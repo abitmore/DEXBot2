@@ -109,17 +109,12 @@ Below is a concise description of each configuration option you may set per-bot 
 - **`targetSpreadPercent`**: number — target spread (in percent) around the market price that the grid should cover. The manager uses this to place buy/sell layers around the market.
 - **`weightDistribution`**: object — `{ "sell": <number>, "buy": <number> }`. Controls order sizing shape. Values are the distribution coefficient (examples below):
   - Typical values: `-1` = Super Valley (more weight far from market), `0` = Valley, `0.5` = Neutral, `1` = Mountain (more weight near market), `2` = Super Mountain.
-- **`weightDistribution`**: object — `{ "sell": <number>, "buy": <number> }`. Controls order sizing shape. Use this to shape capital allocation across layers; smaller/negative values push size to outer layers, larger positive values concentrate near the market. 
 - **`botFunds`**: object — `{ "buy": <number|string>, "sell": <number|string> }`.
   - `buy`: amount of quote asset allocated for buying (can be an absolute number like `10000` or a percentage string like `"50%"`).
   - `sell`: amount of base asset allocated for selling (absolute like `0.1` or percentage string like `"100%"`).
   - `buy` refers to the quote-side (what you spend to buy base); `sell` refers to the base-side (what you sell). Provide human-readable units (not blockchain integer units).
   - If you supply percentages (e.g. `"50%"`) the manager needs `accountTotals` to resolve them to absolute amounts before placing orders; otherwise provide absolute numbers.
 - **`activeOrders`**: object — `{ "buy": <integer>, "sell": <integer> }` number of buy/sell orders to keep active in the grid for each side.
-- **`accountTotals`**: object (optional runtime) — `{ "buy": <number>, "sell": <number> }`. Real human-readable totals of the quote (buy) and base (sell) balances used to resolve percentage `botFunds`. Provide these before initialization when using percentage-based `botFunds`.
-- **`timeoutMs`**: number (optional) — request timeout in milliseconds for client calls (where supported). Useful to tune network/DB timeouts.
-For testing: if you want an explicit calculation pass while a bot is running, the `modules/order` runner or the OrderManager API can trigger the same logic without broadcasting orders.
-
 
 ## How It Works
 
@@ -164,8 +159,6 @@ Below is a short summary of the modules in this repository and what they provide
   - `modules/order/price.js`: Helpers to derive market price from pool/market/ticker.
   - `modules/order/runner.js`: Runner for calculation passes and dry-runs.
   - `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion).
-
-
 
 ## Contributing
 
