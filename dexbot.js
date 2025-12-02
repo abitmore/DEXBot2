@@ -410,6 +410,10 @@ async function runBotInstances(botEntries, { forceDryRun = false, sourceName = '
             instances.push(bot);
         } catch (err) {
             console.error('Failed to start bot:', err.message);
+            if (err && err instanceof accountOrders.MasterPasswordError) {
+                console.error('Aborting because the master password failed 3 times.');
+                process.exit(1);
+            }
             if (err && err.message && String(err.message).toLowerCase().includes('marketprice')) {
                 console.info('Hint: marketPrice could not be derived.');
                 console.info(' - If using profiles/bots.json with "pool" or "market" signals, ensure the chain contains a matching liquidity pool or orderbook for the configured pair.');
