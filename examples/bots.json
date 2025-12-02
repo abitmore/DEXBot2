@@ -1,7 +1,7 @@
 {
   "bots": [
     {
-      "name": "bot name",
+      "name": "bot-name",
       "active": true,
       "dryRun": true,
       "preferredAccount": "bitshares-account",
@@ -26,10 +26,10 @@
       }
     },
     {
-      "name": "bot name",
+      "name": "bot-name",
       "active": false,
       "dryRun": true,
-      "preferredAccount": "example-account",
+      "preferredAccount": "bitshares-account",
       "assetA": "BTC",
       "assetB": "USD",
       "marketPrice": "pool",
