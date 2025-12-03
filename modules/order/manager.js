@@ -581,7 +581,7 @@ class OrderManager {
     // Activate virtual spread orders and transition them to buy or sell as needed.
     // Returns an array of the newly activated order objects (for on-chain placement).
     async activateSpreadOrders(targetType, count) {
-        if (count <= 0) return [];
+        if (count <= 0) return 0;
         const allSpreadOrders = this.getOrdersByTypeAndState(ORDER_TYPES.SPREAD, ORDER_STATES.VIRTUAL);
         const spreadOrders = allSpreadOrders
             .filter(o => (targetType === ORDER_TYPES.BUY && o.price < this.config.marketPrice) || (targetType === ORDER_TYPES.SELL && o.price > this.config.marketPrice))
