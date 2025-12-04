@@ -6,7 +6,7 @@
 
 const BitShares = require('btsdex');
 
-const ACCOUNT_NAME = 'bbot9';
+const ACCOUNT_NAME = 'hanzac-si';
 
 // Asset precision lookup (will be populated from chain)
 const assetPrecisions = {};
