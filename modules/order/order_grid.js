@@ -5,7 +5,9 @@ class OrderGridGenerator {
     static createOrderGrid(config) {
         // Compute helper arrays of buy/sell price levels relative to the market price.
         const { marketPrice, minPrice, maxPrice, incrementPercent } = config;
-        const incrementFactor = 1 + (incrementPercent / 100);
+        // Use explicit step multipliers for clarity:
+        const stepUp = 1 + (incrementPercent / 100);    // e.g. 1.02 for +2%
+        const stepDown = 1 - (incrementPercent / 100);  // e.g. 0.98 for -2%
         
         // Ensure targetSpreadPercent is at least `minSpreadFactor * incrementPercent` to guarantee spread orders.
         // This implementation uses the global default `DEFAULT_CONFIG.minSpreadFactor` (no per-bot overrides).
@@ -19,19 +21,22 @@ class OrderGridGenerator {
         
         // Calculate number of spread orders based on target spread vs increment
         // Ensure at least 2 spread orders (1 buy, 1 sell) to maintain a proper spread zone
-        const calculatedNOrders = Math.ceil(Math.log((1 + (targetSpreadPercent / 100)) / incrementFactor) / Math.log(incrementFactor));
+        // Number of increments needed to cover the target spread using stepUp^n >= (1 + targetSpread)
+        const calculatedNOrders = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
         const nOrders = Math.max(2, calculatedNOrders); // Minimum 2 spread orders
 
         const calculateLevels = (start, min) => {
             const levels = [];
-            for (let current = start; current >= min; current /= incrementFactor) {
+            for (let current = start; current >= min; current *= stepDown) {
                 levels.push(current);
             }
             return levels;
         };
 
         const sellLevels = calculateLevels(maxPrice, marketPrice);
-        const buyLevels = calculateLevels((sellLevels[sellLevels.length - 1] || marketPrice) / incrementFactor, minPrice);
+        // Start the buy side one step below the last sell level (or marketPrice) using stepDown
+        const buyStart = (sellLevels[sellLevels.length - 1] || marketPrice) * stepDown;
+        const buyLevels = calculateLevels(buyStart, minPrice);
 
         const buySpread = Math.floor(nOrders / 2);
         const sellSpread = nOrders - buySpread;
