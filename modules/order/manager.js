@@ -1,3 +1,18 @@
+/**
+ * OrderManager - Core grid-based order management system for DEXBot2
+ * 
+ * This module is responsible for:
+ * - Creating and maintaining a virtual order grid across a price range
+ * - Tracking order states (VIRTUAL -> ACTIVE -> FILLED)
+ * - Synchronizing grid state with on-chain orders
+ * - Managing funds allocation and commitment tracking
+ * - Processing fills and rebalancing the grid
+ * 
+ * The order grid spans from minPrice to maxPrice with orders placed at
+ * regular incrementPercent intervals. Orders near the market price form
+ * the "spread" zone. When orders are filled, new orders are created on
+ * the opposite side to maintain grid coverage.
+ */
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG } = require('./constants');
 const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice } = require('./utils');
 const Logger = require('./logger');
@@ -15,8 +30,39 @@ const MIN_ORDER_SIZE_FACTOR = 50;
 // targetSpreadPercent will be at least 2 * incrementPercent.
 const MIN_SPREAD_FACTOR = 2;
 
-// Core manager responsible for preparing, tracking, and updating the order grid in memory.
+/**
+ * OrderManager class - manages grid-based trading strategy
+ * 
+ * Key concepts:
+ * - Virtual orders: Grid positions not yet placed on-chain
+ * - Active orders: Orders that exist on the blockchain
+ * - Filled orders: Orders that have been fully executed
+ * - Spread orders: Orders in the zone around market price
+ * 
+ * Funds tracking:
+ * - available: Funds not yet committed to orders
+ * - committed: Funds locked in active orders
+ * - total: Starting balance for percentage calculations
+ * 
+ * Price tolerance:
+ * - Chain orders may have slightly different prices due to integer rounding
+ * - Tolerance is calculated based on asset precisions and order sizes
+ * - Orders within tolerance are considered matching
+ * 
+ * @class
+ */
 class OrderManager {
+    /**
+     * Create a new OrderManager instance
+     * @param {Object} config - Bot configuration
+     * @param {string|number} config.marketPrice - Center price or 'pool'/'market' for auto-derive
+     * @param {string|number} config.minPrice - Lower bound (number or '5x' relative)
+     * @param {string|number} config.maxPrice - Upper bound (number or '5x' relative)
+     * @param {number} config.incrementPercent - Price step between orders (e.g., 1 for 1%)
+     * @param {number} config.targetSpreadPercent - Target spread width percentage
+     * @param {Object} config.botFunds - Funds allocation { buy: amount/'%', sell: amount/'%' }
+     * @param {Object} config.activeOrders - Max active orders { buy: n, sell: n }
+     */
     constructor(config = {}) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.marketName = this.config.market || (this.config.assetA && this.config.assetB ? `${this.config.assetA}/${this.config.assetB}` : null);
@@ -371,7 +417,20 @@ class OrderManager {
         await this.initializeOrderGrid();
     }
 
-    // Derive marketPrice when requested then build the virtual order grid.
+    /**
+     * Initialize the virtual order grid.
+     * This method:
+     * 1. Resolves asset metadata from the chain
+     * 2. Derives marketPrice from pool/orderbook if not specified
+     * 3. Resolves min/max price bounds (handles '5x' relative notation)
+     * 4. Waits for account balances if botFunds are percentage-based
+     * 5. Creates the grid using OrderGridGenerator
+     * 6. Allocates order sizes based on available funds
+     * 7. Validates that no orders are below minimum size
+     * 
+     * @throws {Error} If marketPrice is invalid or outside bounds
+     * @throws {Error} If any allocated order is below minimum size
+     */
     async initializeOrderGrid() {
         await this._initializeAssets();
         const mpRaw = this.config.marketPrice;
@@ -520,6 +579,13 @@ class OrderManager {
         this.logFundsStatus(); this.logger.logOrderGrid(Array.from(this.orders.values()), this.config.marketPrice);
     }
 
+    /**
+     * Load a persisted grid snapshot and restore state.
+     * Used when resuming from a previous session instead of
+     * generating a new grid from scratch.
+     * 
+     * @param {Array} grid - Array of order objects from profiles/orders.json
+     */
     loadGrid(grid) {
         if (!grid || !Array.isArray(grid)) return;
         this.orders.clear();
@@ -545,6 +611,14 @@ class OrderManager {
 
 
 
+    /**
+     * Parse a raw blockchain order into a normalized format.
+     * Determines order type (BUY/SELL) based on asset configuration
+     * and converts amounts to human-readable units.
+     * 
+     * @param {Object} chainOrder - Raw order from BitShares API
+     * @returns {Object|null} Parsed order { orderId, price, type, size } or null if invalid
+     */
     _parseChainOrder(chainOrder) {
         if (!chainOrder || !chainOrder.sell_price || !this.assets) return null;
         const { base, quote } = chainOrder.sell_price;
@@ -589,9 +663,17 @@ class OrderManager {
         return { orderId: chainOrder.id, price: price, type: type, size };
     }
 
-    // Apply an on-chain reported size to a tracked grid order and reconcile
-    // funds (committed / available) to avoid drift. `chainSize` is a human
-    // float representing remaining amount to sell for that order.
+    /**
+     * Apply the on-chain reported size to a tracked grid order.
+     * Reconciles funds (committed/available) to prevent drift when
+     * chain size differs from grid size (e.g., partial fills).
+     * 
+     * Only applies to ACTIVE orders - virtual/spread orders keep
+     * their configured sizes until explicitly activated.
+     * 
+     * @param {Object} gridOrder - The grid order to update
+     * @param {number} chainSize - Human-readable size from blockchain
+     */
     _applyChainSizeToGridOrder(gridOrder, chainSize) {
         if (!gridOrder) return;
         // Only apply chain-reported sizes to orders that are ACTIVE.
@@ -1123,6 +1205,20 @@ class OrderManager {
         return { newOrders, ordersNeedingCorrection: this.ordersNeedingPriceCorrection };
     }
 
+    /**
+     * Perform a full grid resynchronization from blockchain state.
+     * This is a "nuclear option" that:
+     * 1. Regenerates the virtual grid from scratch
+     * 2. Fetches all open orders from the chain
+     * 3. Matches grid orders to chain orders by price tolerance
+     * 4. Cancels any chain orders that don't match the grid
+     * 
+     * Used when grid state becomes inconsistent or when explicitly
+     * triggered via recalculate.*.trigger file.
+     * 
+     * @param {Function} readOpenOrdersFn - Async function to fetch open orders
+     * @param {Function} cancelOrderFn - Async function to cancel an order
+     */
     async resyncGridFromChain(readOpenOrdersFn, cancelOrderFn) {
         this.logger.log('Starting full grid resynchronization from blockchain...', 'info');
         await this.initializeOrderGrid();
@@ -1190,6 +1286,18 @@ class OrderManager {
         console.log(`Committed: Buy ${this.funds.committed.buy.toFixed(8)} ${buyName} | Sell ${this.funds.committed.sell.toFixed(8)} ${sellName}`);
     }
 
+    /**
+     * Get the initial set of orders to place on-chain.
+     * Selects the closest virtual orders to market price,
+     * respecting the configured activeOrders limits and
+     * filtering out orders below minimum size.
+     * 
+     * Orders are sorted from outside-in for optimal placement:
+     * - Sells: highest price first
+     * - Buys: lowest price first
+     * 
+     * @returns {Array} Array of order objects to activate
+     */
     getInitialOrdersToActivate() {
         const sellCount = Math.max(0, Number(this.config.activeOrders && this.config.activeOrders.sell ? this.config.activeOrders.sell : 1));
         const buyCount = Math.max(0, Number(this.config.activeOrders && this.config.activeOrders.buy ? this.config.activeOrders.buy : 1));
@@ -1239,7 +1347,12 @@ class OrderManager {
         return [...validSells, ...validBuys];
     }
 
-    // Filter tracked orders by type and state to ease bookkeeping (optimized with indices).
+    /**
+     * Filter tracked orders by type and/or state using optimized indices.
+     * @param {string|null} type - ORDER_TYPES.BUY, SELL, or SPREAD (null for all)
+     * @param {string|null} state - ORDER_STATES.VIRTUAL, ACTIVE, or FILLED (null for all)
+     * @returns {Array} Filtered array of order objects
+     */
     getOrdersByTypeAndState(type, state) { 
         let candidateIds;
         
@@ -1275,7 +1388,16 @@ class OrderManager {
     // Flag whether the spread has widened beyond configured limits so we can rebalance.
     checkSpreadCondition() { const currentSpread = this.calculateCurrentSpread(); const targetSpread = this.config.targetSpreadPercent + this.config.incrementPercent; if (currentSpread > targetSpread) { this.outOfSpread = true; this.logger.log(`Spread too wide (${currentSpread.toFixed(2)}% > ${targetSpread}%), will add extra orders on next fill`, 'warn'); } else this.outOfSpread = false; }
 
-    // React to fills by updating funds, converting orders to spreads, and rebalancing targets.
+    /**
+     * Process filled orders and trigger rebalancing.
+     * For each filled order:
+     * 1. Updates funds (transfers proceeds to available pool)
+     * 2. Converts the filled order to a spread placeholder
+     * 3. Triggers creation of new orders on the opposite side
+     * 
+     * @param {Array} filledOrders - Array of orders that were filled
+     * @returns {Array} Newly activated orders that need on-chain placement
+     */
     async processFilledOrders(filledOrders) { 
         const filledCounts = { [ORDER_TYPES.BUY]: 0, [ORDER_TYPES.SELL]: 0 }; 
         for (const filledOrder of filledOrders) { 
@@ -1356,8 +1478,15 @@ class OrderManager {
         return newOrders;
     }
 
-    // Activate virtual spread orders and transition them to buy or sell as needed.
-    // Returns an array of the newly activated order objects (for on-chain placement).
+    /**
+     * Activate spread placeholder orders as buy/sell orders.
+     * Selects eligible spread orders closest to market price,
+     * allocates funds evenly, and transitions them to ACTIVE state.
+     * 
+     * @param {string} targetType - ORDER_TYPES.BUY or SELL
+     * @param {number} count - Number of orders to activate
+     * @returns {Array} Array of newly activated order objects for on-chain placement
+     */
     async activateSpreadOrders(targetType, count) {
         if (count <= 0) return 0;
         const allSpreadOrders = this.getOrdersByTypeAndState(ORDER_TYPES.SPREAD, ORDER_STATES.VIRTUAL);
@@ -1391,7 +1520,11 @@ class OrderManager {
         return activatedOrders;
     }
 
-    // Compute the percentage spread between top active buy and sell orders.
+    /**
+     * Calculate the current percentage spread between best bid and ask.
+     * Uses active orders if available, falls back to virtual orders.
+     * @returns {number} Spread percentage (e.g., 5.0 for 5%)
+     */
     calculateCurrentSpread() {
         const activeBuys = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
         const activeSells = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE);
@@ -1402,7 +1535,10 @@ class OrderManager {
         const bestBuy = pickBestBuy(); const bestSell = pickBestSell(); if (bestBuy === null || bestSell === null || bestBuy === 0) return 0; return ((bestSell / bestBuy) - 1) * 100;
     }
 
-    // Log a summary of the current grid state and funds to the console.
+    /**
+     * Log a comprehensive status summary to the console.
+     * Displays: market, funds, order counts, spread info.
+     */
     displayStatus() {
         const market = this.marketName || this.config.market || 'unknown';
         const activeOrders = this.getOrdersByTypeAndState(null, ORDER_STATES.ACTIVE);
@@ -1421,7 +1557,17 @@ class OrderManager {
     }
 }
 
-// Normalize configured price bounds, handling relative strings like '5x'.
+/**
+ * Normalize a configured price bound value.
+ * Handles relative strings like '5x' (5x the market price for max,
+ * 1/5x for min), plain numbers, and fallback defaults.
+ * 
+ * @param {string|number} value - Configured value ('5x', 1000, etc.)
+ * @param {number} fallback - Default value if parsing fails
+ * @param {number} marketPrice - Current market price for relative calculations
+ * @param {string} mode - 'min' or 'max' for relative direction
+ * @returns {number} Resolved price bound
+ */
 function resolveConfiguredPriceBound(value, fallback, marketPrice, mode) {
     const relative = resolveRelativePrice(value, marketPrice, mode);
     if (Number.isFinite(relative)) return relative;

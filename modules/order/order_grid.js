@@ -1,10 +1,49 @@
+/**
+ * OrderGridGenerator - Generates the virtual order grid structure
+ * 
+ * This module creates the foundational grid of virtual orders based on:
+ * - Market price (center of the grid)
+ * - Min/max price bounds
+ * - Increment percentage (spacing between orders)
+ * - Target spread percentage (zone around market price)
+ * 
+ * The grid consists of:
+ * - SELL orders above market price
+ * - BUY orders below market price  
+ * - SPREAD orders in the zone closest to market price
+ * 
+ * Orders are sized based on available funds and weight distribution.
+ */
 const { ORDER_TYPES, DEFAULT_CONFIG } = require('./constants');
 
 // MIN_SPREAD_FACTOR constant (moved from constants.js)
 const MIN_SPREAD_FACTOR = 2;
 
-// Build the foundational grid of virtual orders based on increments, spread, and funds.
+/**
+ * OrderGridGenerator - Static class for grid creation and sizing
+ * 
+ * Grid creation algorithm:
+ * 1. Calculate price levels from marketPrice to maxPrice (sells) and minPrice (buys)
+ * 2. Use incrementPercent for geometric spacing (1% -> 1.01x per level)
+ * 3. Assign SPREAD type to orders closest to market price
+ * 4. Calculate order sizes based on funds and weight distribution
+ * 
+ * @class
+ */
 class OrderGridGenerator {
+    /**
+     * Create the order grid structure.
+     * Generates sell orders from market to max, buy orders from market to min.
+     * Orders within targetSpreadPercent of market are marked as SPREAD.
+     * 
+     * @param {Object} config - Grid configuration
+     * @param {number} config.marketPrice - Center price for the grid
+     * @param {number} config.minPrice - Lower price bound
+     * @param {number} config.maxPrice - Upper price bound
+     * @param {number} config.incrementPercent - Price step (e.g., 1 for 1%)
+     * @param {number} config.targetSpreadPercent - Spread zone width
+     * @returns {Object} { orders: Array, initialSpreadCount: { buy, sell } }
+     */
     static createOrderGrid(config) {
         // Compute helper arrays of buy/sell price levels relative to the market price.
         const { marketPrice, minPrice, maxPrice, incrementPercent } = config;
@@ -62,7 +101,22 @@ class OrderGridGenerator {
         return { orders: [...sellOrders, ...buyOrders], initialSpreadCount };
     }
 
-    // Distribute funds across the grid respecting weights and increment guidance.
+    /**
+     * Distribute funds across grid orders using weighted allocation.
+     * 
+     * Weight distribution algorithm:
+     * - Uses geometric weighting based on incrementPercent
+     * - Can favor orders closer to or further from market price
+     * - Respects minimum size constraints
+     * 
+     * @param {Array} orders - Array of order objects from createOrderGrid
+     * @param {Object} config - Grid configuration with weightDistribution
+     * @param {number} sellFunds - Available funds for sell orders (in base asset)
+     * @param {number} buyFunds - Available funds for buy orders (in quote asset)
+     * @param {number} minSellSize - Minimum size for sell orders (0 to disable)
+     * @param {number} minBuySize - Minimum size for buy orders (0 to disable)
+     * @returns {Array} Orders with size property added
+     */
     static calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 0, minBuySize = 0) {
         const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
         const incrementFactor = incrementPercent / 100;

@@ -1,4 +1,27 @@
-// Local persistence for per-bot order-grid snapshots and metadata (profiles/orders.json)
+/**
+ * Account Orders Module - Local persistence for order grid snapshots
+ * 
+ * This module manages the profiles/orders.json file which stores:
+ * - Per-bot order grid snapshots (prices, sizes, states, chain IDs)
+ * - Bot metadata (name, assets, active status)
+ * - Timestamps for tracking changes
+ * 
+ * The grid snapshot allows the bot to resume from where it left off
+ * without regenerating orders, maintaining consistency with on-chain state.
+ * 
+ * File structure:
+ * {
+ *   "bots": {
+ *     "botkey-0": {
+ *       "meta": { name, assetA, assetB, active, index },
+ *       "grid": [ { id, type, state, price, size, orderId }, ... ],
+ *       "createdAt": "ISO timestamp",
+ *       "lastUpdated": "ISO timestamp"
+ *     }
+ *   },
+ *   "lastUpdated": "ISO timestamp"
+ * }
+ */
 const fs = require('fs');
 const path = require('path');
 const { ORDER_STATES } = require('./order/constants');
@@ -19,6 +42,13 @@ function sanitizeKey(source) {
     .replace(/^-+|-+$/g, '') || 'bot';
 }
 
+/**
+ * Generate a unique key for identifying a bot in storage.
+ * Uses bot name or asset pair, sanitized and indexed.
+ * @param {Object} bot - Bot configuration
+ * @param {number} index - Index in bots array
+ * @returns {string} Sanitized key like 'mybot-0' or 'iob-xrp-bts-1'
+ */
 function createBotKey(bot, index) {
   const identifier = bot && bot.name
     ? bot.name
@@ -32,7 +62,22 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/**
+ * AccountOrders class - manages order grid persistence
+ * 
+ * Provides methods to:
+ * - Store and load order grid snapshots
+ * - Track bot metadata and state
+ * - Calculate asset balances from stored grids
+ * 
+ * @class
+ */
 class AccountOrders {
+  /**
+   * Create an AccountOrders instance.
+   * @param {Object} options - Configuration options
+   * @param {string} options.profilesPath - Custom path for orders.json
+   */
   constructor(options = {}) {
     this.profilesPath = options.profilesPath || PROFILES_ORDERS_FILE;
     this._needsBootstrapSave = !fs.existsSync(this.profilesPath);
@@ -64,6 +109,11 @@ class AccountOrders {
     fs.writeFileSync(this.profilesPath, JSON.stringify(this.data, null, 2) + '\n', 'utf8');
   }
 
+  /**
+   * Ensure storage entries exist for all provided bot configurations.
+   * Creates new entries for unknown bots, updates metadata for existing ones.
+   * @param {Array} botEntries - Array of bot configurations from bots.json
+   */
   ensureBotEntries(botEntries = []) {
     if (!Array.isArray(botEntries)) return;
     let changed = false;
@@ -119,6 +169,12 @@ class AccountOrders {
     };
   }
 
+  /**
+   * Save the current order grid snapshot for a bot.
+   * Called after grid changes (initialization, fills, syncs).
+   * @param {string} botKey - Bot identifier key
+   * @param {Array} orders - Array of order objects from OrderManager
+   */
   storeMasterGrid(botKey, orders = []) {
     if (!botKey) return;
     const snapshot = Array.isArray(orders) ? orders.map(order => this._serializeOrder(order)) : [];
@@ -140,6 +196,11 @@ class AccountOrders {
     this._persist();
   }
 
+  /**
+   * Load the persisted order grid for a bot.
+   * @param {string} botKey - Bot identifier key
+   * @returns {Array|null} Order grid array or null if not found
+   */
   loadBotGrid(botKey) {
     if (this.data && this.data.bots && this.data.bots[botKey]) {
       const botData = this.data.bots[botKey];
@@ -148,6 +209,12 @@ class AccountOrders {
     return null;
   }
 
+  /**
+   * Calculate asset balances from a stored grid.
+   * Sums order sizes by asset and state (active vs virtual).
+   * @param {string} botKeyOrName - Bot key or name to look up
+   * @returns {Object|null} Balance summary or null if not found
+   */
   getDBAssetBalances(botKeyOrName) {
     if (!botKeyOrName) return null;
     // Find entry by key or by matching meta.name (case-insensitive)

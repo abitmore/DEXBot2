@@ -1,4 +1,23 @@
-// Try several on-chain lookups to resolve an asset symbol or id to metadata.
+/**
+ * Price Module - Market price derivation from BitShares chain
+ * 
+ * This module provides functions to derive the current market price
+ * for an asset pair from various on-chain sources:
+ * - Liquidity pools (reserves ratio)
+ * - Order book (bid/ask midpoint)
+ * - Aggregated limit orders (volume-weighted average)
+ * 
+ * Price orientation: All functions return price as "quote per base"
+ * (e.g., BTS per XRP for the IOB.XRP/BTS pair).
+ */
+
+/**
+ * Look up asset metadata from chain by symbol or ID.
+ * Tries multiple API methods for compatibility.
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} s - Asset symbol or ID (e.g., 'BTS' or '1.3.0')
+ * @returns {Promise<Object|null>} Asset metadata { id, precision, symbol } or null
+ */
 const lookupAsset = async (BitShares, s) => {
     try { const a = await BitShares.assets[s.toLowerCase()]; if (a && a.id) return a; } catch (e) {}
     try { const r = await BitShares.db.lookup_asset_symbols([s]); if (r && r[0] && r[0].id) return r[0]; } catch (e) {}
@@ -6,7 +25,15 @@ const lookupAsset = async (BitShares, s) => {
     return null;
 };
 
-// Derive a market-based price via orderbooks/ticker data and invert to quote per base.
+/**
+ * Derive market price from the order book.
+ * Uses bid/ask midpoint from get_order_book, falls back to ticker.
+ * Returns inverted price (quote per base).
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - Base asset symbol
+ * @param {string} symB - Quote asset symbol
+ * @returns {Promise<number|null>} Price (quote per base) or null
+ */
 const deriveMarketPrice = async (BitShares, symA, symB) => {
     try {
         const aMeta = await lookupAsset(BitShares, symA);
@@ -42,7 +69,14 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
     }
 };
 
-// Derive a price from a liquidity pool reserve ratio, falling back to weighted OB averaging.
+/**
+ * Derive price from a liquidity pool's reserve ratio.
+ * Falls back to volume-weighted order book average if no pool exists.
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - Base asset symbol
+ * @param {string} symB - Quote asset symbol
+ * @returns {Promise<number|null>} Price (quote per base) or null
+ */
 const derivePoolPrice = async (BitShares, symA, symB) => {
     try {
         const aMeta = await lookupAsset(BitShares, symA);
@@ -147,8 +181,16 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
     }
 };
 
-// derivePrice: try pool -> market/orderbook -> aggregated limit orders
-// mode can be undefined|'auto'|'pool'|'market'
+/**
+ * Unified price derivation with fallback chain.
+ * Tries: pool -> market/orderbook -> aggregated limit orders
+ * 
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - Base asset symbol
+ * @param {string} symB - Quote asset symbol
+ * @param {string} mode - 'auto' (default), 'pool', or 'market'
+ * @returns {Promise<number|null>} Price (quote per base) or null
+ */
 const derivePrice = async (BitShares, symA, symB, mode) => {
     mode = (mode === undefined || mode === null) ? 'auto' : String(mode).toLowerCase();
     // if caller forces a mode, honor it

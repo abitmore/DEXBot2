@@ -1,7 +1,19 @@
-// Shared BitShares client wrapper
-// Exposes a single `BitShares` export for subscription/db work and
-// a `createAccountClient` helper for per-account signing/broadcasting clients.
-
+/**
+ * BitShares Client Module - Shared connection wrapper
+ * 
+ * This module provides a centralized BitShares client for the application:
+ * - Single shared connection for all database queries
+ * - Connection state tracking with waitForConnected() helper
+ * - Per-account client factory for signing/broadcasting transactions
+ * 
+ * Usage:
+ * - Import { BitShares, waitForConnected } for database operations
+ * - Use createAccountClient(name, key) for transaction signing
+ * - Call waitForConnected() before any chain operations
+ * 
+ * The shared BitShares instance handles subscriptions and DB queries.
+ * Per-account clients are created for operations that require signing.
+ */
 const BitSharesLib = require('btsdex');
 require('./btsdex_event_patch');
 
@@ -22,7 +34,12 @@ try {
     // Some environments may not have subscribe available at require time; that's okay
 }
 
-// Block until the singleton BitShares client reports a connected state or times out.
+/**
+ * Wait for the shared BitShares client to establish a connection.
+ * Polls connection state until connected or timeout.
+ * @param {number} timeoutMs - Maximum wait time in milliseconds (default: 30000)
+ * @throws {Error} If connection times out
+ */
 async function waitForConnected(timeoutMs = 30000) {
     const start = Date.now();
     while (!connected) {
@@ -35,6 +52,13 @@ async function waitForConnected(timeoutMs = 30000) {
 
 function onConnected(cb) { connectedCallbacks.add(cb); return () => connectedCallbacks.delete(cb); }
 
+/**
+ * Create a per-account client for signing and broadcasting transactions.
+ * Each account needs its own client instance with the private key.
+ * @param {string} accountName - BitShares account name
+ * @param {string} privateKey - WIF-encoded private key
+ * @returns {Object} btsdex client instance for this account
+ */
 function createAccountClient(accountName, privateKey) {
     // Instantiate a per-account client used for signing/broadcasting transactions.
     return new BitSharesLib(accountName, privateKey);

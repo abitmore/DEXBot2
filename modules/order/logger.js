@@ -1,5 +1,19 @@
-// Simple console logger used by the OrderManager for structured status updates.
+/**
+ * Logger - Color-coded console logger for OrderManager
+ * 
+ * Provides structured logging with:
+ * - Log levels: debug, info, warn, error
+ * - Color coding for order types (buy=green, sell=red, spread=yellow)
+ * - Color coding for order states (virtual=gray, active=green, filled=magenta)
+ * - Formatted order grid display
+ * 
+ * @class
+ */
 class Logger {
+    /**
+     * Create a new Logger instance.
+     * @param {string} level - Minimum log level to display ('debug', 'info', 'warn', 'error')
+     */
     constructor(level = 'info') {
         this.levels = { debug: 0, info: 1, warn: 2, error: 3 };
         this.level = level;

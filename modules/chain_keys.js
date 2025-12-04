@@ -1,12 +1,32 @@
-// Chain keys manager (renamed from account_keys.js)
-// This module manages encrypted account storage and private key helper functions.
-
+/**
+ * Chain Keys Module - Encrypted private key storage and management
+ * 
+ * This module provides secure storage for BitShares private keys using:
+ * - AES-256-GCM encryption with random salt and IV
+ * - Master password protection with SHA-256 hash verification
+ * - Interactive CLI for key management (add/modify/remove)
+ * 
+ * Storage location: profiles/keys.json (gitignored)
+ * 
+ * Supported key formats:
+ * - WIF (Wallet Import Format): 51-52 character Base58Check encoded
+ * - PVT_K1_* style keys used by some Graphene chains
+ * - Raw 64-character hexadecimal private keys
+ * 
+ * Security note: The master password is never stored; only its hash is kept
+ * for verification. All private keys are encrypted before storage.
+ */
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const readlineSync = require('readline-sync');
 
-// Custom password input function that shows asterisks and allows backspace
+/**
+ * Securely read a password from stdin with asterisk masking.
+ * Handles backspace and supports pasted text.
+ * @param {string} prompt - Text to display before input
+ * @returns {Promise<string>} The entered password
+ */
 function readPassword(prompt) {
     const stdin = process.stdin;
     const stdout = process.stdout;
@@ -74,7 +94,13 @@ function ensureProfilesKeysDirectory() {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// Encrypt data with password
+/**
+ * Encrypt text using AES-256-GCM with random salt and IV.
+ * Returns a colon-separated string: salt:iv:authTag:ciphertext
+ * @param {string} text - Plain text to encrypt
+ * @param {string} password - Encryption password
+ * @returns {string} Encrypted data as hex string
+ */
 function encrypt(text, password) {
     const salt = crypto.randomBytes(16);
     const key = crypto.scryptSync(password, salt, 32);
@@ -86,7 +112,13 @@ function encrypt(text, password) {
     return salt.toString('hex') + ':' + iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted;
 }
 
-// Decrypt data with password
+/**
+ * Decrypt text encrypted with the encrypt() function.
+ * @param {string} encrypted - Colon-separated encrypted data
+ * @param {string} password - Decryption password
+ * @returns {string} Decrypted plain text
+ * @throws {Error} If decryption fails (wrong password or corrupted data)
+ */
 function decrypt(encrypted, password) {
     const parts = encrypted.split(':');
     const salt = Buffer.from(parts[0], 'hex');
@@ -103,7 +135,12 @@ function decrypt(encrypted, password) {
 
 const bs58check = require('bs58check').default || require('bs58check');
 
-// Validate common private key formats (strict WIF legacy/compressed using bs58check, PVT-style, and hex)
+/**
+ * Validate a private key format.
+ * Supports WIF (Base58Check), PVT_K1_* style, and 64-char hex.
+ * @param {string} key - Private key to validate
+ * @returns {Object} { valid: boolean, reason?: string }
+ */
 function validatePrivateKey(key) {
     if (!key || typeof key !== 'string') return { valid: false, reason: 'Empty key' };
     const k = key.trim();
@@ -147,7 +184,11 @@ function validatePrivateKey(key) {
     return { valid: false, reason: 'Unrecognized key format' };
 }
 
-// Load accounts data
+/**
+ * Load stored accounts from profiles/keys.json.
+ * Returns empty structure if file doesn't exist or is corrupted.
+ * @returns {Object} { masterPasswordHash: string, accounts: Object }
+ */
 function loadAccounts() {
     try {
         if (!fs.existsSync(PROFILES_KEYS_FILE)) {
@@ -163,7 +204,11 @@ function loadAccounts() {
         return { masterPasswordHash: '', accounts: {} };
     }
 }
-// Hash password for verification
+/**
+ * Hash a password using SHA-256 for storage/comparison.
+ * @param {string} password - Password to hash
+ * @returns {string} Hex-encoded hash
+ */
 function hashPassword(password) {
     return crypto.createHash('sha256').update(password).digest('hex');
 }
@@ -186,7 +231,13 @@ function _promptPassword() {
     return readlineSync.question('Enter master password: ', { hideEchoBack: true });
 }
 
-// Authenticate and return the master password (throws or prompts)
+/**
+ * Authenticate and return the master password.
+ * Prompts user interactively with limited retry attempts.
+ * @returns {string} The verified master password
+ * @throws {Error} If no master password is set
+ * @throws {MasterPasswordError} If max attempts exceeded
+ */
 function authenticate() {
     const accountsData = loadAccounts();
     if (!accountsData.masterPasswordHash) {
@@ -205,7 +256,13 @@ function authenticate() {
     }
 }
 
-// Decrypt and return the stored private key for the requested account.
+/**
+ * Retrieve and decrypt a stored private key.
+ * @param {string} accountName - Name of the account
+ * @param {string} masterPassword - Master password for decryption
+ * @returns {string} Decrypted private key
+ * @throws {Error} If account not found
+ */
 function getPrivateKey(accountName, masterPassword) {
     const accountsData = loadAccounts();
     const account = accountsData.accounts[accountName];
@@ -214,7 +271,11 @@ function getPrivateKey(accountName, masterPassword) {
     }
     return decrypt(account.encryptedKey, masterPassword);
 }
-// Display the saved account names to the console and return their ordering.
+/**
+ * Display stored account names to console.
+ * @param {Object} accounts - Accounts object from loadAccounts()
+ * @returns {Array<string>} Array of account names
+ */
 function listKeyNames(accounts) {
     if (!accounts || Object.keys(accounts).length === 0) {
         console.log('  (no accounts stored yet)');
@@ -283,15 +344,22 @@ async function changeMasterPassword(accountsData, currentPassword) {
     return newPassword;
 }
 
-// Save accounts data
+/**
+ * Save accounts data to profiles/keys.json.
+ * Creates directory if needed.
+ * @param {Object} data - Accounts data to save
+ */
 function saveAccounts(data) {
     // Always save sensitive data to the live path (ignored by git)
     ensureProfilesKeysDirectory();
     fs.writeFileSync(PROFILES_KEYS_FILE, JSON.stringify(data, null, 2));
 }
 
-// Export validator for tests and other modules
-// Launch the interactive key manager menu (add/modify/remove keys and update master password).
+/**
+ * Launch the interactive key management CLI.
+ * Provides menu for: add/modify/remove keys, test decryption,
+ * change master password.
+ */
 async function main() {
     console.log('Chain Key Manager');
     console.log('========================');

@@ -1,4 +1,16 @@
-// Utilities for managing BitShares account keys, fills, and limit-order operations.
+/**
+ * Chain Orders Module - BitShares blockchain interaction layer
+ * 
+ * This module provides the interface for all blockchain operations:
+ * - Account selection and authentication
+ * - Reading open orders from the chain
+ * - Creating, updating, and canceling limit orders
+ * - Listening for fill events via subscriptions
+ * - Fetching on-chain asset balances
+ * 
+ * All order amounts are handled as human-readable floats externally
+ * and converted to blockchain integers internally using asset precision.
+ */
 const { BitShares, createAccountClient, waitForConnected } = require('./bitshares_client');
 const { floatToBlockchainInt, blockchainToFloat } = require('./order/utils');
 const crypto = require('crypto');
@@ -33,13 +45,22 @@ async function _getAssetPrecision(assetRef) {
 let preferredAccountId = null;
 let preferredAccountName = null;
 
-// Remember the preferred account id/name for reuse in other helpers.
+/**
+ * Set the preferred account for subsequent operations.
+ * This allows other functions to operate without requiring account parameters.
+ * @param {string} accountId - BitShares account ID (e.g., '1.2.12345')
+ * @param {string} accountName - Human-readable account name
+ */
 function setPreferredAccount(accountId, accountName) {
     preferredAccountId = accountId;
     if (accountName) preferredAccountName = accountName;
 }
 
-// Attempt to derive an account name from an id by querying the BitShares chain.
+/**
+ * Resolve an account ID to its human-readable name via chain lookup.
+ * @param {string} accountRef - Account ID (e.g., '1.2.12345') or name
+ * @returns {Promise<string|null>} Account name or null if not found
+ */
 async function resolveAccountName(accountRef) {
     if (!accountRef) return null;
     if (typeof accountRef !== 'string') return null;
@@ -56,7 +77,11 @@ async function resolveAccountName(accountRef) {
     return null;
 }
 
-// Attempt to derive an account id from a name using on-chain lookup.
+/**
+ * Resolve an account name to its ID via chain lookup.
+ * @param {string} accountName - Human-readable account name
+ * @returns {Promise<string|null>} Account ID or null if not found
+ */
 async function resolveAccountId(accountName) {
     if (!accountName) return null;
     if (typeof accountName !== 'string') return null;
@@ -107,7 +132,11 @@ function _ensureAccountSubscriber(accountName) {
     return entry;
 }
 
-// Prompt user to select an account after authenticating with the master password.
+/**
+ * Interactive account selection from stored encrypted keys.
+ * Prompts user to authenticate and select an account.
+ * @returns {Promise<Object>} { accountName, privateKey, id }
+ */
 async function selectAccount() {
     const masterPassword = chainKeys.authenticate();
     const accountsData = chainKeys.loadAccounts();
@@ -143,7 +172,12 @@ async function selectAccount() {
     return { accountName: selectedAccount, privateKey: privateKey, id: preferredAccountId };
 }
 
-// Fetch open orders for an account after ensuring connection.
+/**
+ * Fetch all open limit orders for an account from the blockchain.
+ * @param {string|null} accountId - Account ID to query (uses preferred if null)
+ * @param {number} timeoutMs - Connection timeout in milliseconds
+ * @returns {Promise<Array>} Array of raw order objects from chain
+ */
 async function readOpenOrders(accountId = null, timeoutMs = 30000) {
     await waitForConnected(timeoutMs);
     try {
@@ -162,7 +196,14 @@ async function readOpenOrders(accountId = null, timeoutMs = 30000) {
     }
 }
 
-// Listen for fill events on an account and notify callbacks.
+/**
+ * Subscribe to fill events for an account.
+ * Calls the callback when any of the account's orders are filled.
+ * 
+ * @param {string|Function} accountRef - Account name/id, or callback if using preferred
+ * @param {Function} callback - Function called with array of fill operations
+ * @returns {Function} Unsubscribe function to stop listening
+ */
 async function listenForFills(accountRef, callback) {
     let userCallback = null;
     let accountToken = null;
@@ -224,16 +265,21 @@ async function listenForFills(accountRef, callback) {
     };
 }
 
-// Update an existing limit order to new desired values.
-// BitShares stores orders as amount_to_sell and min_to_receive (price = min_to_receive / amount_to_sell).
-// This function accepts the new desired values and calculates the required delta internally.
-//
-// Parameters:
-//   newParams.amountToSell - new desired amount to sell (in human-readable units)
-//   newParams.minToReceive - new desired minimum to receive (in human-readable units)
-// 
-// If only one is provided, the other is kept from the current order.
-// The function calculates delta_amount_to_sell = newAmount - currentAmount
+/**
+ * Update an existing limit order on the blockchain.
+ * Uses limit_order_update operation to modify amounts without canceling.
+ * 
+ * BitShares stores orders as amount_to_sell and min_to_receive.
+ * This function calculates the delta internally.
+ * 
+ * @param {string} accountName - Account that owns the order
+ * @param {string} privateKey - Private key for signing
+ * @param {string} orderId - Chain order ID (e.g., '1.7.12345')
+ * @param {Object} newParams - New order parameters
+ * @param {number} newParams.amountToSell - New amount to sell (human units)
+ * @param {number} newParams.minToReceive - New minimum to receive (human units)
+ * @returns {Promise<Object|null>} Transaction result or null if no change
+ */
 async function updateOrder(accountName, privateKey, orderId, newParams) {
     try {
         const acc = createAccountClient(accountName, privateKey);
@@ -320,7 +366,19 @@ async function updateOrder(accountName, privateKey, orderId, newParams) {
     }
 }
 
-// Build and optionally broadcast a new limit order using provided values.
+/**
+ * Create a new limit order on the blockchain.
+ * 
+ * @param {string} accountName - Account to create order for
+ * @param {string} privateKey - Private key for signing
+ * @param {number} amountToSell - Amount to sell (human units)
+ * @param {string} sellAssetId - Asset ID being sold (e.g., '1.3.0')
+ * @param {number} minToReceive - Minimum amount to receive (human units)
+ * @param {string} receiveAssetId - Asset ID to receive
+ * @param {string|null} expiration - ISO date string or null for 1-year default
+ * @param {boolean} dryRun - If true, prepare but don't broadcast
+ * @returns {Promise<Object>} Transaction result
+ */
 async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false) {
     try {
         const acc = createAccountClient(accountName, privateKey);
@@ -365,7 +423,13 @@ async function createOrder(accountName, privateKey, amountToSell, sellAssetId, m
     }
 }
 
-// Cancel a limit order and broadcast the cancellation.
+/**
+ * Cancel an existing limit order on the blockchain.
+ * @param {string} accountName - Account that owns the order
+ * @param {string} privateKey - Private key for signing
+ * @param {string} orderId - Chain order ID to cancel (e.g., '1.7.12345')
+ * @returns {Promise<Object>} Transaction result
+ */
 async function cancelOrder(accountName, privateKey, orderId) {
     try {
         const acc = createAccountClient(accountName, privateKey);

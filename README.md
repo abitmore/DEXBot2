@@ -144,8 +144,8 @@ Committed: Buy 8676.13 USD | Sell 0.12420407 BTC
 Below is a short summary of the modules in this repository and what they provide. You can paste these lines elsewhere if you need a quick reference.
 
 - `modules/account_bots.js`: Interactive editor for bot configurations (`profiles/bots.json`). Prompts accept numbers, percentages and multiplier strings (e.g. `5x`).
-- `modules/chain_keys.js`: Encrypted master-password storage for private keys (`profiles/keys.json`), plus key management utilities.
-- `modules/chain_orders.js`: Account-level order helpers: authenticate/select account, create/update/cancel orders, listen for fills and read open orders.
+- `modules/chain_keys.js`: Encrypted master-password storage for private keys, authenticate (`profiles/keys.json`), plus key management utilities.
+- `modules/chain_orders.js`: Account-level order helpers: select account, create/update/cancel orders, listen for fills and read open orders.
 - `modules/bitshares_client.js`: Shared BitShares client wrapper and helpers (`BitShares`, `createAccountClient`, `waitForConnected`).
 - `modules/bot_instance.js`: PM2-friendly per-bot runner that boots an `OrderManager` for a chosen bot config.
 - `modules/btsdex_event_patch.js`: Small runtime patch for `btsdex` history/account events (improves account history updates when available).

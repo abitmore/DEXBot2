@@ -1,4 +1,18 @@
 #!/usr/bin/env node
+/**
+ * DEXBot2 - Primary CLI driver for automated BitShares DEX market making
+ * 
+ * This is the main entry point that manages tracked bots and provides helper
+ * utilities such as key/bot editors. The bot creates grid-based limit orders
+ * across a price range and automatically replaces filled orders.
+ * 
+ * Main features:
+ * - Grid-based order placement with configurable spread and increment
+ * - Automatic order replacement when fills occur
+ * - Master password encryption for private keys
+ * - Dry-run mode for testing without broadcasting transactions
+ * - CLI commands: start, drystart, restart, stop, keys, bots
+ */
 const { BitShares, waitForConnected } = require('./modules/bitshares_client');
 const fs = require('fs');
 const path = require('path');
@@ -112,9 +126,27 @@ const accountOrders = new AccountOrders();
 // Connection handled centrally by modules/bitshares_client; use waitForConnected() when needed
 
 /**
- * Real DEX Bot using BitShares API
+ * DEXBot - Core trading bot class that manages grid-based market making
+ * 
+ * Responsibilities:
+ * - Initializes connection to BitShares and authenticates account
+ * - Creates and manages an OrderManager instance for grid operations
+ * - Places initial orders and listens for fills to replace them
+ * - Handles grid synchronization with on-chain state
+ * - Supports dry-run mode for testing without broadcasting
+ * 
+ * @class
  */
 class DEXBot {
+    /**
+     * Create a new DEXBot instance
+     * @param {Object} config - Bot configuration from profiles/bots.json
+     * @param {string} config.assetA - Base asset symbol (e.g., 'IOB.XRP')
+     * @param {string} config.assetB - Quote asset symbol (e.g., 'BTS')
+     * @param {string|number} config.marketPrice - Target price or 'pool'/'market' for auto-derive
+     * @param {boolean} config.dryRun - If true, skip broadcasting transactions
+     * @param {string} config.preferredAccount - BitShares account name to use
+     */
     constructor(config) {
         this.config = config;
         this.account = null;
@@ -156,6 +188,15 @@ class DEXBot {
         console.log(`Initialized DEXBot for account: ${this.account}`);
     }
 
+    /**
+     * Place the initial grid orders on-chain after computing the order grid.
+     * This method:
+     * 1. Initializes the OrderManager if not already done
+     * 2. Fetches account balances for percentage-based botFunds
+     * 3. Generates the virtual order grid
+     * 4. Places orders on-chain in an interleaved pattern (sell, buy, sell, buy...)
+     * 5. Persists the grid snapshot to profiles/orders.json
+     */
     async placeInitialOrders() {
         if (!this.manager) this.manager = new OrderManager(this.config);
         // If botFunds are percentage-based and account info is available, try to
@@ -256,7 +297,12 @@ class DEXBot {
         accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()));
     }
 
-    // Place new orders on-chain (used after fills to create replacement orders)
+    /**
+     * Place new replacement orders on-chain after fills.
+     * Called by the fill listener when orders are fully filled.
+     * Creates new orders on the opposite side of the spread.
+     * @param {Array} orders - Array of order objects to place
+     */
     async placeNewOrders(orders) {
         if (!orders || orders.length === 0) return;
         if (this.config.dryRun) {
@@ -302,6 +348,17 @@ class DEXBot {
         }
     }
 
+    /**
+     * Start the bot's main operation loop.
+     * This method:
+     * 1. Initializes the account connection and OrderManager
+     * 2. Sets up fill listeners for automatic order replacement
+     * 3. Loads or generates the order grid based on persisted state
+     * 4. Watches for trigger files to force grid regeneration
+     * 5. Runs a continuous update loop for order monitoring
+     * 
+     * @param {string|null} masterPassword - Pre-authenticated master password (optional)
+     */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
         if (!this.manager) {
@@ -366,6 +423,10 @@ class DEXBot {
             }
         });
 
+        /**
+         * Perform a full grid resync: cancel orphan orders and regenerate grid.
+         * Triggered by the presence of a `recalculate.<botKey>.trigger` file.
+         */
         const performResync = async () => {
             if (this.isResyncing) {
                 this.manager.logger.log('Resync already in progress, skipping trigger.', 'warn');
@@ -520,7 +581,12 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
     }
 }
 
-// Handle master password prompts and auto-launch key manager when missing.
+/**
+ * Handle master password authentication with auto-launch fallback.
+ * If no master password is set, automatically launches the key manager
+ * to guide the user through initial setup.
+ * @returns {Promise<string>} The authenticated master password
+ */
 async function authenticateMasterPassword() {
     try {
         return chainKeys.authenticate();
@@ -536,6 +602,14 @@ async function authenticateMasterPassword() {
     }
 }
 
+/**
+ * Validate a bot configuration entry for required fields.
+ * Checks for: assetA, assetB, activeOrders (buy/sell), botFunds (buy/sell)
+ * @param {Object} b - Bot entry from bots.json
+ * @param {number} i - Index in the bots array
+ * @param {string} src - Source name for error messages
+ * @returns {string|null} Error message if invalid, null if valid
+ */
 function validateBotEntry(b, i, src) {
     const problems = [];
     const required = ['assetA', 'assetB', 'activeOrders', 'botFunds'];
@@ -579,7 +653,19 @@ function collectValidationIssues(entries, sourceName) {
     return { errors, warnings };
 }
 
-// Run the provided bot entries, enforcing validation, master password needs, and order manager start.
+/**
+ * Execute the provided bot entries after validation and authentication.
+ * This is the main orchestration function that:
+ * 1. Validates all bot configurations
+ * 2. Prompts for master password if any bot needs it
+ * 3. Creates DEXBot instances and starts them
+ * 
+ * @param {Array} botEntries - Array of normalized bot configurations
+ * @param {Object} options - Execution options
+ * @param {boolean} options.forceDryRun - Force all bots into dry-run mode
+ * @param {string} options.sourceName - Source label for logging
+ * @returns {Promise<Array>} Array of started DEXBot instances
+ */
 async function runBotInstances(botEntries, { forceDryRun = false, sourceName = 'settings' } = {}) {
     if (!botEntries.length) {
         console.log(`No bot entries were found in ${sourceName}.`);
@@ -655,7 +741,13 @@ async function runBotInstances(botEntries, { forceDryRun = false, sourceName = '
     return instances;
 }
 
-// Entry point that resolves a named bot (or all tracked bots) before running them.
+/**
+ * Start a specific bot by name or all active bots if no name provided.
+ * Looks up the bot in profiles/bots.json and starts it.
+ * @param {string|null} botName - Name of the bot to start, or null for all active
+ * @param {Object} options - Start options
+ * @param {boolean} options.dryRun - Run in dry-run mode (no broadcasts)
+ */
 async function startBotByName(botName, { dryRun = false } = {}) {
     if (!botName) {
         return runDefaultBots({ forceDryRun: dryRun, sourceName: dryRun ? 'CLI drystart (all)' : 'CLI start (all)' });
@@ -678,7 +770,12 @@ async function startBotByName(botName, { dryRun = false } = {}) {
     await runBotInstances(normalized, { forceDryRun: dryRun, sourceName: dryRun ? 'CLI drystart' : 'CLI start' });
 }
 
-// Mark tracked bots (one or all) inactive in the config file.
+/**
+ * Mark a bot (or all bots) as inactive in profiles/bots.json.
+ * Note: This only updates the config file; running processes must be
+ * stopped manually (Ctrl+C).
+ * @param {string|null} botName - Name of the bot to stop, or null for all
+ */
 async function stopBotByName(botName) {
     const { config, filePath } = loadSettingsFile();
     const entries = resolveRawBotEntries(config);
@@ -712,7 +809,15 @@ async function stopBotByName(botName) {
     console.log(`Marked '${botName}' inactive in ${path.basename(filePath)}. Stop the running process manually (Ctrl+C).`);
 }
 
-// Convenience wrapper that triggers a grid recalculation on the next start.
+/**
+ * Restart a bot by regenerating its grid and starting it fresh.
+ * This method:
+ * 1. Generates a new order grid from current configuration
+ * 2. Persists the grid snapshot to profiles/orders.json
+ * 3. Starts the bot with the new grid
+ * 
+ * @param {string|null} botName - Name of the bot to restart, or null for all active
+ */
 async function restartBotByName(botName) {
     const { config } = loadSettingsFile();
     const entries = normalizeBotEntries(resolveRawBotEntries(config));
@@ -761,7 +866,11 @@ async function restartBotByName(botName) {
     await startBotByName(botName, { dryRun: false });
 }
 
-// Parse CLI arguments and dispatch the requested command if provided.
+/**
+ * Parse and execute CLI commands.
+ * Supported commands: start, drystart, restart, stop, keys, bots
+ * @returns {Promise<boolean>} True if a command was handled, false otherwise
+ */
 async function handleCLICommands() {
     if (!cliArgs.length) return false;
     const [command, target] = cliArgs;
