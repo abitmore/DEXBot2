@@ -59,43 +59,14 @@ async function main() {
 
     console.log(`Account: ${ACCOUNT_NAME} (${account.id})\n`);
 
-    const full = await BitShares.db.get_full_accounts([account.id], false);
-    const accountData = full[0][1] || {};
+    // Use centralized helper which returns free + locked (for_sale) amounts per asset
+    const { getOnChainAssetBalances } = require('../modules/account_orders');
+    const balancesMap = await getOnChainAssetBalances(account.id); // assetRef -> { assetId, symbol, precision, freeRaw, lockedRaw, free, locked, total }
 
-    const balances = accountData.balances || [];
-    const limitOrders = accountData.limit_orders || [];
-
-    // Sum free balances by asset (integer satoshi amounts)
-    const freeInt = new Map();
-    for (const b of balances) {
-        const aid = String(b.asset_type || b.asset_id || b.asset);
-        const val = Number(b.balance || b.amount || 0);
-        freeInt.set(aid, (freeInt.get(aid) || 0) + val);
-    }
-
-    // Sum locked amounts (for_sale) grouped by base asset id (integer satoshi amounts)
-    const lockedInt = new Map();
-    for (const o of limitOrders) {
-        if (!o || !o.sell_price || !o.sell_price.base) continue;
-        const baseId = String(o.sell_price.base.asset_id);
-        const forSale = Number(o.for_sale || 0);
-        lockedInt.set(baseId, (lockedInt.get(baseId) || 0) + forSale);
-    }
-
-    // Collect all asset ids seen
-    const assetIds = new Set([...freeInt.keys(), ...lockedInt.keys()]);
-
-    // Prepare display rows
     const rows = [];
-    for (const aid of assetIds) {
-        const precision = await getAssetPrecision(aid);
-        const symbol = await getAssetSymbol(aid);
-        const freeRaw = freeInt.get(aid) || 0;
-        const lockedRaw = lockedInt.get(aid) || 0;
-        const freeHuman = blockchainToFloat(freeRaw, precision);
-        const lockedHuman = blockchainToFloat(lockedRaw, precision);
-        const totalHuman = freeHuman + lockedHuman;
-        rows.push({ aid, symbol, precision, freeRaw, lockedRaw, freeHuman, lockedHuman, totalHuman, btsValue: null, priceInBTS: null });
+    for (const k of Object.keys(balancesMap || {})) {
+        const info = balancesMap[k] || {};
+        rows.push({ aid: info.assetId || k, symbol: info.symbol || k, precision: info.precision || 0, freeRaw: info.freeRaw || 0, lockedRaw: info.lockedRaw || 0, freeHuman: info.free || 0, lockedHuman: info.locked || 0, totalHuman: info.total || 0, btsValue: null, priceInBTS: null });
     }
 
     // Sort by total descending for table and visualization

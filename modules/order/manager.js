@@ -200,24 +200,37 @@ class OrderManager {
 
             if (!assetAId || !assetBId) return;
 
-            const full = await BitShares.db.get_full_accounts([accountIdOrName], false);
-            if (!full || !Array.isArray(full) || !full[0]) return;
-            const accountData = full[0][1];
-            const balances = accountData && accountData.balances ? accountData.balances : [];
+            // Use centralized helper to fetch on-chain balances (free amounts only) for the two configured assets
+            try {
+                const { getOnChainAssetBalances } = require('../account_orders');
+                const lookup = await getOnChainAssetBalances(accountIdOrName, [assetAId, assetBId]);
+                const aInfo = lookup && (lookup[assetAId] || lookup[this.config.assetA]);
+                const bInfo = lookup && (lookup[assetBId] || lookup[this.config.assetB]);
+                const sellTotal = aInfo && typeof aInfo.free === 'number' ? aInfo.free : null;
+                const buyTotal = bInfo && typeof bInfo.free === 'number' ? bInfo.free : null;
+                this.logger && this.logger.log && this.logger.log('Fetched on-chain balances for accountTotals (via helper)', 'info');
+                this.setAccountTotals({ buy: buyTotal, sell: sellTotal });
+            } catch (err) {
+                // fall back to raw chain query in the unlikely event helper fails
+                const full = await BitShares.db.get_full_accounts([accountIdOrName], false);
+                if (!full || !Array.isArray(full) || !full[0]) return;
+                const accountData = full[0][1];
+                const balances = accountData && accountData.balances ? accountData.balances : [];
 
-            const findBalanceInt = (assetId) => {
-                const b = balances.find(x => x.asset_type === assetId || x.asset_type === assetId.toString());
-                return b ? Number(b.balance || b.amount || 0) : 0;
-            };
+                const findBalanceInt = (assetId) => {
+                    const b = balances.find(x => x.asset_type === assetId || x.asset_type === assetId.toString());
+                    return b ? Number(b.balance || b.amount || 0) : 0;
+                };
 
-            const rawSell = findBalanceInt(assetAId);
-            const rawBuy = findBalanceInt(assetBId);
+                const rawSell = findBalanceInt(assetAId);
+                const rawBuy = findBalanceInt(assetBId);
 
-            const buyTotal = Number.isFinite(Number(rawBuy)) ? blockchainToFloat(rawBuy, precisionB !== undefined ? precisionB : 8) : null;
-            const sellTotal = Number.isFinite(Number(rawSell)) ? blockchainToFloat(rawSell, precisionA !== undefined ? precisionA : 8) : null;
+                const buyTotal = Number.isFinite(Number(rawBuy)) ? blockchainToFloat(rawBuy, precisionB !== undefined ? precisionB : 8) : null;
+                const sellTotal = Number.isFinite(Number(rawSell)) ? blockchainToFloat(rawSell, precisionA !== undefined ? precisionA : 8) : null;
 
-            this.logger && this.logger.log && this.logger.log('Fetched on-chain balances for accountTotals', 'info');
-            this.setAccountTotals({ buy: buyTotal, sell: sellTotal });
+                this.logger && this.logger.log && this.logger.log('Fetched on-chain balances for accountTotals (fallback raw)', 'info');
+                this.setAccountTotals({ buy: buyTotal, sell: sellTotal });
+            }
         } catch (err) {
             this.logger && this.logger.log && this.logger.log(`Failed to fetch on-chain balances: ${err && err.message ? err.message : err}`, 'warn');
         }
