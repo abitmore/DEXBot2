@@ -599,20 +599,37 @@ class OrderManager {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue; // Already matched
             
             // Find a grid order that matches by type and price but has a stale/missing orderId
+            // Use calculatePriceTolerance(...) which computes tolerance based on asset precisions and order sizes
             let bestMatch = null;
             let bestPriceDiff = Infinity;
-            const PRICE_TOLERANCE_PERCENT = 0.02; // 2% tolerance for price matching
-            
+
             for (const gridOrder of this.orders.values()) {
                 if (gridOrder.state !== ORDER_STATES.ACTIVE) continue;
                 if (gridOrder.type !== chainOrder.type) continue;
                 // Skip if this grid order's orderId is still valid on chain
                 if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) continue;
-                
+
                 const priceDiff = Math.abs(gridOrder.price - chainOrder.price);
-                const priceThreshold = gridOrder.price * PRICE_TOLERANCE_PERCENT;
-                
-                if (priceDiff < priceThreshold && priceDiff < bestPriceDiff) {
+
+                // Prefer using the chain-reported size when available for a more accurate tolerance
+                const orderSize = (chainOrder.size && Number.isFinite(Number(chainOrder.size))) ? Number(chainOrder.size) : (gridOrder.size && Number.isFinite(Number(gridOrder.size)) ? Number(gridOrder.size) : null);
+
+                // Compute tolerance using the same formula used elsewhere in the manager
+                let tolerance = null;
+                try {
+                    if (orderSize !== null && orderSize > 0) {
+                        tolerance = this.calculatePriceTolerance(gridOrder.price, orderSize, gridOrder.type);
+                    }
+                } catch (e) {
+                    tolerance = null;
+                }
+
+                // Ensure we have a usable tolerance from calculatePriceTolerance (it provides a fallback)
+                if (!tolerance || !Number.isFinite(tolerance)) {
+                    tolerance = this.calculatePriceTolerance(gridOrder.price, orderSize, gridOrder.type);
+                }
+
+                if (priceDiff <= tolerance && priceDiff < bestPriceDiff) {
                     bestMatch = gridOrder;
                     bestPriceDiff = priceDiff;
                 }
@@ -762,45 +779,39 @@ class OrderManager {
             this.logger.log(`_findMatchingGridOrder: orderId ${parsedChainOrder.orderId} NOT found in grid, falling back to price matching (chain price=${parsedChainOrder.price?.toFixed(6)}, type=${parsedChainOrder.type})`, 'info');
         }
         
-        // If no orderId match, try matching by price for VIRTUAL orders
-        // Use relative tolerance based on price magnitude
-        const getRelativeTolerance = (price) => {
-            const absPrice = Math.abs(price);
-            if (absPrice < 1e-6) return 1e-15;  // Very small prices
-            if (absPrice < 1e-3) return absPrice * 1e-8;  // Small prices
-            return absPrice * 1e-9;  // Normal prices
-        };
-        
+        // If no orderId match, try matching by price. Use calculatePriceTolerance
+        // which computes a tolerance based on asset precisions and sizes.
         for (const gridOrder of this.orders.values()) {
             if (gridOrder.state === ORDER_STATES.VIRTUAL && !gridOrder.orderId) {
                 const priceDiff = Math.abs(gridOrder.price - parsedChainOrder.price);
-                const tolerance = getRelativeTolerance(gridOrder.price);
-                if (gridOrder.type === parsedChainOrder.type && priceDiff < tolerance) {
+                const orderSize = (gridOrder.size && Number.isFinite(Number(gridOrder.size))) ? Number(gridOrder.size) : null;
+                const tolerance = this.calculatePriceTolerance(gridOrder.price, orderSize, gridOrder.type);
+                if (gridOrder.type === parsedChainOrder.type && priceDiff <= tolerance) {
                     this.logger.log(`_findMatchingGridOrder: matched ${parsedChainOrder.orderId} to VIRTUAL grid order ${gridOrder.id} by price`, 'debug');
                     return gridOrder;
                 }
             }
         }
-        
-        // For ACTIVE orders, find the CLOSEST price match (not just first within tolerance)
-        // This handles the case where blockchain order IDs changed (e.g., order was cancelled and recreated)
+
+        // For ACTIVE orders, find the CLOSEST price match that is within the calculated tolerance.
         if (parsedChainOrder.price !== undefined && parsedChainOrder.type) {
             let bestMatch = null;
             let smallestDiff = Infinity;
-            
+
             for (const gridOrder of this.orders.values()) {
                 if (gridOrder.state === ORDER_STATES.ACTIVE && gridOrder.type === parsedChainOrder.type) {
                     const priceDiff = Math.abs(gridOrder.price - parsedChainOrder.price);
-                    const tolerance = getRelativeTolerance(gridOrder.price);
-                    
+                    const orderSize = (gridOrder.size && Number.isFinite(Number(gridOrder.size))) ? Number(gridOrder.size) : null;
+                    const tolerance = this.calculatePriceTolerance(gridOrder.price, orderSize, gridOrder.type);
+
                     // Only consider if within tolerance, then pick the closest
-                    if (priceDiff < tolerance && priceDiff < smallestDiff) {
+                    if (priceDiff <= tolerance && priceDiff < smallestDiff) {
                         smallestDiff = priceDiff;
                         bestMatch = gridOrder;
                     }
                 }
             }
-            
+
             if (bestMatch) {
                 this.logger.log(`_findMatchingGridOrder: matched ${parsedChainOrder.orderId} to ACTIVE grid order ${bestMatch.id} by closest price (diff=${smallestDiff.toExponential(4)}, old orderId: ${bestMatch.orderId})`, 'debug');
                 return bestMatch;
@@ -868,19 +879,19 @@ class OrderManager {
         
         this.logger.log(`Fill analysis: type=${fillType}, price=${fillPrice.toFixed(4)}`, 'debug');
         
-        // Find matching ACTIVE order by type and price
-        const PRICE_TOLERANCE_PERCENT = 0.001; // 0.1% tolerance for price matching
+        // Find matching ACTIVE order by type and price using calculatePriceTolerance
         let bestMatch = null;
         let bestPriceDiff = Infinity;
-        
+
         for (const gridOrder of this.orders.values()) {
             if (gridOrder.state !== ORDER_STATES.ACTIVE) continue;
             if (gridOrder.type !== fillType) continue;
-            
+
             const priceDiff = Math.abs(gridOrder.price - fillPrice);
-            const priceThreshold = gridOrder.price * PRICE_TOLERANCE_PERCENT;
-            
-            if (priceDiff < priceThreshold && priceDiff < bestPriceDiff) {
+            const orderSize = (gridOrder.size && Number.isFinite(Number(gridOrder.size))) ? Number(gridOrder.size) : null;
+            const tolerance = this.calculatePriceTolerance(gridOrder.price, orderSize, gridOrder.type);
+
+            if (priceDiff <= tolerance && priceDiff < bestPriceDiff) {
                 bestMatch = gridOrder;
                 bestPriceDiff = priceDiff;
             }
@@ -1041,20 +1052,24 @@ class OrderManager {
                     bestMatch = chainOrder;
                 }
             }
-            const PRICE_TOLERANCE = 1e-8;
-            if (bestMatch && smallestDiff < PRICE_TOLERANCE * gridOrder.price) {
-                gridOrder.state = ORDER_STATES.ACTIVE;
-                gridOrder.orderId = bestMatch.id;
-                // Parse the matched chain order again to get reported size and reconcile funds
-                try {
-                    const parsed = this._parseChainOrder(bestMatch);
-                    if (parsed && parsed.size !== null && parsed.size !== undefined && Number.isFinite(Number(parsed.size))) {
-                        this._applyChainSizeToGridOrder(gridOrder, parsed.size);
-                    }
-                } catch (e) { /* best-effort */ }
-                this.orders.set(gridOrder.id, gridOrder);
-                matchedChainOrderIds.add(bestMatch.id);
-                this.logger.log(`Matched grid order ${gridOrder.id} to on-chain order ${bestMatch.id}.`, 'debug');
+            // Use calculatePriceTolerance to determine whether the best match is acceptable
+            if (bestMatch) {
+                const orderSize = (gridOrder.size && Number.isFinite(Number(gridOrder.size))) ? Number(gridOrder.size) : null;
+                const tolerance = this.calculatePriceTolerance(gridOrder.price, orderSize, gridOrder.type);
+                if (smallestDiff <= tolerance) {
+                    gridOrder.state = ORDER_STATES.ACTIVE;
+                    gridOrder.orderId = bestMatch.id;
+                    // Parse the matched chain order again to get reported size and reconcile funds
+                    try {
+                        const parsed = this._parseChainOrder(bestMatch);
+                        if (parsed && parsed.size !== null && parsed.size !== undefined && Number.isFinite(Number(parsed.size))) {
+                            this._applyChainSizeToGridOrder(gridOrder, parsed.size);
+                        }
+                    } catch (e) { /* best-effort */ }
+                    this.orders.set(gridOrder.id, gridOrder);
+                    matchedChainOrderIds.add(bestMatch.id);
+                    this.logger.log(`Matched grid order ${gridOrder.id} to on-chain order ${bestMatch.id}.`, 'debug');
+                }
             }
         }
         for (const chainOrder of chainOrders) {
