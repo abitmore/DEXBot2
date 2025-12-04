@@ -1,9 +1,10 @@
 /**
- * Chain Keys Module - Encrypted private key storage and management
+ * Chain Keys Module - Authentication and encrypted private key storage
  * 
- * This module provides secure storage for BitShares private keys using:
+ * This module provides authentication and secure storage for BitShares private keys:
+ * - Master password authentication with SHA-256 hash verification
  * - AES-256-GCM encryption with random salt and IV
- * - Master password protection with SHA-256 hash verification
+ * - Private key retrieval for transaction signing
  * - Interactive CLI for key management (add/modify/remove)
  * 
  * Storage location: profiles/keys.json (gitignored)
@@ -472,5 +473,15 @@ async function main() {
     }
 }
 
-module.exports = { validatePrivateKey, loadAccounts, saveAccounts, encrypt, decrypt, hashPassword, main,
-    authenticate, getPrivateKey, MasterPasswordError };
+module.exports = {
+    validatePrivateKey,
+    loadAccounts,
+    saveAccounts,
+    encrypt,
+    decrypt,
+    hashPassword,
+    main,
+    authenticate,
+    getPrivateKey,
+    MasterPasswordError,
+};

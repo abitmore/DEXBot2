@@ -2,7 +2,7 @@
  * Chain Orders Module - BitShares blockchain interaction layer
  * 
  * This module provides the interface for all blockchain operations:
- * - Account selection and authentication
+ * - Account selection (authentication via chain_keys.js)
  * - Reading open orders from the chain
  * - Creating, updating, and canceling limit orders
  * - Listening for fill events via subscriptions
