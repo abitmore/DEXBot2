@@ -15,6 +15,7 @@
  * Orders are sized based on available funds and weight distribution.
  */
 const { ORDER_TYPES, DEFAULT_CONFIG } = require('./constants');
+const { floatToBlockchainInt } = require('./utils');
 
 // MIN_SPREAD_FACTOR constant (moved from constants.js)
 const MIN_SPREAD_FACTOR = 2;
@@ -117,7 +118,9 @@ class OrderGridGenerator {
      * @param {number} minBuySize - Minimum size for buy orders (0 to disable)
      * @returns {Array} Orders with size property added
      */
-    static calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 0, minBuySize = 0) {
+    // Accept optional precision parameters for both sides so size-vs-min
+    // comparisons can be performed exactly at blockchain integer granularity.
+    static calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 0, minBuySize = 0, precisionA = null, precisionB = null) {
         const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
         const incrementFactor = incrementPercent / 100;
 
@@ -160,7 +163,15 @@ class OrderGridGenerator {
                 //   enforcing the per-order minimum (i.e. minSize=0).
                 // - If totalFunds is zero or not finite, signal failure with
                 //   a zero-filled array so the caller can decide how to proceed.
-                const anyBelow = sizes.some(sz => sz < minSize - 1e-12);
+                    // If precision provided for this side, compare integer representations
+                    const precision = (side === 'sell') ? precisionA : precisionB;
+                    let anyBelow = false;
+                    if (precision !== null && precision !== undefined && Number.isFinite(precision)) {
+                        const minInt = floatToBlockchainInt(minSize, precision);
+                        anyBelow = sizes.some(sz => floatToBlockchainInt(sz, precision) < minInt);
+                    } else {
+                        anyBelow = sizes.some(sz => sz < minSize - 1e-8);
+                    }
                 if (anyBelow) {
                     if (Number.isFinite(totalFunds) && totalFunds > 0) {
                         // Retry allocation without min-size (single-pass)

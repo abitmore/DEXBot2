@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { OrderManager } = require('../modules/order/manager');
+const { floatToBlockchainInt } = require('../modules/order/utils');
 const { AccountOrders } = require('../modules/account_orders');
 
 console.log('Running partial-fill unit test (using syncFromOpenOrders)...');
@@ -68,15 +69,15 @@ const fillInfo = {
         // Should have 1 updated order
         assert(result.updatedOrders.length === 1, `Expected 1 updated order, got ${result.updatedOrders.length}`);
 
-        // Check updated grid order size
+        // Check updated grid order size (compare blockchain integer amounts)
         const updated = mgr.orders.get(gridId);
-        const expectedRemaining = +(remainingHuman).toFixed(8);
-        assert(Math.abs(updated.size - expectedRemaining) < 1e-9, `Expected remaining size ${expectedRemaining}, got ${updated.size}`);
+        const updatedInt = floatToBlockchainInt(updated.size, mgr.assets.assetA.precision);
+        assert.strictEqual(updatedInt, remainingInt, `Expected remaining integer ${remainingInt}, got ${updatedInt}`);
         assert(updated.state === 'active', `Expected state 'active', got ${updated.state}`);
 
         // Check funds adjustments: committed.sell decreased
-        const expectedCommittedSell = remainingHuman;
-        assert(Math.abs(mgr.funds.committed.sell - expectedCommittedSell) < 1e-9, `committed.sell expected ${expectedCommittedSell}, got ${mgr.funds.committed.sell}`);
+        const committedInt = floatToBlockchainInt(mgr.funds.committed.sell, mgr.assets.assetA.precision);
+        assert.strictEqual(committedInt, remainingInt, `committed.sell expected integer ${remainingInt}, got ${committedInt}`);
 
         // Persist snapshot using AccountOrders and verify file contains updated size
         const idx = new AccountOrders({ profilesPath: tmpIndexPath });
@@ -90,7 +91,8 @@ const fillInfo = {
         assert(Array.isArray(persistedOrders), 'Persisted grid should be an array');
         const persisted = persistedOrders.find(o => o.id === gridId);
         assert(persisted, 'Persisted grid should contain the updated order');
-        assert(Math.abs(persisted.size - expectedRemaining) < 1e-9, `Persisted size ${persisted.size} != expected ${expectedRemaining}`);
+        const persistedInt = floatToBlockchainInt(persisted.size, mgr.assets.assetA.precision);
+        assert.strictEqual(persistedInt, remainingInt, `Persisted integer ${persistedInt} != expected ${remainingInt}`);
 
         console.log('Partial-fill test passed.');
         process.exit(0);

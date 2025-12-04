@@ -21,7 +21,10 @@ const OrderGridGenerator = require('./order_grid');
 // Constants for manager operations
 const SYNC_DELAY_MS = 500;
 const ACCOUNT_TOTALS_TIMEOUT_MS = 10000;
-const EPSILON = 1e-10; // Tolerance for price and size comparisons
+// Size comparisons are performed by converting human-readable floats
+// to blockchain integer amounts using floatToBlockchainInt(...) and
+// comparing integers. This provides exact, deterministic behavior that
+// matches on-chain granularity and avoids arbitrary tolerances.
 // Factor to multiply the smallest representable unit (based on asset precision)
 // to determine the minimum order size. E.g., factor=50 with precision=4 => minSize=0.005
 const MIN_ORDER_SIZE_FACTOR = 50;
@@ -526,8 +529,12 @@ class OrderManager {
             `minSellSize=${String(minSellSize)}, minBuySize=${String(minBuySize)}`;
         this.logger && this.logger.log && this.logger.log(diagMsg, 'debug');
 
+        // Pass asset precisions so the grid generator can perform exact
+        // integer-based min-size checks when needed.
+        const precA = this.assets?.assetA?.precision;
+        const precB = this.assets?.assetB?.precision;
         let sizedOrders = OrderGridGenerator.calculateOrderSizes(
-            orders, this.config, this.funds.available.sell, this.funds.available.buy, minSellSize, minBuySize
+            orders, this.config, this.funds.available.sell, this.funds.available.buy, minSellSize, minBuySize, precA, precB
         );
 
         // Safety check: if any allocated order is non-zero but below the
@@ -540,8 +547,25 @@ class OrderManager {
             // Treat zero-sized allocations as a failure condition as well.
             // Any non-finite size or any size strictly less than the per-order
             // minimum (including zero) will trigger abort.
-            const anySellBelow = minSellSize > 0 && sellsAfter.some(sz => !Number.isFinite(sz) || sz < (minSellSize - 1e-12));
-            const anyBuyBelow = minBuySize > 0 && buysAfter.some(sz => !Number.isFinite(sz) || sz < (minBuySize - 1e-12));
+            // Use integer comparisons (blockchain units) when precision available
+            let anySellBelow = false;
+            let anyBuyBelow = false;
+            if (minSellSize > 0) {
+                if (precA !== undefined && precA !== null && Number.isFinite(precA)) {
+                    const minSellInt = floatToBlockchainInt(minSellSize, precA);
+                    anySellBelow = sellsAfter.some(sz => !Number.isFinite(sz) || floatToBlockchainInt(sz, precA) < minSellInt);
+                } else {
+                    anySellBelow = sellsAfter.some(sz => !Number.isFinite(sz) || sz < (minSellSize - 1e-8));
+                }
+            }
+            if (minBuySize > 0) {
+                if (precB !== undefined && precB !== null && Number.isFinite(precB)) {
+                    const minBuyInt = floatToBlockchainInt(minBuySize, precB);
+                    anyBuyBelow = buysAfter.some(sz => !Number.isFinite(sz) || floatToBlockchainInt(sz, precB) < minBuyInt);
+                } else {
+                    anyBuyBelow = buysAfter.some(sz => !Number.isFinite(sz) || sz < (minBuySize - 1e-8));
+                }
+            }
             if (anySellBelow || anyBuyBelow) {
                 const parts = [];
                 if (anySellBelow) parts.push(`sell.min=${String(minSellSize)}`);
@@ -687,7 +711,14 @@ class OrderManager {
         const oldSize = Number(gridOrder.size || 0);
         const newSize = Number.isFinite(Number(chainSize)) ? Number(chainSize) : oldSize;
         const delta = newSize - oldSize;
-        if (Math.abs(delta) < EPSILON) {
+        // Determine precision for this order's size (assetA for SELL, assetB for BUY)
+        const precision = (gridOrder.type === ORDER_TYPES.SELL)
+            ? this.assets?.assetA?.precision
+            : this.assets?.assetB?.precision;
+        // Compare as blockchain integers (rounding is handled by floatToBlockchainInt)
+        const oldInt = floatToBlockchainInt(oldSize, precision);
+        const newInt = floatToBlockchainInt(newSize, precision);
+        if (oldInt === newInt) {
             gridOrder.size = newSize; // still ensure normalized numeric
             return;
         }
@@ -783,7 +814,15 @@ class OrderManager {
                 const oldSize = Number(gridOrder.size || 0);
                 const newSize = Number(chainOrder.size || 0);
                 
-                if (Math.abs(oldSize - newSize) > EPSILON) {
+                // Compare using asset precision so we only treat on-chain-significant
+                // size changes as different. Use the order-type to pick precision.
+                const precision = (gridOrder.type === ORDER_TYPES.SELL)
+                    ? this.assets?.assetA?.precision
+                    : this.assets?.assetB?.precision;
+                // Use integer equality to detect chain-significant size changes
+                const oldInt = floatToBlockchainInt(oldSize, precision);
+                const newInt = floatToBlockchainInt(newSize, precision);
+                if (oldInt !== newInt) {
                     const fillAmount = oldSize - newSize;
                     this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}): size changed ${oldSize.toFixed(8)} -> ${newSize.toFixed(8)} (filled: ${fillAmount.toFixed(8)})`, 'info');
                     this._applyChainSizeToGridOrder(gridOrder, newSize);
@@ -849,7 +888,13 @@ class OrderManager {
                 // Update size from chain but NEVER update price
                 const oldSize = Number(bestMatch.size || 0);
                 const newSize = Number(chainOrder.size || 0);
-                if (Math.abs(oldSize - newSize) > EPSILON) {
+                // Determine precision from the matching grid order (if available)
+                const precision = (bestMatch && bestMatch.type === ORDER_TYPES.SELL)
+                    ? this.assets?.assetA?.precision
+                    : this.assets?.assetB?.precision;
+                const oldInt = floatToBlockchainInt(oldSize, precision);
+                const newInt = floatToBlockchainInt(newSize, precision);
+                if (oldInt !== newInt) {
                     this._applyChainSizeToGridOrder(bestMatch, newSize);
                 }
                 this._updateOrder(bestMatch);
@@ -1172,7 +1217,13 @@ class OrderManager {
                         if (parsedOrder.size !== null && parsedOrder.size !== undefined && Number.isFinite(Number(parsedOrder.size))) {
                             const gridSize = Number(gridOrder.size || 0);
                             const chainSize = Number(parsedOrder.size);
-                            if (Math.abs(gridSize - chainSize) > 1e-10) {
+                            // Compare integers so we only log significant (on-chain) differences
+                            const precision = (gridOrder.type === ORDER_TYPES.SELL)
+                                ? this.assets?.assetA?.precision
+                                : this.assets?.assetB?.precision;
+                            const gridInt = floatToBlockchainInt(gridSize, precision);
+                            const chainInt = floatToBlockchainInt(chainSize, precision);
+                            if (gridInt !== chainInt) {
                                 this.logger.log(`Size sync ${gridOrder.id}: chain orderId=${parsedOrder.orderId}, chainPrice=${parsedOrder.price.toFixed(6)}, gridPrice=${gridOrder.price.toFixed(6)}, gridSize=${gridSize} -> chainSize=${chainSize}`, 'info');
                             }
                             try { this._applyChainSizeToGridOrder(gridOrder, parsedOrder.size); } catch (e) { 
