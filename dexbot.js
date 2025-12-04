@@ -716,32 +716,45 @@ async function restartBotByName(botName) {
     const { config } = loadSettingsFile();
     const entries = normalizeBotEntries(resolveRawBotEntries(config));
 
-    const createTrigger = (bot) => {
-        const triggerFile = path.join(PROFILES_DIR, `recalculate.${bot.botKey}.trigger`);
-        try {
-            fs.writeFileSync(triggerFile, new Date().toISOString());
-            console.log(`Scheduled grid regeneration for '${bot.name}'.`);
-        } catch (err) {
-            console.error(`Could not write trigger file for ${bot.name}:`, err.message);
-        }
-    };
-
-    if (botName) {
-        const match = entries.find(b => b.name === botName);
-        if (!match) {
-            console.error(`Could not find any bot named '${botName}' to restart.`);
-            process.exit(1);
-        }
-        createTrigger(match);
-    } else {
-        console.log('Scheduling grid regeneration for all active bots.');
-        entries.forEach(bot => {
-            if (bot.active) {
-                createTrigger(bot);
-            }
-        });
+    // Ensure BitShares connection so we can derive prices/assets when building the grid.
+    try {
+        await waitForConnected(10000);
+    } catch (err) {
+        console.warn('Timed out waiting for BitShares connection before generating grid snapshots. Will attempt generation without connection where possible.');
     }
 
+    // Generate a fresh grid snapshot for the selected bots and persist to profiles/orders.json
+    const targets = botName ? entries.filter(b => b.name === botName) : entries.filter(b => b.active);
+    if (botName && targets.length === 0) {
+        console.error(`Could not find any bot named '${botName}' to restart.`);
+        process.exit(1);
+    }
+
+    for (const bot of targets) {
+        try {
+            // Build an OrderManager with the bot config and initialize the order grid
+            const manager = new OrderManager(bot);
+            // Populate assets/marketPrice and compute the virtual grid (best-effort)
+            try {
+                await manager.initializeOrderGrid();
+            } catch (e) {
+                // Initialization may fail if on-chain lookups are unavailable; log and continue with whatever grid was built.
+                console.warn(`Grid initialization for '${bot.name}' failed: ${e && e.message ? e.message : e}`);
+            }
+
+            // Ensure indexDB has metadata for this bot and persist the generated grid
+            indexDB.ensureBotEntries([bot]);
+            indexDB.storeMasterGrid(bot.botKey, Array.from(manager.orders.values()));
+            console.log(`Generated and stored grid snapshot for '${bot.name}' to profiles/orders.json`);
+        } catch (err) {
+            console.warn(`Failed to generate grid for '${bot.name}': ${err && err.message ? err.message : err}`);
+        }
+    }
+
+    // When invoked directly via `dexbot restart` we rebuild and persist the
+    // grid immediately and do NOT create the `recalculate.*.trigger` files
+    // (those remain available as an external hook that other processes
+    // can create manually to request a resync). Proceed to start the bot.
     const target = botName ? ` '${botName}'` : ' all active bots';
     console.log(`Restarting${target}. Ensure any previous run is stopped.`);
     await startBotByName(botName, { dryRun: false });
