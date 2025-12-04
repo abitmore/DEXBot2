@@ -1,12 +1,26 @@
-const { ORDER_TYPES } = require('./constants');
+const { ORDER_TYPES, DEFAULT_CONFIG } = require('./constants');
 
 // Build the foundational grid of virtual orders based on increments, spread, and funds.
 class OrderGridGenerator {
     static createOrderGrid(config) {
         // Compute helper arrays of buy/sell price levels relative to the market price.
-        const { marketPrice, minPrice, maxPrice, incrementPercent, targetSpreadPercent } = config;
+        const { marketPrice, minPrice, maxPrice, incrementPercent } = config;
         const incrementFactor = 1 + (incrementPercent / 100);
-        const nOrders = Math.ceil(Math.log((1 + (targetSpreadPercent / 100)) / incrementFactor) / Math.log(incrementFactor));
+        
+        // Ensure targetSpreadPercent is at least `minSpreadFactor * incrementPercent` to guarantee spread orders.
+        // This implementation uses the global default `DEFAULT_CONFIG.minSpreadFactor` (no per-bot overrides).
+        const spreadFactor = Number(DEFAULT_CONFIG.minSpreadFactor);
+        const minSpreadPercent = incrementPercent * spreadFactor;
+        const targetSpreadPercent = Math.max(config.targetSpreadPercent, minSpreadPercent);
+        if (config.targetSpreadPercent < minSpreadPercent) {
+            console.log(`[WARN] targetSpreadPercent (${config.targetSpreadPercent}%) is less than ${spreadFactor}*incrementPercent (${minSpreadPercent.toFixed(2)}%). ` +
+                        `Auto-adjusting to ${minSpreadPercent.toFixed(2)}% to ensure spread orders are created.`);
+        }
+        
+        // Calculate number of spread orders based on target spread vs increment
+        // Ensure at least 2 spread orders (1 buy, 1 sell) to maintain a proper spread zone
+        const calculatedNOrders = Math.ceil(Math.log((1 + (targetSpreadPercent / 100)) / incrementFactor) / Math.log(incrementFactor));
+        const nOrders = Math.max(2, calculatedNOrders); // Minimum 2 spread orders
 
         const calculateLevels = (start, min) => {
             const levels = [];

@@ -14,7 +14,7 @@ const cfg = {
     targetSpreadPercent: 20,
     botFunds: { buy: 1000, sell: 10 },
     activeOrders: { buy: 1, sell: 1 },
-    minOrderSize: 1e-8
+    
 };
 
 const mgr = new OrderManager(cfg);

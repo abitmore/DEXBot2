@@ -162,7 +162,6 @@ function promptBotData(base = {}) {
     const fundsSell = askNumberOrPercentage('botFunds sell amount', base.botFunds && base.botFunds.sell !== undefined ? base.botFunds.sell : DEFAULT_CONFIG.botFunds.sell);
     const ordersBuy = askNumber('activeOrders buy count', base.activeOrders && base.activeOrders.buy !== undefined ? base.activeOrders.buy : DEFAULT_CONFIG.activeOrders.buy);
     const ordersSell = askNumber('activeOrders sell count', base.activeOrders && base.activeOrders.sell !== undefined ? base.activeOrders.sell : DEFAULT_CONFIG.activeOrders.sell);
-
     return {
         name,
         active,
@@ -177,7 +176,8 @@ function promptBotData(base = {}) {
         targetSpreadPercent,
         weightDistribution: { sell: weightSell, buy: weightBuy },
         botFunds: { buy: fundsBuy, sell: fundsSell },
-        activeOrders: { buy: ordersBuy, sell: ordersSell }
+        activeOrders: { buy: ordersBuy, sell: ordersSell },
+        
     };
 }
 

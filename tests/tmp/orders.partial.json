@@ -1,0 +1,29 @@
+{
+  "bots": {
+    "test-bot-0": {
+      "meta": {
+        "key": "test-bot-0",
+        "name": null,
+        "assetA": null,
+        "assetB": null,
+        "active": false,
+        "index": null,
+        "createdAt": "2025-12-03T21:19:40.332Z",
+        "updatedAt": "2025-12-03T21:19:40.332Z"
+      },
+      "grid": [
+        {
+          "id": "grid-1",
+          "type": "sell",
+          "state": "active",
+          "price": 2,
+          "size": 6.5,
+          "orderId": "1.7.5000"
+        }
+      ],
+      "createdAt": "2025-12-03T21:19:40.332Z",
+      "lastUpdated": "2025-12-03T21:19:40.332Z"
+    }
+  },
+  "lastUpdated": "2025-12-03T21:19:40.332Z"
+}

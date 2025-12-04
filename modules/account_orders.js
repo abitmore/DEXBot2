@@ -1,6 +1,6 @@
 // Utilities for managing BitShares account keys, fills, and limit-order operations.
 const { BitShares, createAccountClient, waitForConnected } = require('./bitshares_client');
-const { floatToBlockchainInt } = require('./order/utils');
+const { floatToBlockchainInt, blockchainToFloat } = require('./order/utils');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -320,7 +320,16 @@ async function listenForFills(accountRef, callback) {
     };
 }
 
-// Adjust an existing limit order with new parameters (amount/price).
+// Update an existing limit order to new desired values.
+// BitShares stores orders as amount_to_sell and min_to_receive (price = min_to_receive / amount_to_sell).
+// This function accepts the new desired values and calculates the required delta internally.
+//
+// Parameters:
+//   newParams.amountToSell - new desired amount to sell (in human-readable units)
+//   newParams.minToReceive - new desired minimum to receive (in human-readable units)
+// 
+// If only one is provided, the other is kept from the current order.
+// The function calculates delta_amount_to_sell = newAmount - currentAmount
 async function updateOrder(accountName, privateKey, orderId, newParams) {
     try {
         const acc = createAccountClient(accountName, privateKey);
@@ -329,30 +338,71 @@ async function updateOrder(accountName, privateKey, orderId, newParams) {
         const order = orders.find(o => o.id === orderId);
         if (!order) throw new Error(`Order ${orderId} not found`);
 
-        // If caller provided newParams.amount (float in human units), convert to integer scaled by precision
-        let deltaAmountValue = newParams.amount || order.sell_price.base.amount;
-        if (newParams.amount !== undefined && newParams.amount !== null) {
-            const basePrecision = await _getAssetPrecision(order.sell_price.base.asset_id);
-            deltaAmountValue = floatToBlockchainInt(newParams.amount, basePrecision);
+        const sellAssetId = order.sell_price.base.asset_id;
+        const receiveAssetId = order.sell_price.quote.asset_id;
+        const sellPrecision = await _getAssetPrecision(sellAssetId);
+        const receivePrecision = await _getAssetPrecision(receiveAssetId);
+
+        // Current values from the order (for_sale is the remaining amount to sell)
+        const currentSellInt = order.for_sale;
+        const currentSellFloat = blockchainToFloat(currentSellInt, sellPrecision);
+        
+        // Calculate current min_to_receive from price ratio and for_sale
+        // price ratio = quote.amount / base.amount from sell_price
+        const priceRatioBase = order.sell_price.base.amount;
+        const priceRatioQuote = order.sell_price.quote.amount;
+        const currentReceiveInt = Math.round((currentSellInt * priceRatioQuote) / priceRatioBase);
+        const currentReceiveFloat = blockchainToFloat(currentReceiveInt, receivePrecision);
+
+        // Determine new desired values
+        const newSellFloat = (newParams.amountToSell !== undefined && newParams.amountToSell !== null) 
+            ? newParams.amountToSell 
+            : currentSellFloat;
+        const newReceiveFloat = (newParams.minToReceive !== undefined && newParams.minToReceive !== null) 
+            ? newParams.minToReceive 
+            : currentReceiveFloat;
+
+        // Convert to blockchain integers
+        const newSellInt = floatToBlockchainInt(newSellFloat, sellPrecision);
+        const newReceiveInt = floatToBlockchainInt(newReceiveFloat, receivePrecision);
+
+        // Calculate delta (new - current)
+        let deltaSellInt = newSellInt - currentSellInt;
+
+        // Only skip when delta is exactly zero (no change). Negative deltas
+        // (reducing amount_to_sell) are allowed and will be sent to the chain.
+        if (deltaSellInt === 0) {
+            console.log(`Delta is 0; skipping limit_order_update (no change to amount_to_sell)`);
+            return null;
         }
 
+        // Build the new_price as the ratio between the new amounts
+        // Adjust newSellInt to match the delta we're actually sending
+        const adjustedSellInt = currentSellInt + deltaSellInt;
+        
         const updateParams = {
             fee: { amount: 0, asset_id: '1.3.0' },
+            seller: acc.account.id,
             order: orderId,
             delta_amount_to_sell: {
-                amount: deltaAmountValue,
-                asset_id: order.sell_price.base.asset_id
+                amount: deltaSellInt,
+                asset_id: sellAssetId
             },
             new_price: {
-                base: order.sell_price.base,
+                base: {
+                    amount: adjustedSellInt,
+                    asset_id: sellAssetId
+                },
                 quote: {
-                    amount: Math.round((newParams.price || order.sell_price.quote.amount / order.sell_price.base.amount) * order.sell_price.base.amount),
-                    asset_id: order.sell_price.quote.asset_id
+                    amount: newReceiveInt,
+                    asset_id: receiveAssetId
                 }
             }
         };
 
         if (newParams.expiration) updateParams.expiration = newParams.expiration;
+
+        console.log(`Updating order ${orderId}: sell ${currentSellFloat} -> ${newSellFloat}, receive ${currentReceiveFloat} -> ${newReceiveFloat}, delta=${deltaSellInt}`);
 
         const tx = acc.newTx();
         tx.limit_order_update(updateParams);

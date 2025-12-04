@@ -310,6 +310,61 @@ class DEXBot {
             this.manager.accountId = this.accountId;
         }
 
+        // Start listening for fills BEFORE any order operations to avoid missing fills
+        await accountOrders.listenForFills(this.account || undefined, async (fills) => {
+            if (this.manager && !this.isResyncing && !this.config.dryRun) {
+                for (const fill of fills) {
+                    if (fill && fill.op && fill.op[0] === 4) {
+                            const fillOp = fill.op[1];
+                            // Skip taker fills (is_maker = false means this is not our order being filled)
+                            // is_maker = true means our limit order was filled (we are the maker/liquidity provider)
+                            if (fillOp.is_maker === false) {
+                                this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
+                                continue;
+                            }
+                            
+                            // Log nicely formatted fill info
+                            const paysAmount = fillOp.pays ? fillOp.pays.amount : '?';
+                            const paysAsset = fillOp.pays ? fillOp.pays.asset_id : '?';
+                            const receivesAmount = fillOp.receives ? fillOp.receives.amount : '?';
+                            const receivesAsset = fillOp.receives ? fillOp.receives.asset_id : '?';
+                            console.log(`\n===== FILL DETECTED =====`);
+                            console.log(`Pays: ${paysAmount} (asset ${paysAsset})`);
+                            console.log(`Receives: ${receivesAmount} (asset ${receivesAsset})`);
+                            console.log(`is_maker: ${fillOp.is_maker}`);
+                            console.log(`Block: ${fill.block_num}, Time: ${fill.block_time}`);
+                            console.log(`=========================\n`);
+
+                            // Fetch fresh open orders from blockchain and sync by orderId
+                            const chainOrders = await accountOrders.readOpenOrders(this.account);
+                            const syncResult = this.manager.syncFromOpenOrders(chainOrders, fillOp);
+                            
+                            // Correct any orders with price mismatches (orderId matched but price outside tolerance)
+                            if (syncResult.ordersNeedingCorrection && syncResult.ordersNeedingCorrection.length > 0) {
+                                this.manager.logger.log(`Correcting ${syncResult.ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');
+                                const correctionResult = await this.manager.correctAllPriceMismatches(
+                                    this.account, this.privateKey, accountOrders
+                                );
+                                if (correctionResult.failed > 0) {
+                                    this.manager.logger.log(`${correctionResult.failed} order correction(s) failed`, 'error');
+                                }
+                            }
+                            
+                            // Process any fully filled orders (create new orders on opposite side)
+                            if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                                const newOrders = await this.manager.processFilledOrders(syncResult.filledOrders);
+                                if (newOrders && newOrders.length > 0) {
+                                    await this.placeNewOrders(newOrders);
+                                }
+                            }
+                            
+                            // Always persist snapshot after processing fills
+                            indexDB.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()));
+                    }
+                }
+            }
+        });
+
         const performResync = async () => {
             if (this.isResyncing) {
                 this.manager.logger.log('Resync already in progress, skipping trigger.', 'warn');
@@ -382,7 +437,19 @@ class DEXBot {
             } else {
                 this.manager.logger.log('Found active session. Loading and syncing existing grid.', 'info');
                 this.manager.loadGrid(persistedGrid);
-                await this.manager.synchronizeWithChain(chainOrders, 'readOpenOrders');
+                const syncResult = await this.manager.synchronizeWithChain(chainOrders, 'readOpenOrders');
+                
+                // Correct any orders with price mismatches at startup
+                if (syncResult.ordersNeedingCorrection && syncResult.ordersNeedingCorrection.length > 0) {
+                    this.manager.logger.log(`Startup: Correcting ${syncResult.ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');
+                    const correctionResult = await this.manager.correctAllPriceMismatches(
+                        this.account, this.privateKey, accountOrders
+                    );
+                    if (correctionResult.failed > 0) {
+                        this.manager.logger.log(`${correctionResult.failed} startup order correction(s) failed`, 'error');
+                    }
+                }
+                
                 indexDB.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()));
             }
         }
@@ -402,23 +469,6 @@ class DEXBot {
                 }
             } catch (err) {
                 console.warn('fs.watch handler error:', err && err.message ? err.message : err);
-            }
-        });
-
-        await accountOrders.listenForFills(this.account || undefined, async (fills) => {
-            console.log('On-chain fill detected:', fills);
-            if (this.manager && !this.isResyncing && !this.config.dryRun) {
-                for (const fill of fills) {
-                    if (fill && fill.op && fill.op[0] === 4) {
-                        const result = await this.manager.synchronizeWithChain(fill.op[1], 'listenForFills');
-                        
-                        // Place any new orders on-chain
-                        if (result && result.newOrders && result.newOrders.length > 0) {
-                            await this.placeNewOrders(result.newOrders);
-                            indexDB.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()));
-                        }
-                    }
-                }
             }
         });
 

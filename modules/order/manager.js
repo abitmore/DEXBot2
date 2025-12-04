@@ -19,6 +19,8 @@ class OrderManager {
         // Promise that resolves when accountTotals (both buy & sell) are populated.
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;
+        // Orders that need price correction on blockchain (orderId matched but price outside tolerance)
+        this.ordersNeedingPriceCorrection = [];
     }
 
     // Reconcile funds totals based on config, input percentages, and prior committed balances.
@@ -185,6 +187,119 @@ class OrderManager {
         }
     }
 
+    /**
+     * Calculate the minimum order size for a given order type.
+     * Uses minOrderSizeFactor * (smallest unit based on asset precision).
+     * If the factor is disabled or the asset precision cannot be determined,
+     * this function now returns 0 (no implicit fallback).
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @returns {number} - Minimum order size in human-readable units (or 0 if unavailable)
+     */
+    getMinOrderSize(orderType) {
+        const factor = Number(DEFAULT_CONFIG.minOrderSizeFactor);
+
+        // If configured default factor is not set, zero, or invalid, return 0
+        if (!factor || !Number.isFinite(factor) || factor <= 0) {
+            return 0;
+        }
+
+        // Determine which asset's precision to use based on order type
+        // SELL orders: size is in assetA (base)
+        // BUY orders: size is in assetB (quote)
+        let precision = null;
+        if (this.assets) {
+            if (orderType === ORDER_TYPES.SELL && this.assets.assetA) {
+                precision = this.assets.assetA.precision;
+            } else if (orderType === ORDER_TYPES.BUY && this.assets.assetB) {
+                precision = this.assets.assetB.precision;
+            }
+        }
+
+        // If we can't determine precision, return 0 (no implicit fallback)
+        if (precision === null || precision === undefined || !Number.isFinite(precision)) {
+            return 0;
+        }
+
+        // Calculate: factor * (10 ^ -precision)
+        // E.g., factor=50, precision=4 => 50 * 0.0001 = 0.005
+        const smallestUnit = Math.pow(10, -precision);
+        const dynamicMin = Number(factor) * smallestUnit;
+
+        return dynamicMin;
+    }
+
+    /**
+     * Calculate the maximum allowable price difference between grid and blockchain
+     * based on asset precisions and order size.
+     * 
+     * The tolerance is calculated as: (1/precisionA + 1/precisionB) / orderSize
+     * This represents the minimum price change that could occur due to integer rounding
+     * on the blockchain when converting float amounts to integer satoshis.
+     * 
+     * @param {number} gridPrice - The price in the grid (indexDB)
+     * @param {number} orderSize - The order size
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @returns {number} - Maximum allowable absolute price difference
+     */
+    calculatePriceTolerance(gridPrice, orderSize, orderType) {
+        if (!this.assets || !gridPrice || !orderSize) {
+            // Fallback to a reasonable default if assets not available
+            return gridPrice * 0.001; // 0.1% tolerance as fallback
+        }
+        
+        const precisionA = this.assets.assetA?.precision ?? 8;
+        const precisionB = this.assets.assetB?.precision ?? 8;
+        
+        // Determine orderSizeA and orderSizeB based on order type
+        // For BUY orders: size is in assetB (BTS) - we're selling BTS to buy XRP
+        // For SELL orders: size is in assetA (XRP) - we're selling XRP to buy BTS
+        let orderSizeA, orderSizeB;
+        if (orderType === ORDER_TYPES.SELL) {
+            // SELL: orderSize is in assetA (XRP)
+            orderSizeA = orderSize;
+            orderSizeB = orderSize * gridPrice;
+        } else {
+            // BUY: orderSize is in assetB (BTS)
+            orderSizeB = orderSize;
+            orderSizeA = orderSize / gridPrice;
+        }
+        
+        // Tolerance formula: (1/(orderSizeA * 10^precisionA) + 1/(orderSizeB * 10^precisionB)) * price
+        // Example for BUY: 73.88 BTS with price 1820 -> orderSizeA = 0.0406 XRP
+        // termA = 1/(0.0406 * 10^4) = 1/406 = 0.00246
+        // termB = 1/(73.88 * 10^5) = 1/7388000 = 0.000000135
+        // tolerance = (0.00246 + 0.000000135) * 1820 ≈ 4.48
+        const termA = 1 / (orderSizeA * Math.pow(10, precisionA));
+        const termB = 1 / (orderSizeB * Math.pow(10, precisionB));
+        const tolerance = (termA + termB) * gridPrice;
+        
+        return tolerance;
+    }
+
+    /**
+     * Check if a chain order price is within acceptable tolerance of the grid order price.
+     * @param {Object} gridOrder - The grid order from indexDB
+     * @param {Object} chainOrder - The parsed chain order (with price, type, size)
+     * @returns {Object} - { isWithinTolerance: boolean, priceDiff: number, tolerance: number }
+     */
+    checkPriceWithinTolerance(gridOrder, chainOrder) {
+        const gridPrice = Number(gridOrder.price);
+        const chainPrice = Number(chainOrder.price);
+        const orderSize = Number(chainOrder.size || gridOrder.size || 0);
+        
+        const priceDiff = Math.abs(gridPrice - chainPrice);
+        const tolerance = this.calculatePriceTolerance(gridPrice, orderSize, gridOrder.type);
+        
+        return {
+            isWithinTolerance: priceDiff <= tolerance,
+            priceDiff,
+            tolerance,
+            gridPrice,
+            chainPrice,
+            orderSize
+        };
+    }
+
     async initialize() {
         await this.initializeOrderGrid();
     }
@@ -310,42 +425,487 @@ class OrderManager {
         let price;
         let type;
         if (base.asset_id === this.assets.assetA.id && quote.asset_id === this.assets.assetB.id) {
+            // SELL order: selling assetA (base) to receive assetB (quote)
+            // Price = quote/base in human units = (quote_satoshis/quote_precision) / (base_satoshis/base_precision)
+            //       = (quote/base) * 10^(base_precision - quote_precision)
             price = (quote.amount / base.amount) * Math.pow(10, this.assets.assetA.precision - this.assets.assetB.precision);
             type = ORDER_TYPES.SELL;
         } else if (base.asset_id === this.assets.assetB.id && quote.asset_id === this.assets.assetA.id) {
-            price = (base.amount / quote.amount) * Math.pow(10, this.assets.assetB.precision - this.assets.assetA.precision);
+            // BUY order: selling assetB (base) to receive assetA (quote)
+            // Price in BTS/XRP = base_human / quote_human = (base_satoshis/base_precision) / (quote_satoshis/quote_precision)
+            //       = (base/quote) * 10^(quote_precision - base_precision)
+            price = (base.amount / quote.amount) * Math.pow(10, this.assets.assetA.precision - this.assets.assetB.precision);
             type = ORDER_TYPES.BUY;
         } else {
             return null;
         }
-        return { orderId: chainOrder.id, price: price, type: type };
+        // Attempt to capture the remaining on-chain size (for_sale) and
+        // convert it back to human units using asset precision. The meaning
+        // of `for_sale` depends on which asset is the base in sell_price.
+        let size = null;
+        try {
+            if (chainOrder.for_sale !== undefined && chainOrder.for_sale !== null) {
+                if (type === ORDER_TYPES.SELL) {
+                    // SELL: base is assetA and `for_sale` is amount of assetA remaining
+                    const prec = this.assets.assetA && this.assets.assetA.precision !== undefined ? this.assets.assetA.precision : 0;
+                    size = blockchainToFloat(Number(chainOrder.for_sale), prec);
+                } else if (type === ORDER_TYPES.BUY) {
+                    // BUY: base is assetB and `for_sale` is amount of assetB remaining
+                    const prec = this.assets.assetB && this.assets.assetB.precision !== undefined ? this.assets.assetB.precision : 0;
+                    size = blockchainToFloat(Number(chainOrder.for_sale), prec);
+                }
+            }
+        } catch (e) {
+            size = null; // best-effort: if conversion fails, ignore size
+        }
+
+        return { orderId: chainOrder.id, price: price, type: type, size };
+    }
+
+    // Apply an on-chain reported size to a tracked grid order and reconcile
+    // funds (committed / available) to avoid drift. `chainSize` is a human
+    // float representing remaining amount to sell for that order.
+    _applyChainSizeToGridOrder(gridOrder, chainSize) {
+        if (!gridOrder) return;
+        const oldSize = Number(gridOrder.size || 0);
+        const newSize = Number.isFinite(Number(chainSize)) ? Number(chainSize) : oldSize;
+        const delta = newSize - oldSize;
+        if (Math.abs(delta) < 1e-12) {
+            gridOrder.size = newSize; // still ensure normalized numeric
+            return;
+        }
+
+        if (!this.funds) this.resetFunds();
+
+        // Log size adjustment for debugging
+        this.logger.log(`Order ${gridOrder.id} size adjustment: ${oldSize.toFixed(8)} -> ${newSize.toFixed(8)} (delta: ${delta.toFixed(8)})`, 'info');
+
+        if (gridOrder.type === ORDER_TYPES.BUY) {
+            this.funds.committed.buy = Math.max(0, (this.funds.committed.buy || 0) + delta);
+            this.funds.available.buy = Math.max(0, (this.funds.available.buy || 0) - delta);
+        } else if (gridOrder.type === ORDER_TYPES.SELL) {
+            this.funds.committed.sell = Math.max(0, (this.funds.committed.sell || 0) + delta);
+            this.funds.available.sell = Math.max(0, (this.funds.available.sell || 0) - delta);
+        }
+
+        gridOrder.size = newSize;
+    }
+
+    /**
+     * Sync grid orders from fresh blockchain open orders after a fill event.
+     * This is the preferred way to handle fills:
+     * 1. Fetch current open orders from blockchain
+     * 2. Match grid orders to chain orders by orderId
+     * 3. Check if price difference is within tolerance (based on asset precision)
+     * 4. If orderId matches but price outside tolerance, flag for correction
+     * 5. If orderId not found but price matches, update orderId (never update price)
+     * 6. Update sizes from blockchain for_sale values
+     * 7. Mark orders as FILLED if they no longer exist on chain
+     * 
+     * @param {Array} chainOrders - Array of open orders from blockchain
+     * @param {Object} fillInfo - Optional fill event info for logging (pays/receives amounts)
+     * @returns {Object} - { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] }
+     */
+    syncFromOpenOrders(chainOrders, fillInfo = null) {
+        if (!Array.isArray(chainOrders)) {
+            this.logger.log('syncFromOpenOrders: No chain orders provided', 'warn');
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
+        }
+        
+        this.logger.log(`syncFromOpenOrders: Processing ${chainOrders.length} open orders from blockchain`, 'info');
+        
+        // Parse all chain orders
+        const parsedChainOrders = new Map();
+        const rawChainOrders = new Map(); // Keep raw orders for correction
+        for (const chainOrder of chainOrders) {
+            const parsed = this._parseChainOrder(chainOrder);
+            if (parsed) {
+                parsedChainOrders.set(parsed.orderId, parsed);
+                rawChainOrders.set(parsed.orderId, chainOrder);
+            }
+        }
+        
+        const filledOrders = [];
+        const updatedOrders = [];
+        const ordersNeedingCorrection = [];
+        const chainOrderIdsOnGrid = new Set();
+        
+        // Clear previous correction list
+        this.ordersNeedingPriceCorrection = [];
+        
+        // First pass: Match by orderId and check price tolerance
+        for (const gridOrder of this.orders.values()) {
+            if (gridOrder.state !== ORDER_STATES.ACTIVE) continue;
+            if (!gridOrder.orderId) continue;
+            
+            const chainOrder = parsedChainOrders.get(gridOrder.orderId);
+            
+            if (chainOrder) {
+                // Order still exists on chain - check price tolerance
+                const toleranceCheck = this.checkPriceWithinTolerance(gridOrder, chainOrder);
+                
+                if (!toleranceCheck.isWithinTolerance) {
+                    // Price difference exceeds tolerance - need to correct order on blockchain
+                    this.logger.log(
+                        `Order ${gridOrder.id} (${gridOrder.orderId}): PRICE MISMATCH - ` +
+                        `grid=${toleranceCheck.gridPrice.toFixed(8)}, chain=${toleranceCheck.chainPrice.toFixed(8)}, ` +
+                        `diff=${toleranceCheck.priceDiff.toFixed(8)}, tolerance=${toleranceCheck.tolerance.toFixed(8)}. ` +
+                        `Flagging for correction.`, 
+                        'warn'
+                    );
+                    
+                    const correctionInfo = {
+                        gridOrder: { ...gridOrder },
+                        chainOrderId: gridOrder.orderId,
+                        rawChainOrder: rawChainOrders.get(gridOrder.orderId),
+                        expectedPrice: gridOrder.price,
+                        actualPrice: chainOrder.price,
+                        size: chainOrder.size || gridOrder.size,
+                        type: gridOrder.type
+                    };
+                    ordersNeedingCorrection.push(correctionInfo);
+                    this.ordersNeedingPriceCorrection.push(correctionInfo);
+                    chainOrderIdsOnGrid.add(gridOrder.orderId);
+                    // Don't update size yet - will be updated after correction
+                    continue;
+                }
+                
+                // Price within tolerance - update size if different
+                chainOrderIdsOnGrid.add(gridOrder.orderId);
+                const oldSize = Number(gridOrder.size || 0);
+                const newSize = Number(chainOrder.size || 0);
+                
+                if (Math.abs(oldSize - newSize) > 1e-10) {
+                    const fillAmount = oldSize - newSize;
+                    this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}): size changed ${oldSize.toFixed(8)} -> ${newSize.toFixed(8)} (filled: ${fillAmount.toFixed(8)})`, 'info');
+                    this._applyChainSizeToGridOrder(gridOrder, newSize);
+                    updatedOrders.push(gridOrder);
+                }
+                this.orders.set(gridOrder.id, gridOrder);
+            } else {
+                // Order no longer exists on chain - it was fully filled
+                this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}) no longer on chain - marking as FILLED`, 'info');
+                const filledOrder = { ...gridOrder };
+                gridOrder.state = ORDER_STATES.FILLED;
+                gridOrder.size = 0;
+                this.orders.set(gridOrder.id, gridOrder);
+                filledOrders.push(filledOrder);
+            }
+        }
+        
+        // Second pass: Check for chain orders that don't match any grid orderId but match by price
+        // This handles cases where orders were recreated with new IDs
+        for (const [chainOrderId, chainOrder] of parsedChainOrders) {
+            if (chainOrderIdsOnGrid.has(chainOrderId)) continue; // Already matched
+            
+            // Find a grid order that matches by type and price but has a stale/missing orderId
+            let bestMatch = null;
+            let bestPriceDiff = Infinity;
+            const PRICE_TOLERANCE_PERCENT = 0.02; // 2% tolerance for price matching
+            
+            for (const gridOrder of this.orders.values()) {
+                if (gridOrder.state !== ORDER_STATES.ACTIVE) continue;
+                if (gridOrder.type !== chainOrder.type) continue;
+                // Skip if this grid order's orderId is still valid on chain
+                if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) continue;
+                
+                const priceDiff = Math.abs(gridOrder.price - chainOrder.price);
+                const priceThreshold = gridOrder.price * PRICE_TOLERANCE_PERCENT;
+                
+                if (priceDiff < priceThreshold && priceDiff < bestPriceDiff) {
+                    bestMatch = gridOrder;
+                    bestPriceDiff = priceDiff;
+                }
+            }
+            
+            if (bestMatch) {
+                this.logger.log(`Order ${bestMatch.id}: Updating orderId ${bestMatch.orderId} -> ${chainOrderId} (matched by price, diff=${bestPriceDiff.toFixed(8)})`, 'info');
+                bestMatch.orderId = chainOrderId;
+                // Update size from chain but NEVER update price
+                const oldSize = Number(bestMatch.size || 0);
+                const newSize = Number(chainOrder.size || 0);
+                if (Math.abs(oldSize - newSize) > 1e-10) {
+                    this._applyChainSizeToGridOrder(bestMatch, newSize);
+                }
+                this.orders.set(bestMatch.id, bestMatch);
+                updatedOrders.push(bestMatch);
+                chainOrderIdsOnGrid.add(chainOrderId);
+            } else {
+                this.logger.log(`Chain order ${chainOrderId} (type=${chainOrder.type}, price=${chainOrder.price.toFixed(4)}) has no matching grid order`, 'warn');
+            }
+        }
+        
+        // Log fill info if provided
+        if (fillInfo && fillInfo.pays && fillInfo.receives) {
+            this.logger.log(`Fill event: pays ${fillInfo.pays.amount} (${fillInfo.pays.asset_id}), receives ${fillInfo.receives.amount} (${fillInfo.receives.asset_id})`, 'info');
+        }
+        
+        // Log summary of orders needing correction
+        if (ordersNeedingCorrection.length > 0) {
+            this.logger.log(`${ordersNeedingCorrection.length} order(s) need price correction on blockchain`, 'warn');
+        }
+        
+        return { filledOrders, updatedOrders, ordersNeedingCorrection };
+    }
+
+    /**
+     * Correct an order on the blockchain to match the grid price.
+     * This uses limit_order_update to change the price without canceling.
+     * The orderId remains the same after the update.
+     * 
+     * Since BitShares stores orders as amount_to_sell and min_to_receive,
+     * we calculate the new min_to_receive based on the grid price and current size.
+     * 
+     * @param {Object} correctionInfo - Info about the order to correct
+     * @param {string} accountName - Account name for signing
+     * @param {string} privateKey - Private key for signing
+     * @param {Object} accountOrders - Module with updateOrder function
+     * @returns {Object} - { success: boolean, error: string|null }
+     */
+    async correctOrderPriceOnChain(correctionInfo, accountName, privateKey, accountOrders) {
+        const { gridOrder, chainOrderId, expectedPrice, size, type } = correctionInfo;
+        
+        this.logger.log(`Correcting order ${gridOrder.id} (${chainOrderId}): updating to price ${expectedPrice.toFixed(8)}`, 'info');
+        
+        try {
+            // Calculate new amounts based on the grid price
+            // For SELL orders: we sell assetA to receive assetB, so minToReceive = size * price
+            // For BUY orders: we sell assetB to receive assetA, so minToReceive = size / price (size is in assetB)
+            let amountToSell, minToReceive;
+            
+            if (type === ORDER_TYPES.SELL) {
+                // Selling assetA for assetB at price (assetB per assetA)
+                amountToSell = size;
+                minToReceive = size * expectedPrice;
+            } else {
+                // Buying assetA with assetB at price (assetB per assetA)
+                // size is the amount of assetB we're selling
+                amountToSell = size;
+                minToReceive = size / expectedPrice;
+            }
+            
+            this.logger.log(`Updating order: amountToSell=${amountToSell.toFixed(8)}, minToReceive=${minToReceive.toFixed(8)}`, 'info');
+            
+            // Use limit_order_update to change the amounts (which changes the effective price)
+            const updateResult = await accountOrders.updateOrder(accountName, privateKey, chainOrderId, {
+                amountToSell,
+                minToReceive
+            });
+
+            // accountOrders.updateOrder returns `null` when there is no change (delta === 0)
+            // In that case we should treat the correction as skipped rather than successful.
+            if (updateResult === null) {
+                this.logger.log(`Order ${gridOrder.id} (${chainOrderId}) price correction skipped (no change to amount_to_sell)`, 'info');
+                return { success: false, error: 'No change to amount_to_sell (delta=0) - update skipped' };
+            }
+
+            this.logger.log(`Order ${gridOrder.id} (${chainOrderId}) price corrected to ${expectedPrice.toFixed(8)}`, 'info');
+            
+            // Remove from correction list
+            this.ordersNeedingPriceCorrection = this.ordersNeedingPriceCorrection.filter(
+                c => c.chainOrderId !== chainOrderId
+            );
+            
+            return { success: true, error: null };
+            
+        } catch (error) {
+            this.logger.log(`Failed to correct order ${gridOrder.id}: ${error.message}`, 'error');
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Correct all orders that have price mismatches.
+     * @param {string} accountName - Account name for signing
+     * @param {string} privateKey - Private key for signing  
+     * @param {Object} accountOrders - Module with createOrder/cancelOrder functions
+     * @returns {Object} - { corrected: number, failed: number, results: Array }
+     */
+    async correctAllPriceMismatches(accountName, privateKey, accountOrders) {
+        const results = [];
+        let corrected = 0;
+        let failed = 0;
+        
+        // Make a copy since we modify the list during iteration
+        const ordersToCorrect = [...this.ordersNeedingPriceCorrection];
+        
+        for (const correctionInfo of ordersToCorrect) {
+            const result = await this.correctOrderPriceOnChain(
+                correctionInfo, accountName, privateKey, accountOrders
+            );
+            results.push({ ...correctionInfo, result });
+            
+            if (result.success) {
+                corrected++;
+            } else {
+                failed++;
+            }
+            
+            // Small delay between corrections to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        this.logger.log(`Price correction complete: ${corrected} corrected, ${failed} failed`, 'info');
+        return { corrected, failed, results };
     }
 
     _findMatchingGridOrder(parsedChainOrder) {
+        // First try exact orderId match - this is the most reliable
         if (parsedChainOrder.orderId) {
             for (const gridOrder of this.orders.values()) {
-                if (gridOrder.orderId === parsedChainOrder.orderId) return gridOrder;
+                if (gridOrder.orderId === parsedChainOrder.orderId) {
+                    this.logger.log(`_findMatchingGridOrder: MATCHED ${parsedChainOrder.orderId} -> ${gridOrder.id} by orderId`, 'info');
+                    return gridOrder;
+                }
             }
+            // Log that orderId was not found in any grid order
+            this.logger.log(`_findMatchingGridOrder: orderId ${parsedChainOrder.orderId} NOT found in grid, falling back to price matching (chain price=${parsedChainOrder.price?.toFixed(6)}, type=${parsedChainOrder.type})`, 'info');
         }
-        const PRICE_TOLERANCE = 1e-9;
+        
+        // If no orderId match, try matching by price for VIRTUAL orders
+        // Use relative tolerance based on price magnitude
+        const getRelativeTolerance = (price) => {
+            const absPrice = Math.abs(price);
+            if (absPrice < 1e-6) return 1e-15;  // Very small prices
+            if (absPrice < 1e-3) return absPrice * 1e-8;  // Small prices
+            return absPrice * 1e-9;  // Normal prices
+        };
+        
         for (const gridOrder of this.orders.values()) {
             if (gridOrder.state === ORDER_STATES.VIRTUAL && !gridOrder.orderId) {
                 const priceDiff = Math.abs(gridOrder.price - parsedChainOrder.price);
-                if (gridOrder.type === parsedChainOrder.type && priceDiff < PRICE_TOLERANCE) {
+                const tolerance = getRelativeTolerance(gridOrder.price);
+                if (gridOrder.type === parsedChainOrder.type && priceDiff < tolerance) {
+                    this.logger.log(`_findMatchingGridOrder: matched ${parsedChainOrder.orderId} to VIRTUAL grid order ${gridOrder.id} by price`, 'debug');
                     return gridOrder;
                 }
             }
         }
+        
+        // For ACTIVE orders, find the CLOSEST price match (not just first within tolerance)
+        // This handles the case where blockchain order IDs changed (e.g., order was cancelled and recreated)
+        if (parsedChainOrder.price !== undefined && parsedChainOrder.type) {
+            let bestMatch = null;
+            let smallestDiff = Infinity;
+            
+            for (const gridOrder of this.orders.values()) {
+                if (gridOrder.state === ORDER_STATES.ACTIVE && gridOrder.type === parsedChainOrder.type) {
+                    const priceDiff = Math.abs(gridOrder.price - parsedChainOrder.price);
+                    const tolerance = getRelativeTolerance(gridOrder.price);
+                    
+                    // Only consider if within tolerance, then pick the closest
+                    if (priceDiff < tolerance && priceDiff < smallestDiff) {
+                        smallestDiff = priceDiff;
+                        bestMatch = gridOrder;
+                    }
+                }
+            }
+            
+            if (bestMatch) {
+                this.logger.log(`_findMatchingGridOrder: matched ${parsedChainOrder.orderId} to ACTIVE grid order ${bestMatch.id} by closest price (diff=${smallestDiff.toExponential(4)}, old orderId: ${bestMatch.orderId})`, 'debug');
+                return bestMatch;
+            }
+        }
+        
         return null;
+    }
+
+    // Match a fill operation to a grid order - prefer order_id matching, fallback to price/assets
+    _findMatchingGridOrderByFill(fillOp) {
+        // First try to match by order_id if available (most reliable)
+        if (fillOp.order_id) {
+            for (const gridOrder of this.orders.values()) {
+                if (gridOrder.orderId === fillOp.order_id) {
+                    this.logger.log(`_findMatchingGridOrderByFill: MATCHED fill to ${gridOrder.id} by order_id ${fillOp.order_id}`, 'info');
+                    return gridOrder;
+                }
+            }
+            this.logger.log(`_findMatchingGridOrderByFill: order_id ${fillOp.order_id} not found in grid, trying price match`, 'info');
+        }
+        
+        // Fallback to price/asset matching
+        if (!fillOp.pays || !fillOp.receives || !this.assets) {
+            return null;
+        }
+        
+        const paysAssetId = String(fillOp.pays.asset_id);
+        const receivesAssetId = String(fillOp.receives.asset_id);
+        const assetAId = String(this.assets.assetA?.id || '');
+        const assetBId = String(this.assets.assetB?.id || '');
+        
+        // Determine order type from assets:
+        // SELL order: pays assetA (base), receives assetB (quote)
+        // BUY order: pays assetB (quote), receives assetA (base)
+        let fillType = null;
+        let fillPrice = null;
+        
+        if (paysAssetId === assetAId && receivesAssetId === assetBId) {
+            // This is a SELL fill (paying base, receiving quote)
+            fillType = ORDER_TYPES.SELL;
+            const paysAmount = blockchainToFloat(Number(fillOp.pays.amount), this.assets.assetA?.precision || 0);
+            const receivesAmount = blockchainToFloat(Number(fillOp.receives.amount), this.assets.assetB?.precision || 0);
+            if (paysAmount > 0) {
+                fillPrice = receivesAmount / paysAmount;  // price = quote/base
+            }
+        } else if (paysAssetId === assetBId && receivesAssetId === assetAId) {
+            // This is a BUY fill (paying quote, receiving base)
+            fillType = ORDER_TYPES.BUY;
+            const paysAmount = blockchainToFloat(Number(fillOp.pays.amount), this.assets.assetB?.precision || 0);
+            const receivesAmount = blockchainToFloat(Number(fillOp.receives.amount), this.assets.assetA?.precision || 0);
+            if (receivesAmount > 0) {
+                fillPrice = paysAmount / receivesAmount;  // price = quote/base
+            }
+        } else {
+            // Assets don't match our market
+            this.logger.log(`Fill assets (${paysAssetId}/${receivesAssetId}) don't match market (${assetAId}/${assetBId})`, 'debug');
+            return null;
+        }
+        
+        if (!fillType || !Number.isFinite(fillPrice)) {
+            this.logger.log(`Could not determine fill type or price`, 'debug');
+            return null;
+        }
+        
+        this.logger.log(`Fill analysis: type=${fillType}, price=${fillPrice.toFixed(4)}`, 'debug');
+        
+        // Find matching ACTIVE order by type and price
+        const PRICE_TOLERANCE_PERCENT = 0.001; // 0.1% tolerance for price matching
+        let bestMatch = null;
+        let bestPriceDiff = Infinity;
+        
+        for (const gridOrder of this.orders.values()) {
+            if (gridOrder.state !== ORDER_STATES.ACTIVE) continue;
+            if (gridOrder.type !== fillType) continue;
+            
+            const priceDiff = Math.abs(gridOrder.price - fillPrice);
+            const priceThreshold = gridOrder.price * PRICE_TOLERANCE_PERCENT;
+            
+            if (priceDiff < priceThreshold && priceDiff < bestPriceDiff) {
+                bestMatch = gridOrder;
+                bestPriceDiff = priceDiff;
+            }
+        }
+        
+        if (bestMatch) {
+            this.logger.log(`_findMatchingGridOrderByFill: MATCHED fill to ${bestMatch.id} by PRICE (fillPrice=${fillPrice.toFixed(4)}, gridPrice=${bestMatch.price.toFixed(4)}, diff=${bestPriceDiff.toFixed(8)})`, 'info');
+        } else {
+            this.logger.log(`_findMatchingGridOrderByFill: NO MATCH found for fill (type=${fillType}, price=${fillPrice?.toFixed(4)})`, 'warn');
+        }
+        
+        return bestMatch;
     }
 
     async synchronizeWithChain(chainData, source) {
         if (!this.assets) {
             this.logger.log('Asset metadata not available, cannot synchronize.', 'warn');
-            return { newOrders: [] };
+            return { newOrders: [], ordersNeedingCorrection: [] };
         }
         this.logger.log(`Syncing from ${source}`, 'info');
         let newOrders = [];
+        // Reset the instance-level correction list for readOpenOrders case
+        if (source === 'readOpenOrders') {
+            this.ordersNeedingPriceCorrection = [];
+        }
         switch (source) {
             case 'createOrder': {
                 const { gridOrderId, chainOrderId } = chainData;
@@ -359,15 +919,9 @@ class OrderManager {
                 break;
             }
             case 'listenForFills': {
-                const fillOp = chainData;
-                const orderId = fillOp.order_id;
-                const gridOrder = this._findMatchingGridOrder({ orderId });
-                if (gridOrder && gridOrder.state === ORDER_STATES.ACTIVE) {
-                    gridOrder.state = ORDER_STATES.FILLED;
-                    this.orders.set(gridOrder.id, gridOrder);
-                    this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}) marked as FILLED`, 'info');
-                    newOrders = await this.processFilledOrders([gridOrder]);
-                }
+                // DEPRECATED: Fill handling is now done via syncFromOpenOrders() in dexbot.js
+                // This case is kept for backwards compatibility but should not be used
+                this.logger.log(`listenForFills case in synchronizeWithChain is deprecated - use syncFromOpenOrders() instead`, 'warn');
                 break;
             }
             case 'cancelOrder': {
@@ -385,14 +939,63 @@ class OrderManager {
                 const seenOnChain = new Set();
                 for (const chainOrder of chainData) {
                     const parsedOrder = this._parseChainOrder(chainOrder);
-                    if (!parsedOrder) continue;
+                    if (!parsedOrder) {
+                        this.logger.log(`Could not parse chain order ${chainOrder.id}`, 'debug');
+                        continue;
+                    }
                     seenOnChain.add(parsedOrder.orderId);
                     const gridOrder = this._findMatchingGridOrder(parsedOrder);
-                    if (gridOrder && gridOrder.state !== ORDER_STATES.ACTIVE) {
-                        gridOrder.state = ORDER_STATES.ACTIVE;
-                        gridOrder.orderId = parsedOrder.orderId;
+                    if (gridOrder) {
+                        const wasActive = gridOrder.state === ORDER_STATES.ACTIVE;
+                        const oldOrderId = gridOrder.orderId;
+                        
+                        // Always update the orderId from chain - it may have changed
+                        if (gridOrder.orderId !== parsedOrder.orderId) {
+                            this.logger.log(`Updating orderId for ${gridOrder.id}: ${oldOrderId} -> ${parsedOrder.orderId}`, 'info');
+                            gridOrder.orderId = parsedOrder.orderId;
+                        }
+                        
+                        if (!wasActive) {
+                            gridOrder.state = ORDER_STATES.ACTIVE;
+                            this.logger.log(`Order ${gridOrder.id} transitioned to ACTIVE with orderId ${gridOrder.orderId}`, 'info');
+                        }
+                        
+                        // Check price tolerance - if chain price differs too much, flag for correction
+                        const toleranceCheck = this.checkPriceWithinTolerance(gridOrder, parsedOrder);
+                        
+                        if (!toleranceCheck.isWithinTolerance) {
+                            this.logger.log(
+                                `Price mismatch ${gridOrder.id}: gridPrice=${toleranceCheck.gridPrice.toFixed(8)}, ` +
+                                `chainPrice=${toleranceCheck.chainPrice.toFixed(8)}, diff=${toleranceCheck.priceDiff.toFixed(6)}, ` +
+                                `maxTolerance=${toleranceCheck.tolerance.toFixed(6)} - flagging for correction`,
+                                'warn'
+                            );
+                            this.ordersNeedingPriceCorrection.push({
+                                gridOrder,
+                                chainOrderId: parsedOrder.orderId,
+                                expectedPrice: gridOrder.price,
+                                actualPrice: parsedOrder.price,
+                                size: Number(gridOrder.size || parsedOrder.size || 0),
+                                type: gridOrder.type
+                            });
+                        }
+                        
+                        // Reconcile sizes to avoid funds drift when on-chain size differs
+                        if (parsedOrder.size !== null && parsedOrder.size !== undefined && Number.isFinite(Number(parsedOrder.size))) {
+                            const gridSize = Number(gridOrder.size || 0);
+                            const chainSize = Number(parsedOrder.size);
+                            if (Math.abs(gridSize - chainSize) > 1e-10) {
+                                this.logger.log(`Size sync ${gridOrder.id}: chain orderId=${parsedOrder.orderId}, chainPrice=${parsedOrder.price.toFixed(6)}, gridPrice=${gridOrder.price.toFixed(6)}, gridSize=${gridSize} -> chainSize=${chainSize}`, 'info');
+                            }
+                            try { this._applyChainSizeToGridOrder(gridOrder, parsedOrder.size); } catch (e) { 
+                                this.logger.log(`Error applying chain size to grid order: ${e.message}`, 'warn');
+                            }
+                        } else {
+                            this.logger.log(`Chain order ${parsedOrder.orderId} has no valid size (for_sale)`, 'debug');
+                        }
                         this.orders.set(gridOrder.id, gridOrder);
-                        this.logger.log(`Order ${gridOrder.id} found on-chain, marked ACTIVE`, 'debug');
+                    } else {
+                        this.logger.log(`No matching grid order found for chain order ${parsedOrder.orderId} (type=${parsedOrder.type}, price=${parsedOrder.price.toFixed(4)})`, 'warn');
                     }
                 }
                 for (const gridOrder of this.orders.values()) {
@@ -403,10 +1006,15 @@ class OrderManager {
                         this.orders.set(gridOrder.id, gridOrder);
                     }
                 }
+                
+                // Log summary of orders needing correction
+                if (this.ordersNeedingPriceCorrection.length > 0) {
+                    this.logger.log(`${this.ordersNeedingPriceCorrection.length} order(s) need price correction on blockchain`, 'warn');
+                }
                 break;
             }
         }
-        return { newOrders };
+        return { newOrders, ordersNeedingCorrection: this.ordersNeedingPriceCorrection };
     }
 
     async resyncGridFromChain(readOpenOrdersFn, cancelOrderFn) {
@@ -437,6 +1045,13 @@ class OrderManager {
             if (bestMatch && smallestDiff < PRICE_TOLERANCE * gridOrder.price) {
                 gridOrder.state = ORDER_STATES.ACTIVE;
                 gridOrder.orderId = bestMatch.id;
+                // Parse the matched chain order again to get reported size and reconcile funds
+                try {
+                    const parsed = this._parseChainOrder(bestMatch);
+                    if (parsed && parsed.size !== null && parsed.size !== undefined && Number.isFinite(Number(parsed.size))) {
+                        this._applyChainSizeToGridOrder(gridOrder, parsed.size);
+                    }
+                } catch (e) { /* best-effort */ }
                 this.orders.set(gridOrder.id, gridOrder);
                 matchedChainOrderIds.add(bestMatch.id);
                 this.logger.log(`Matched grid order ${gridOrder.id} to on-chain order ${bestMatch.id}.`, 'debug');
@@ -468,6 +1083,10 @@ class OrderManager {
     getInitialOrdersToActivate() {
         const sellCount = Math.max(0, Number(this.config.activeOrders && this.config.activeOrders.sell ? this.config.activeOrders.sell : 1));
         const buyCount = Math.max(0, Number(this.config.activeOrders && this.config.activeOrders.buy ? this.config.activeOrders.buy : 1));
+        
+        // Get minimum order sizes for each type
+        const minSellSize = this.getMinOrderSize(ORDER_TYPES.SELL);
+        const minBuySize = this.getMinOrderSize(ORDER_TYPES.BUY);
 
         // --- Sells ---
         const allVirtualSells = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL);
@@ -475,8 +1094,16 @@ class OrderManager {
         allVirtualSells.sort((a, b) => a.price - b.price);
         // Take the block of orders that will become active
         const futureActiveSells = allVirtualSells.slice(0, sellCount);
+        // Filter out orders below minimum size and log warnings
+        const validSells = futureActiveSells.filter(order => {
+            if (order.size < minSellSize) {
+                this.logger.log(`Skipping sell order ${order.id}: size ${order.size.toFixed(8)} < minOrderSize ${minSellSize.toFixed(8)}`, 'warn');
+                return false;
+            }
+            return true;
+        });
         // Sort that block from the outside-in
-        futureActiveSells.sort((a, b) => b.price - a.price);
+        validSells.sort((a, b) => b.price - a.price);
 
         // --- Buys ---
         const allVirtualBuys = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL);
@@ -484,10 +1111,22 @@ class OrderManager {
         allVirtualBuys.sort((a, b) => b.price - a.price);
         // Take the block of orders that will become active
         const futureActiveBuys = allVirtualBuys.slice(0, buyCount);
+        // Filter out orders below minimum size and log warnings
+        const validBuys = futureActiveBuys.filter(order => {
+            if (order.size < minBuySize) {
+                this.logger.log(`Skipping buy order ${order.id}: size ${order.size.toFixed(8)} < minOrderSize ${minBuySize.toFixed(8)}`, 'warn');
+                return false;
+            }
+            return true;
+        });
         // Sort that block from the outside-in
-        futureActiveBuys.sort((a, b) => a.price - b.price);
+        validBuys.sort((a, b) => a.price - b.price);
         
-        return [...futureActiveSells, ...futureActiveBuys];
+        if (validSells.length < futureActiveSells.length || validBuys.length < futureActiveBuys.length) {
+            this.logger.log(`Filtered ${futureActiveSells.length - validSells.length} sell and ${futureActiveBuys.length - validBuys.length} buy orders below minimum size threshold`, 'info');
+        }
+        
+        return [...validSells, ...validBuys];
     }
 
     // Filter tracked orders by type and state to ease bookkeeping.
@@ -593,7 +1232,7 @@ class OrderManager {
             this.logger.log(`No SPREAD orders available for ${targetType} (total spreads: ${allSpreadOrders.length}, eligible at ${targetType === ORDER_TYPES.BUY ? 'below' : 'above'} market price ${this.config.marketPrice}: ${spreadOrders.length})`, 'warn');
             return [];
         }
-        const minSize = Number(this.config.minOrderSize || 1e-8);
+        const minSize = this.getMinOrderSize(targetType);
         const maxByFunds = minSize > 0 ? Math.floor(availableFunds / minSize) : desiredCount;
         const ordersToCreate = Math.max(0, Math.min(desiredCount, maxByFunds || desiredCount));
         if (ordersToCreate === 0) { this.logger.log(`Insufficient funds to create any ${targetType} orders (available=${availableFunds}, minOrderSize=${minSize})`, 'warn'); return []; }
