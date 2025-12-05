@@ -452,7 +452,7 @@ class DEXBot {
                 this.manager.logger.log('Grid regeneration triggered. Performing full grid resync...', 'info');
                 const readFn = () => chainOrders.readOpenOrders(this.accountId);
                 const cancelFn = (orderId) => chainOrders.cancelOrder(this.account, this.privateKey, orderId);
-                await this.manager.resyncGridFromChain(readFn, cancelFn);
+                await this.manager.recalculateGrid(readFn, cancelFn);
                 accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()));
 
                 if (fs.existsSync(this.triggerFile)) {
