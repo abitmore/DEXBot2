@@ -271,7 +271,7 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
  * Match a fill operation to a grid order using manager context
  * opts: { orders: Map, assets, calcToleranceFn, logger }
  */
-function findMatchingGridOrderByFill(fillOp, opts) {
+function findMatchingGridOrderByHistory(fillOp, opts) {
     const { orders, assets, calcToleranceFn, logger } = opts || {};
     if (!fillOp) return null;
 
@@ -395,7 +395,7 @@ module.exports = {
     parseChainOrder,
     findBestMatchByPrice,
     findMatchingGridOrderByOpenOrder,
-    findMatchingGridOrderByFill,
+    findMatchingGridOrderByHistory,
     applyChainSizeToGridOrder,
     correctOrderPriceOnChain,
     getMinOrderSize

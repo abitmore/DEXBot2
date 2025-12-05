@@ -14,7 +14,7 @@
  * the opposite side to maintain grid coverage.
  */
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG } = require('./constants');
-const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findBestMatchByPrice, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByFill, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize } = require('./utils');
+const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findBestMatchByPrice, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize } = require('./utils');
 const Logger = require('./logger');
 const OrderGridGenerator = require('./order_grid');
 
