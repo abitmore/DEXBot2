@@ -1,9 +1,23 @@
-/**\n * Runner Module - Standalone order grid calculation utility\n * \n * Provides a command-line tool for testing order grid generation\n * without actually placing orders. Useful for:\n * - Verifying configuration produces expected grid\n * - Testing price derivation from pool/market\n * - Debugging order sizing and fund allocation\n * \n * Usage: CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e \"require('./runner').runOrderManagerCalculation()\"\n */\nconst fs = require('fs');
+/**
+ * Runner Module - Standalone order grid calculation utility
+ * 
+ * Provides a command-line tool for testing order grid generation
+ * without actually placing orders. Useful for:
+ * - Verifying configuration produces expected grid
+ * - Testing price derivation from pool/market
+ * - Debugging order sizing and fund allocation
+ * 
+ * Usage: CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e \"require('./runner').runOrderManagerCalculation()\"
+ */
+const fs = require('fs');
 const path = require('path');
 const { OrderManager } = require('./manager');
 
 /**
- * Run a standalone order grid calculation for testing.\n * Loads bot config, derives market price, creates grid, and simulates cycles.\n * @throws {Error} If config invalid or marketPrice outside bounds\n */
+ * Run a standalone order grid calculation for testing.
+ * Loads bot config, derives market price, creates grid, and simulates cycles.
+ * @throws {Error} If config invalid or marketPrice outside bounds
+ */
 async function runOrderManagerCalculation() {
     const cfgFile = path.join(__dirname, '..', 'profiles', 'bots.json');
     let runtimeConfig = {};
