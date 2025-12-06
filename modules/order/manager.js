@@ -989,7 +989,6 @@ class OrderManager {
             // Mark as ACTIVE and commit funds
             const activatedOrder = { ...order, state: ORDER_STATES.ACTIVE };
             this._updateOrder(activatedOrder);
-            this._adjustFunds(targetType, orderSize);
             
             activated.push(activatedOrder);
             this.logger.log(`Prepared virtual ${targetType} ${order.id} at price ${order.price.toFixed(4)}, size ${orderSize.toFixed(8)} for on-chain placement`, 'info');
