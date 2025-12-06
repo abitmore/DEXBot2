@@ -1113,11 +1113,13 @@ class OrderManager {
     completeOrderRotation(oldOrderInfo) {
         const order = this.orders.get(oldOrderInfo.id);
         if (order) {
-            // Return the old order position to VIRTUAL state, keeping the same type
-            // The order can be re-activated later when price moves back
-            const virtualOrder = { ...order, state: ORDER_STATES.VIRTUAL, orderId: null, size: 0 };
+            // Return the old order position to VIRTUAL state, keeping the same type and size.
+            // The order keeps its original grid size so it can be re-activated later when price moves back.
+            // No funds adjustment here - the old order's committed funds were already released when it was cancelled,
+            // and the new order's funds were committed in prepareFurthestOrdersForRotation.
+            const virtualOrder = { ...order, state: ORDER_STATES.VIRTUAL, orderId: null };
             this._updateOrder(virtualOrder);
-            this.logger.log(`Rotated order ${oldOrderInfo.id} (${oldOrderInfo.type}) at price ${oldOrderInfo.price.toFixed(4)} -> VIRTUAL`, 'info');
+            this.logger.log(`Rotated order ${oldOrderInfo.id} (${oldOrderInfo.type}) at price ${oldOrderInfo.price.toFixed(4)} -> VIRTUAL (size preserved: ${order.size?.toFixed(8) || 0})`, 'info');
             
             // Clear this orderId from recently rotated tracking (rotation complete)
             if (oldOrderInfo.orderId) {
