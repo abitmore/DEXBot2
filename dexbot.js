@@ -362,7 +362,17 @@ class DEXBot {
      * 
      * @param {Object} rebalanceResult - { ordersToPlace: [], ordersToRotate: [] }
      */
-    async updateOrdersOnChain(rebalanceResult) {
+    /**
+     * Update orders on-chain using batched transactions.
+     * 
+     * 1. Collect create operations for ordersToPlace
+     * 2. Collect update operations for ordersToRotate
+     * 3. Execute all in one batch transaction
+     * 4. Process results to update grid state
+     * 
+     * @param {Object} rebalanceResult - { ordersToPlace: [], ordersToRotate: [] }
+     */
+    async updateOrdersOnChainBatch(rebalanceResult) {
         const { ordersToPlace, ordersToRotate } = rebalanceResult;
 
         if (this.config.dryRun) {
@@ -376,6 +386,9 @@ class DEXBot {
         }
 
         const { assetA, assetB } = this.manager.assets;
+        const operations = [];
+        const createOrderContexts = []; // To map results back to grid orders
+        const rotateOrderContexts = []; // To map updates
 
         const buildCreateOrderArgs = (order) => {
             let amountToSell, sellAssetId, minToReceive, receiveAssetId;
@@ -393,36 +406,26 @@ class DEXBot {
             return { amountToSell, sellAssetId, minToReceive, receiveAssetId };
         };
 
-        // Step 1: Place new orders for activated virtual orders
+        // Step 1: Build create operations
         if (ordersToPlace && ordersToPlace.length > 0) {
             for (const order of ordersToPlace) {
                 try {
-                    this.manager.logger.log(`Placing new ${order.type} order on-chain: price=${order.price.toFixed(4)}, size=${order.size.toFixed(8)}`, 'info');
                     const args = buildCreateOrderArgs(order);
-                    const result = await chainOrders.createOrder(
-                        this.account, this.privateKey, args.amountToSell, args.sellAssetId,
-                        args.minToReceive, args.receiveAssetId, null, false
+                    const op = await chainOrders.buildCreateOrderOp(
+                        this.account, args.amountToSell, args.sellAssetId,
+                        args.minToReceive, args.receiveAssetId, null
                     );
-
-                    const chainOrderId = result && result[0] && result[0].trx && result[0].trx.operation_results && result[0].trx.operation_results[0] && result[0].trx.operation_results[0][1];
-
-                    if (chainOrderId) {
-                        await this.manager.synchronizeWithChain({ gridOrderId: order.id, chainOrderId }, 'createOrder');
-                        this.manager.logger.log(`Placed ${order.type} order ${order.id} -> ${chainOrderId}`, 'info');
-                    } else {
-                        this.manager.logger.log(`Order ${order.id} placement response missing order_id`, 'warn');
-                    }
+                    operations.push(op);
+                    createOrderContexts.push(order);
                 } catch (err) {
-                    this.manager.logger.log(`Failed to place ${order.type} order ${order.id}: ${err.message}`, 'error');
+                    this.manager.logger.log(`Failed to prepare create op for ${order.type} order ${order.id}: ${err.message}`, 'error');
                 }
             }
         }
 
-        // Step 2: Update orders (use limit_order_update to change price/size in place)
+        // Step 2: Build update operations (rotation)
         if (ordersToRotate && ordersToRotate.length > 0) {
-            this.manager.logger.log(`Processing ${ordersToRotate.length} order rotation(s)`, 'info');
-
-            // Deduplicate by orderId - only process each chain order once
+            // Deduplicate by orderId
             const seenOrderIds = new Set();
             const uniqueRotations = ordersToRotate.filter(r => {
                 const orderId = r?.oldOrder?.orderId;
@@ -437,15 +440,8 @@ class DEXBot {
             for (const rotation of uniqueRotations) {
                 try {
                     const { oldOrder, newPrice, newSize, newGridId, type } = rotation;
+                    if (!oldOrder.orderId) continue;
 
-                    if (!oldOrder.orderId) {
-                        this.manager.logger.log(`Cannot update order without orderId`, 'warn');
-                        continue;
-                    }
-
-                    // Calculate new amounts for the update
-                    // For BUY: amountToSell is in assetB (quote), minToReceive is in assetA (base)
-                    // For SELL: amountToSell is in assetA (base), minToReceive is in assetB (quote)
                     let newAmountToSell, newMinToReceive;
                     if (type === 'sell') {
                         newAmountToSell = newSize;
@@ -455,44 +451,78 @@ class DEXBot {
                         newMinToReceive = newSize / newPrice;
                     }
 
-                    this.manager.logger.log(`Updating ${type} order ${oldOrder.orderId}: price ${oldOrder.price.toFixed(4)} -> ${newPrice.toFixed(4)}, size ${oldOrder.size.toFixed(8)} -> ${newSize.toFixed(8)}`, 'info');
-
-                    // Use limit_order_update to modify the order in place
-                    const updateResult = await chainOrders.updateOrder(
-                        this.account,
-                        this.privateKey,
-                        oldOrder.orderId,
-                        {
-                            amountToSell: newAmountToSell,
-                            minToReceive: newMinToReceive
-                        }
+                    const op = await chainOrders.buildUpdateOrderOp(
+                        this.account, oldOrder.orderId,
+                        { amountToSell: newAmountToSell, minToReceive: newMinToReceive }
                     );
 
-                    if (updateResult) {
-                        // Update the grid: old position becomes VIRTUAL, new position becomes ACTIVE with same orderId
-                        this.manager.completeOrderRotation(oldOrder);
-
-                        // The orderId stays the same, just update the grid position it's associated with
-                        await this.manager.synchronizeWithChain({ gridOrderId: newGridId, chainOrderId: oldOrder.orderId }, 'createOrder');
-
-                        this.manager.logger.log(`Rotation complete: ${oldOrder.orderId} moved from ${oldOrder.price.toFixed(4)} to ${newPrice.toFixed(4)}`, 'info');
+                    if (op) {
+                        operations.push(op);
+                        rotateOrderContexts.push(rotation);
                     } else {
-                        this.manager.logger.log(`Order ${oldOrder.orderId} update returned null (no change needed)`, 'info');
+                        this.manager.logger.log(`No change needed for rotation of ${oldOrder.orderId}`, 'debug');
                     }
-
                 } catch (err) {
-                    const orderId = rotation?.oldOrder?.orderId || 'unknown';
-                    const oldPrice = rotation?.oldOrder?.price?.toFixed(4) || '?';
-                    const newPriceVal = rotation?.newPrice?.toFixed(4) || '?';
-
-                    // Handle "not found" errors gracefully - order was filled between detection and rotation
-                    if (err.message && err.message.includes('not found')) {
-                        this.manager.logger.log(`Order ${orderId} @ ${oldPrice} no longer exists (filled?) - cannot rotate to ${newPriceVal}`, 'warn');
-                    } else {
-                        this.manager.logger.log(`Failed to rotate order ${orderId} @ ${oldPrice} -> ${newPriceVal}: ${err.message}`, 'error');
-                    }
+                    this.manager.logger.log(`Failed to prepare update op for rotation: ${err.message}`, 'error');
                 }
             }
+        }
+
+        if (operations.length === 0) {
+            return;
+        }
+
+        // Step 3: Execute Batch
+        try {
+            this.manager.logger.log(`Broadcasting batch with ${operations.length} operations...`, 'info');
+            const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
+
+            // Step 4: Map results
+            if (result && result[0] && result[0].trx && result[0].trx.operation_results) {
+                const results = result[0].trx.operation_results;
+                // Results correspond strictly to operations index
+                // We must iterate our contexts and match them to operations
+
+                let opIndex = 0;
+
+                // Process Creates
+                for (let i = 0; i < createOrderContexts.length; i++) {
+                    const order = createOrderContexts[i];
+                    // Skip if corresponding op wasn't pushed? 
+                    // We pushed ops and contexts in sync, so index should match relative to overall list.
+                    // But we have creates THEN updates.
+
+                    const res = results[opIndex++];
+                    // res is [1, "1.7.xxxxx"] for limit_order_create (1 is object type id?) or just object id?
+                    // Usually operation_results is array of [type, id/data]
+                    const chainOrderId = res && res[1];
+
+                    if (chainOrderId) {
+                        await this.manager.synchronizeWithChain({ gridOrderId: order.id, chainOrderId }, 'createOrder');
+                        this.manager.logger.log(`Placed ${order.type} order ${order.id} -> ${chainOrderId}`, 'info');
+                    } else {
+                        this.manager.logger.log(`Batch result missing ID for created order ${order.id}`, 'warn');
+                    }
+                }
+
+                // Process Rotations
+                for (let i = 0; i < rotateOrderContexts.length; i++) {
+                    const rotation = rotateOrderContexts[i];
+                    // limit_order_update returns void usually, or we don't need its id (id is constant)
+                    // We just assume success if tx broadcast didn't throw
+                    opIndex++;
+
+                    const { oldOrder, newPrice, newGridId } = rotation;
+                    this.manager.completeOrderRotation(oldOrder);
+                    await this.manager.synchronizeWithChain({ gridOrderId: newGridId, chainOrderId: oldOrder.orderId }, 'createOrder');
+                    this.manager.logger.log(`Rotation complete: ${oldOrder.orderId} moved to ${newPrice.toFixed(4)}`, 'info');
+                }
+            }
+
+        } catch (err) {
+            this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
+            // If batch fails, should we try to revert or just let the next sync fix it?
+            // The next sync/loop will see discrepancies and fix them, though funds might be momentarily desync.
         }
     }
 
@@ -531,17 +561,18 @@ class DEXBot {
                     const allFills = [...fills, ...this._pendingFills];
                     this._pendingFills = [];
 
+                    const validFills = [];
+                    const processedFillKeys = new Set();
+
+                    // 1. Filter and Deduplicate
                     for (const fill of allFills) {
                         if (fill && fill.op && fill.op[0] === 4) {
                             const fillOp = fill.op[1];
-                            // Skip taker fills (is_maker = false means this is not our order being filled)
-                            // is_maker = true means our limit order was filled (we are the maker/liquidity provider)
                             if (fillOp.is_maker === false) {
                                 this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
                                 continue;
                             }
 
-                            // Deduplicate fills - prevent processing the same fill event twice
                             const fillKey = `${fillOp.order_id}:${fill.block_num}`;
                             const now = Date.now();
                             if (this._recentlyProcessedFills.has(fillKey)) {
@@ -551,13 +582,13 @@ class DEXBot {
                                     continue;
                                 }
                             }
+
+                            // Check local dedupe set for this batch
+                            if (processedFillKeys.has(fillKey)) continue;
+
+                            processedFillKeys.add(fillKey);
                             this._recentlyProcessedFills.set(fillKey, now);
-                            // Clean up old entries to prevent memory leak
-                            for (const [key, timestamp] of this._recentlyProcessedFills) {
-                                if (now - timestamp > this._fillDedupeWindowMs * 2) {
-                                    this._recentlyProcessedFills.delete(key);
-                                }
-                            }
+                            validFills.push(fill);
 
                             // Log nicely formatted fill info
                             const paysAmount = fillOp.pays ? fillOp.pays.amount : '?';
@@ -571,56 +602,92 @@ class DEXBot {
                             console.log(`is_maker: ${fillOp.is_maker}`);
                             console.log(`Block: ${fill.block_num}, Time: ${fill.block_time}`);
                             console.log(`=========================\n`);
-
-                            // Process fill based on configured mode
-                            const fillMode = chainOrders.getFillProcessingMode();
-                            let syncResult;
-
-                            if (fillMode === 'history') {
-                                // Use fill event data directly - match by order_id (preferred, faster)
-                                this.manager.logger.log(`Processing fill using 'history' mode (order_id matching)`, 'info');
-                                syncResult = this.manager.syncFromFillHistory(fillOp);
-                                // History mode doesn't detect price mismatches - no ordersNeedingCorrection
-                                syncResult.ordersNeedingCorrection = [];
-                            } else {
-                                // Fallback: Fetch open orders from blockchain and sync (backup method)
-                                this.manager.logger.log(`Processing fill using 'open' mode (blockchain sync)`, 'info');
-                                const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
-                                syncResult = this.manager.syncFromOpenOrders(chainOpenOrders, fillOp);
-                            }
-
-                            // Correct any orders with price mismatches (orderId matched but price outside tolerance)
-                            // Only applicable in 'open' mode
-                            let correctedOrderIds = new Set();
-                            if (syncResult.ordersNeedingCorrection && syncResult.ordersNeedingCorrection.length > 0) {
-                                this.manager.logger.log(`Correcting ${syncResult.ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');
-                                // Track which orderIds are being corrected so we don't also try to rotate them
-                                correctedOrderIds = new Set(syncResult.ordersNeedingCorrection.map(c => c.chainOrderId).filter(Boolean));
-                                const correctionResult = await OrderUtils.correctAllPriceMismatches(
-                                    this.manager, this.account, this.privateKey, chainOrders
-                                );
-                                if (correctionResult.failed > 0) {
-                                    this.manager.logger.log(`${correctionResult.failed} order correction(s) failed`, 'error');
-                                }
-                            }
-
-                            // Process any fully filled orders using the "rotate furthest" strategy:
-                            // - Activate closest virtual orders on same side (need on-chain placement)
-                            // - Rotate furthest active orders on opposite side (cancel + recreate at new price)
-                            if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                                const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, correctedOrderIds);
-                                // rebalanceResult now contains { ordersToPlace, ordersToRotate }
-                                const hasOrdersToPlace = rebalanceResult && rebalanceResult.ordersToPlace && rebalanceResult.ordersToPlace.length > 0;
-                                const hasOrdersToRotate = rebalanceResult && rebalanceResult.ordersToRotate && rebalanceResult.ordersToRotate.length > 0;
-
-                                if (hasOrdersToPlace || hasOrdersToRotate) {
-                                    await this.updateOrdersOnChain(rebalanceResult);
-                                }
-                            }
-
-                            // Always persist snapshot after processing fills
-                            accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()));
                         }
+                    }
+
+                    // Clean up old entries
+                    const now = Date.now();
+                    for (const [key, timestamp] of this._recentlyProcessedFills) {
+                        if (now - timestamp > this._fillDedupeWindowMs * 2) {
+                            this._recentlyProcessedFills.delete(key);
+                        }
+                    }
+
+                    if (validFills.length === 0) return;
+
+                    // 2. Sync and Collect Filled Orders
+                    const allFilledOrders = [];
+                    let ordersNeedingCorrection = [];
+                    const fillMode = chainOrders.getFillProcessingMode();
+
+                    if (fillMode === 'history') {
+                        this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'history' mode`, 'info');
+                        for (const fill of validFills) {
+                            const fillOp = fill.op[1];
+                            const result = this.manager.syncFromFillHistory(fillOp);
+                            if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
+                        }
+                    } else {
+                        // Open orders mode: fetch once, then sync each fill against it?
+                        // Or fetch once, sync once?
+                        // syncFromOpenOrders updates the grid based on missing orders.
+                        // If we have multiple fills, they are all missing orders.
+                        // Calling syncFromOpenOrders ONCE will detect all missing orders.
+                        // But we need to pass a fillOp for logging?
+                        // Let's call it for each fillOp but pass the SAME chainOpenOrders snapshot to be efficient.
+                        this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'open' mode`, 'info');
+                        const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
+
+                        // We need to accumulate results. 
+                        // Note: syncFromOpenOrders might return the SAME filled orders if we call it multiple times 
+                        // without updating the grid state in between?
+                        // Actually, syncFromOpenOrders DOES update the grid (marking as filled).
+                        // So subsequent calls with same open orders list will work fine?
+                        // Yes, if Order A is missing, first call marks it filled. Second call Order A is filled? 
+                        // Wait, syncFromOpenOrders iterates order grid and checks against chain.
+                        // If chainOpenOrders is constant, and grid is updated...
+                        // Re-running it is redundant but safe if implementation is idempotent-ish.
+                        // But why run it multiple times? Just run it ONCE without fillOp specific logging, 
+                        // or run it once and pass the last fillOp?
+                        // The fillOp arg is only used for:
+                        // "Order ${gridOrder.id} ... matched fill ${fillOp.order_id}"
+                        // If we want detailed logs for each, we'd need to loop.
+                        // But fundamentally, we just need to know what's missing.
+
+                        const result = this.manager.syncFromOpenOrders(chainOpenOrders, validFills[0].op[1]);
+                        // ^ This detects ALL missing orders at once.
+                        // If validFills has 5 fills, and open orders is missing 5 orders, this one call catches them all.
+                        // The only downside is the log message might only reference the first fill ID or be generic.
+
+                        if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
+                        if (result.ordersNeedingCorrection) ordersNeedingCorrection = result.ordersNeedingCorrection;
+                    }
+
+                    // 3. Handle Price Corrections (immediate, loose - keeping original logic for now)
+                    if (ordersNeedingCorrection.length > 0) {
+                        this.manager.logger.log(`Correcting ${ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');
+                        const correctionResult = await OrderUtils.correctAllPriceMismatches(
+                            this.manager, this.account, this.privateKey, chainOrders
+                        );
+                        if (correctionResult.failed > 0) {
+                            this.manager.logger.log(`${correctionResult.failed} order correction(s) failed`, 'error');
+                        }
+                    }
+
+                    // 4. Batch Rebalance and Execution
+                    if (allFilledOrders.length > 0) {
+                        this.manager.logger.log(`Aggregating ${allFilledOrders.length} filled orders for batch processing...`, 'info');
+
+                        // This updates funds with proceeds from ALL filled orders and returns the rebalance result
+                        const rebalanceResult = await this.manager.processFilledOrders(allFilledOrders);
+
+                        // Execute batch transaction
+                        await this.updateOrdersOnChainBatch(rebalanceResult);
+                    }
+
+                    // Always persist snapshot after processing fills if we did anything
+                    if (validFills.length > 0) {
+                        accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()));
                     }
                 } catch (err) {
                     this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');

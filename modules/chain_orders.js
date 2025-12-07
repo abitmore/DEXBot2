@@ -92,11 +92,14 @@ async function resolveAccountName(accountRef) {
 async function resolveAccountId(accountName) {
     if (!accountName) return null;
     if (typeof accountName !== 'string') return null;
+    // If already in ID format, return as-is
+    if (/^1\.2\.\d+$/.test(accountName)) return accountName;
     try {
         await waitForConnected();
         const full = await BitShares.db.get_full_accounts([accountName], false);
-        if (full && full[0] && full[0][0]) {
-            return full[0][0];
+        // full[0][0] is the account name (key), full[0][1] contains account data
+        if (full && full[0] && full[0][1] && full[0][1].account && full[0][1].account.id) {
+            return full[0][1].account.id;
         }
     } catch (err) {
         // ignore resolution failures
@@ -273,73 +276,55 @@ async function listenForFills(accountRef, callback) {
 }
 
 /**
- * Update an existing limit order on the blockchain.
- * Uses limit_order_update operation to modify amounts without canceling.
- * 
- * BitShares stores orders as amount_to_sell and min_to_receive.
- * This function calculates the delta internally.
- * 
- * @param {string} accountName - Account that owns the order
- * @param {string} privateKey - Private key for signing
- * @param {string} orderId - Chain order ID (e.g., '1.7.12345')
- * @param {Object} newParams - New order parameters
- * @param {number} newParams.amountToSell - New amount to sell (human units)
- * @param {number} newParams.minToReceive - New minimum to receive (human units)
- * @returns {Promise<Object|null>} Transaction result or null if no change
+ * Build a limit_order_update operation.
+ * @returns {Promise<Object|null>} Operation object or null if no change
  */
-async function updateOrder(accountName, privateKey, orderId, newParams) {
-    try {
-        const acc = createAccountClient(accountName, privateKey);
-        await acc.initPromise;
-        const orders = await readOpenOrders(acc.account.id);
-        const order = orders.find(o => o.id === orderId);
-        if (!order) throw new Error(`Order ${orderId} not found`);
+async function buildUpdateOrderOp(accountName, orderId, newParams) {
+    const accId = await resolveAccountId(accountName);
+    if (!accId) throw new Error(`Account ${accountName} not found`);
 
-        const sellAssetId = order.sell_price.base.asset_id;
-        const receiveAssetId = order.sell_price.quote.asset_id;
-        const sellPrecision = await _getAssetPrecision(sellAssetId);
-        const receivePrecision = await _getAssetPrecision(receiveAssetId);
+    // We can't use the account client here easily for reading, but we need raw reads anyway.
+    // However, existing updateOrder logic uses readOpenOrders which just needs an ID.
+    const orders = await readOpenOrders(accId);
+    const order = orders.find(o => o.id === orderId);
+    if (!order) throw new Error(`Order ${orderId} not found`);
 
-        // Current values from the order (for_sale is the remaining amount to sell)
-        const currentSellInt = order.for_sale;
-        const currentSellFloat = blockchainToFloat(currentSellInt, sellPrecision);
+    const sellAssetId = order.sell_price.base.asset_id;
+    const receiveAssetId = order.sell_price.quote.asset_id;
+    const sellPrecision = await _getAssetPrecision(sellAssetId);
+    const receivePrecision = await _getAssetPrecision(receiveAssetId);
 
-        // Calculate current min_to_receive from price ratio and for_sale
-        // price ratio = quote.amount / base.amount from sell_price
-        const priceRatioBase = order.sell_price.base.amount;
-        const priceRatioQuote = order.sell_price.quote.amount;
-        const currentReceiveInt = Math.round((currentSellInt * priceRatioQuote) / priceRatioBase);
-        const currentReceiveFloat = blockchainToFloat(currentReceiveInt, receivePrecision);
+    const currentSellInt = order.for_sale;
+    const currentSellFloat = blockchainToFloat(currentSellInt, sellPrecision);
 
-        // Determine new desired values
-        const newSellFloat = (newParams.amountToSell !== undefined && newParams.amountToSell !== null)
-            ? newParams.amountToSell
-            : currentSellFloat;
-        const newReceiveFloat = (newParams.minToReceive !== undefined && newParams.minToReceive !== null)
-            ? newParams.minToReceive
-            : currentReceiveFloat;
+    const priceRatioBase = order.sell_price.base.amount;
+    const priceRatioQuote = order.sell_price.quote.amount;
+    const currentReceiveInt = Math.round((currentSellInt * priceRatioQuote) / priceRatioBase);
+    const currentReceiveFloat = blockchainToFloat(currentReceiveInt, receivePrecision);
 
-        // Convert to blockchain integers
-        const newSellInt = floatToBlockchainInt(newSellFloat, sellPrecision);
-        const newReceiveInt = floatToBlockchainInt(newReceiveFloat, receivePrecision);
+    const newSellFloat = (newParams.amountToSell !== undefined && newParams.amountToSell !== null) ? newParams.amountToSell : currentSellFloat;
+    const newReceiveFloat = (newParams.minToReceive !== undefined && newParams.minToReceive !== null) ? newParams.minToReceive : currentReceiveFloat;
 
-        // Calculate delta (new - current)
-        let deltaSellInt = newSellInt - currentSellInt;
+    const newSellInt = floatToBlockchainInt(newSellFloat, sellPrecision);
+    const newReceiveInt = floatToBlockchainInt(newReceiveFloat, receivePrecision);
 
-        // Only skip when delta is exactly zero (no change). Negative deltas
-        // (reducing amount_to_sell) are allowed and will be sent to the chain.
-        if (deltaSellInt === 0) {
-            console.log(`Delta is 0; skipping limit_order_update (no change to amount_to_sell)`);
-            return null;
-        }
+    // Calculate delta (new - current)
+    // IMPORTANT: BitShares limit_order_update takes a delta for amount_to_sell
+    // But for the new_price, it takes the NEW total amounts.
+    let deltaSellInt = newSellInt - currentSellInt;
 
-        // Build the new_price as the ratio between the new amounts
-        // Adjust newSellInt to match the delta we're actually sending
-        const adjustedSellInt = currentSellInt + deltaSellInt;
+    if (deltaSellInt === 0) {
+        return null;
+    }
 
-        const updateParams = {
+    // Adjust newSellInt to strict logic: current + delta
+    const adjustedSellInt = currentSellInt + deltaSellInt;
+
+    const op = {
+        op_name: 'limit_order_update',
+        op_data: {
             fee: { amount: 0, asset_id: '1.3.0' },
-            seller: acc.account.id,
+            seller: accId,
             order: orderId,
             delta_amount_to_sell: {
                 amount: deltaSellInt,
@@ -355,19 +340,44 @@ async function updateOrder(accountName, privateKey, orderId, newParams) {
                     asset_id: receiveAssetId
                 }
             }
-        };
+        }
+    };
+    if (newParams.expiration) op.op_data.expiration = newParams.expiration;
 
-        if (newParams.expiration) updateParams.expiration = newParams.expiration;
+    return op;
+}
 
-        console.log(`Updating order ${orderId}: sell ${currentSellFloat} -> ${newSellFloat}, receive ${currentReceiveFloat} -> ${newReceiveFloat}, delta=${deltaSellInt}`);
+/**
+ * Update an existing limit order on the blockchain.
+ */
+async function updateOrder(accountName, privateKey, orderId, newParams) {
+    try {
+        const op = await buildUpdateOrderOp(accountName, orderId, newParams);
+        if (!op) {
+            console.log(`Delta is 0; skipping limit_order_update (no change to amount_to_sell)`);
+            return null;
+        }
 
+        const acc = createAccountClient(accountName, privateKey);
+        await acc.initPromise;
         const tx = acc.newTx();
-        tx.limit_order_update(updateParams);
+
+        // Use explicit method call for robustness
+        if (typeof tx.limit_order_update === 'function') {
+            tx.limit_order_update(op.op_data);
+        } else {
+            // Fallback for some library versions or if method is missing
+            console.warn(`tx.limit_order_update not found, trying add_operation logic or throwing`);
+            if (typeof tx.add_operation === 'function') {
+                // Reconstruct full op object if needed? No, btsdex add_operation usually takes ID + data
+                // But let's assume limit_order_update exists if create exists
+                throw new Error(`Transaction builder does not support limit_order_update`);
+            }
+            throw new Error(`Transaction builder does not support limit_order_update`);
+        }
         await tx.broadcast();
 
         console.log(`Order ${orderId} updated successfully`);
-        // Return a simple success object instead of the tx Proxy to avoid any
-        // accidental method calls on the finalized transaction
         return { success: true, orderId };
     } catch (error) {
         console.error('Error updating order:', error.message);
@@ -376,22 +386,45 @@ async function updateOrder(accountName, privateKey, orderId, newParams) {
 }
 
 /**
+ * Build a limit_order_create operation.
+ */
+async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration) {
+    const accId = await resolveAccountId(accountName);
+    if (!accId) throw new Error(`Account ${accountName} not found`);
+
+    if (!expiration) {
+        const now = new Date();
+        now.setFullYear(now.getFullYear() + 1);
+        expiration = now.toISOString().split('T')[0] + 'T23:59:59';
+    }
+
+    const sellPrecision = await _getAssetPrecision(sellAssetId);
+    const receivePrecision = await _getAssetPrecision(receiveAssetId);
+    const amountToSellInt = floatToBlockchainInt(amountToSell, sellPrecision);
+    const minToReceiveInt = floatToBlockchainInt(minToReceive, receivePrecision);
+
+    const op = {
+        op_name: 'limit_order_create',
+        op_data: {
+            fee: { amount: 0, asset_id: '1.3.0' },
+            seller: accId,
+            amount_to_sell: { amount: amountToSellInt, asset_id: sellAssetId },
+            min_to_receive: { amount: minToReceiveInt, asset_id: receiveAssetId },
+            expiration: expiration,
+            fill_or_kill: false,
+            extensions: []
+        }
+    };
+    return op;
+}
+
+/**
  * Create a new limit order on the blockchain.
- * 
- * @param {string} accountName - Account to create order for
- * @param {string} privateKey - Private key for signing
- * @param {number} amountToSell - Amount to sell (human units)
- * @param {string} sellAssetId - Asset ID being sold (e.g., '1.3.0')
- * @param {number} minToReceive - Minimum amount to receive (human units)
- * @param {string} receiveAssetId - Asset ID to receive
- * @param {string|null} expiration - ISO date string or null for 1-year default
- * @param {boolean} dryRun - If true, prepare but don't broadcast
- * @returns {Promise<Object>} Transaction result
  */
 async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false) {
     try {
-        const acc = createAccountClient(accountName, privateKey);
-        await acc.initPromise;
+        const accId = await resolveAccountId(accountName);
+        if (!accId) throw new Error(`Account ${accountName} not found`);
 
         if (!expiration) {
             const now = new Date();
@@ -399,7 +432,6 @@ async function createOrder(accountName, privateKey, amountToSell, sellAssetId, m
             expiration = now.toISOString().split('T')[0] + 'T23:59:59';
         }
 
-        // Convert float human values to blockchain integer amounts using asset precision
         const sellPrecision = await _getAssetPrecision(sellAssetId);
         const receivePrecision = await _getAssetPrecision(receiveAssetId);
         const amountToSellInt = floatToBlockchainInt(amountToSell, sellPrecision);
@@ -407,7 +439,7 @@ async function createOrder(accountName, privateKey, amountToSell, sellAssetId, m
 
         const createParams = {
             fee: { amount: 0, asset_id: '1.3.0' },
-            seller: acc.account.id,
+            seller: accId,
             amount_to_sell: { amount: amountToSellInt, asset_id: sellAssetId },
             min_to_receive: { amount: minToReceiveInt, asset_id: receiveAssetId },
             expiration: expiration,
@@ -415,15 +447,16 @@ async function createOrder(accountName, privateKey, amountToSell, sellAssetId, m
             extensions: []
         };
 
-        const tx = acc.newTx();
-        tx.limit_order_create(createParams);
-
         if (dryRun) {
             console.log(`Dry run: Limit order prepared for account ${accountName} (not broadcasted)`);
-            // Return simplified object instead of tx Proxy
             return { dryRun: true, params: createParams };
         }
 
+        const acc = createAccountClient(accountName, privateKey);
+        await acc.initPromise;
+        const tx = acc.newTx();
+        // Invoke standard method directly
+        tx.limit_order_create(createParams);
         const result = await tx.broadcast();
         console.log(`Limit order created successfully for account ${accountName}`);
         return result;
@@ -434,25 +467,74 @@ async function createOrder(accountName, privateKey, amountToSell, sellAssetId, m
 }
 
 /**
+ * Build a limit_order_cancel operation.
+ */
+async function buildCancelOrderOp(accountName, orderId) {
+    const accId = await resolveAccountId(accountName);
+    if (!accId) throw new Error(`Account ${accountName} not found`);
+
+    return {
+        op_name: 'limit_order_cancel',
+        op_data: {
+            fee: { amount: 0, asset_id: '1.3.0' },
+            fee_paying_account: accId,
+            order: orderId
+        }
+    };
+}
+
+/**
  * Cancel an existing limit order on the blockchain.
- * @param {string} accountName - Account that owns the order
- * @param {string} privateKey - Private key for signing
- * @param {string} orderId - Chain order ID to cancel (e.g., '1.7.12345')
- * @returns {Promise<Object>} Transaction result
  */
 async function cancelOrder(accountName, privateKey, orderId) {
     try {
+        const op = await buildCancelOrderOp(accountName, orderId);
+
         const acc = createAccountClient(accountName, privateKey);
         await acc.initPromise;
-        const cancelParams = { fee: { amount: 0, asset_id: '1.3.0' }, order: orderId, fee_paying_account: acc.account.id };
         const tx = acc.newTx();
-        tx.limit_order_cancel(cancelParams);
+        // Explicit call
+        tx.limit_order_cancel(op.op_data);
         await tx.broadcast();
+
         console.log(`Order ${orderId} cancelled successfully`);
-        // Return simple success object instead of tx Proxy
         return { success: true, orderId };
     } catch (error) {
         console.error('Error cancelling order:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Execute a batch of operations in a single transaction.
+ * @param {string} accountName - Account paying fees (usually the bot account)
+ * @param {string} privateKey - Private key for signing
+ * @param {Array} operations - Array of operation objects { op_name, op_data } returned by build helpers
+ * @returns {Promise<Object>} Transaction result
+ */
+async function executeBatch(accountName, privateKey, operations) {
+    if (!operations || operations.length === 0) return { success: true, operations: 0 };
+
+    try {
+        console.log(`Executing batch of ${operations.length} operations for ${accountName}...`);
+        const acc = createAccountClient(accountName, privateKey);
+        await acc.initPromise;
+        const tx = acc.newTx();
+
+        for (const op of operations) {
+            if (typeof tx[op.op_name] === 'function') {
+                tx[op.op_name](op.op_data);
+            } else {
+                console.warn(`Transaction builder missing method for ${op.op_name}`);
+                throw new Error(`Transaction builder does not support ${op.op_name}`);
+            }
+        }
+
+        const result = await tx.broadcast();
+        console.log(`Batch transaction broadcasted successfully.`);
+        return result;
+    } catch (error) {
+        console.error('Error executing batch transaction:', error.message);
         throw error;
     }
 }
@@ -568,6 +650,10 @@ module.exports = {
     getOnChainAssetBalances,
     getFillProcessingMode,
     FILL_PROCESSING_MODE,
+    buildUpdateOrderOp,
+    buildCreateOrderOp,
+    buildCancelOrderOp,
+    executeBatch,
 
     // Note: authentication and key retrieval moved to modules/chain_keys.js
 };
