@@ -820,6 +820,19 @@ class DEXBot {
                 await Grid.loadGrid(this.manager, persistedGrid);
                 const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
+                // If startup sync detected missing orders (fills), it returns rebalance instructions
+                if (syncResult && syncResult.rebalanceResult) {
+                    const { ordersToPlace, ordersToRotate } = syncResult.rebalanceResult;
+                    if ((ordersToPlace && ordersToPlace.length > 0) || (ordersToRotate && ordersToRotate.length > 0)) {
+                        this.manager.logger.log(`Startup: Detected missing orders (offline fills). executing rebalancing...`, 'info');
+                        if (!this.config.dryRun) {
+                            await this.updateOrdersOnChainBatch(syncResult.rebalanceResult);
+                        } else {
+                            this.manager.logger.log(`Dry run: would execute startup rebalancing (${ordersToPlace.length} new, ${ordersToRotate.length} rotated)`, 'info');
+                        }
+                    }
+                }
+
                 // Correct any orders with price mismatches at startup
                 if (syncResult.ordersNeedingCorrection && syncResult.ordersNeedingCorrection.length > 0) {
                     this.manager.logger.log(`Startup: Correcting ${syncResult.ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');

@@ -842,20 +842,30 @@ class OrderManager {
                         this.logger.log(`No matching grid order found for chain order ${parsedOrder.orderId} (type=${parsedOrder.type}, price=${parsedOrder.price.toFixed(4)})`, 'warn');
                     }
                 }
+                const missingActiveOrders = [];
                 for (const gridOrder of this.orders.values()) {
                     if (gridOrder.state === ORDER_STATES.ACTIVE && !seenOnChain.has(gridOrder.orderId)) {
-                        // Create new object to avoid mutation bug
-                        const updatedOrder = { ...gridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
-                        this.logger.log(`Active order ${gridOrder.id} (${gridOrder.orderId}) not on-chain, reverting to VIRTUAL`, 'warn');
-                        this._updateOrder(updatedOrder);
+                        this.logger.log(`Active order ${gridOrder.id} (${gridOrder.orderId}) not on-chain - treating as FILLED`, 'info');
+                        missingActiveOrders.push(gridOrder);
                     }
+                }
+
+                // If we found missing orders, process them as fills
+                let rebalanceResult = { ordersToPlace: [], ordersToRotate: [] };
+                if (missingActiveOrders.length > 0) {
+                    // Create minimal order objects for processing (size/price/type/id)
+                    // we don't need full fill ops for this, just the fact they are filled
+                    // processFilledOrders expects array of order objects
+                    rebalanceResult = await this.processFilledOrders(missingActiveOrders, new Set(this.ordersNeedingPriceCorrection.map(c => c.chainOrderId)));
                 }
 
                 // Log summary of orders needing correction
                 if (this.ordersNeedingPriceCorrection.length > 0) {
                     this.logger.log(`${this.ordersNeedingPriceCorrection.length} order(s) need price correction on blockchain`, 'warn');
                 }
-                break;
+
+                // Return rebalance instructions so caller can execute them if desired
+                return { newOrders, ordersNeedingCorrection: this.ordersNeedingPriceCorrection, rebalanceResult };
             }
         }
         return { newOrders, ordersNeedingCorrection: this.ordersNeedingPriceCorrection };
