@@ -22,8 +22,9 @@ const ORDER_TYPES = Object.freeze({
 // Life-cycle states assigned to generated or active orders.
 // State transitions affect fund calculations in manager.recalculateFunds()
 const ORDER_STATES = Object.freeze({
-    VIRTUAL: 'virtual',   // Not on-chain, size in funds.virtuel; also used for filled orders converted to SPREAD
-    ACTIVE: 'active'      // On-chain, size in funds.committed.grid (and .chain if has orderId)
+    VIRTUAL: 'virtual',   // Not on-chain, size in funds.virtuel; also used for fully filled orders converted to SPREAD
+    ACTIVE: 'active',     // On-chain, size in funds.committed.grid (and .chain if has orderId)
+    PARTIAL: 'partial'    // On-chain, partially filled order, size in funds.committed.grid (and .chain if has orderId)
 });
 
 // Defaults applied when instantiating an OrderManager with minimal configuration.

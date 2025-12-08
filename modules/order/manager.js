@@ -113,7 +113,8 @@ class OrderManager {
         // Indices for fast lookup by state and type (optimization)
         this._ordersByState = {
             [ORDER_STATES.VIRTUAL]: new Set(),
-            [ORDER_STATES.ACTIVE]: new Set()
+            [ORDER_STATES.ACTIVE]: new Set(),
+            [ORDER_STATES.PARTIAL]: new Set()
         };
         this._ordersByType = {
             [ORDER_TYPES.BUY]: new Set(),
@@ -184,14 +185,14 @@ class OrderManager {
             if (size <= 0) continue;
 
             if (order.type === ORDER_TYPES.BUY) {
-                if (order.state === ORDER_STATES.ACTIVE) {
+                if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
                     gridBuy += size;
                     if (order.orderId) chainBuy += size;
                 } else if (order.state === ORDER_STATES.VIRTUAL) {
                     virtuelBuy += size;
                 }
             } else if (order.type === ORDER_TYPES.SELL) {
-                if (order.state === ORDER_STATES.ACTIVE) {
+                if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
                     gridSell += size;
                     if (order.orderId) chainSell += size;
                 } else if (order.state === ORDER_STATES.VIRTUAL) {
@@ -505,17 +506,22 @@ class OrderManager {
                     const fillAmount = oldSize - newSize;
                     this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}): size changed ${oldSize.toFixed(8)} -> ${newSize.toFixed(8)} (filled: ${fillAmount.toFixed(8)})`, 'info');
                     applyChainSizeToGridOrder(this, gridOrder, newSize);
+                    // Transition to PARTIAL state since it was partially filled
+                    if (gridOrder.state === ORDER_STATES.ACTIVE) {
+                        gridOrder.state = ORDER_STATES.PARTIAL;
+                        this._updateOrder(gridOrder);
+                    }
                     updatedOrders.push(gridOrder);
                 }
                 this._updateOrder(gridOrder);
             } else {
                 // Order no longer exists on chain - it was fully filled
-                // Only treat as filled if it was previously ACTIVE. If it was VIRTUAL and not on chain, it's just a virtual order.
-                if (gridOrder.state === ORDER_STATES.ACTIVE) {
-                    this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}) no longer on chain - marking as FILLED`, 'info');
+                // Only treat as filled if it was previously ACTIVE or PARTIAL. If it was VIRTUAL and not on chain, it's just a virtual order.
+                if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
+                    this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}) no longer on chain - marking as VIRTUAL (fully filled)`, 'info');
                     const filledOrder = { ...gridOrder };
                     // Create new object to avoid mutation bug
-                    const updatedOrder = { ...gridOrder, state: ORDER_STATES.FILLED, size: 0 };
+                    const updatedOrder = { ...gridOrder, state: ORDER_STATES.VIRTUAL, size: 0 };
                     this._updateOrder(updatedOrder);
                     filledOrders.push(filledOrder);
                 }
@@ -534,7 +540,7 @@ class OrderManager {
 
             for (const gridOrder of this.orders.values()) {
                 // Skip if already confirmed active on another ID
-                if (gridOrder.state === ORDER_STATES.ACTIVE && gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) continue;
+                if ((gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) && gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) continue;
                 // If it's active but the ID is dead/missing, we can match. If it's VIRTUAL, we can match.
 
                 if (gridOrder.type !== chainOrder.type) continue;
@@ -638,7 +644,7 @@ class OrderManager {
         // Find the grid order by orderId
         let matchedGridOrder = null;
         for (const gridOrder of this.orders.values()) {
-            if (gridOrder.orderId === orderId && gridOrder.state === ORDER_STATES.ACTIVE) {
+            if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
                 matchedGridOrder = gridOrder;
                 break;
             }
@@ -690,16 +696,18 @@ class OrderManager {
             // Fully filled
             this.logger.log(`syncFromFillHistory: Order ${matchedGridOrder.id} (${orderId}) FULLY FILLED`, 'info');
             const filledOrder = { ...matchedGridOrder };
-            // Create new object to avoid mutation bug
-            const updatedOrder = { ...matchedGridOrder, state: ORDER_STATES.FILLED, size: 0 };
+            // Create new object to avoid mutation bug - mark as VIRTUAL (fully filled)
+            const updatedOrder = { ...matchedGridOrder, state: ORDER_STATES.VIRTUAL, size: 0 };
             this._updateOrder(updatedOrder);
             filledOrders.push(filledOrder);
         } else {
-            // Partially filled
+            // Partially filled - transition to PARTIAL state
             this.logger.log(`syncFromFillHistory: Order ${matchedGridOrder.id} (${orderId}) PARTIALLY FILLED, remaining=${newSize.toFixed(8)}`, 'info');
             applyChainSizeToGridOrder(this, matchedGridOrder, newSize);
-            this._updateOrder(matchedGridOrder);
-            updatedOrders.push(matchedGridOrder);
+            // Update state to PARTIAL
+            const updatedOrder = { ...matchedGridOrder, state: ORDER_STATES.PARTIAL };
+            this._updateOrder(updatedOrder);
+            updatedOrders.push(updatedOrder);
             partialFill = true;
         }
 
@@ -843,8 +851,8 @@ class OrderManager {
                 }
                 const missingActiveOrders = [];
                 for (const gridOrder of this.orders.values()) {
-                    if (gridOrder.state === ORDER_STATES.ACTIVE && !seenOnChain.has(gridOrder.orderId)) {
-                        this.logger.log(`Active order ${gridOrder.id} (${gridOrder.orderId}) not on-chain - treating as FILLED`, 'info');
+                    if ((gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) && !seenOnChain.has(gridOrder.orderId)) {
+                        this.logger.log(`Active/Partial order ${gridOrder.id} (${gridOrder.orderId}) not on-chain - treating as FILLED`, 'info');
                         missingActiveOrders.push(gridOrder);
                     }
                 }

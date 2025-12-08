@@ -67,7 +67,8 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     mgr.orders = new Map();
     mgr._ordersByState = {
         [ORDER_STATES.VIRTUAL]: new Set(),
-        [ORDER_STATES.ACTIVE]: new Set()
+        [ORDER_STATES.ACTIVE]: new Set(),
+        [ORDER_STATES.PARTIAL]: new Set()
     };
     mgr._ordersByType = {
         [ORDER_TYPES.BUY]: new Set(),
@@ -137,7 +138,8 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     rotateMgr.orders = new Map();
     rotateMgr._ordersByState = {
         [ORDER_STATES.VIRTUAL]: new Set(),
-        [ORDER_STATES.ACTIVE]: new Set()
+        [ORDER_STATES.ACTIVE]: new Set(),
+        [ORDER_STATES.PARTIAL]: new Set()
     };
     rotateMgr._ordersByType = {
         [ORDER_TYPES.BUY]: new Set(),

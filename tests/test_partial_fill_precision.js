@@ -18,9 +18,12 @@ async function runCase({ precision, initialSize, partialFilled, expectUpdated })
 
     const gridOrder = { id: gridId, orderId: chainOrderId, type: 'sell', state: 'active', size: initialSize, price };
     mgr.orders.set(gridId, gridOrder);
+    // Update state tracking
+    mgr._ordersByState['active'].add(gridId);
+    mgr._ordersByType['sell'].add(gridId);
     mgr.resetFunds();
-    mgr.funds.committed.sell = initialSize;
-    mgr.funds.available.sell = Math.max(0, mgr.funds.available.sell - initialSize);
+    mgr.setAccountTotals({ buy: 0, sell: initialSize, buyFree: 0, sellFree: 0 });
+    mgr.recalculateFunds(); // This will set committed.grid.sell based on the active order
 
     const remainingHuman = +(initialSize - partialFilled);
     const remainingInt = Math.round(remainingHuman * Math.pow(10, precision));
@@ -46,14 +49,14 @@ async function runCase({ precision, initialSize, partialFilled, expectUpdated })
     const updated = mgr.orders.get(gridId);
     if (expectUpdated) {
         assert(result.updatedOrders.length === 1, `Expected update, got none (precision ${precision}, partial ${partialFilled})`);
-        assert(updated.state === 'active', 'still active');
-        // Committed should be new remaining (compare ints)
-        const committedInt = floatToBlockchainInt(mgr.funds.committed.sell, precision);
+        assert(updated.state === 'partial', 'should transition to partial');
+        // Committed should be new remaining (compare ints using nested structure)
+        const committedInt = floatToBlockchainInt(mgr.funds.committed.grid.sell, precision);
         assert.strictEqual(committedInt, remainingInt);
     } else {
         assert(result.updatedOrders.length === 0, `Expected NO update, got update (precision ${precision}, partial ${partialFilled})`);
-        // committed should remain the initialSize (compare ints)
-        const committedInt = floatToBlockchainInt(mgr.funds.committed.sell, precision);
+        // committed should remain the initialSize (compare ints using nested structure)
+        const committedInt = floatToBlockchainInt(mgr.funds.committed.grid.sell, precision);
         assert.strictEqual(committedInt, initialInt);
     }
 }

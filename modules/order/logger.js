@@ -30,7 +30,7 @@ class Logger {
             reset: '\x1b[0m',
             buy: '\x1b[32m', sell: '\x1b[31m', spread: '\x1b[33m',
             debug: '\x1b[36m', info: '\x1b[37m', warn: '\x1b[33m', error: '\x1b[31m',
-            virtual: '\x1b[90m', active: '\x1b[32m'
+            virtual: '\x1b[90m', active: '\x1b[32m', partial: '\x1b[34m'
         };
     }
 
@@ -105,6 +105,7 @@ class Logger {
         if (!manager) return;
         const market = manager.marketName || manager.config?.market || 'unknown';
         const activeOrders = manager.getOrdersByTypeAndState(null, 'active');
+        const partialOrders = manager.getOrdersByTypeAndState(null, 'partial');
         const virtualOrders = manager.getOrdersByTypeAndState(null, 'virtual');
         console.log('\n===== STATUS =====');
         console.log(`Market: ${market}`);
@@ -131,7 +132,7 @@ class Logger {
         console.log(`virtuel.grid: Buy ${virtuelBuy.toFixed(8)} ${buyName} | Sell ${virtuelSell.toFixed(8)} ${sellName}`);
         console.log(`committed.grid: Buy ${committedGridBuy.toFixed(8)} ${buyName} | Sell ${committedGridSell.toFixed(8)} ${sellName}`);
         console.log(`committed.chain: Buy ${committedChainBuy.toFixed(8)} ${buyName} | Sell ${committedChainSell.toFixed(8)} ${sellName}`);
-        console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length}`);
+        console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length} | Partial ${partialOrders.length}`);
         console.log(`Spreads: ${manager.currentSpreadCount}/${manager.targetSpreadCount}`);
         // calculateCurrentSpread may exist on manager
         const spread = typeof manager.calculateCurrentSpread === 'function' ? manager.calculateCurrentSpread() : 0;

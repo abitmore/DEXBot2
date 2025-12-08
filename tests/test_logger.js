@@ -29,6 +29,7 @@ const mgrStub = {
 	outOfSpread: false,
 	getOrdersByTypeAndState: (type, state) => {
 		if (state === 'active') return [1,2];
+		if (state === 'partial') return [1];
 		if (state === 'virtual') return [1,2,3,4];
 		return [];
 	},

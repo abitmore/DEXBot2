@@ -30,10 +30,13 @@ const initialSize = 10; // human units of assetA
 const price = 2; // quote per base
 const gridOrder = { id: gridId, orderId: chainOrderId, type: 'sell', state: 'active', size: initialSize, price };
 mgr.orders.set(gridId, gridOrder);
-// Initialize funds consistent with an active SELL order
+// Update state tracking
+mgr._ordersByState['active'].add(gridId);
+mgr._ordersByType['sell'].add(gridId);
+// Initialize funds consistent with an active SELL order (using nested structure)
 mgr.resetFunds();
-mgr.funds.committed.sell = initialSize;
-mgr.funds.available.sell = Math.max(0, mgr.funds.available.sell - initialSize);
+mgr.setAccountTotals({ buy: 0, sell: initialSize, buyFree: 0, sellFree: 0 });
+mgr.recalculateFunds(); // This will set committed.grid.sell based on the active order
 
 // Simulate partial fill: 3.5 units of assetA filled
 // The blockchain will report for_sale as the remaining amount (10 - 3.5 = 6.5)
@@ -73,11 +76,11 @@ const fillInfo = {
         const updated = mgr.orders.get(gridId);
         const updatedInt = floatToBlockchainInt(updated.size, mgr.assets.assetA.precision);
         assert.strictEqual(updatedInt, remainingInt, `Expected remaining integer ${remainingInt}, got ${updatedInt}`);
-        assert(updated.state === 'active', `Expected state 'active', got ${updated.state}`);
+        assert(updated.state === 'partial', `Expected state 'partial', got ${updated.state}`);
 
-        // Check funds adjustments: committed.sell decreased
-        const committedInt = floatToBlockchainInt(mgr.funds.committed.sell, mgr.assets.assetA.precision);
-        assert.strictEqual(committedInt, remainingInt, `committed.sell expected integer ${remainingInt}, got ${committedInt}`);
+        // Check funds adjustments: committed.grid.sell decreased (using new nested structure)
+        const committedInt = floatToBlockchainInt(mgr.funds.committed.grid.sell, mgr.assets.assetA.precision);
+        assert.strictEqual(committedInt, remainingInt, `committed.grid.sell expected integer ${remainingInt}, got ${committedInt}`);
 
         // Persist snapshot using AccountOrders and verify file contains updated size
         const idx = new AccountOrders({ profilesPath: tmpIndexPath });
