@@ -261,7 +261,9 @@ class AccountOrders {
   _serializeOrder(order = {}) {
     const priceValue = Number(order.price !== undefined && order.price !== null ? order.price : 0);
     const sizeValue = Number(order.size !== undefined && order.size !== null ? order.size : 0);
-    const orderId = order.state === ORDER_STATES.ACTIVE ? (order.orderId || order.id || '') : '';
+    // Preserve orderId for both ACTIVE and PARTIAL orders
+    const shouldHaveId = order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL;
+    const orderId = shouldHaveId ? (order.orderId || order.id || '') : '';
     return {
       id: order.id || null,
       type: order.type || null,

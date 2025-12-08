@@ -259,8 +259,9 @@ function findMatchingGridOrderByHistory(fillOp, opts) {
 // ---------------------------------------------------------------------------
 function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     if (!manager || !gridOrder) return;
-    if (gridOrder.state !== ORDER_STATES.ACTIVE) {
-        manager.logger?.log?.(`Skipping chain size apply for non-ACTIVE order ${gridOrder.id} (state=${gridOrder.state})`, 'debug');
+    // Allow updates for ACTIVE and PARTIAL orders
+    if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) {
+        manager.logger?.log?.(`Skipping chain size apply for non-ACTIVE/PARTIAL order ${gridOrder.id} (state=${gridOrder.state})`, 'debug');
         return;
     }
     const oldSize = Number(gridOrder.size || 0);
