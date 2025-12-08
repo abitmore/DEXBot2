@@ -8,8 +8,8 @@
  * 
  * ORDER_STATES: Lifecycle states for orders (affects fund tracking)
  * - VIRTUAL: Not yet on-chain, size contributes to funds.virtuel (reserved)
+ *            Also used for filled orders that are converted to SPREAD placeholders
  * - ACTIVE: Placed on-chain, size contributes to funds.committed
- * - FILLED: Fully executed, size=0, no longer contributes to funds
  */
 
 // Order categories used by the OrderManager when classifying grid entries.
@@ -22,9 +22,8 @@ const ORDER_TYPES = Object.freeze({
 // Life-cycle states assigned to generated or active orders.
 // State transitions affect fund calculations in manager.recalculateFunds()
 const ORDER_STATES = Object.freeze({
-    VIRTUAL: 'virtual',   // Not on-chain, size in funds.virtuel
-    ACTIVE: 'active',     // On-chain, size in funds.committed.grid (and .chain if has orderId)
-    FILLED: 'filled'      // Executed, size=0, removed from fund tracking
+    VIRTUAL: 'virtual',   // Not on-chain, size in funds.virtuel; also used for filled orders converted to SPREAD
+    ACTIVE: 'active'      // On-chain, size in funds.committed.grid (and .chain if has orderId)
 });
 
 // Defaults applied when instantiating an OrderManager with minimal configuration.

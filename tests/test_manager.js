@@ -22,8 +22,7 @@ const mgr = new OrderManager(cfg);
 // Funds before setting account totals
 assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should have funds object');
 
-mgr.setAccountTotals({ buy: 1000, sell: 10 });
-mgr.resetFunds();
+mgr.setAccountTotals({ buy: 1000, sell: 10, buyFree: 1000, sellFree: 10 });
 
 // Ensure funds reflect the simple config values
 assert.strictEqual(mgr.funds.available.buy, 1000);
@@ -43,9 +42,9 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     // after initialize there should be orders
     assert(mgr.orders.size > 0, 'initializeGrid should create orders');
 
-    // funds should have committed some sizes for either side
-    const committedBuy = mgr.funds.committed.buy;
-    const committedSell = mgr.funds.committed.sell;
+    // funds should have committed some sizes for either side (using new nested structure)
+    const committedBuy = mgr.funds.committed.grid.buy;
+    const committedSell = mgr.funds.committed.grid.sell;
     assert(typeof committedBuy === 'number');
     assert(typeof committedSell === 'number');
 
@@ -68,8 +67,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     mgr.orders = new Map();
     mgr._ordersByState = {
         [ORDER_STATES.VIRTUAL]: new Set(),
-        [ORDER_STATES.ACTIVE]: new Set(),
-        [ORDER_STATES.FILLED]: new Set()
+        [ORDER_STATES.ACTIVE]: new Set()
     };
     mgr._ordersByType = {
         [ORDER_TYPES.BUY]: new Set(),
@@ -139,8 +137,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     rotateMgr.orders = new Map();
     rotateMgr._ordersByState = {
         [ORDER_STATES.VIRTUAL]: new Set(),
-        [ORDER_STATES.ACTIVE]: new Set(),
-        [ORDER_STATES.FILLED]: new Set()
+        [ORDER_STATES.ACTIVE]: new Set()
     };
     rotateMgr._ordersByType = {
         [ORDER_TYPES.BUY]: new Set(),
@@ -171,14 +168,17 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     testOrders.forEach(o => rotateMgr._updateOrder(o));
     rotateMgr.funds.available.buy = 500;
     rotateMgr.funds.available.sell = 5;
-    rotateMgr.funds.committed.buy = 300;
-    rotateMgr.funds.committed.sell = 3;
+    rotateMgr.funds.committed.grid.buy = 300;
+    rotateMgr.funds.committed.grid.sell = 3;
 
     // Test activateClosestVirtualOrdersForPlacement: should activate the closest virtual order for on-chain placement
     const activatedBuys = await rotateMgr.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.BUY, 1);
     assert.strictEqual(activatedBuys.length, 1, 'Should activate 1 buy');
     assert.strictEqual(activatedBuys[0].id, 'vbuy1', 'Should activate the closest virtual buy (95)');
     assert.strictEqual(activatedBuys[0].state, ORDER_STATES.ACTIVE, 'Should be marked as ACTIVE');
+
+    // Reset available funds for rotation test (activation consumed funds)
+    rotateMgr.funds.available.sell = 5;
 
     // Test prepareFurthestOrdersForRotation: should select the furthest active order for rotation
     const rotations = await rotateMgr.prepareFurthestOrdersForRotation(ORDER_TYPES.SELL, 1);

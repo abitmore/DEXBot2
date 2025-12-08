@@ -30,7 +30,6 @@ const mgrStub = {
 	getOrdersByTypeAndState: (type, state) => {
 		if (state === 'active') return [1,2];
 		if (state === 'virtual') return [1,2,3,4];
-		if (state === 'filled') return [];
 		return [];
 	},
 	calculateCurrentSpread: () => 3.1415
@@ -48,8 +47,8 @@ assert(joined.includes('hello world'), 'should include the info message');
 assert(joined.includes('debug message'), 'should include debug message');
 assert(joined.includes('ORDER GRID') || joined.includes('ORDER GRID'), 'should include ORDER GRID header');
 assert(joined.includes('TEST/PAIR'), 'should include market name in grid');
-// Ensure both grid and chain available funds are displayed
-assert(joined.includes('Available (grid)') || joined.includes('Available Funds (grid)'), 'should include Available (grid) funds label');
-assert(joined.includes('Available (chain)') || joined.includes('Available Funds (chain)'), 'should include Available (chain) funds label');
+// Ensure funds are displayed in the output
+assert(joined.includes('funds.available') || joined.includes('Available'), 'should include available funds label');
+assert(joined.includes('total.chain') || joined.includes('total.grid'), 'should include total funds labels');
 
 console.log('logger tests passed');

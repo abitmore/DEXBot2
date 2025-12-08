@@ -4,7 +4,7 @@
  * Provides structured logging with:
  * - Log levels: debug, info, warn, error
  * - Color coding for order types (buy=green, sell=red, spread=yellow)
- * - Color coding for order states (virtual=gray, active=green, filled=magenta)
+ * - Color coding for order states (virtual=gray, active=green)
  * - Formatted order grid display
  * - Fund status display (logFundsStatus)
  * 
@@ -30,7 +30,7 @@ class Logger {
             reset: '\x1b[0m',
             buy: '\x1b[32m', sell: '\x1b[31m', spread: '\x1b[33m',
             debug: '\x1b[36m', info: '\x1b[37m', warn: '\x1b[33m', error: '\x1b[31m',
-            virtual: '\x1b[90m', active: '\x1b[32m', filled: '\x1b[35m'
+            virtual: '\x1b[90m', active: '\x1b[32m'
         };
     }
 
@@ -106,7 +106,6 @@ class Logger {
         const market = manager.marketName || manager.config?.market || 'unknown';
         const activeOrders = manager.getOrdersByTypeAndState(null, 'active');
         const virtualOrders = manager.getOrdersByTypeAndState(null, 'virtual');
-        const filledOrders = manager.getOrdersByTypeAndState(null, 'filled');
         console.log('\n===== STATUS =====');
         console.log(`Market: ${market}`);
         const buyName = manager.config?.assetB || 'quote';
@@ -132,7 +131,7 @@ class Logger {
         console.log(`virtuel.grid: Buy ${virtuelBuy.toFixed(8)} ${buyName} | Sell ${virtuelSell.toFixed(8)} ${sellName}`);
         console.log(`committed.grid: Buy ${committedGridBuy.toFixed(8)} ${buyName} | Sell ${committedGridSell.toFixed(8)} ${sellName}`);
         console.log(`committed.chain: Buy ${committedChainBuy.toFixed(8)} ${buyName} | Sell ${committedChainSell.toFixed(8)} ${sellName}`);
-        console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length} | Filled ${filledOrders.length}`);
+        console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length}`);
         console.log(`Spreads: ${manager.currentSpreadCount}/${manager.targetSpreadCount}`);
         // calculateCurrentSpread may exist on manager
         const spread = typeof manager.calculateCurrentSpread === 'function' ? manager.calculateCurrentSpread() : 0;
