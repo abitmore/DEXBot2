@@ -34,7 +34,7 @@
  *    - Runs indefinitely (PM2 manages restart/stop)
  *
  * Usage:
- *   Direct (single bot): node bot.js bbot9
+ *   Direct (single bot): node bot.js <bot-name>
  *   Via PM2 ecosystem: pm2 start profiles/ecosystem.config.js
  *   Full setup: npm run pm2:unlock-start or node dexbot.js pm2
  *

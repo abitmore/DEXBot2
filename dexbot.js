@@ -1291,6 +1291,9 @@ async function handleCLICommands() {
         case 'pm2':
             const pm2Launcher = require('./pm2.js');
             await pm2Launcher.main();
+            // Close stdin and exit cleanly after PM2 startup
+            if (process.stdin) process.stdin.destroy();
+            process.exit(0);
             return true;
         default:
             printCLIUsage();

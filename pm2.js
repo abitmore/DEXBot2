@@ -142,12 +142,17 @@ function startPM2(masterPassword) {
         const pm2 = spawn('pm2', ['start', ECOSYSTEM_FILE], {
             cwd: ROOT,
             env,
-            stdio: 'inherit'
+            stdio: 'inherit',
+            detached: false
         });
 
         pm2.on('close', code => {
-            if (code === 0) resolve();
-            else reject(new Error(`PM2 exited with code ${code}`));
+            if (code === 0) {
+                // Ensure we disconnect from PM2's file descriptors
+                setImmediate(resolve);
+            } else {
+                reject(new Error(`PM2 exited with code ${code}`));
+            }
         });
 
         pm2.on('error', reject);
@@ -272,7 +277,12 @@ async function main() {
 
 // Run if called directly
 if (require.main === module) {
-    main().catch(err => {
+    main().then(() => {
+        // Close stdin to prevent hanging
+        if (process.stdin) process.stdin.destroy();
+        // Exit immediately
+        process.exit(0);
+    }).catch(err => {
         console.error('Error:', err.message);
         process.exit(1);
     });
