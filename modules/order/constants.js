@@ -41,7 +41,7 @@ const DEFAULT_CONFIG = {
     weightDistribution: { sell: 0.5, buy: 0.5 },
     // Order of keys changed: place sell first then buy for readability/consistency
     botFunds: { sell: "100%", buy: "100%" },
-    activeOrders: { sell: 24, buy: 24 },
+    activeOrders: { sell: 20, buy: 20 },
 };
 
 // Timing constants used by OrderManager and helpers

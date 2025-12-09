@@ -21,8 +21,8 @@
         "buy": "100%"
       },
       "activeOrders": {
-        "sell": 24,
-        "buy": 24
+        "sell": 20,
+        "buy": 20
       }
     },
     {
@@ -46,8 +46,8 @@
         "buy": 2000
       },
       "activeOrders": {
-        "sell": 24,
-        "buy": 24
+        "sell": 20,
+        "buy": 20
       }
     }
   ]

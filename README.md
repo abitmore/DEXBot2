@@ -156,7 +156,7 @@ Define each bot in `profiles/bots.json`. A minimal structure looks like this:
       "targetSpreadPercent": 5,
       "weightDistribution": { "sell": 0.5, "buy": 0.5 },
       "botFunds": { "sell": "100%", "buy": "100%" },
-      "activeOrders": { "sell": 24, "buy": 24 }
+      "activeOrders": { "sell": 20, "buy": 20 }
     },
   ]
 }
