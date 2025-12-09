@@ -155,8 +155,8 @@ Define each bot in `profiles/bots.json`. A minimal structure looks like this:
       "incrementPercent": 1,
       "targetSpreadPercent": 5,
       "weightDistribution": { "sell": 0.5, "buy": 0.5 },
-      "botFunds": { "buy": "100%", "sell": "100%" },
-      "activeOrders": { "buy": 24, "sell": 24 }
+      "botFunds": { "sell": "100%", "buy": "100%" },
+      "activeOrders": { "sell": 24, "buy": 24 }
     },
   ]
 }
@@ -179,12 +179,12 @@ Below is a concise description of each configuration option you may set per-bot 
 - **`targetSpreadPercent`**: number — target spread (in percent) around the market price that the grid should cover. The manager uses this to place buy/sell layers around the market.
 - **`weightDistribution`**: object — `{ "sell": <number>, "buy": <number> }`. Controls order sizing shape. Values are the distribution coefficient (examples below):
   - Typical values: `-1` = Super Valley (more weight far from market), `0` = Valley, `0.5` = Neutral, `1` = Mountain (more weight near market), `2` = Super Mountain.
-- **`botFunds`**: object — `{ "buy": <number|string>, "sell": <number|string> }`.
-  - `buy`: amount of quote asset allocated for buying (can be an absolute number like `10000` or a percentage string like `"50%"`).
+- **`botFunds`**: object — `{ "sell": <number|string>, "buy": <number|string> }`.
   - `sell`: amount of base asset allocated for selling (absolute like `0.1` or percentage string like `"100%"`).
+  - `buy`: amount of quote asset allocated for buying (can be an absolute number like `10000` or a percentage string like `"50%"`).
   - `buy` refers to the quote-side (what you spend to buy base); `sell` refers to the base-side (what you sell). Provide human-readable units (not blockchain integer units).
   - If you supply percentages (e.g. `"50%"`) the manager needs `accountTotals` to resolve them to absolute amounts before placing orders; otherwise provide absolute numbers.
-- **`activeOrders`**: object — `{ "buy": <integer>, "sell": <integer> }` number of buy/sell orders to keep active in the grid for each side.
+- **`activeOrders`**: object — `{ "sell": <integer>, "buy": <integer> }` number of sell/buy orders to keep active in the grid for each side.
 
 ## How It Works
 

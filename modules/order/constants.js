@@ -39,8 +39,9 @@ const DEFAULT_CONFIG = {
     assetA: null,
     assetB: null,
     weightDistribution: { sell: 0.5, buy: 0.5 },
-    botFunds: { buy: "100%", sell: "100%" },
-    activeOrders: { buy: 24, sell: 24 },
+    // Order of keys changed: place sell first then buy for readability/consistency
+    botFunds: { sell: "100%", buy: "100%" },
+    activeOrders: { sell: 24, buy: 24 },
 };
 
 // Timing constants used by OrderManager and helpers

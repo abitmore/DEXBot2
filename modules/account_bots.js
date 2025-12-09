@@ -159,10 +159,11 @@ function promptBotData(base = {}) {
     const targetSpreadPercent = askNumber('targetSpreadPercent', base.targetSpreadPercent !== undefined ? base.targetSpreadPercent : DEFAULT_CONFIG.targetSpreadPercent);
     const weightSell = askNumber('Weight distribution (sell)', base.weightDistribution && base.weightDistribution.sell !== undefined ? base.weightDistribution.sell : DEFAULT_CONFIG.weightDistribution.sell);
     const weightBuy = askNumber('Weight distribution (buy)', base.weightDistribution && base.weightDistribution.buy !== undefined ? base.weightDistribution.buy : DEFAULT_CONFIG.weightDistribution.buy);
-    const fundsBuy = askNumberOrPercentage('botFunds buy amount', base.botFunds && base.botFunds.buy !== undefined ? base.botFunds.buy : DEFAULT_CONFIG.botFunds.buy);
+    // Prompt sell first, then buy to make the config output match the desired ordering
     const fundsSell = askNumberOrPercentage('botFunds sell amount', base.botFunds && base.botFunds.sell !== undefined ? base.botFunds.sell : DEFAULT_CONFIG.botFunds.sell);
-    const ordersBuy = askNumber('activeOrders buy count', base.activeOrders && base.activeOrders.buy !== undefined ? base.activeOrders.buy : DEFAULT_CONFIG.activeOrders.buy);
+    const fundsBuy = askNumberOrPercentage('botFunds buy amount', base.botFunds && base.botFunds.buy !== undefined ? base.botFunds.buy : DEFAULT_CONFIG.botFunds.buy);
     const ordersSell = askNumber('activeOrders sell count', base.activeOrders && base.activeOrders.sell !== undefined ? base.activeOrders.sell : DEFAULT_CONFIG.activeOrders.sell);
+    const ordersBuy = askNumber('activeOrders buy count', base.activeOrders && base.activeOrders.buy !== undefined ? base.activeOrders.buy : DEFAULT_CONFIG.activeOrders.buy);
     return {
         name,
         active,
@@ -176,8 +177,9 @@ function promptBotData(base = {}) {
         incrementPercent,
         targetSpreadPercent,
         weightDistribution: { sell: weightSell, buy: weightBuy },
-        botFunds: { buy: fundsBuy, sell: fundsSell },
-        activeOrders: { buy: ordersBuy, sell: ordersSell },
+        // Output sell first then buy for both botFunds and activeOrders
+        botFunds: { sell: fundsSell, buy: fundsBuy },
+        activeOrders: { sell: ordersSell, buy: ordersBuy },
         
     };
 }
