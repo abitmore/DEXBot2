@@ -247,7 +247,7 @@ async function main() {
                 console.log('Unknown selection.');
         }
     }
-    console.log('Bots configuration helper exiting.');
+    console.log('Botmanager closed!');
 }
 
 module.exports = { main, parseJsonWithComments };

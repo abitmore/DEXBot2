@@ -20,7 +20,7 @@ A sophisticated market making bot for the BitShares Decentralized Exchange (DEX)
 ## Installation
 
 ```bash
-# Clone the repository
+# Clone the repository and switch to folder
 git clone https://github.com/froooze/DEXBot2.git
 cd DEXBot2
 

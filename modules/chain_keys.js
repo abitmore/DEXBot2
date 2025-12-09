@@ -438,7 +438,7 @@ async function main() {
 
         if (choice === '1') {
             const accountName = readlineSync.question('Enter account name: ');
-            const privateKeyRaw = await readPassword('Enter private key:   ');
+            const privateKeyRaw = await readPassword('Enter private key:  ');
             const privateKey = privateKeyRaw.replace(/\s+/g, '');
 
             const validation = validatePrivateKey(privateKey);
@@ -497,7 +497,7 @@ async function main() {
         } else if (choice === '6') {
             masterPassword = await changeMasterPassword(accountsData, masterPassword);
         } else if (choice === '7') {
-            console.log('Goodbye!');
+            console.log('Keymanager closed!');
             break;
         } else {
             console.log('Invalid choice.');
