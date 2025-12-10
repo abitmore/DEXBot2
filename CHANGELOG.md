@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2025-12-10 - Multi-Bot Fund Allocation & Update Script
+
+### Features
+- **Multi-Bot Fund Allocation**: Enforce botFunds percentage allocation when multiple bots share an account
+  - Each bot respects its allocated percentage of chainFree (what's free on-chain)
+  - Bot1 with 90% gets 90% of chainFree, Bot2 with 10% gets 10% of remaining
+  - Prevents fund allocation conflicts in shared accounts
+  - Applied at grid initialization for accurate startup sizing
+
+### Fixed
+- **Update Script**: Removed interactive merge prompts by using `git pull --rebase`
+- **Script Permissions**: Made update.sh permanently executable via git config
+
 ## [0.1.1] - 2025-12-10 - Minimum Delta Enforcement
 
 ### Features
