@@ -2,14 +2,15 @@
 
 A sophisticated market making bot for the BitShares Decentralized Exchange (DEX), implementing optimized staggered order strategies for automated trading.
 
-## Features
+## 🚀 Features
 
 - **Staggered Order Grid**: Creates geometric order grids around market price for efficient market making.
 - **Dynamic Rebalancing**: Automatically adjusts orders after fills to maintain optimal spread.
+- **Multi-Bot Support**: Run multiple bots simultaneously on different trading pairs.
+- **PM2 Process Management**: Automatic restart and monitoring for production use.
+- **Master Password Security**: Encrypted key storage with RAM-only password handling.
 
-## Disclaimer
-
-⚠️ Warning — Use At Your Own Risk
+## ⚠️ Disclaimer — Use At Your Own Risk
 
 - This software is in alpha stage and provided "as‑is" without warranty.
 - Always test configurations in `dryRun` mode.
@@ -17,7 +18,7 @@ A sophisticated market making bot for the BitShares Decentralized Exchange (DEX)
 - The authors and maintainers are not responsible for losses.
 
 
-## Installation
+## 📦 Installation
 
 ```bash
 # Clone the repository and switch to folder
@@ -28,7 +29,7 @@ cd DEXBot2
 npm install
 ```
 
-## CLI & Running
+## ⚙️ CLI & Running
 
 ### Single Bot (Direct)
 
@@ -47,7 +48,7 @@ Use the `dexbot` wrapper or run `node dexbot.js` directly:
 
 If any active bot requires `preferredAccount`, dexbot will prompt once for the master password and reuse it for subsequent bots.
 
-### PM2 Process Management (Recommended for Production)
+### 🎯 PM2 Process Management (Recommended for Production)
 
 For production use with automatic restart and process monitoring, use PM2:
 
@@ -124,7 +125,7 @@ Bot configurations are defined in `profiles/bots.json`. The PM2 launcher automat
 - Never written to disk or config files
 - Cleared when process exits
 
-## Order Calculation
+## 📊 Order Calculation
 
 The order sizing follows a compact formula:
 
@@ -144,7 +145,7 @@ Weight distribution examples (set `n` via `weightDistribution`):
 - `1` = Mountain (order increase linearly towards center)
 - `2` = Super Mountain (aggressive concentration towards center)
 
-## Configuration
+## 🔧 Configuration
 
 Define each bot in `profiles/bots.json`. A minimal structure looks like this:
 
@@ -171,7 +172,7 @@ Define each bot in `profiles/bots.json`. A minimal structure looks like this:
 }
 ```
 
-## Configuration Options
+## 📋 Configuration Options
 
 Below is a concise description of each configuration option you may set per-bot (use these keys inside each `bots` entry in `examples/bots.json` / `profiles/bots.json`):
 
@@ -195,7 +196,7 @@ Below is a concise description of each configuration option you may set per-bot 
   - If you supply percentages (e.g. `"50%"`) the manager needs `accountTotals` to resolve them to absolute amounts before placing orders; otherwise provide absolute numbers.
 - **`activeOrders`**: object — `{ "sell": <integer>, "buy": <integer> }` number of sell/buy orders to keep active in the grid for each side.
 
-## How It Works
+## 🔄 How It Works
 
 1. **Grid Creation**: Generates buy/sell orders in geometric progression.
 2. **Order Sizing**: Applies weight distribution for optimal capital allocation.
@@ -218,7 +219,7 @@ Available: Buy 0.00 USD | Sell 0.00000000 BTC
 Committed: Buy 8676.13 USD | Sell 0.12420407 BTC
 ```
 
-## Modules
+## 📦 Modules
 
 Below is a short summary of the modules in this repository and what they provide. You can paste these lines elsewhere if you need a quick reference.
 
@@ -249,7 +250,7 @@ Core order generation, management, and grid algorithms:
 - `modules/order/runner.js`: Runner for calculation passes and dry-runs without blockchain interaction.
 - `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers).
 
-## Contributing
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -257,7 +258,7 @@ Core order generation, management, and grid algorithms:
 4. Test thoroughly
 5. Submit a pull request
 
-## License
+## 📄 License
 
 MIT License - see LICENSE file for details
 
