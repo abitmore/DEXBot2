@@ -13,7 +13,7 @@
  * - Dry-run mode for testing without broadcasting transactions
  * - CLI commands: start, drystart, restart, stop, keys, bots
  */
-const { BitShares, waitForConnected } = require('./modules/bitshares_client');
+const { BitShares, waitForConnected, setSuppressConnectionLog } = require('./modules/bitshares_client');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline-sync');
@@ -29,6 +29,16 @@ const { AccountOrders, createBotKey } = require('./modules/account_orders');
 // Primary CLI driver that manages tracked bots and helper utilities such as key/bot editors.
 const PROFILES_BOTS_FILE = path.join(__dirname, 'profiles', 'bots.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
+
+// Initialize profiles directory if it doesn't exist
+function ensureProfilesDirectory() {
+    if (!fs.existsSync(PROFILES_DIR)) {
+        fs.mkdirSync(PROFILES_DIR, { recursive: true });
+        console.log('✓ Created profiles directory');
+        return true;
+    }
+    return false;
+}
 
 
 const CLI_COMMANDS = ['start', 'restart', 'stop', 'drystart', 'keys', 'bots', 'pm2'];
@@ -84,9 +94,11 @@ if (cliArgs.includes(CLI_EXAMPLES_FLAG)) {
 // `parseJsonWithComments` is provided by `modules/account_bots.js` (shared single-source)
 
 // Load the tracked bot settings file, handling missing files or parse failures gracefully.
-function loadSettingsFile() {
+function loadSettingsFile({ silent = false } = {}) {
     if (!fs.existsSync(PROFILES_BOTS_FILE)) {
-        console.error('profiles/bots.json not found. Run `npm run bootstrap:profiles` to create it from the tracked examples.');
+        if (!silent) {
+            console.error('profiles/bots.json not found. Run `npm run bootstrap:profiles` to create it from the tracked examples.');
+        }
         return { config: {}, filePath: PROFILES_BOTS_FILE };
     }
     try {
@@ -1316,7 +1328,58 @@ async function runDefaultBots({ forceDryRun = false, sourceName = 'settings' } =
 
 // Entry point combining CLI shortcuts and default bot execution.
 async function bootstrap() {
+    // Ensure profiles directory exists
+    const isNewSetup = ensureProfilesDirectory();
+
+    // If this is a new setup, prompt to set up keys
+    if (isNewSetup) {
+        // Suppress BitShares connection log during first-time setup
+        setSuppressConnectionLog(true);
+        console.log();
+        console.log('='.repeat(50));
+        console.log('Welcome to DEXBot2!');
+        console.log('='.repeat(50));
+        console.log();
+        console.log('To get started, you need to configure your master password.');
+        console.log('This password will encrypt your private keys.');
+        console.log();
+        const setupKeys = readline.keyInYN('Set up master password now?');
+        if (setupKeys) {
+            console.log();
+            await accountKeys.main();
+            console.log();
+            console.log('Master password configured! Now you can:');
+            console.log('  node dexbot bots   - Create and manage bots');
+            console.log('  node dexbot        - Run your configured bots');
+            console.log();
+        } else {
+            console.log();
+            console.log('You can set up your master password later by running:');
+            console.log('  node dexbot keys');
+            console.log();
+        }
+        return;
+    }
+
+    // Handle CLI commands first (before checking for bots.json)
     if (await handleCLICommands()) return;
+
+    // Check if bots.json exists - if not, guide user
+    if (!fs.existsSync(PROFILES_BOTS_FILE)) {
+        // Suppress BitShares connection log when no bots configured
+        setSuppressConnectionLog(true);
+        console.log();
+        console.log('No bot configuration found.');
+        console.log();
+        console.log('First, set up your master password:');
+        console.log('  node dexbot keys');
+        console.log();
+        console.log('Then, create your first bot:');
+        console.log('  node dexbot bots');
+        console.log();
+        process.exit(0);
+    }
+
     await runDefaultBots();
 }
 

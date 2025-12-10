@@ -20,12 +20,20 @@ require('./btsdex_event_patch');
 // Shared connection state for the process. Modules should use waitForConnected()
 // to ensure the shared BitShares client is connected before making DB calls.
 let connected = false;
+let suppressConnectionLog = false;
 const connectedCallbacks = new Set();
+
+// Allow suppressing the connection log message
+function setSuppressConnectionLog(suppress) {
+    suppressConnectionLog = suppress;
+}
 
 try {
     BitSharesLib.subscribe('connected', () => {
         connected = true;
-        console.log('modules/bitshares_client: BitShares connected');
+        if (!suppressConnectionLog) {
+            console.log('modules/bitshares_client: BitShares connected');
+        }
         for (const cb of Array.from(connectedCallbacks)) {
             try { cb(); } catch (e) { console.error('connected callback error', e.message); }
         }
@@ -69,6 +77,7 @@ module.exports = {
     createAccountClient,
     waitForConnected,
     onConnected,
+    setSuppressConnectionLog,
     _internal: { get connected() { return connected; } }
 };
 
