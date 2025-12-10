@@ -146,7 +146,7 @@ Example - Run a specific bot with custom polling interval:
 BOT_NAME=my-bot RUN_LOOP_MS=3000 node dexbot.js
 ```
 
-## 📊 Order Calculation
+## 📐 Order Calculation
 
 The order sizing follows a compact formula:
 
@@ -193,7 +193,7 @@ Define each bot in `profiles/bots.json`. A minimal structure looks like this:
 }
 ```
 
-## 📋 Configuration Options
+## ⚙️ Configuration Options
 
 Below is a concise description of each configuration option you may set per-bot (use these keys inside each `bots` entry in `examples/bots.json` / `profiles/bots.json`):
 
@@ -257,10 +257,10 @@ This comprehensive fill handling ensures capital efficiency, eliminates orphaned
 ### Fill Deduplication
 Fills are tracked with a 5-second deduplication window to prevent duplicate order processing. This ensures reliable fill detection even if the same fill event arrives multiple times.
 
-### Price Tolerance & Integer Rounding
+### 🔢 Price Tolerance & Integer Rounding
 The bot calculates price tolerances to account for blockchain integer rounding discrepancies. This ensures reliable matching of on-chain orders with grid orders despite minor precision differences.
 
-### Persistent Grid & Price Caching
+### 💾 Persistent Grid & Price Caching
 DEXBot intelligently caches grid calculations and order prices to avoid unnecessary recalculation:
 - **Grid state persists** in `profiles/orders.json` across bot restarts
 - **Order prices preserved** from the last successful synchronization
@@ -269,7 +269,7 @@ DEXBot intelligently caches grid calculations and order prices to avoid unnecess
 
 This optimization significantly reduces startup time and blockchain queries, especially for bots running 20+ orders.
 
-### Offline Filled Order Detection
+### 📱 Offline Filled Order Detection
 The bot automatically detects orders that were filled while offline:
 - **Compares persisted grid** with current on-chain open orders on startup
 - **Identifies missing orders** (orders from grid that are no longer on-chain)
@@ -279,7 +279,7 @@ The bot automatically detects orders that were filled while offline:
 
 This ensures seamless resumption after being offline without missing fill proceeds.
 
-### Trigger-File Grid Regeneration
+### 🎯 Trigger-File Grid Regeneration
 Create a trigger file `profiles/recalculate.<bot-key>.trigger` to request immediate grid regeneration on the next polling cycle. This allows external scripts to request recalculation without restarting the bot.
 
 Example:
@@ -287,7 +287,7 @@ Example:
 touch profiles/recalculate.my-bot.trigger
 ```
 
-### Standalone Grid Calculator
+### 🧮 Standalone Grid Calculator
 Use the standalone calculator to dry-run grid calculations without blockchain interaction:
 
 ```bash
@@ -304,13 +304,13 @@ Environment variables:
 
 Below is a short summary of the modules in this repository and what they provide. You can paste these lines elsewhere if you need a quick reference.
 
-### Entry Points
+### 🚀 Entry Points
 
 - `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, stop, restart, drystart) and management commands (keys, bots, --cli-examples). Includes full DEXBot class with grid management, fill processing, and account operations.
 - `pm2.js`: Unified PM2 launcher. Orchestrates BitShares connection, PM2 check/install, ecosystem config generation from `profiles/bots.json`, master password authentication, and bot startup with automatic restart policies.
 - `bot.js`: PM2-friendly per-bot entry point. Loads bot config by name from `profiles/bots.json`, authenticates via master password (from environment or interactive prompt), initializes DEXBot instance, and runs the trading loop.
 
-### Core Modules
+### 🔧 Core Modules
 
 - `modules/account_bots.js`: Interactive editor for bot configurations (`profiles/bots.json`). Prompts accept numbers, percentages and multiplier strings (e.g. `5x`).
 - `modules/chain_keys.js`: Encrypted master-password storage for private keys (`profiles/keys.json`), plus key authentication and management utilities.
@@ -319,7 +319,7 @@ Below is a short summary of the modules in this repository and what they provide
 - `modules/btsdex_event_patch.js`: Runtime patch for `btsdex` library to improve history and account event handling.
 - `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots and metadata (`profiles/orders.json`).
 
-### Order Subsystem (`modules/order/`)
+### 📊 Order Subsystem (`modules/order/`)
 
 Core order generation, management, and grid algorithms:
 
@@ -343,7 +343,7 @@ Core order generation, management, and grid algorithms:
 
 MIT License - see LICENSE file for details
 
-## Links
+## 🔗 Links
 
 - [![Telegram](https://img.shields.io/badge/Telegram-%40DEXBot__2-26A5E4?logo=telegram&logoColor=white)](https://t.me/DEXBot_2)
 - [![Website](https://img.shields.io/badge/Website-dexbot.org-4FC08D?logo=internet-explorer&logoColor=white)](https://dexbot.org/)
@@ -351,6 +351,6 @@ MIT License - see LICENSE file for details
 - [![Awesome BitShares](https://camo.githubusercontent.com/9d49598b873146ec650fb3f275e8a532c765dabb1f61d5afa25be41e79891aa7/68747470733a2f2f617765736f6d652e72652f62616467652e737667)](https://github.com/bitshares/awesome-bitshares)
 - [![Reddit](https://img.shields.io/badge/Reddit-r%2FBitShares-ff4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/BitShares/)
 
-## Disclaimer
+## ⚠️ Disclaimer
 
 This software is for educational and research purposes. Use at your own risk. Always test with small amounts and understand the risks of automated trading.
