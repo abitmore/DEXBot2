@@ -24,23 +24,23 @@ The most important fix in this release addresses a critical bug where fills were
 - `bot.js` - Added complete fill processing callback (replaced 6-line placeholder)
 - `bot.js` - Added `updateOrdersOnChainBatch()` method for order execution
 
-### Improvements & Enhancements
+### Code Improvements in This Release
 
-1. **Fund Fallback for Order Rotation** (manager.js:1498)
-   - Prevents order rotation from halting when pendingProceeds are exhausted
-   - Falls back to available funds as secondary source
+Based on commit `33aa9d6`:
+- **Complete Fill Processing Pipeline**: Replaced 6-line placeholder with full implementation
+- **Fill Validation**: Filters operations, skips taker fills, validates data integrity
+- **Deduplication**: 5-second window prevents duplicate fill processing
+- **Grid Synchronization**: Uses fill history mode to sync with blockchain
+- **Order Rebalancing**: Calculates and executes replacement orders atomically
+- **Price Correction**: Handles orders with price mismatches
+- **Concurrency Protection**: Queue mechanism prevents concurrent fill processing
+- **updateOrdersOnChainBatch() Method**: Handles create/update/delete operations in single transaction
 
-2. **Price Derivation Robustness** (utils.js:354-571)
-   - Multi-API support (list_liquidity_pools and get_liquidity_pools variants)
-   - Graceful degradation to market pricing when pool unavailable
-   - Enhanced asset lookup with precision validation
-   - Improved error recovery
+### Recent Updates
 
-3. **Documentation Updates**
-   - Updated README with all new features
-   - Added Advanced Features section
-   - Documented environment variables
-   - Listed known issues and recommendations
+- README.md updated with new features and CLI commands
+- Environment variables documented
+- Advanced Features section added
 
 ## Installation for Users
 
@@ -172,7 +172,6 @@ Announce on:
 ## Version History
 
 - 0.1.0 (2025-12-10) - Initial release with fill processing fix
-- 0.2.0 (planned) - Error recovery and grid consistency improvements
 
 ## Support
 
