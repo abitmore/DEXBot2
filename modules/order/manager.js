@@ -159,6 +159,42 @@ class OrderManager {
     }
 
     /**
+     * Apply botFunds allocation constraints to available funds.
+     * Called at grid initialization to respect percentage-based botFunds when multiple bots share an account.
+     *
+     * This ensures:
+     * - Bot1 with botFunds.buy="90%" gets 90% of chainFree (what's free on-chain)
+     * - Bot2 with botFunds.buy="10%" gets 10% of remaining chainFree
+     *
+     * During trading, available funds are recalculated normally without this constraint
+     * (available = chainFree - virtuel + pendingProceeds)
+     */
+    applyBotFundsAllocation() {
+        if (!this.config.botFunds || !this.accountTotals) return;
+
+        const chainFreeBuy = this.accountTotals.buyFree || 0;
+        const chainFreeSell = this.accountTotals.sellFree || 0;
+
+        // Calculate what this bot is allocated based on chainFree
+        const allocatedBuy = this._resolveConfigValue(this.config.botFunds.buy, chainFreeBuy);
+        const allocatedSell = this._resolveConfigValue(this.config.botFunds.sell, chainFreeSell);
+
+        // Cap available to not exceed allocation
+        if (allocatedBuy > 0) {
+            this.funds.available.buy = Math.min(this.funds.available.buy, allocatedBuy);
+        }
+        if (allocatedSell > 0) {
+            this.funds.available.sell = Math.min(this.funds.available.sell, allocatedSell);
+        }
+
+        this.logger?.log(
+            `Applied botFunds allocation: buy=${allocatedBuy.toFixed(8)} (available=${this.funds.available.buy.toFixed(8)}), ` +
+            `sell=${allocatedSell.toFixed(8)} (available=${this.funds.available.sell.toFixed(8)})`,
+            'info'
+        );
+    }
+
+    /**
      * Recalculate all fund values based on current order states.
      * 
      * This method iterates all orders and computes:

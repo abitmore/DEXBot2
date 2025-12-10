@@ -333,6 +333,12 @@ class Grid {
         const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 
+        // Apply botFunds percentage allocation constraints for multi-bot account sharing
+        // This ensures each bot respects its allocated percentage of chainFree (what's actually free on-chain)
+        if (manager.applyBotFundsAllocation && typeof manager.applyBotFundsAllocation === 'function') {
+            manager.applyBotFundsAllocation();
+        }
+
         const diagMsg = `Allocating sizes: sellFunds=${String(manager.funds.available.sell)}, buyFunds=${String(manager.funds.available.buy)}, ` +
             `minSellSize=${String(minSellSize)}, minBuySize=${String(minBuySize)}`;
         manager.logger && manager.logger.log && manager.logger.log(diagMsg, 'debug');
