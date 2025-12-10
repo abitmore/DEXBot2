@@ -17,6 +17,7 @@
  *    - Reads bot definitions from profiles/bots.json
  *    - Generates profiles/ecosystem.config.js with absolute paths
  *    - Filters only active bots (active !== false)
+ *    - If bot-name provided, filters to only that bot
  *
  * 4. Master Password Authentication
  *    - Prompts user interactively for master password
@@ -26,12 +27,13 @@
  * 5. PM2 Startup
  *    - Passes master password via MASTER_PASSWORD environment variable
  *    - Each bot process receives password from env var
- *    - Spawns all configured bots as PM2 managed processes
+ *    - Spawns configured bots as PM2 managed processes
  *
  * Usage:
- *   node pm2.js              - Full setup and start
- *   node dexbot.js pm2       - Same via CLI
- *   npm run pm2:unlock-start - Same via npm script
+ *   node pm2.js              - Full setup and start all active bots
+ *   node pm2.js <bot-name>   - Start only the specified bot via PM2
+ *   node dexbot.js pm2       - Same as 'node pm2.js' via CLI
+ *   npm run pm2:unlock-start - Same as 'node pm2.js' via npm script
  *
  * Security:
  *   - Master password never written to disk
@@ -67,7 +69,7 @@ function parseJsonWithComments(content) {
 }
 
 // Generate ecosystem.config.js from bots.json
-function generateEcosystemConfig() {
+function generateEcosystemConfig(botNameFilter = null) {
     if (!fs.existsSync(BOTS_JSON)) {
         console.error('profiles/bots.json not found. Run: npm run bootstrap:profiles');
         process.exit(1);
@@ -80,9 +82,16 @@ function generateEcosystemConfig() {
 
     const content = fs.readFileSync(BOTS_JSON, 'utf8');
     const config = parseJsonWithComments(content);
-    const bots = (config.bots || []).filter(b => b.active !== false);
+    let bots = (config.bots || []).filter(b => b.active !== false);
 
-    if (bots.length === 0) {
+    // Filter to specific bot if name provided
+    if (botNameFilter) {
+        bots = bots.filter(b => b.name === botNameFilter);
+        if (bots.length === 0) {
+            console.error(`Bot '${botNameFilter}' not found or not active in profiles/bots.json`);
+            process.exit(1);
+        }
+    } else if (bots.length === 0) {
         console.error('No active bots found in profiles/bots.json');
         process.exit(1);
     }
@@ -213,9 +222,12 @@ async function installPM2() {
 }
 
 // Main
-async function main() {
+async function main(botNameFilter = null) {
     console.log('='.repeat(50));
     console.log('DEXBot2 PM2 Launcher');
+    if (botNameFilter) {
+        console.log(`Starting bot: ${botNameFilter}`);
+    }
     console.log('='.repeat(50));
     console.log();
 
@@ -248,7 +260,7 @@ async function main() {
 
     // Step 2: Generate ecosystem config
     console.log('Generating ecosystem configuration...');
-    const apps = generateEcosystemConfig();
+    const apps = generateEcosystemConfig(botNameFilter);
     console.log(`Number active bots: ${apps.length}`);
     console.log();
 
@@ -277,7 +289,10 @@ async function main() {
 
 // Run if called directly
 if (require.main === module) {
-    main().then(() => {
+    // Extract optional bot-name parameter from command line
+    const botNameFilter = process.argv[2] || null;
+
+    main(botNameFilter).then(() => {
         // Close stdin to prevent hanging
         if (process.stdin) process.stdin.destroy();
         // Exit immediately

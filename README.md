@@ -51,10 +51,10 @@ If any active bot requires `preferredAccount`, dexbot will prompt once for the m
 
 For production use with automatic restart and process monitoring, use PM2:
 
-#### Quick Start
+#### Quick Start (All Bots)
 
 ```bash
-# Start all bots with PM2
+# Start all active bots with PM2
 node pm2.js
 
 # Or via CLI
@@ -68,7 +68,16 @@ This unified launcher handles everything automatically:
 4. **Authentication**: Prompts for master password (kept in RAM only, never saved to disk)
 5. **Startup**: Starts all active bots as PM2-managed processes with auto-restart
 
-#### Individual Bot
+#### Single Bot via PM2
+
+```bash
+# Start a specific bot via PM2
+node pm2.js <bot-name>
+```
+
+Same as `node pm2.js` but only starts the specified bot.
+
+#### Individual Bot (Direct, without PM2)
 
 ```bash
 # Run a single bot directly (prompts for password if not in environment)
