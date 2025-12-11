@@ -165,6 +165,16 @@ class Grid {
         const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
         const incrementFactor = incrementPercent / 100;
 
+        // Validate weight distribution is within acceptable range (-1 to 2)
+        const MIN_WEIGHT = -1;
+        const MAX_WEIGHT = 2;
+        if (!Number.isFinite(sellWeight) || sellWeight < MIN_WEIGHT || sellWeight > MAX_WEIGHT) {
+            throw new Error(`Invalid sell weight distribution: ${sellWeight}. Must be between ${MIN_WEIGHT} and ${MAX_WEIGHT}.`);
+        }
+        if (!Number.isFinite(buyWeight) || buyWeight < MIN_WEIGHT || buyWeight > MAX_WEIGHT) {
+            throw new Error(`Invalid buy weight distribution: ${buyWeight}. Must be between ${MIN_WEIGHT} and ${MAX_WEIGHT}.`);
+        }
+
         // side: 'sell' or 'buy' - explicit instead of comparing weights
         // minSize: enforce a minimum human-unit size per order; allocations below
         // minSize are removed and their funds redistributed among remaining orders.
