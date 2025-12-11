@@ -26,7 +26,6 @@ REPO_URL="https://github.com/froooze/DEXBot2.git"
 REPO_BRANCH="main"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-BACKUP_DIR="${PROJECT_ROOT}/backups"
 LOG_FILE="${PROJECT_ROOT}/update.log"
 TIMESTAMP=$(date '+%Y-%m-%d_%H-%M-%S')
 
@@ -60,19 +59,11 @@ log_info "Project Root: $PROJECT_ROOT"
 log_info "Branch: $REPO_BRANCH"
 log_info "Timestamp: $TIMESTAMP"
 
-# Step 1: Backup profiles directory
-log_info "Step 1: Backing up profiles directory..."
-mkdir -p "$BACKUP_DIR"
-BACKUP_PATH="${BACKUP_DIR}/profiles_${TIMESTAMP}"
-if [ -d "$PROJECT_ROOT/profiles" ]; then
-    cp -r "$PROJECT_ROOT/profiles" "$BACKUP_PATH"
-    log_success "Profiles backed up to: $BACKUP_PATH"
-else
-    log_warning "No profiles directory found, skipping backup"
-fi
+# Note: profiles/ directory is in .gitignore and is not backed up during updates
+# Your configuration files are safe and will not be affected by the update
 
-# Step 2: Check git status
-log_info "Step 2: Checking git status..."
+# Step 1: Check git status
+log_info "Step 1: Checking git status..."
 cd "$PROJECT_ROOT"
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
     log_error "Not a git repository"
@@ -82,7 +73,20 @@ fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 log_info "Current branch: $CURRENT_BRANCH"
 
-# Step 3: Stash any local changes (except profiles)
+# Step 2: Protect profiles directory (ensure it won't be touched)
+log_info "Step 2: Protecting profiles directory..."
+if [ -d "$PROJECT_ROOT/profiles" ]; then
+    # Ensure profiles is properly ignored by git
+    if ! grep -q "^/profiles$" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
+        log_warning "Warning: profiles/ not in .gitignore, adding it..."
+        echo "/profiles" >> "$PROJECT_ROOT/.gitignore"
+    fi
+    log_success "Profiles directory is protected and will not be modified"
+else
+    log_info "No profiles directory found (will be created on first run)"
+fi
+
+# Step 3: Stash any local changes (except profiles which is in .gitignore)
 log_info "Step 3: Checking for local changes..."
 if ! git diff --quiet; then
     log_warning "Uncommitted changes detected, stashing..."
@@ -117,17 +121,11 @@ if git pull --rebase origin "$REPO_BRANCH"; then
     log_success "Successfully pulled latest code"
 else
     log_error "Failed to pull latest code"
-    log_error "Restoring backup..."
-    if [ -d "$BACKUP_PATH" ]; then
-        rm -rf "$PROJECT_ROOT/profiles"
-        cp -r "$BACKUP_PATH" "$PROJECT_ROOT/profiles"
-        log_info "Profiles restored from backup"
-    fi
     exit 1
 fi
 
 # Step 7: Install/update dependencies
-log_info "Step 6: Installing/updating dependencies..."
+log_info "Step 7: Installing/updating dependencies..."
 if npm install --prefer-offline; then
     log_success "Dependencies installed successfully"
 else
@@ -135,7 +133,7 @@ else
 fi
 
 # Step 8: Check for PM2 running
-log_info "Step 7: Checking PM2 status..."
+log_info "Step 8: Checking PM2 status..."
 if command -v pm2 &> /dev/null; then
     if pm2 list | grep -q "bbot"; then
         log_info "PM2 bots detected, reloading..."
@@ -162,7 +160,7 @@ log_info "- Dependencies installed"
 if command -v pm2 &> /dev/null && pm2 list | grep -q "bbot"; then
     log_info "- PM2 processes reloaded"
 fi
-log_info "- Backup saved: $BACKUP_PATH"
+log_info "- Your profiles/ directory is safe and unchanged"
 log_info ""
 log_info "Log file: $LOG_FILE"
 log_info ""
