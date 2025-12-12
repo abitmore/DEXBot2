@@ -134,15 +134,29 @@ fi
 # Step 8: Check for PM2 running
 log_info "Step 8: Checking PM2 status..."
 if command -v pm2 &> /dev/null; then
-    if pm2 list | grep -q "bbot"; then
-        log_info "PM2 bots detected, reloading..."
-        if pm2 reload profiles/ecosystem.config.js 2>/dev/null; then
-            log_success "PM2 bots reloaded successfully"
+    # Read bot names from bots.json
+    if [ -f "$PROJECT_ROOT/profiles/bots.json" ]; then
+        # Extract bot names from bots.json and check if any are running
+        BOTS_FOUND=false
+        while IFS= read -r bot_name; do
+            if pm2 list | grep -q "$bot_name"; then
+                BOTS_FOUND=true
+                break
+            fi
+        done < <(grep -o '"name": "[^"]*"' "$PROJECT_ROOT/profiles/bots.json" | sed 's/"name": "//;s/"$//')
+
+        if [ "$BOTS_FOUND" = true ]; then
+            log_info "PM2 bots detected, reloading..."
+            if pm2 reload profiles/ecosystem.config.js 2>/dev/null; then
+                log_success "PM2 bots reloaded successfully"
+            else
+                log_warning "PM2 reload failed or no ecosystem config found"
+            fi
         else
-            log_warning "PM2 reload failed or no ecosystem config found"
+            log_info "No running PM2 bots found"
         fi
     else
-        log_info "No running PM2 bots found"
+        log_info "No bots.json found, skipping bot detection"
     fi
 else
     log_info "PM2 not installed, skipping restart"
@@ -156,8 +170,19 @@ log_info ""
 log_info "Summary:"
 log_info "- Code updated to latest from dev branch"
 log_info "- Dependencies installed"
-if command -v pm2 &> /dev/null && pm2 list | grep -q "bbot"; then
-    log_info "- PM2 processes reloaded"
+# Check if any bots from bots.json are running
+if command -v pm2 &> /dev/null && [ -f "$PROJECT_ROOT/profiles/bots.json" ]; then
+    BOTS_RUNNING=false
+    while IFS= read -r bot_name; do
+        if pm2 list | grep -q "$bot_name"; then
+            BOTS_RUNNING=true
+            break
+        fi
+    done < <(grep -o '"name": "[^"]*"' "$PROJECT_ROOT/profiles/bots.json" | sed 's/"name": "//;s/"$//')
+
+    if [ "$BOTS_RUNNING" = true ]; then
+        log_info "- PM2 processes reloaded"
+    fi
 fi
 log_info "- Your profiles/ directory is safe and unchanged"
 log_info ""
