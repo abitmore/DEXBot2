@@ -1650,7 +1650,33 @@ class OrderManager {
         }
 
         const orderCount = Math.min(ordersToProcess.length, eligibleSpreadOrders.length);
-        const fundsPerOrder = orderCount > 0 ? availableFunds / orderCount : 0;
+        const simpleDistribution = orderCount > 0 ? availableFunds / orderCount : 0;
+
+        // Calculate geometric distribution for comparison
+        let geometricSizes = [];
+        let totalGeometric = 0;
+        if (orderCount > 0) {
+            const Grid = require('./grid');
+            geometricSizes = Grid.calculateRotationOrderSizes(
+                availableFunds,
+                0, // no existing grid for new orders
+                orderCount,
+                targetType,
+                this.config,
+                0, // no min size
+                side === 'buy' ? (this.assets?.assetB?.precision ?? 8) : (this.assets?.assetA?.precision ?? 8)
+            );
+            totalGeometric = geometricSizes.reduce((a, b) => a + b, 0);
+        }
+
+        // Compare distributions and handle surplus/shortage
+        let surplus = 0;
+        if (geometricSizes.length > 0 && totalGeometric < availableFunds) {
+            // Geometric sizes are smaller: use them and add surplus to cacheFunds
+            surplus = availableFunds - totalGeometric;
+            this.funds.cacheFunds[side] = (this.funds.cacheFunds[side] || 0) + surplus;
+            this.logger.log(`Geometric distribution (${totalGeometric.toFixed(8)}) smaller than available (${availableFunds.toFixed(8)}). Adding surplus ${surplus.toFixed(8)} to cacheFunds.${side}`, 'info');
+        }
 
         // Track remaining funds locally since this.funds.available gets reset by recalculateFunds
         let remainingFunds = availableFunds;
@@ -1664,8 +1690,13 @@ class OrderManager {
             const targetGridId = priceSource.id;
             const targetPrice = priceSource.price;
 
-            // Use available funds for new order size (proceeds from the fill)
-            const newSize = fundsPerOrder;
+            // Use geometric sizes if available, otherwise cap at simple distribution
+            let newSize;
+            if (geometricSizes.length > i) {
+                newSize = Math.min(geometricSizes[i], simpleDistribution);
+            } else {
+                newSize = simpleDistribution;
+            }
             if (newSize <= 0) {
                 this.logger.log(`No available funds for rotation, skipping`, 'warn');
                 continue;
