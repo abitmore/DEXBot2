@@ -59,7 +59,7 @@ const GRID_LIMITS = Object.freeze({
     // Checked independently for buy and sell sides
     // Example: If cacheFunds.buy = 100 and total.grid.buy = 1000, ratio = 10%
     // If threshold = 5%, then 10% >= 5% triggers update for buy side only
-    GRID_REGENERATION_PERCENTAGE: 5
+    GRID_REGENERATION_PERCENTAGE: 1
 });
 
 module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS };
