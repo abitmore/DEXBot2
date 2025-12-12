@@ -174,8 +174,9 @@ class AccountOrders {
    * Called after grid changes (initialization, fills, syncs).
    * @param {string} botKey - Bot identifier key
    * @param {Array} orders - Array of order objects from OrderManager
+   * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
    */
-  storeMasterGrid(botKey, orders = []) {
+  storeMasterGrid(botKey, orders = [], cacheFunds = null) {
     if (!botKey) return;
     const snapshot = Array.isArray(orders) ? orders.map(order => this._serializeOrder(order)) : [];
     if (!this.data.bots[botKey]) {
@@ -183,11 +184,15 @@ class AccountOrders {
       this.data.bots[botKey] = {
         meta,
         grid: snapshot,
+        cacheFunds: cacheFunds || { buy: 0, sell: 0 },
         createdAt: meta.createdAt,
         lastUpdated: meta.updatedAt
       };
     } else {
       this.data.bots[botKey].grid = snapshot;
+      if (cacheFunds) {
+        this.data.bots[botKey].cacheFunds = cacheFunds;
+      }
       const timestamp = nowIso();
       this.data.bots[botKey].lastUpdated = timestamp;
       if (this.data.bots[botKey].meta) this.data.bots[botKey].meta.updatedAt = timestamp;
@@ -207,6 +212,33 @@ class AccountOrders {
       return botData.grid || null;
     }
     return null;
+  }
+
+  /**
+   * Load cached funds for a bot (difference between available and calculated rotation sizes).
+   * @param {string} botKey - Bot identifier key
+   * @returns {Object|null} Cached funds { buy, sell } or null if not found
+   */
+  loadCacheFunds(botKey) {
+    if (this.data && this.data.bots && this.data.bots[botKey]) {
+      const botData = this.data.bots[botKey];
+      return botData.cacheFunds || { buy: 0, sell: 0 };
+    }
+    return null;
+  }
+
+  /**
+   * Update cached funds for a bot.
+   * @param {string} botKey - Bot identifier key
+   * @param {Object} cacheFunds - Cached funds { buy, sell }
+   */
+  updateCacheFunds(botKey, cacheFunds) {
+    if (!botKey || !this.data || !this.data.bots || !this.data.bots[botKey]) {
+      return;
+    }
+    this.data.bots[botKey].cacheFunds = cacheFunds || { buy: 0, sell: 0 };
+    this.data.lastUpdated = nowIso();
+    this._persist();
   }
 
   /**

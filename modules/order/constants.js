@@ -53,7 +53,13 @@ const TIMING = Object.freeze({
 // Grid limits and scaling constants
 const GRID_LIMITS = Object.freeze({
     MIN_SPREAD_FACTOR: 2,
-    MIN_ORDER_SIZE_FACTOR: 50
+    MIN_ORDER_SIZE_FACTOR: 50,
+    // Grid regeneration threshold (percentage)
+    // When (cacheFunds / total.grid) * 100 >= this percentage on one side, trigger Grid.updateGridOrderSizes() for that side
+    // Checked independently for buy and sell sides
+    // Example: If cacheFunds.buy = 100 and total.grid.buy = 1000, ratio = 10%
+    // If threshold = 5%, then 10% >= 5% triggers update for buy side only
+    GRID_REGENERATION_PERCENTAGE: 5
 });
 
 module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS };

@@ -631,6 +631,322 @@ class Grid {
         manager.logger && manager.logger.logFundsStatus && manager.logger.logFundsStatus(manager);
         manager.logger.logOrderGrid(Array.from(manager.orders.values()), manager.config.marketPrice);
     }
+
+    /**
+     * Check if cache funds exceed regeneration threshold and update grid sizes if needed.
+     * Independently checks buy and sell sides - can update just one side.
+     * Threshold: if (cacheFunds / total.grid) * 100 >= GRID_REGENERATION_PERCENTAGE, update that side.
+     *
+     * @param {Object} manager - OrderManager instance with existing grid
+     * @param {Object} cacheFunds - Cached funds { buy, sell } from previous rotations
+     * @returns {Object} { buyUpdated: boolean, sellUpdated: boolean }
+     * @example
+     * const result = Grid.checkAndUpdateGridIfNeeded(manager, cacheFunds);
+     * if (result.buyUpdated) console.log('Buy side was regenerated');
+     * if (result.sellUpdated) console.log('Sell side was regenerated');
+     */
+    static checkAndUpdateGridIfNeeded(manager, cacheFunds = { buy: 0, sell: 0 }) {
+        if (!manager) throw new Error('checkAndUpdateGridIfNeeded requires a manager instance');
+
+        const { GRID_LIMITS } = require('./constants');
+        const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 5;
+
+        const gridBuy = manager.funds?.total?.grid?.buy || 0;
+        const gridSell = manager.funds?.total?.grid?.sell || 0;
+        const cacheBuy = Number(cacheFunds?.buy || 0);
+        const cacheSell = Number(cacheFunds?.sell || 0);
+
+        const result = { buyUpdated: false, sellUpdated: false };
+
+        // Check buy side independently
+        if (gridBuy > 0) {
+            const buyRatio = (cacheBuy / gridBuy) * 100;
+            if (buyRatio >= threshold) {
+                manager.logger?.log(
+                    `Cache funds ratio for buy side: ${buyRatio.toFixed(2)}% >= ${threshold}% threshold. Updating buy order sizes.`,
+                    'info'
+                );
+                Grid.updateGridOrderSizesForSide(manager, ORDER_TYPES.BUY, cacheFunds);
+                result.buyUpdated = true;
+            } else {
+                manager.logger?.log(
+                    `Cache funds ratio for buy side: ${buyRatio.toFixed(2)}% < ${threshold}% threshold. No update needed.`,
+                    'debug'
+                );
+            }
+        }
+
+        // Check sell side independently
+        if (gridSell > 0) {
+            const sellRatio = (cacheSell / gridSell) * 100;
+            if (sellRatio >= threshold) {
+                manager.logger?.log(
+                    `Cache funds ratio for sell side: ${sellRatio.toFixed(2)}% >= ${threshold}% threshold. Updating sell order sizes.`,
+                    'info'
+                );
+                Grid.updateGridOrderSizesForSide(manager, ORDER_TYPES.SELL, cacheFunds);
+                result.sellUpdated = true;
+            } else {
+                manager.logger?.log(
+                    `Cache funds ratio for sell side: ${sellRatio.toFixed(2)}% < ${threshold}% threshold. No update needed.`,
+                    'debug'
+                );
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Update order sizes for a specific side (buy or sell) based on cache and grid allocation.
+     * Helper for checkAndUpdateGridIfNeeded to update only one side at a time.
+     *
+     * @param {Object} manager - OrderManager instance
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {Object} cacheFunds - Cached funds { buy, sell }
+     * @returns {void} Updates orders in-place
+     */
+    static updateGridOrderSizesForSide(manager, orderType, cacheFunds = { buy: 0, sell: 0 }) {
+        if (!manager) throw new Error('updateGridOrderSizesForSide requires a manager instance');
+
+        const config = manager.config || {};
+        const isBuy = orderType === ORDER_TYPES.BUY;
+        const cacheFundsValue = isBuy ? Number(cacheFunds?.buy || 0) : Number(cacheFunds?.sell || 0);
+        const gridValue = isBuy
+            ? manager.funds?.total?.grid?.buy || 0
+            : manager.funds?.total?.grid?.sell || 0;
+
+        const sideName = isBuy ? 'buy' : 'sell';
+        manager.logger?.log(
+            `Updating ${sideName} side order sizes: cache=${cacheFundsValue.toFixed(8)} + grid=${gridValue.toFixed(8)} = ${(cacheFundsValue + gridValue).toFixed(8)}`,
+            'info'
+        );
+
+        // Get orders for this side
+        const orders = Array.from(manager.orders.values()).filter(o => o.type === orderType);
+
+        if (orders.length === 0) {
+            manager.logger?.log(`No ${sideName} orders found to update`, 'warn');
+            return;
+        }
+
+        // Calculate new sizes for this side only
+        const newSizes = Grid.calculateRotationOrderSizes(
+            cacheFundsValue,
+            gridValue,
+            orders.length,
+            orderType,
+            config,
+            0,
+            isBuy ? manager.assets?.assetB?.precision : manager.assets?.assetA?.precision
+        );
+
+        // Update orders with new sizes
+        orders.forEach((order, i) => {
+            const newSize = newSizes[i] || 0;
+            if (Math.abs(order.size - newSize) > 1e-8) {
+                manager.logger?.log(
+                    `${sideName.charAt(0).toUpperCase() + sideName.slice(1)} ${order.id} @ ${order.price.toFixed(6)}: ${order.size.toFixed(8)} → ${newSize.toFixed(8)}`,
+                    'debug'
+                );
+                const updatedOrder = { ...order, size: newSize };
+                manager._updateOrder(updatedOrder);
+            }
+        });
+
+        // Recalculate funds after updating this side
+        manager.recalculateFunds();
+
+        manager.logger?.log(`${sideName} side order sizes updated`, 'info');
+    }
+
+    /**
+     * Update order sizes in existing grid based on cache funds and total grid allocation.
+     * Keeps grid structure intact (prices, spread, active/virtual states) but recalculates all order sizes.
+     * Uses only cacheFunds + total.grid for sizing (does NOT include available.funds).
+     * Used when reloading grid to maintain consistent sizing across restarts.
+     *
+     * @param {Object} manager - OrderManager instance with existing grid
+     * @param {Object} cacheFunds - Cached funds { buy, sell } from previous rotations
+     * @returns {void} Updates orders in-place via manager._updateOrder()
+     * @example
+     * // After loading grid, update all order sizes based on cache and grid allocation
+     * const cacheFunds = accountOrders.loadCacheFunds(botKey) || { buy: 0, sell: 0 };
+     * Grid.updateGridOrderSizes(manager, cacheFunds);
+     */
+    static updateGridOrderSizes(manager, cacheFunds = { buy: 0, sell: 0 }) {
+        if (!manager) throw new Error('updateGridOrderSizes requires a manager instance');
+
+        const config = manager.config || {};
+        const cacheBuy = Number(cacheFunds?.buy || 0);
+        const cacheSell = Number(cacheFunds?.sell || 0);
+
+        // Get grid allocation (NOT available funds)
+        const gridBuy = manager.funds?.total?.grid?.buy || 0;
+        const gridSell = manager.funds?.total?.grid?.sell || 0;
+
+        // Total to distribute: cache + grid only
+        const totalBuy = cacheBuy + gridBuy;
+        const totalSell = cacheSell + gridSell;
+
+        manager.logger?.log(
+            `Updating grid order sizes - Buy: cache=${cacheBuy.toFixed(8)} + grid=${gridBuy.toFixed(8)} = ${totalBuy.toFixed(8)}`,
+            'info'
+        );
+        manager.logger?.log(
+            `Updating grid order sizes - Sell: cache=${cacheSell.toFixed(8)} + grid=${gridSell.toFixed(8)} = ${totalSell.toFixed(8)}`,
+            'info'
+        );
+
+        // Get all buy and sell orders by their current position in grid
+        const buyOrders = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
+        const sellOrders = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.SELL);
+
+        // Calculate new sizes using same weighting algorithm
+        // Pass 0 as availableFunds since we only want cache + grid
+        const buyNewSizes = Grid.calculateRotationOrderSizes(
+            cacheBuy,
+            gridBuy,
+            buyOrders.length,
+            ORDER_TYPES.BUY,
+            config,
+            0,
+            manager.assets?.assetB?.precision
+        );
+
+        const sellNewSizes = Grid.calculateRotationOrderSizes(
+            cacheSell,
+            gridSell,
+            sellOrders.length,
+            ORDER_TYPES.SELL,
+            config,
+            0,
+            manager.assets?.assetA?.precision
+        );
+
+        // Update buy orders with new sizes
+        buyOrders.forEach((order, i) => {
+            const newSize = buyNewSizes[i] || 0;
+            if (Math.abs(order.size - newSize) > 1e-8) {
+                manager.logger?.log(
+                    `Buy ${order.id} @ ${order.price.toFixed(6)}: ${order.size.toFixed(8)} → ${newSize.toFixed(8)}`,
+                    'debug'
+                );
+                const updatedOrder = { ...order, size: newSize };
+                manager._updateOrder(updatedOrder);
+            }
+        });
+
+        // Update sell orders with new sizes
+        sellOrders.forEach((order, i) => {
+            const newSize = sellNewSizes[i] || 0;
+            if (Math.abs(order.size - newSize) > 1e-8) {
+                manager.logger?.log(
+                    `Sell ${order.id} @ ${order.price.toFixed(6)}: ${order.size.toFixed(8)} → ${newSize.toFixed(8)}`,
+                    'debug'
+                );
+                const updatedOrder = { ...order, size: newSize };
+                manager._updateOrder(updatedOrder);
+            }
+        });
+
+        // Recalculate funds after updating sizes
+        manager.recalculateFunds();
+
+        manager.logger?.log('Grid order sizes updated', 'info');
+        manager.logger?.logFundsStatus && manager.logger.logFundsStatus(manager);
+        manager.logger?.logOrderGrid && manager.logger.logOrderGrid(Array.from(manager.orders.values()), config.marketPrice);
+    }
+
+    /**
+     * Calculate individual order sizes based on available funds and total grid allocation.
+     * Uses the same geometric weighting algorithm as grid initialization.
+     * Distributes the combined allocation (available + grid) across orders during rotation.
+     * This ensures new rotation orders cover the same total allocation space as the full grid.
+     *
+     * @param {number} availableFunds - Currently available funds for new orders
+     * @param {number} totalGridAllocation - Total currently allocated in grid (committed + virtuel)
+     * @param {number} orderCount - Number of new orders to size
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {Object} config - Configuration object with incrementPercent and weightDistribution
+     * @param {number} [minSize=0] - Minimum order size (optional)
+     * @param {number} [precision=null] - Asset precision for integer-based size validation (optional)
+     * @returns {Array} Array of order sizes (length = orderCount)
+     * @example
+     * // Distribute 100 available + 400 already allocated = 500 total across 5 new orders
+     * const sizes = Grid.calculateRotationOrderSizes(
+     *     100,                               // available funds from fill
+     *     400,                               // existing grid allocation (buy or sell side)
+     *     5,                                 // 5 new orders to create
+     *     ORDER_TYPES.BUY,
+     *     { incrementPercent: 1, weightDistribution: { buy: 0.5, sell: 0.5 } }
+     * );
+     * // Returns: [size0, size1, size2, size3, size4] where sizes sum to ~500
+     */
+    static calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderCount, orderType, config, minSize = 0, precision = null) {
+        if (orderCount <= 0) {
+            return [];
+        }
+
+        // Combine available funds + total grid allocation for full distribution
+        const totalFunds = availableFunds + totalGridAllocation;
+
+        if (!Number.isFinite(totalFunds) || totalFunds <= 0) {
+            return new Array(orderCount).fill(0);
+        }
+
+        const { incrementPercent, weightDistribution } = config;
+        const weight = (orderType === ORDER_TYPES.SELL) ? weightDistribution.sell : weightDistribution.buy;
+        const incrementFactor = incrementPercent / 100;
+
+        // Validate weight is within acceptable range
+        const MIN_WEIGHT = -1;
+        const MAX_WEIGHT = 2;
+        if (!Number.isFinite(weight) || weight < MIN_WEIGHT || weight > MAX_WEIGHT) {
+            throw new Error(`Invalid weight distribution: ${weight}. Must be between ${MIN_WEIGHT} and ${MAX_WEIGHT}.`);
+        }
+
+        const n = orderCount;
+        const reverse = (orderType === ORDER_TYPES.SELL);
+        const base = 1 - incrementFactor;
+
+        // Precompute raw weights using geometric formula
+        const rawWeights = new Array(n);
+        for (let i = 0; i < n; i++) {
+            const idx = reverse ? (n - 1 - i) : i;
+            rawWeights[i] = Math.pow(base, idx * weight);
+        }
+
+        // Allocate funds based on weights
+        let sizes = new Array(n).fill(0);
+        const totalWeight = rawWeights.reduce((s, w) => s + w, 0) || 1;
+
+        // Single-pass allocation
+        for (let i = 0; i < n; i++) {
+            sizes[i] = (rawWeights[i] / totalWeight) * totalFunds;
+        }
+
+        // Check if any size is below minimum threshold
+        if (Number.isFinite(minSize) && minSize > 0) {
+            let anyBelow = false;
+            if (precision !== null && precision !== undefined && Number.isFinite(precision)) {
+                const minInt = floatToBlockchainInt(minSize, precision);
+                anyBelow = sizes.some(sz => floatToBlockchainInt(sz, precision) < minInt);
+            } else {
+                anyBelow = sizes.some(sz => sz < minSize - 1e-8);
+            }
+
+            // If any size is below minimum and we have funds, retry without minimum enforcement
+            if (anyBelow && Number.isFinite(totalFunds) && totalFunds > 0) {
+                const fallbackTotalWeight = rawWeights.reduce((s, w) => s + w, 0) || 1;
+                for (let i = 0; i < n; i++) {
+                    sizes[i] = (rawWeights[i] / fallbackTotalWeight) * totalFunds;
+                }
+            }
+        }
+
+        return sizes;
+    }
 }
 
 /**

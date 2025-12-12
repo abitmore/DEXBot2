@@ -988,10 +988,19 @@ class OrderManager {
                 // Step 1: Match chain orders to grid orders
                 for (const chainOrder of chainData) {
                     const parsedOrder = parseChainOrder(chainOrder, this.assets);
-                    if (!parsedOrder) {
-                        this.logger.log(`DEBUG: Could not parse chain order ${chainOrder.id}`, 'warn');
-                        continue;
-                    }
+                        if (!parsedOrder) {
+                            this.logger.log(`DEBUG: Could not parse chain order ${chainOrder.id}; attempting fallback by orderId`, 'warn');
+                            // Fallback: attempt to match by orderId even if parsing failed.
+                            const idFallback = { orderId: chainOrder.id };
+                            const gridOrderById = findMatchingGridOrderByOpenOrder(idFallback, { orders: this.orders, ordersByState: this._ordersByState, assets: this.assets, calcToleranceFn: (p,s,t) => calculatePriceTolerance(p,s,t,this.assets), logger: this.logger });
+                            if (!gridOrderById) {
+                                // Nothing to do for this chain order.
+                                continue;
+                            }
+                            this.logger.log(`DEBUG: Matched chain order ${chainOrder.id} to grid order ${gridOrderById.id} via orderId fallback`, 'info');
+                            // Build a shallow parsedOrder so the rest of the code can proceed.
+                            parsedOrder = { orderId: chainOrder.id, type: gridOrderById.type, price: gridOrderById.price, size: gridOrderById.size };
+                        }
                     relevantChainOrders.push(chainOrder);
                     seenOnChain.add(parsedOrder.orderId);
                     parsedCount++;
