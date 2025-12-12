@@ -344,46 +344,45 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
     // But for the new_price, it takes the NEW total amounts.
     let deltaSellInt = newSellInt - currentSellInt;
 
-    // Check if price is actually changing (compare ratios)
-    // Current price ratio: base/quote = priceRatioBase/priceRatioQuote
-    // New price ratio: newSellInt/newReceiveInt
-    // They're different if: currentSellInt * newReceiveInt != newSellInt * currentReceiveInt
-    const priceChanged = (currentSellInt * candidateReceiveInt) !== (newSellInt * currentReceiveInt);
+    // First, compute the receive amount with the current delta (not adjusted yet)
+    let newReceiveInt;
+    if (newParams.minToReceive !== undefined && newParams.minToReceive !== null) {
+        newReceiveInt = floatToBlockchainInt(newParams.minToReceive, receivePrecision);
+    } else if (newParams.newPrice !== undefined && newParams.newPrice !== null) {
+        const price = Number(newParams.newPrice);
+        const receiveFloat = (newParams.orderType === 'sell')
+            ? (newSellFloat * price)
+            : (newSellFloat / price);
+        newReceiveInt = floatToBlockchainInt(receiveFloat, receivePrecision);
+    } else {
+        // Keep existing on-chain price ratio.
+        newReceiveInt = Math.round((newSellInt * priceRatioQuote) / priceRatioBase);
+    }
+
+    // Check if price or amount is actually changing
+    const priceChanged = newReceiveInt !== currentReceiveInt;
+    const amountChanged = deltaSellInt !== 0;
 
     // Skip update only if BOTH amount and price are unchanged
-    if (deltaSellInt === 0 && !priceChanged) {
+    if (!amountChanged && !priceChanged) {
         return null;
     }
 
-    // Enforce minimum delta: if deltaSellInt is 0 but price is changing,
-    // adjust delta by ±1 toward market center to ensure meaningful update
-    if (deltaSellInt === 0 && priceChanged) {
-        // Determine direction toward market center:
-        // For SELL orders: newReceiveInt < currentReceiveInt means moving down toward market (lower price = better for selling)
-        // For BUY orders: newReceiveInt < currentReceiveInt means moving down toward market (lower price = better for buying, get more BTC for same USD)
-        const isMovingTowardMarket = candidateReceiveInt < currentReceiveInt;
-
-        if (isMovingTowardMarket) {
-            // Adjust delta by +1 to push order size slightly (toward market center)
-            deltaSellInt = 1;
-            console.log(
-                `[buildUpdateOrderOp] Delta was 0 but price changed toward market. Enforcing minimum delta: +1 ` +
-                `(order ${orderId}, ${newParams.orderType}, receive ${currentReceiveInt} → ${candidateReceiveInt})`
-            );
-        } else {
-            // Moving away from market - allow zero delta but log it
-            console.log(
-                `[buildUpdateOrderOp] Delta is 0 and price moving away from market. Allowing zero delta. ` +
-                `(order ${orderId}, ${newParams.orderType}, receive ${currentReceiveInt} → ${candidateReceiveInt})`
-            );
-        }
+    // At this point, at least one field (amount or price) changed.
+    // If BOTH are unchanged (which shouldn't happen due to check above),
+    // we need to enforce a minimum delta of +1 to ensure operation validity
+    if (!amountChanged && !priceChanged) {
+        deltaSellInt = 1;
+        console.log(
+            `[buildUpdateOrderOp] Neither amount nor price changed, but enforcing minimum delta: +1 ` +
+            `(order ${orderId}, ${newParams.orderType})`
+        );
     }
 
     // Adjust newSellInt to strict logic: current + delta
     const adjustedSellInt = currentSellInt + deltaSellInt;
 
-    // Compute the final receive amount consistent with the final sell amount.
-    let newReceiveInt;
+    // Recompute the final receive amount with the adjusted sell amount
     if (newParams.minToReceive !== undefined && newParams.minToReceive !== null) {
         newReceiveInt = floatToBlockchainInt(newParams.minToReceive, receivePrecision);
     } else if (newParams.newPrice !== undefined && newParams.newPrice !== null) {
