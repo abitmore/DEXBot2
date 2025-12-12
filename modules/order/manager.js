@@ -218,20 +218,62 @@ class OrderManager {
         const allocatedBuy = this._resolveConfigValue(this.config.botFunds.buy, chainTotalBuy);
         const allocatedSell = this._resolveConfigValue(this.config.botFunds.sell, chainTotalSell);
 
+        // Deduct BTS creation fees if BTS is in the trading pair
+        let btsFeesForCreation = 0;
+        const assetA = this.config.assetA;
+        const assetB = this.config.assetB;
+        const hasBtsPair = (assetA === 'BTS' || assetB === 'BTS');
+
+        if (hasBtsPair) {
+            try {
+                const { getAssetFees } = require('./utils');
+                const targetBuy = Math.max(0, Number.isFinite(Number(this.config.activeOrders?.buy)) ? Number(this.config.activeOrders.buy) : 1);
+                const targetSell = Math.max(0, Number.isFinite(Number(this.config.activeOrders?.sell)) ? Number(this.config.activeOrders.sell) : 1);
+                const totalOrdersToCreate = targetBuy + targetSell;
+
+                if (totalOrdersToCreate > 0) {
+                    const btsFeeData = getAssetFees('BTS', 1);
+                    btsFeesForCreation = btsFeeData.createFee * totalOrdersToCreate;
+                }
+            } catch (err) {
+                this.logger?.log?.(`Warning: Could not calculate BTS creation fees in applyBotFundsAllocation: ${err.message}`, 'warn');
+            }
+        }
+
+        // Reduce allocated amounts by BTS fees if applicable
+        let finalAllocatedBuy = allocatedBuy;
+        let finalAllocatedSell = allocatedSell;
+
+        if (btsFeesForCreation > 0) {
+            if (assetB === 'BTS') {
+                finalAllocatedBuy = Math.max(0, allocatedBuy - btsFeesForCreation);
+                this.logger?.log?.(
+                    `Reduced allocated BTS (buy) by ${btsFeesForCreation.toFixed(8)} for order creation fees: ${allocatedBuy.toFixed(8)} -> ${finalAllocatedBuy.toFixed(8)}`,
+                    'info'
+                );
+            } else if (assetA === 'BTS') {
+                finalAllocatedSell = Math.max(0, allocatedSell - btsFeesForCreation);
+                this.logger?.log?.(
+                    `Reduced allocated BTS (sell) by ${btsFeesForCreation.toFixed(8)} for order creation fees: ${allocatedSell.toFixed(8)} -> ${finalAllocatedSell.toFixed(8)}`,
+                    'info'
+                );
+            }
+        }
+
         // Expose allocation for grid sizing (and diagnostics)
-        this.funds.allocated = { buy: allocatedBuy, sell: allocatedSell };
+        this.funds.allocated = { buy: finalAllocatedBuy, sell: finalAllocatedSell };
 
         // Cap available to not exceed allocation
-        if (allocatedBuy > 0) {
-            this.funds.available.buy = Math.min(this.funds.available.buy, allocatedBuy);
+        if (finalAllocatedBuy > 0) {
+            this.funds.available.buy = Math.min(this.funds.available.buy, finalAllocatedBuy);
         }
-        if (allocatedSell > 0) {
-            this.funds.available.sell = Math.min(this.funds.available.sell, allocatedSell);
+        if (finalAllocatedSell > 0) {
+            this.funds.available.sell = Math.min(this.funds.available.sell, finalAllocatedSell);
         }
 
         this.logger?.log(
-            `Applied botFunds allocation (based on total): buy=${allocatedBuy.toFixed(8)} (total=${chainTotalBuy.toFixed(8)}, available=${this.funds.available.buy.toFixed(8)}), ` +
-            `sell=${allocatedSell.toFixed(8)} (total=${chainTotalSell.toFixed(8)}, available=${this.funds.available.sell.toFixed(8)})`,
+            `Applied botFunds allocation (based on total): buy=${finalAllocatedBuy.toFixed(8)} (total=${chainTotalBuy.toFixed(8)}, available=${this.funds.available.buy.toFixed(8)}), ` +
+            `sell=${finalAllocatedSell.toFixed(8)} (total=${chainTotalSell.toFixed(8)}, available=${this.funds.available.sell.toFixed(8)})`,
             'info'
         );
     }
@@ -1193,9 +1235,9 @@ class OrderManager {
 
                 // Add BTS blockchain fees if BTS is in pair (quote asset fee only when selling)
                 if (hasBtsPair && this.config.assetB === 'BTS') {
-                    const btsFee = getAssetFees('BTS', filledOrder.size);
-                    btsFeesDuedThisFill += btsFee;
-                    this.logger.log(`BTS blockchain fee for sell order: ${btsFee.toFixed(8)} BTS`, 'debug');
+                    const btsFeeData = getAssetFees('BTS', filledOrder.size);
+                    btsFeesDuedThisFill += btsFeeData.total;
+                    this.logger.log(`BTS blockchain fee for sell order: ${btsFeeData.total.toFixed(8)} BTS`, 'debug');
                 }
             } else {
                 const proceeds = filledOrder.size / filledOrder.price;
@@ -1211,9 +1253,9 @@ class OrderManager {
 
                 // Add BTS blockchain fees if BTS is in pair (base asset fee only when buying)
                 if (hasBtsPair && this.config.assetA === 'BTS') {
-                    const btsFee = getAssetFees('BTS', filledOrder.size);
-                    btsFeesDuedThisFill += btsFee;
-                    this.logger.log(`BTS blockchain fee for buy order: ${btsFee.toFixed(8)} BTS`, 'debug');
+                    const btsFeeData = getAssetFees('BTS', filledOrder.size);
+                    btsFeesDuedThisFill += btsFeeData.total;
+                    this.logger.log(`BTS blockchain fee for buy order: ${btsFeeData.total.toFixed(8)} BTS`, 'debug');
                 }
             }
 

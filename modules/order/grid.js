@@ -408,8 +408,61 @@ class Grid {
             'info'
         );
 
+        // Deduct BTS createFee for orders that will be created during grid initialization
+        // Only if BTS is in the trading pair
+        let btsFeesForCreation = 0;
+        const assetA = manager.config.assetA;
+        const assetB = manager.config.assetB;
+        const hasBtsPair = (assetA === 'BTS' || assetB === 'BTS');
+
+        if (hasBtsPair) {
+            try {
+                const { getAssetFees } = require('./utils');
+                const targetBuy = Math.max(0, Number.isFinite(Number(manager.config.activeOrders?.buy)) ? Number(manager.config.activeOrders.buy) : 1);
+                const targetSell = Math.max(0, Number.isFinite(Number(manager.config.activeOrders?.sell)) ? Number(manager.config.activeOrders.sell) : 1);
+
+                // Ignore open orders at startup - calculate fees for all target orders as if we're creating them from scratch
+                // This ensures we reserve enough BTS for order creation regardless of current state
+                const totalOrdersToCreate = targetBuy + targetSell;
+
+                if (totalOrdersToCreate > 0) {
+                    const btsFeeData = getAssetFees('BTS', 1); // Amount doesn't matter for create fee
+                    btsFeesForCreation = btsFeeData.createFee * totalOrdersToCreate;
+                    manager.logger.log(
+                        `BTS fee reservation: ${totalOrdersToCreate} orders to create (buy=${targetBuy}, sell=${targetSell}) = ${btsFeesForCreation.toFixed(8)} BTS`,
+                        'info'
+                    );
+                }
+            } catch (err) {
+                manager.logger && manager.logger.log && manager.logger.log(
+                    `Warning: Could not calculate BTS creation fees: ${err.message}`,
+                    'warn'
+                );
+            }
+        }
+
+        // Reduce available BTS funds by the fees we need to reserve
+        let finalInputFundsBuy = inputFundsBuy;
+        let finalInputFundsSell = inputFundsSell;
+
+        if (btsFeesForCreation > 0) {
+            if (assetB === 'BTS') {
+                finalInputFundsBuy = Math.max(0, inputFundsBuy - btsFeesForCreation);
+                manager.logger.log(
+                    `Reduced available BTS (buy) funds by ${btsFeesForCreation.toFixed(8)} for order creation fees: ${inputFundsBuy.toFixed(8)} -> ${finalInputFundsBuy.toFixed(8)}`,
+                    'info'
+                );
+            } else if (assetA === 'BTS') {
+                finalInputFundsSell = Math.max(0, inputFundsSell - btsFeesForCreation);
+                manager.logger.log(
+                    `Reduced available BTS (sell) funds by ${btsFeesForCreation.toFixed(8)} for order creation fees: ${inputFundsSell.toFixed(8)} -> ${finalInputFundsSell.toFixed(8)}`,
+                    'info'
+                );
+            }
+        }
+
         let sizedOrders = Grid.calculateOrderSizes(
-            orders, manager.config, inputFundsSell, inputFundsBuy, minSellSize, minBuySize, precA, precB
+            orders, manager.config, finalInputFundsSell, finalInputFundsBuy, minSellSize, minBuySize, precA, precB
         );
 
         // Calculate total allocated by the sizing algorithm

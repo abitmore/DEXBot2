@@ -83,7 +83,9 @@ async function main() {
         // Test BTS (blockchain fees)
         console.log('\n--- BTS ---');
         const btsFees = getAssetFees('BTS', 1000);
-        console.log(`getAssetFees('BTS', 1000) = ${btsFees.toFixed(8)} BTS`);
+        console.log(`getAssetFees('BTS', 1000):`);
+        console.log(`  total: ${btsFees.total.toFixed(8)} BTS`);
+        console.log(`  createFee: ${btsFees.createFee.toFixed(8)} BTS`);
 
         // Test IOB.XRP
         console.log('\n--- IOB.XRP ---');

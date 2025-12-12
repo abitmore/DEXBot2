@@ -835,9 +835,11 @@ function clearFeeCache() {
  *
  * @param {string} assetSymbol - Asset symbol (e.g., 'IOB.XRP', 'TWENTIX', 'BTS')
  * @param {number} assetAmount - Amount of asset to calculate fees for
- * @returns {number} Total fee amount in the asset's native units
- *   For BTS: blockchain fees only (creation 10% + update)
- *   For market assets: market fee on the amount
+ * @returns {number|object} Fee amount in the asset's native units
+ *   For BTS: object with { total: number, createFee: number }
+ *     - total: blockchain fees (creation 10% + update)
+ *     - createFee: the full limit order creation fee
+ *   For market assets: total fee amount (number)
  */
 function getAssetFees(assetSymbol, assetAmount) {
     const cachedFees = feeCache[assetSymbol];
@@ -856,7 +858,10 @@ function getAssetFees(assetSymbol, assetAmount) {
         const orderCreationFee = cachedFees.limitOrderCreate.bts;
         const orderUpdateFee = cachedFees.limitOrderUpdate.bts;
         const makerNetFee = orderCreationFee * 0.1; // 10% of creation fee after 90% refund
-        return makerNetFee + orderUpdateFee;
+        return {
+            total: makerNetFee + orderUpdateFee,
+            createFee: orderCreationFee
+        };
     }
 
     // Handle regular assets - deduct market fee from the amount received

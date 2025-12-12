@@ -52,7 +52,9 @@ async function main() {
         console.log('-'.repeat(80));
 
         const btsFees = getAssetFees('BTS', 1000);
-        console.log(`\ngetAssetFees('BTS', 1000) = ${btsFees.toFixed(8)} BTS`);
+        console.log(`\ngetAssetFees('BTS', 1000):`);
+        console.log(`  total: ${btsFees.total.toFixed(8)} BTS`);
+        console.log(`  createFee: ${btsFees.createFee.toFixed(8)} BTS`);
 
         console.log('\n' + '='.repeat(80) + '\n');
 
