@@ -33,7 +33,7 @@ const DEFAULT_CONFIG = {
     minPrice: "4x",
     maxPrice: "4x",
     incrementPercent: 1,
-    targetSpreadPercent: 5,
+    targetSpreadPercent: 3,
     active: true,
     dryRun: false,
     assetA: null,
