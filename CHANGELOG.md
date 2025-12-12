@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2025-12-12 - Startup Grid Reconciliation & Fee Caching System
+
+### Features
+- **Startup Grid Reconciliation System**: Intelligent grid recovery at startup
+  - Price-based matching to resume persisted grids with existing on-chain orders
+  - Smart regeneration decisions based on on-chain order states
+  - Count-based reconciliation for order synchronization
+  - Unified startup logic in both bot.js and dexbot.js
+
+- **Fee Caching System**: Improved fill processing performance
+  - One-time fee data loading to avoid repeated blockchain queries
+  - Cache fee deductions throughout the trading session
+  - Integrated into fill processing workflows
+
+- **Enhanced Order Manager**: Better fund tracking and grid management
+  - Improved chain order synchronization with price+size matching
+  - Grid recalculation for full grid resync with better parameters
+  - Enhanced logging and debug output for startup troubleshooting
+
+- **Improved Account Handling**: Better restart operations
+  - Set account info on manager during restart for balance calculations
+  - Support percentage-based botFunds configuration at restart
+  - Fetch on-chain balances before grid initialization if needed
+
+### Fixed
+- **Limit Order Update Calculation**: Fixed parameter handling in chain_orders.js
+  - Corrected receive amount handling for price-change detection
+  - Improved delta calculation when price changes toward/away from market
+  - Added comprehensive validation for final amounts after delta adjustment
+
+### Testing
+- Comprehensive test coverage for new reconciliation logic
+- Test startup decision logic with various grid/chain scenarios
+- Test TwentyX-specific edge cases and recovery paths
+
 ## [0.1.2] - 2025-12-10 - Multi-Bot Fund Allocation & Update Script
 
 ### Features
