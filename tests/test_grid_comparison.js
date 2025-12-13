@@ -332,7 +332,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
 }
 
 console.log('\n=== Test Summary ===');
-console.log(`Threshold: ${GRID_COMPARISON.DIVERGENCE_THRESHOLD}`);
+console.log(`Threshold: ${GRID_COMPARISON.DIVERGENCE_THRESHOLD_Percent}`);
 console.log('Separate metrics for buy/sell sides');
 console.log('Independent auto-updates by side');
 console.log('Run: npm test -- tests/test_grid_comparison.js');
