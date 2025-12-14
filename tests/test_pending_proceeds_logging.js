@@ -11,7 +11,7 @@
 
 const { OrderManager } = require('../modules/order');
 const { AccountOrders, createBotKey } = require('../modules/account_orders');
-const { ORDER_STATES, ORDER_TYPES } = require('../modules/order/constants');
+const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 // Simple test logger that captures output
 class TestLogger {

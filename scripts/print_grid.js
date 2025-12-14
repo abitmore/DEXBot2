@@ -1,5 +1,5 @@
 const Grid = require('../modules/order/grid');
-const { DEFAULT_CONFIG } = require('../modules/order/constants');
+const { DEFAULT_CONFIG } = require('../modules/constants');
 
 function printGridSample() {
   const config = {

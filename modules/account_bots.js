@@ -4,7 +4,7 @@ const path = require('path');
 const readlineSync = require('readline-sync');
 const readline = require('readline');
 const { execSync } = require('child_process');
-const { DEFAULT_CONFIG } = require('./order/constants');
+const { DEFAULT_CONFIG } = require('./constants');
 
 function parseJsonWithComments(raw) {
     const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');

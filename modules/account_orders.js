@@ -24,7 +24,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { ORDER_STATES } = require('./order/constants');
+const { ORDER_STATES } = require('./constants');
 
 const PROFILES_ORDERS_FILE = path.join(__dirname, '..', 'profiles', 'orders.json');
 

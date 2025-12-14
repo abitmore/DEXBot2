@@ -392,7 +392,7 @@ Below is a short summary of the modules in this repository and what they provide
 
 Core order generation, management, and grid algorithms:
 
-- `modules/order/constants.js`: Order constants, grid limits, and `DEFAULT_CONFIG`.
+- `modules/constants.js`: Order constants, grid limits, and `DEFAULT_CONFIG`.
 - `modules/order/index.js`: Public entry point: exports `OrderManager` and `runOrderManagerCalculation()` (dry-run helper).
 - `modules/order/logger.js`: Colored console logger and `logOrderGrid()` helper for formatted output.
 - `modules/order/manager.js`: `OrderManager` class — derives market price, resolves bounds, builds and manages the grid, handles fills and rebalancing.

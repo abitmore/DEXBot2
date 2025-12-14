@@ -21,11 +21,11 @@
  * - Grid loading (loadGrid): ACTIVE orders increment funds.committed
  * - Order activation: funds.virtuel decreases, funds.committed increases
  */
-const { ORDER_TYPES, DEFAULT_CONFIG, GRID_LIMITS } = require('./constants');
+const { ORDER_TYPES, DEFAULT_CONFIG, GRID_LIMITS } = require('../constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
 const { floatToBlockchainInt, resolveRelativePrice } = require('./utils');
 
-// Grid sizing limits are centralized in modules/order/constants.js -> GRID_LIMITS
+// Grid sizing limits are centralized in modules/constants.js -> GRID_LIMITS
 
 /**
  * Grid - Static class for grid creation and sizing

@@ -11,7 +11,7 @@
 
 const { AccountOrders, createBotKey } = require('../modules/account_orders');
 const { OrderManager } = require('../modules/order');
-const { ORDER_STATES, ORDER_TYPES } = require('../modules/order/constants');
+const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 async function testCompleteLifecycle() {
     console.log('\n╔════════════════════════════════════════════════════════╗');

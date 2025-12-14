@@ -1,6 +1,6 @@
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
-const { ORDER_TYPES, DEFAULT_CONFIG } = require('../modules/order/constants');
+const { ORDER_TYPES, DEFAULT_CONFIG } = require('../modules/constants');
 
 console.log('Running rotation order sizing test...\n');
 

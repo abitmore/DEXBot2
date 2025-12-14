@@ -1,4 +1,4 @@
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('./constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const OrderUtils = require('./utils');
 
 function _countActiveOnGrid(manager, type) {

@@ -1,7 +1,7 @@
 
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/order/constants');
+const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 // Mock Manager
 class MockManager {

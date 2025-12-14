@@ -11,7 +11,7 @@
  */
 
 const { OrderManager } = require('../modules/order');
-const { ORDER_STATES, ORDER_TYPES } = require('../modules/order/constants');
+const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 console.log('\n===== TEST: Partial Fill Proceeds Not Double-Counted =====\n');
 

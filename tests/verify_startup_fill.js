@@ -1,6 +1,6 @@
 
 const { OrderManager } = require('../modules/order/manager');
-const { ORDER_STATES, ORDER_TYPES } = require('../modules/order/constants');
+const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 // Mock assets/logger
 const mockAssets = {

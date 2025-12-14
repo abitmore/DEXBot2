@@ -8,7 +8,7 @@
 
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/order/constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
 
 /**

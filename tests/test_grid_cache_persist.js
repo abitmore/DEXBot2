@@ -26,7 +26,7 @@ if (!rawBefore.bots[botKey] || rawBefore.bots[botKey].cacheFunds.buy !== 123.456
 }
 
 // Simulate manager object minimal shape needed by Grid.checkAndUpdateGridIfNeeded
-const ORDER_TYPES = require('../modules/order/constants').ORDER_TYPES;
+const ORDER_TYPES = require('../modules/constants').ORDER_TYPES;
 const manager = {
   funds: { total: { grid: { buy: 100 } }, cacheFunds: { buy: 123.456, sell: 0 } },
   config: { botKey, incrementPercent: 1, weightDistribution: { buy: 0.5, sell: 0.5 } },

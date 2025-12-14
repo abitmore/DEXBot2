@@ -34,18 +34,18 @@
  * 3. Order fill: pendingProceeds set with fill value, available increases temporarily
  * 4. After rotation: pendingProceeds cleared as funds are consumed by new orders
  */
-const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('./constants');
+const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('../constants');
 const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize, getAssetFees } = require('./utils');
 const Logger = require('./logger');
 // Grid functions (initialize/recalculate) are intended to be
 // called directly via require('./grid').initializeGrid(manager) by callers.
 
-// Constants for manager operations are provided by modules/order/constants.js
+// Constants for manager operations are provided by modules/constants.js
 // Size comparisons are performed by converting human-readable floats
 // to blockchain integer amounts using floatToBlockchainInt(...) and
 // comparing integers. This provides exact, deterministic behavior that
 // matches on-chain granularity and avoids arbitrary tolerances.
-// MIN_ORDER_SIZE_FACTOR and MIN_SPREAD_FACTOR moved to modules/order/constants.js
+// MIN_ORDER_SIZE_FACTOR and MIN_SPREAD_FACTOR are defined in modules/constants.js
 // and exposed via GRID_LIMITS (e.g. GRID_LIMITS.MIN_ORDER_SIZE_FACTOR)
 
 /**

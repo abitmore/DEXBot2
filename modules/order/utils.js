@@ -14,7 +14,7 @@
  * to keep the funds structure consistent with order state changes.
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING } = require('./constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');
 
 // ---------------------------------------------------------------------------
 // Parsing helpers

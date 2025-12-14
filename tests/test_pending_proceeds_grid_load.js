@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { OrderManager, grid: Grid } = require('../modules/order');
-const { ORDER_TYPES } = require('../modules/order/constants');
+const { ORDER_TYPES } = require('../modules/constants');
 
 /**
  * Test that pendingProceeds survive grid loading
