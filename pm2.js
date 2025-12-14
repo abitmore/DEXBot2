@@ -148,7 +148,18 @@ async function authenticateWithoutWait() {
 function startPM2(masterPassword) {
     return new Promise((resolve, reject) => {
         const env = { ...process.env, MASTER_PASSWORD: masterPassword };
-        const pm2 = spawn('pm2', ['start', ECOSYSTEM_FILE], {
+        
+        // CRITICAL FIX: Use 'pm2 restart' instead of 'pm2 start' to properly handle
+        // the case where bots are already running. This prevents:
+        // 1. Multiple processes for the same bot running simultaneously
+        // 2. Race conditions where both old and new processes read/write to the same persistence file
+        // 3. Duplicate order creation from conflicting state
+        //
+        // pm2 restart will:
+        // - Restart already-running bots gracefully
+        // - Start new bots that don't exist
+        // - NOT create duplicate processes
+        const pm2 = spawn('pm2', ['restart', ECOSYSTEM_FILE], {
             cwd: ROOT,
             env,
             stdio: 'inherit',
