@@ -116,21 +116,34 @@ class AccountOrders {
    */
   ensureBotEntries(botEntries = []) {
     if (!Array.isArray(botEntries)) return;
+    const validKeys = new Set();
     let changed = false;
+
+    // 1. Update/Create active bots
     for (const [index, bot] of botEntries.entries()) {
       const key = bot.botKey || createBotKey(bot, index);
+      validKeys.add(key);
+
       let entry = this.data.bots[key];
       const meta = this._buildMeta(bot, key, index, entry && entry.meta);
+
       if (!entry) {
         entry = {
           meta,
           grid: [],
+          cacheFunds: { buy: 0, sell: 0 },
           createdAt: meta.createdAt,
           lastUpdated: meta.updatedAt
         };
         this.data.bots[key] = entry;
         changed = true;
       } else {
+        // Ensure cacheFunds exists even for existing bots
+        if (!entry.cacheFunds || typeof entry.cacheFunds.buy !== 'number') {
+          entry.cacheFunds = { buy: 0, sell: 0 };
+          changed = true;
+        }
+
         entry.grid = entry.grid || [];
         if (this._metaChanged(entry.meta, meta)) {
           entry.meta = { ...entry.meta, ...meta, createdAt: entry.meta?.createdAt || meta.createdAt };
@@ -140,6 +153,16 @@ class AccountOrders {
       }
       bot.botKey = key;
     }
+
+    // 2. Prune zombie bots (remove entries not in botEntries)
+    for (const key of Object.keys(this.data.bots)) {
+      if (!validKeys.has(key)) {
+        console.log(`[AccountOrders] Pruning stale bot entry: ${key}`);
+        delete this.data.bots[key];
+        changed = true;
+      }
+    }
+
     if (changed) {
       this.data.lastUpdated = nowIso();
       this._persist();
@@ -222,9 +245,12 @@ class AccountOrders {
   loadCacheFunds(botKey) {
     if (this.data && this.data.bots && this.data.bots[botKey]) {
       const botData = this.data.bots[botKey];
-      return botData.cacheFunds || { buy: 0, sell: 0 };
+      const cf = botData.cacheFunds;
+      if (cf && typeof cf.buy === 'number' && typeof cf.sell === 'number') {
+        return cf;
+      }
     }
-    return null;
+    return { buy: 0, sell: 0 };
   }
 
   /**

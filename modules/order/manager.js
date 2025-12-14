@@ -693,11 +693,11 @@ class OrderManager {
                 if (oldInt !== newInt) {
                     const fillAmount = oldSize - newSize;
                     this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}): size changed ${oldSize.toFixed(8)} -> ${newSize.toFixed(8)} (filled: ${fillAmount.toFixed(8)})`, 'info');
-                    
+
                     // Create copy for update
                     const updatedOrder = { ...gridOrder };
                     applyChainSizeToGridOrder(this, updatedOrder, newSize);
-                    
+
                     // Transition to PARTIAL state since it was partially filled
                     if (updatedOrder.state === ORDER_STATES.ACTIVE) {
                         updatedOrder.state = ORDER_STATES.PARTIAL;
@@ -713,10 +713,10 @@ class OrderManager {
                 if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
                     this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}) no longer on chain - marking as VIRTUAL (fully filled)`, 'info');
                     const filledOrder = { ...gridOrder };
-                    
+
                     // Create copy for update
                     const updatedOrder = { ...gridOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
-                    
+
                     this._updateOrder(updatedOrder);
                     filledOrders.push(filledOrder);
                 }
@@ -891,25 +891,25 @@ class OrderManager {
             // Fully filled
             this.logger.log(`syncFromFillHistory: Order ${matchedGridOrder.id} (${orderId}) FULLY FILLED`, 'info');
             const filledOrder = { ...matchedGridOrder };
-            
+
             // Create copy for update
             const updatedOrder = { ...matchedGridOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
-            
+
             this._updateOrder(updatedOrder);
             filledOrders.push(filledOrder);
         } else {
             // Partially filled - transition to PARTIAL state
             this.logger.log(`syncFromFillHistory: Order ${matchedGridOrder.id} (${orderId}) PARTIALLY FILLED, remaining=${newSize.toFixed(8)}`, 'info');
-            
+
             // Create copy for update
             const updatedOrder = { ...matchedGridOrder };
-            
+
             // Update state to PARTIAL first to ensure correct index updates
             // (applyChainSizeToGridOrder calls _updateOrder internally)
             updatedOrder.state = ORDER_STATES.PARTIAL;
-            
+
             applyChainSizeToGridOrder(this, updatedOrder, newSize);
-            
+
             // Sanity check: ensure orderId is still there
             if (!updatedOrder.orderId) {
                 this.logger.log(`CRITICAL: orderId lost in syncFromFillHistory for ${updatedOrder.id}! Restoring from param ${orderId}`, 'error');
@@ -995,19 +995,19 @@ class OrderManager {
                 // Step 1: Match chain orders to grid orders
                 for (const chainOrder of chainData) {
                     const parsedOrder = parseChainOrder(chainOrder, this.assets);
-                        if (!parsedOrder) {
-                            this.logger.log(`DEBUG: Could not parse chain order ${chainOrder.id}; attempting fallback by orderId`, 'warn');
-                            // Fallback: attempt to match by orderId even if parsing failed.
-                            const idFallback = { orderId: chainOrder.id };
-                            const gridOrderById = findMatchingGridOrderByOpenOrder(idFallback, { orders: this.orders, ordersByState: this._ordersByState, assets: this.assets, calcToleranceFn: (p,s,t) => calculatePriceTolerance(p,s,t,this.assets), logger: this.logger });
-                            if (!gridOrderById) {
-                                // Nothing to do for this chain order.
-                                continue;
-                            }
-                            this.logger.log(`DEBUG: Matched chain order ${chainOrder.id} to grid order ${gridOrderById.id} via orderId fallback`, 'info');
-                            // Build a shallow parsedOrder so the rest of the code can proceed.
-                            parsedOrder = { orderId: chainOrder.id, type: gridOrderById.type, price: gridOrderById.price, size: gridOrderById.size };
+                    if (!parsedOrder) {
+                        this.logger.log(`DEBUG: Could not parse chain order ${chainOrder.id}; attempting fallback by orderId`, 'warn');
+                        // Fallback: attempt to match by orderId even if parsing failed.
+                        const idFallback = { orderId: chainOrder.id };
+                        const gridOrderById = findMatchingGridOrderByOpenOrder(idFallback, { orders: this.orders, ordersByState: this._ordersByState, assets: this.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, this.assets), logger: this.logger });
+                        if (!gridOrderById) {
+                            // Nothing to do for this chain order.
+                            continue;
                         }
+                        this.logger.log(`DEBUG: Matched chain order ${chainOrder.id} to grid order ${gridOrderById.id} via orderId fallback`, 'info');
+                        // Build a shallow parsedOrder so the rest of the code can proceed.
+                        parsedOrder = { orderId: chainOrder.id, type: gridOrderById.type, price: gridOrderById.price, size: gridOrderById.size };
+                    }
                     relevantChainOrders.push(chainOrder);
                     seenOnChain.add(parsedOrder.orderId);
                     parsedCount++;
@@ -1704,7 +1704,7 @@ class OrderManager {
             const newCacheFundsValue = oldCacheFundsValue + surplus;
             this.funds.cacheFunds[side] = newCacheFundsValue;
             this.logger.log(`Allocated sum (${allocatedSum.toFixed(8)}) smaller than available (${availableFunds.toFixed(8)}). Adding surplus ${surplus.toFixed(8)} to cacheFunds.${side}`, 'info');
-            
+
             // Persist cacheFunds and trigger grid comparison when value changes
             try {
                 const { AccountOrders } = require('../account_orders');
@@ -1713,14 +1713,14 @@ class OrderManager {
                     accountDb.updateCacheFunds(this.config.botKey, this.funds.cacheFunds);
                     this.logger.log(`Persisted cacheFunds.${side} = ${newCacheFundsValue.toFixed(8)}`, 'debug');
                 }
-                
+
                 // Trigger grid comparison to detect divergence after cacheFunds change
                 const { Grid } = require('./grid');
                 const persistedGrid = accountDb?.loadBotGrid(this.config.botKey) || [];
                 const calculatedGrid = Array.from(this.orders.values());
-                
+
                 const comparisonResult = Grid.compareGrids(calculatedGrid, persistedGrid, this, this.funds.cacheFunds);
-                
+
                 if (comparisonResult.buy.metric > 0 || comparisonResult.sell.metric > 0) {
                     this.logger.log(
                         `Grid divergence detected after cacheFunds change: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`,
