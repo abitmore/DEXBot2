@@ -601,8 +601,8 @@ class Grid {
                     'info'
                 );
                 Grid.updateGridOrderSizesForSide(manager, s.orderType, cacheFunds);
-                // Clear persisted cacheFunds for this side since we regenerated sizes
-                Grid._clearAndPersistCacheFunds(manager, s.name);
+                // Persist the updated cacheFunds (which now includes the surplus)
+                Grid._persistCacheFunds(manager, s.name);
                 if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
             } else {
                 manager.logger?.log(
@@ -640,6 +640,9 @@ class Grid {
             'info'
         );
 
+        // Required utils for precision handling
+        const { floatToBlockchainInt, blockchainToFloat } = require('./utils');
+
         // Get orders for this side
         const orders = Array.from(manager.orders.values()).filter(o => o.type === orderType);
 
@@ -649,6 +652,7 @@ class Grid {
         }
 
         // Calculate new sizes for this side only
+        const precision = isBuy ? manager.assets?.assetB?.precision : manager.assets?.assetA?.precision;
         const newSizes = Grid.calculateRotationOrderSizes(
             cacheFundsValue,
             gridValue,
@@ -656,8 +660,11 @@ class Grid {
             orderType,
             config,
             0,
-            isBuy ? manager.assets?.assetB?.precision : manager.assets?.assetA?.precision
+            precision
         );
+
+        // DEBUG: Log calculated sizes as requested
+        manager.logger?.log?.(`DEBUG Calculated Sizes (${sideName}): [${newSizes.map(s => s.toFixed(8)).join(', ')}]`, 'debug');
 
         // Update orders with new sizes
         Grid._updateOrdersForSide(manager, orderType, newSizes, orders);
@@ -666,6 +673,30 @@ class Grid {
         manager.recalculateFunds();
 
         manager.logger?.log(`${sideName} side order sizes updated`, 'info');
+
+        // Calculate surplus (totalInput - totalAllocated) to be recycled into cacheFunds
+        // Ensure we compare apples to apples using blockchain integer precision
+        if (precision !== undefined && precision !== null) {
+            const totalInputInt = floatToBlockchainInt(cacheFundsValue + gridValue, precision);
+            let totalAllocatedInt = 0;
+
+            // Sum up the actual allocated sizes (quantized)
+            newSizes.forEach(size => {
+                totalAllocatedInt += floatToBlockchainInt(size, precision);
+            });
+
+            const surplusInt = totalInputInt - totalAllocatedInt;
+            const surplus = blockchainToFloat(surplusInt, precision);
+
+            // Add surplus back to cacheFunds
+            if (!manager.funds.cacheFunds) manager.funds.cacheFunds = { buy: 0, sell: 0 };
+            manager.funds.cacheFunds[sideName] = surplus;
+
+            manager.logger?.log(
+                `DEBUG Recalc Surplus: input=${(cacheFundsValue + gridValue).toFixed(8)}, allocated=${blockchainToFloat(totalAllocatedInt, precision).toFixed(8)}, surplus=${surplus.toFixed(8)} added to cache`,
+                'debug'
+            );
+        }
     }
 
     /**
@@ -819,11 +850,11 @@ class Grid {
                 `Buy side divergence metric ${buyMetric.toFixed(6)} exceeds threshold ${threshold.toFixed(6)}. Triggering updateGridOrderSizesForSide...`,
                 'info'
             );
-            
+
             const funds = cacheFunds || { buy: 0, sell: 0 };
             Grid.updateGridOrderSizesForSide(manager, ORDER_TYPES.BUY, funds);
             buyUpdated = true;
-            
+
             manager.logger?.log?.(
                 `Buy side order sizes updated due to high divergence metric (${buyMetric.toFixed(6)})`,
                 'info'
@@ -837,11 +868,11 @@ class Grid {
                 `Sell side divergence metric ${sellMetric.toFixed(6)} exceeds threshold ${threshold.toFixed(6)}. Triggering updateGridOrderSizesForSide...`,
                 'info'
             );
-            
+
             const funds = cacheFunds || { buy: 0, sell: 0 };
             Grid.updateGridOrderSizesForSide(manager, ORDER_TYPES.SELL, funds);
             sellUpdated = true;
-            
+
             manager.logger?.log?.(
                 `Sell side order sizes updated due to high divergence metric (${sellMetric.toFixed(6)})`,
                 'info'
@@ -951,6 +982,26 @@ class Grid {
             }
         } catch (e) {
             manager.logger?.log?.(`Failed to clear/persist cacheFunds after ${side} regeneration: ${e.message}`, 'warn');
+        }
+    }
+
+    /**
+     * Persist current cacheFunds for a given side without clearing it.
+     */
+    static _persistCacheFunds(manager, side) {
+        try {
+            manager.funds.cacheFunds = manager.funds.cacheFunds || { buy: 0, sell: 0 };
+            // Ensure side exists
+            if (manager.funds.cacheFunds[side] === undefined) manager.funds.cacheFunds[side] = 0;
+
+            const { AccountOrders } = require('../account_orders');
+            if (manager.config && manager.config.botKey) {
+                const accountDb = manager.accountOrders || new AccountOrders({ profilesPath: manager.config.profilesPath });
+                accountDb.updateCacheFunds(manager.config.botKey, manager.funds.cacheFunds);
+                manager.logger?.log?.(`Persisted cacheFunds.${side} (${Number(manager.funds.cacheFunds[side]).toFixed(8)}) after regeneration`, 'debug');
+            }
+        } catch (e) {
+            manager.logger?.log?.(`Failed to persist cacheFunds after ${side} regeneration: ${e.message}`, 'warn');
         }
     }
 
