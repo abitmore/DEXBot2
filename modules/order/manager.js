@@ -1734,12 +1734,11 @@ class OrderManager {
             ];
             const totalSlots = allOrdersOnSide.length + filledCount;
             
-            // Get total funds using the same snapshot method as grid initialization
-            const snapshot = this.getChainFundsSnapshot ? this.getChainFundsSnapshot() : {
-                allocatedBuy: this.funds.total.chain.buy || 0,
-                allocatedSell: this.funds.total.chain.sell || 0
-            };
-            const totalFunds = side === 'sell' ? snapshot.allocatedSell : snapshot.allocatedBuy;
+            // Calculate total funds for rotation sizing
+            // Total = total.grid (committed + virtuel) + cacheFunds + pendingProceeds
+            const totalFunds = side === 'buy'
+                ? (this.funds.total?.grid?.buy || 0) + (this.funds.cacheFunds?.buy || 0) + (this.funds.pendingProceeds?.buy || 0)
+                : (this.funds.total?.grid?.sell || 0) + (this.funds.cacheFunds?.sell || 0) + (this.funds.pendingProceeds?.sell || 0);
             
             // Create dummy orders matching the actual grid structure (all active + virtual)
             const dummyOrders = Array(totalSlots).fill(null).map((_, i) => ({
