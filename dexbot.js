@@ -167,6 +167,7 @@ class DEXBot {
         this.account = null;
         this.privateKey = null;
         this.manager = null;
+        this.accountOrders = null;  // Will be initialized in start()
         this.isResyncing = false;
         this.triggerFile = path.join(PROFILES_DIR, `recalculate.${config.botKey}.trigger`);
         // Track recently processed fills to avoid duplicate processing
@@ -605,14 +606,14 @@ class DEXBot {
         await this.initialize(masterPassword);
         
         // Create AccountOrders with bot-specific file (one file per bot)
-        const accountOrders = new AccountOrders({ botKey: this.config.botKey });
+        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
         
         if (!this.manager) {
             this.manager = new OrderManager(this.config || {});
             // Attach account identifiers so OrderManager can fetch on-chain totals when needed
             this.manager.account = this.account;
             this.manager.accountId = this.accountId;
-            this.manager.accountOrders = accountOrders;  // Enable pendingProceeds persistence
+            this.manager.accountOrders = this.accountOrders;  // Enable pendingProceeds persistence
         }
 
         // Start listening for fills BEFORE any order operations to avoid missing fills

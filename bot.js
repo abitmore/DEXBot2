@@ -163,6 +163,7 @@ class DEXBot {
         this.account = null;
         this.privateKey = null;
         this.manager = null;
+        this.accountOrders = null;  // Will be initialized in start()
         this.isResyncing = false;
         this.triggerFile = path.join(PROFILES_DIR, `recalculate.${config.botKey}.trigger`);
         this._recentlyProcessedFills = new Map();
@@ -505,13 +506,13 @@ class DEXBot {
         await this.initialize(masterPassword);
         
         // Create AccountOrders with bot-specific file (one file per bot)
-        const accountOrders = new AccountOrders({ botKey: this.config.botKey });
+        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
         
         if (!this.manager) {
             this.manager = new OrderManager(this.config || {});
             this.manager.account = this.account;
             this.manager.accountId = this.accountId;
-            this.manager.accountOrders = accountOrders;  // Enable pendingProceeds persistence
+            this.manager.accountOrders = this.accountOrders;  // Enable pendingProceeds persistence
         }
 
         // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
@@ -661,11 +662,11 @@ class DEXBot {
         const allActiveBots = allBotsConfig
             .filter(b => b.active !== false)
             .map((b, idx) => normalizeBotEntry(b, idx));
-        accountOrders.ensureBotEntries(allActiveBots);
+        this.accountOrders.ensureBotEntries(allActiveBots);
 
-        const persistedGrid = accountOrders.loadBotGrid(this.config.botKey);
-        const persistedCacheFunds = accountOrders.loadCacheFunds(this.config.botKey);
-        const persistedPendingProceeds = accountOrders.loadPendingProceeds(this.config.botKey);
+        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
+        const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
+        const persistedPendingProceeds = this.accountOrders.loadPendingProceeds(this.config.botKey);
         
         // Restore cacheFunds to manager if found
         if (persistedCacheFunds) {
@@ -701,7 +702,7 @@ class DEXBot {
                 chainOpenOrders,
                 manager: this.manager,
                 logger: { log: (msg) => console.log(`[bot.js] ${msg}`) },
-                storeGrid: (orders) => accountOrders.storeMasterGrid(this.config.botKey, orders, this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds),
+                storeGrid: (orders) => this.accountOrders.storeMasterGrid(this.config.botKey, orders, this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds),
                 attemptResumeFn: attemptResumePersistedGridByPriceMatch,
             });
             shouldRegenerate = decision.shouldRegenerate;
@@ -740,12 +741,12 @@ class DEXBot {
                 console.log('[bot.js] No existing chain orders found. Placing initial orders.');
                 await this.placeInitialOrders();
             }
-            accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
+            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
         } else {
             console.log('[bot.js] Found active session. Loading and syncing existing grid.');
             await Grid.loadGrid(this.manager, persistedGrid);
             await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-            accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
+            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
         }
 
         // Main loop
