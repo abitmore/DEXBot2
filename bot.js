@@ -769,8 +769,14 @@ class DEXBot {
             .filter(b => b.active !== false)
             .map((b, idx) => normalizeBotEntry(b, idx));
         
-        // Normalize config for current bot
-        const normalizedConfig = normalizeBotEntry(botConfig, 0);
+        // Find the correct index for the current bot in the bots.json list
+        const botIndex = allBotsConfig.findIndex(b => b.name === botName);
+        if (botIndex === -1) {
+            throw new Error(`Bot "${botName}" not found in ${PROFILES_BOTS_FILE}`);
+        }
+        
+        // Normalize config for current bot with correct index
+        const normalizedConfig = normalizeBotEntry(botConfig, botIndex);
         
         // Ensure entries exist for ALL active bots (prevents pruning other bots)
         accountOrders.ensureBotEntries(allActiveBots);
