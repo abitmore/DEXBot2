@@ -736,6 +736,17 @@ class DEXBot {
 
                         // Execute batch transaction
                         await this.updateOrdersOnChainBatch(rebalanceResult);
+
+                        // After rotation, correct any orders marked for size update during grid trigger
+                        if (this.manager.ordersNeedingPriceCorrection && this.manager.ordersNeedingPriceCorrection.length > 0) {
+                            this.manager.logger.log(`Correcting ${this.manager.ordersNeedingPriceCorrection.length} order(s) with size changes after rotation...`, 'info');
+                            const sizeCorrection = await OrderUtils.correctAllPriceMismatches(
+                                this.manager, this.account, this.privateKey, chainOrders
+                            );
+                            if (sizeCorrection.failed > 0) {
+                                this.manager.logger.log(`${sizeCorrection.failed} size correction(s) failed`, 'error');
+                            }
+                        }
                     }
 
                     // Always persist snapshot after processing fills if we did anything

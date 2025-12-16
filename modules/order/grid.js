@@ -623,6 +623,9 @@ class Grid {
                 Grid.updateGridOrderSizesForSide(manager, s.orderType, cacheFunds);
                 // Persist the updated cacheFunds (which now includes the surplus)
                 Grid._persistCacheFunds(manager, s.name);
+                // Track which sides had sizes updated for later correction on-chain
+                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
+                manager._gridSidesUpdated.push(s.orderType);
                 if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
             } else {
                 manager.logger?.log(

@@ -140,6 +140,8 @@ class OrderManager {
         this.ordersNeedingPriceCorrection = [];
         // Track recently rotated orderIds to prevent double-rotation (cleared after successful rotation)
         this._recentlyRotatedOrderIds = new Set();
+        // Track which order sides had their sizes updated by grid triggers
+        this._gridSidesUpdated = [];
     }
 
     // Helper: Resolve config value (percentage, number, or string)
@@ -1082,6 +1084,7 @@ class OrderManager {
                 };
             }
         }
+
         return { newOrders, ordersNeedingCorrection: this.ordersNeedingPriceCorrection };
     }
 
@@ -1393,6 +1396,38 @@ class OrderManager {
         }
         
         this._logAvailable('after rotation clear');
+
+        // After rotation, mark any on-chain orders that had their sizes updated by grid triggers for correction
+        // This ensures their on-chain sizes match the new grid sizes
+        if (this._gridSidesUpdated && this._gridSidesUpdated.length > 0) {
+            for (const orderType of this._gridSidesUpdated) {
+                const ordersOnSide = Array.from(this.orders.values())
+                    .filter(o => o.type === orderType && o.orderId && o.state === ORDER_STATES.ACTIVE);
+
+                for (const order of ordersOnSide) {
+                    const correctionInfo = {
+                        gridOrder: { ...order },
+                        chainOrderId: order.orderId,
+                        rawChainOrder: null,
+                        expectedPrice: order.price,
+                        actualPrice: order.price,
+                        expectedSize: order.size,
+                        size: order.size,
+                        type: order.type,
+                        sizeChanged: true
+                    };
+                    this.ordersNeedingPriceCorrection.push(correctionInfo);
+                }
+            }
+            if (this.ordersNeedingPriceCorrection.length > 0) {
+                this.logger.log(
+                    `Marked ${this.ordersNeedingPriceCorrection.length} on-chain orders for size correction after grid update`,
+                    'info'
+                );
+            }
+            // Clear the tracking flag
+            this._gridSidesUpdated = [];
+        }
 
         this.logger && this.logger.logFundsStatus && this.logger.logFundsStatus(this);
         return newOrders;
@@ -1853,7 +1888,32 @@ class OrderManager {
                     // Step 1: Simple percentage-based check
                     const simpleCheckResult = Grid.checkAndUpdateGridIfNeeded(this, this.funds.cacheFunds);
 
-                    // Step 2: If simple check didn't trigger, run expensive quadratic comparison
+                    // Step 2: If grid was updated for this side, recalculate allocatedSizes from the updated grid
+                    const thisUpdated = (side === 'buy' && simpleCheckResult.buyUpdated) || (side === 'sell' && simpleCheckResult.sellUpdated);
+                    if (thisUpdated && orderCount > 0) {
+                        // Re-query orders and get new sizes from the updated grid
+                        // Include all order states to match what updateGridOrderSizesForSide does
+                        const updatedOrders = Array.from(this.orders.values())
+                            .filter(o => o.type === targetType);
+
+                        // Sort to match the rotation order: closest to spread first
+                        if (side === 'buy') {
+                            updatedOrders.sort((a, b) => b.price - a.price); // Highest price first
+                        } else {
+                            updatedOrders.sort((a, b) => a.price - b.price); // Lowest price first
+                        }
+
+                        // Take the first orderCount sizes (closest to spread = the ones being rotated)
+                        allocatedSizes = updatedOrders.slice(0, orderCount).map(o => o.size);
+                        allocatedSum = allocatedSizes.reduce((sum, s) => sum + (Number(s) || 0), 0);
+
+                        this.logger.log(
+                            `Recalculated rotation sizes after grid update: [${allocatedSizes.map(s => s.toFixed(8)).join(', ')}], sum=${allocatedSum.toFixed(8)}`,
+                            'info'
+                        );
+                    }
+
+                    // Step 3: If simple check didn't trigger, run expensive quadratic comparison
                     if (!simpleCheckResult.buyUpdated && !simpleCheckResult.sellUpdated) {
                         const persistedGrid = accountDb.loadBotGrid(this.config.botKey) || [];
                         const calculatedGrid = Array.from(this.orders.values());
