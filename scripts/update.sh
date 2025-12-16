@@ -90,17 +90,15 @@ else
     log_info "No profiles directory found (will be created on first run)"
 fi
 
-# Step 3: Stash any local changes (except profiles which is in .gitignore)
-log_info "Step 3: Checking for local changes..."
-if ! git diff --quiet; then
-    log_warning "Uncommitted changes detected, stashing..."
-    git stash
-    log_info "Changes stashed"
-fi
-
-# Step 3b: Auto-checkout to main branch if not already on it (after stashing)
+# Step 3: Auto-checkout to main branch if not already on it
 if [ "$CURRENT_BRANCH" != "$REPO_BRANCH" ]; then
-    log_info "Switching to $REPO_BRANCH branch..."
+    log_info "Step 3: Switching to $REPO_BRANCH branch..."
+    # Discard any local changes before switching (clean working directory required)
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        log_warning "Local changes detected, discarding to ensure clean checkout..."
+        git checkout -- .
+        git clean -fd
+    fi
     if git checkout "$REPO_BRANCH"; then
         log_success "Switched to $REPO_BRANCH branch"
     else
