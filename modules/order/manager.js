@@ -1242,19 +1242,48 @@ class OrderManager {
      */
     async processFilledOrders(filledOrders, excludeOrderIds = new Set()) {
         this.logger.log(`>>> processFilledOrders() called with ${filledOrders.length} filled orders`, 'info');
+
+        /**
+         * FILL PROCESSING STRATEGY:
+         * ========================
+         * When orders fill, we need to:
+         * 1. Calculate proceeds (amount received when order filled)
+         * 2. Update on-chain account balances optimistically (without waiting for chain refresh)
+         * 3. Track full vs partial fills
+         * 4. Convert full fills to SPREAD placeholders
+         * 5. Accumulate blockchain fees
+         * 6. Prepare new orders for rotation
+         *
+         * Key Insight - Proceeds Calculation:
+         * -----------------------------------
+         * SELL orders: We SELL assetA (base) and RECEIVE assetB (quote)
+         *   proceeds = size * price (converts base asset to quote)
+         *   Added to: proceedsBuy (because we received quote asset)
+         *
+         * BUY orders: We BUY assetA (base) and SPEND assetB (quote)
+         *   proceeds = size / price (converts spent quote to base received)
+         *   Added to: proceedsSell (because we received base asset)
+         *
+         * These proceeds become "available" for placing new orders without waiting
+         * for a blockchain confirmation.
+         */
         const filledCounts = { [ORDER_TYPES.BUY]: 0, [ORDER_TYPES.SELL]: 0 };
         const partialFillCount = { [ORDER_TYPES.BUY]: 0, [ORDER_TYPES.SELL]: 0 };
-        // Collect proceeds to add AFTER all maybeConvertToSpread calls
-        // (because maybeConvertToSpread calls _updateOrder which runs recalculateFunds and would overwrite)
+
+        // Collect proceeds to add AFTER all fill conversions
+        // We don't add them immediately because _updateOrder() calls recalculateFunds()
+        // which would overwrite our accumulated proceeds
         let proceedsBuy = 0;
         let proceedsSell = 0;
-        // Track balance deltas so we can adjust accountTotals immediately without waiting for a fresh chain fetch
+
+        // Track balance deltas for optimistic account total updates
+        // These allow us to reflect fills immediately without waiting for a fresh chain query
         let deltaBuyFree = 0;
         let deltaSellFree = 0;
         let deltaBuyTotal = 0;
         let deltaSellTotal = 0;
 
-        // Check if BTS is in the trading pair and track BTS fees only if it is
+        // Check if BTS is in the trading pair (only track blockchain fees if it is)
         const hasBtsPair = this.config.assetA === 'BTS' || this.config.assetB === 'BTS';
 
         for (const filledOrder of filledOrders) {

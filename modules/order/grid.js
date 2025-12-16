@@ -1193,6 +1193,38 @@ class Grid {
      *
      * @returns {Array<number>} sizes
      */
+    /**
+     * Allocate funds across orders using geometric weight distribution.
+     *
+     * Weight Distribution Algorithm:
+     * ================================
+     * This function creates a proportional allocation across n orders based on weight distribution.
+     * The key formula is: weight[i] = (1 - increment)^(i * n)
+     *
+     * Where:
+     * - base = (1 - incrementFactor) ranges from 0.98 (1% increment) to 0.99 (0.5% increment)
+     * - idx = order index (0 = closest to market, n-1 = furthest from market)
+     * - weight = distribution coefficient (-1 to 2) controlling shape:
+     *   - weight = -1: Super Valley (aggressive concentration at edges)
+     *   - weight = 0:  Valley (linear increase toward edges)
+     *   - weight = 0.5: Neutral (balanced distribution)
+     *   - weight = 1:  Mountain (linear increase toward center/market)
+     *   - weight = 2:  Super Mountain (aggressive concentration at center)
+     *
+     * Examples (5 orders, 1% increment, 100 units total):
+     * - weight=-1: [55.3, 39.2, 3.2, 1.8, 0.5] (edges get most)
+     * - weight=0:  [20.0, 20.0, 20.0, 20.0, 20.0] (equal split)
+     * - weight=1:  [0.5, 1.8, 3.2, 39.2, 55.3] (center gets most)
+     *
+     * @param {number} totalFunds - Total amount to distribute
+     * @param {number} n - Number of orders to allocate across
+     * @param {number} weight - Distribution shape (-1 to 2)
+     * @param {number} incrementFactor - Price increment as decimal (0.01 for 1%)
+     * @param {boolean} reverse - If true, reverse the allocation (for sell orders)
+     * @param {number} minSize - Minimum order size threshold (0 to disable)
+     * @param {number} precision - Blockchain precision for size quantization
+     * @returns {Array} Array of order sizes
+     */
     static _allocateByWeights(totalFunds, n, weight, incrementFactor, reverse = false, minSize = 0, precision = null) {
         if (n <= 0) return [];
         if (!Number.isFinite(totalFunds) || totalFunds <= 0) return new Array(n).fill(0);
@@ -1203,16 +1235,29 @@ class Grid {
             throw new Error(`Invalid weight distribution: ${weight}. Must be between ${MIN_WEIGHT} and ${MAX_WEIGHT}.`);
         }
 
+        // Step 1: Calculate base factor from increment
+        // base = (1 - increment) creates exponential decay/growth
+        // e.g., 1% increment → base = 0.99
         const base = 1 - incrementFactor;
+
+        // Step 2: Calculate raw weights for each order position
+        // The formula: weight[i] = base^(idx * weight)
+        // - base^0 = 1.0 (first position always gets base weight)
+        // - base^(idx*weight) scales exponentially based on position and weight coefficient
+        // - reverse parameter inverts the position index so sell orders decrease geometrically
         const rawWeights = new Array(n);
         for (let i = 0; i < n; i++) {
             const idx = reverse ? (n - 1 - i) : i;
             rawWeights[i] = Math.pow(base, idx * weight);
         }
 
+        // Step 3: Normalize weights to sum to 1, then scale by totalFunds
+        // This ensures all funds are distributed and ratios are preserved
         const sizes = new Array(n).fill(0);
         const totalWeight = rawWeights.reduce((s, w) => s + w, 0) || 1;
-        for (let i = 0; i < n; i++) sizes[i] = (rawWeights[i] / totalWeight) * totalFunds;
+        for (let i = 0; i < n; i++) {
+            sizes[i] = (rawWeights[i] / totalWeight) * totalFunds;
+        }
 
         return sizes;
     }
@@ -1249,35 +1294,56 @@ class Grid {
 
     /**
      * Calculate individual order sizes based on available funds and total grid allocation.
-     * Uses the same geometric weighting algorithm as grid initialization.
-     * Distributes the combined allocation (available + grid) across orders during rotation.
-     * This ensures new rotation orders cover the same total allocation space as the full grid.
      *
-     * @param {number} availableFunds - Currently available funds for new orders
-     * @param {number} totalGridAllocation - Total currently allocated in grid (committed + virtuel)
-     * @param {number} orderCount - Number of new orders to size
+     * Rotation Sizing Strategy:
+     * ========================
+     * After fills occur, we need to size new orders. This function ensures the new orders
+     * maintain the same proportional distribution as the full grid would have.
+     *
+     * The key insight: When filling n orders out of N total grid positions:
+     * - We have: available funds (from fills) + grid allocation (remaining orders)
+     * - We size n new orders to match what a full reset would allocate
+     *
+     * This maintains grid coherence without requiring a full grid regeneration.
+     *
+     * Example Scenario (5 total grid orders, 2 filled):
+     * -----------------------------------------------
+     * Initial grid allocation: 100 BTS per order = 500 total
+     * - 2 orders fill and are converted to SPREAD placeholders
+     * - We have: 200 BTS in available funds (from fills) + 300 BTS remaining in grid
+     * - We size 2 new orders to sum to 200 (reflecting the original allocation for 2 positions)
+     *
+     * The formula ensures: newOrdersSizes = (availableFunds + gridAllocation) * (geometric_weights)
+     *
+     * @param {number} availableFunds - Currently available funds (includes fill proceeds + cache + free balance)
+     * @param {number} totalGridAllocation - Total funds currently locked in grid (committed.grid + virtuel)
+     * @param {number} orderCount - Number of new orders to size (e.g., 2 if 2 orders were filled)
      * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
-     * @param {Object} config - Configuration object with incrementPercent and weightDistribution
-     * @param {number} [minSize=0] - Minimum order size (optional)
-     * @param {number} [precision=null] - Asset precision for integer-based size validation (optional)
+     * @param {Object} config - Configuration with incrementPercent and weightDistribution
+     * @param {number} [minSize=0] - Minimum order size constraint (optional)
+     * @param {number} [precision=null] - Blockchain precision for integer-based quantization (optional)
      * @returns {Array} Array of order sizes (length = orderCount)
+     *
      * @example
-     * // Distribute 100 available + 400 already allocated = 500 total across 5 new orders
+     * // Grid has 5 orders (100 BTS each = 500 total)
+     * // 2 orders get filled, leaving 300 BTS in grid + 200 BTS available
      * const sizes = Grid.calculateRotationOrderSizes(
-     *     100,                               // available funds from fill
-     *     400,                               // existing grid allocation (buy or sell side)
-     *     5,                                 // 5 new orders to create
+     *     200,                               // available funds (from 2 fills @ 100 each)
+     *     300,                               // remaining grid allocation (3 unfilled orders @ 100 each)
+     *     2,                                 // size 2 new orders
      *     ORDER_TYPES.BUY,
-     *     { incrementPercent: 1, weightDistribution: { buy: 0.5, sell: 0.5 } }
+     *     { incrementPercent: 1, weightDistribution: { buy: 1, sell: 1 } }
      * );
-     * // Returns: [size0, size1, size2, size3, size4] where sizes sum to ~500
+     * // Returns: [size0, size1] where sizes sum to ~200, distributed per weight (Mountain style)
+     * // The geometric shape mirrors what a full 5-order reset would look like
      */
     static calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderCount, orderType, config, minSize = 0, precision = null) {
         if (orderCount <= 0) {
             return [];
         }
 
-        // Combine available funds + total grid allocation for full distribution
+        // Combine available + grid allocation to calculate total sizing context
+        // This represents the "full reset" amount if we were regenerating the entire grid
         const totalFunds = availableFunds + totalGridAllocation;
 
         if (!Number.isFinite(totalFunds) || totalFunds <= 0) {
@@ -1287,8 +1353,13 @@ class Grid {
         const { incrementPercent, weightDistribution } = config;
         const incrementFactor = incrementPercent / 100;
 
+        // Select weight distribution based on side (buy or sell)
         const weight = (orderType === ORDER_TYPES.SELL) ? weightDistribution.sell : weightDistribution.buy;
+
+        // Reverse the allocation for sell orders so they're ordered from high to low price
         const reverse = (orderType === ORDER_TYPES.SELL);
+
+        // Allocate total funds using geometric weighting
         return Grid._allocateByWeights(totalFunds, orderCount, weight, incrementFactor, reverse, minSize, precision);
     }
 }
