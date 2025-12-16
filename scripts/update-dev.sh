@@ -138,23 +138,23 @@ fi
 # Step 8: Check for PM2 running
 log_info "Step 8: Checking PM2 status..."
 if command -v pm2 &> /dev/null; then
-    # Read bot names from bots.json
+    # Read bot names from bots.json and collect running ones
     if [ -f "$PROJECT_ROOT/profiles/bots.json" ]; then
         # Extract bot names from bots.json and check if any are running
-        BOTS_FOUND=false
+        RUNNING_BOTS=()
         while IFS= read -r bot_name; do
             if pm2 list | grep -q "$bot_name"; then
-                BOTS_FOUND=true
-                break
+                RUNNING_BOTS+=("$bot_name")
             fi
         done < <(grep -o '"name": "[^"]*"' "$PROJECT_ROOT/profiles/bots.json" | sed 's/"name": "//;s/"$//')
 
-        if [ "$BOTS_FOUND" = true ]; then
-            log_info "PM2 bots detected, reloading..."
-            if pm2 reload profiles/ecosystem.config.js 2>/dev/null; then
+        if [ ${#RUNNING_BOTS[@]} -gt 0 ]; then
+            log_info "PM2 bots detected (${#RUNNING_BOTS[@]} running): ${RUNNING_BOTS[*]}"
+            log_info "Reloading running bots only..."
+            if pm2 reload "${RUNNING_BOTS[@]}" 2>/dev/null; then
                 log_success "PM2 bots reloaded successfully"
             else
-                log_warning "PM2 reload failed or no ecosystem config found"
+                log_warning "PM2 reload failed"
             fi
         else
             log_info "No running PM2 bots found"
@@ -176,16 +176,15 @@ log_info "- Code updated to latest from dev branch"
 log_info "- Dependencies installed"
 # Check if any bots from bots.json are running
 if command -v pm2 &> /dev/null && [ -f "$PROJECT_ROOT/profiles/bots.json" ]; then
-    BOTS_RUNNING=false
+    SUMMARY_RUNNING_BOTS=()
     while IFS= read -r bot_name; do
         if pm2 list | grep -q "$bot_name"; then
-            BOTS_RUNNING=true
-            break
+            SUMMARY_RUNNING_BOTS+=("$bot_name")
         fi
     done < <(grep -o '"name": "[^"]*"' "$PROJECT_ROOT/profiles/bots.json" | sed 's/"name": "//;s/"$//')
 
-    if [ "$BOTS_RUNNING" = true ]; then
-        log_info "- PM2 processes reloaded"
+    if [ ${#SUMMARY_RUNNING_BOTS[@]} -gt 0 ]; then
+        log_info "- PM2 processes reloaded (${#SUMMARY_RUNNING_BOTS[@]}): ${SUMMARY_RUNNING_BOTS[*]}"
     fi
 fi
 log_info "- Your profiles/ directory is safe and unchanged"
