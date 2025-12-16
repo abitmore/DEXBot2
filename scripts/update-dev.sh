@@ -94,9 +94,20 @@ if [ "$CURRENT_BRANCH" != "$REPO_BRANCH" ]; then
     log_info "Step 3: Switching to $REPO_BRANCH branch..."
     # Discard any local changes before switching (clean working directory required)
     if ! git diff --quiet || ! git diff --cached --quiet; then
-        log_warning "Local changes detected, discarding to ensure clean checkout..."
+        log_warning "Local changes detected, discarding to ensure clean checkout (preserving constants.json)..."
+        # Backup constants.json to preserve user settings
+        if [ -f "$PROJECT_ROOT/constants.json" ]; then
+            cp "$PROJECT_ROOT/constants.json" "$PROJECT_ROOT/.constants.json.backup"
+            log_info "Backed up constants.json"
+        fi
+        # Clean working directory
         git checkout -- .
         git clean -fd
+        # Restore constants.json
+        if [ -f "$PROJECT_ROOT/.constants.json.backup" ]; then
+            mv "$PROJECT_ROOT/.constants.json.backup" "$PROJECT_ROOT/constants.json"
+            log_info "Restored constants.json"
+        fi
     fi
     if git checkout "$REPO_BRANCH"; then
         log_success "Switched to $REPO_BRANCH branch"
@@ -106,11 +117,22 @@ if [ "$CURRENT_BRANCH" != "$REPO_BRANCH" ]; then
     fi
 else
     log_info "Step 3: Cleaning working directory..."
-    # Always clean working directory before pull (profiles/ is protected in .gitignore)
+    # Always clean working directory before pull (profiles/ and constants.json are protected)
     if ! git diff --quiet || ! git diff --cached --quiet; then
-        log_warning "Local changes detected, discarding..."
+        log_warning "Local changes detected, discarding (preserving constants.json)..."
+        # Backup constants.json to preserve user settings
+        if [ -f "$PROJECT_ROOT/constants.json" ]; then
+            cp "$PROJECT_ROOT/constants.json" "$PROJECT_ROOT/.constants.json.backup"
+            log_info "Backed up constants.json"
+        fi
+        # Clean working directory
         git checkout -- .
         git clean -fd
+        # Restore constants.json
+        if [ -f "$PROJECT_ROOT/.constants.json.backup" ]; then
+            mv "$PROJECT_ROOT/.constants.json.backup" "$PROJECT_ROOT/constants.json"
+            log_info "Restored constants.json"
+        fi
         log_info "Working directory cleaned"
     fi
 fi
