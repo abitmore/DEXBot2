@@ -135,12 +135,21 @@ class Grid {
         manager.orders.clear();
         Object.values(manager._ordersByState).forEach(set => set.clear());
         Object.values(manager._ordersByType).forEach(set => set.clear());
-        
-        // CRITICAL: Preserve pendingProceeds before reset, as they contain fill proceeds awaiting rotation
+
+        // CRITICAL: Preserve persistent funds before reset
+        // cacheFunds: accumulated surplus from rotation sizing (persists across sessions)
+        // pendingProceeds: fill proceeds awaiting rotation
+        // btsFeesOwed: accumulated blockchain fees
+        const savedCacheFunds = { ...manager.funds.cacheFunds };
         const savedPendingProceeds = { ...manager.funds.pendingProceeds };
+        const savedBtsFeesOwed = manager.funds.btsFeesOwed;
+
         manager.resetFunds();
-        // Restore preserved pendingProceeds after reset
+
+        // Restore preserved persistent funds after reset
+        manager.funds.cacheFunds = { ...savedCacheFunds };
         manager.funds.pendingProceeds = { ...savedPendingProceeds };
+        manager.funds.btsFeesOwed = savedBtsFeesOwed;
         
         grid.forEach(order => {
             manager._updateOrder(order);
