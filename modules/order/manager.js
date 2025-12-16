@@ -275,6 +275,7 @@ class OrderManager {
     /**
      * Central calculation for available funds.
      * Formula: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed) + pendingProceeds
+     * (btsFeesOwed only subtracted if BTS is the asset for this side)
      *
      * @param {string} side - 'buy' or 'sell'
      * @returns {number} Available funds for the given side
@@ -286,7 +287,10 @@ class OrderManager {
         const virtuel = side === 'buy' ? (this.funds.virtuel?.buy || 0) : (this.funds.virtuel?.sell || 0);
         const cacheFunds = side === 'buy' ? (this.funds.cacheFunds?.buy || 0) : (this.funds.cacheFunds?.sell || 0);
         const pending = side === 'buy' ? (this.funds.pendingProceeds?.buy || 0) : (this.funds.pendingProceeds?.sell || 0);
-        const btsFeesOwed = this.funds.btsFeesOwed || 0;
+
+        // Only subtract btsFeesOwed if BTS is the asset for this side
+        const asset = side === 'buy' ? this.config.assetA : this.config.assetB;
+        const btsFeesOwed = (asset === 'BTS') ? (this.funds.btsFeesOwed || 0) : 0;
 
         return Math.max(0, chainFree - virtuel - cacheFunds - btsFeesOwed) + pending;
     }
@@ -1740,11 +1744,12 @@ class OrderManager {
         // If BTS fees were already accounted for in calculateAvailableFunds, track deduction here
         const hasBtsPair = this.config.assetA === 'BTS' || this.config.assetB === 'BTS';
         if (hasBtsPair && this.funds.btsFeesOwed > 0) {
-            const isBtsOnThisSide = (side === 'buy' && this.config.assetB === 'BTS') || (side === 'sell' && this.config.assetA === 'BTS');
+            const isBtsOnThisSide = (side === 'buy' && this.config.assetA === 'BTS') || (side === 'sell' && this.config.assetB === 'BTS');
             if (isBtsOnThisSide) {
                 const feesOwedThisSide = Math.min(this.funds.btsFeesOwed, this.funds.pendingProceeds?.[side] ?? 0);
                 if (feesOwedThisSide > 0) {
                     this.funds.btsFeesOwed -= feesOwedThisSide;
+                    this.funds.pendingProceeds[side] -= feesOwedThisSide;
                     this.logger.log(`Rotation deducting BTS fees: ${feesOwedThisSide.toFixed(8)} BTS. Remaining fees: ${this.funds.btsFeesOwed.toFixed(8)} BTS`, 'info');
                 }
             }
