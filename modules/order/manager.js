@@ -418,42 +418,6 @@ class OrderManager {
         }
     }
 
-    /**
-     * Retry persistence of previously failed fund data.
-     * Called periodically when bot is in a stable state to retry saving funds that couldn't be persisted.
-     * Useful when disk I/O errors occur but later become transient.
-     *
-     * @returns {boolean} true if all retried data persisted successfully, false if some still failing
-     */
-    retryPersistenceIfNeeded() {
-        if (!this._persistenceWarning) {
-            return true;  // No pending persistence issues
-        }
-
-        const warning = this._persistenceWarning;
-        this.logger.log(`Retrying persistence for ${warning.type} (failed at ${new Date(warning.timestamp).toISOString()})...`, 'info');
-
-        try {
-            if (warning.type === 'pendingProceeds') {
-                const success = this._persistPendingProceeds();
-                if (success) {
-                    this.logger.log(`✓ Successfully retried pendingProceeds persistence`, 'info');
-                }
-                return success;
-            } else if (warning.type === 'btsFeesOwed') {
-                const success = this._persistBtsFeesOwed();
-                if (success) {
-                    this.logger.log(`✓ Successfully retried btsFeesOwed persistence`, 'info');
-                }
-                return success;
-            }
-        } catch (e) {
-            this.logger.log(`Error during persistence retry: ${e.message}`, 'error');
-            return false;
-        }
-
-        return false;
-    }
 
     /**
      * Check if bot has any persistence warnings that need attention.

@@ -20,7 +20,7 @@ const readline = require('readline-sync');
 const chainOrders = require('./modules/chain_orders');
 const chainKeys = require('./modules/chain_keys');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./modules/order');
-const { persistGridSnapshot } = OrderUtils;
+const { persistGridSnapshot, retryPersistenceIfNeeded } = OrderUtils;
 const { ORDER_STATES } = require('./modules/constants');
 const { reconcileStartupOrders, attemptResumePersistedGridByPriceMatch, decideStartupGridAction } = require('./modules/order/startup_reconcile');
 const accountKeys = require('./modules/chain_keys');
@@ -759,11 +759,9 @@ class DEXBot {
                     }
 
                     // Attempt to retry any previously failed persistence operations
-                    if (typeof this.manager.retryPersistenceIfNeeded === 'function') {
-                        const persistenceOk = this.manager.retryPersistenceIfNeeded();
-                        if (persistenceOk) {
-                            this.manager.logger.log(`Persistence recovery check passed`, 'debug');
-                        }
+                    const persistenceOk = retryPersistenceIfNeeded(this.manager);
+                    if (persistenceOk) {
+                        this.manager.logger.log(`Persistence recovery check passed`, 'debug');
                     }
                 } catch (err) {
                     this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');

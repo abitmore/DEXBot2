@@ -61,7 +61,7 @@ const { BitShares, waitForConnected } = require('./modules/bitshares_client');
 const chainKeys = require('./modules/chain_keys');
 const chainOrders = require('./modules/chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./modules/order');
-const { persistGridSnapshot } = OrderUtils;
+const { persistGridSnapshot, retryPersistenceIfNeeded } = OrderUtils;
 const { ORDER_STATES } = require('./modules/constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction } = require('./modules/order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./modules/account_orders');
@@ -645,9 +645,7 @@ class DEXBot {
                     }
 
                     // Attempt to retry any previously failed persistence operations
-                    if (typeof this.manager.retryPersistenceIfNeeded === 'function') {
-                        this.manager.retryPersistenceIfNeeded();
-                    }
+                    retryPersistenceIfNeeded(this.manager);
                 } catch (err) {
                     this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
                 } finally {

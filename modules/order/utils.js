@@ -1035,6 +1035,55 @@ function persistGridSnapshot(manager, accountOrders, botKey) {
     }
 }
 
+/**
+ * Retry persistence of previously failed fund data.
+ * Called periodically when bot is in a stable state to retry saving funds that couldn't be persisted.
+ * Useful when disk I/O errors occur but later become transient.
+ *
+ * @param {Object} manager - The OrderManager instance containing persistence state
+ * @returns {boolean} true if all retried data persisted successfully, false if some still failing
+ *
+ * Example:
+ *   retryPersistenceIfNeeded(manager);
+ */
+function retryPersistenceIfNeeded(manager) {
+    if (!manager) {
+        return true;
+    }
+
+    if (!manager._persistenceWarning) {
+        return true;  // No pending persistence issues
+    }
+
+    const warning = manager._persistenceWarning;
+    if (manager.logger) {
+        manager.logger.log(`Retrying persistence for ${warning.type} (failed at ${new Date(warning.timestamp).toISOString()})...`, 'info');
+    }
+
+    try {
+        if (warning.type === 'pendingProceeds') {
+            const success = manager._persistPendingProceeds();
+            if (success && manager.logger) {
+                manager.logger.log(`✓ Successfully retried pendingProceeds persistence`, 'info');
+            }
+            return success;
+        } else if (warning.type === 'btsFeesOwed') {
+            const success = manager._persistBtsFeesOwed();
+            if (success && manager.logger) {
+                manager.logger.log(`✓ Successfully retried btsFeesOwed persistence`, 'info');
+            }
+            return success;
+        }
+    } catch (e) {
+        if (manager.logger) {
+            manager.logger.log(`Error during persistence retry: ${e.message}`, 'error');
+        }
+        return false;
+    }
+
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -1080,5 +1129,6 @@ module.exports = {
     getAssetFees,
 
     // Persistence
-    persistGridSnapshot
+    persistGridSnapshot,
+    retryPersistenceIfNeeded
 };
