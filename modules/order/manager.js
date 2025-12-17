@@ -326,25 +326,39 @@ class OrderManager {
     /**
      * Persist pending proceeds to disk with retry logic.
      * Retries up to 3 times with exponential backoff on transient failures.
-     * Fails hard on permanent failure to prevent silent data loss.
+     * On final failure, logs critical error but does NOT throw - allows processing to continue
+     * with in-memory proceeds. Flags persistenceWarning so bot can retry persistence later.
      *
-     * @throws {Error} If persistence fails after all retry attempts
+     * @returns {boolean} true if persistence succeeded, false if failed
      */
     _persistPendingProceeds() {
         if (!this.config || !this.config.botKey || !this.accountOrders) {
-            return;
+            return true;  // Can't persist, but that's ok (e.g., dry run)
         }
 
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
                 this.accountOrders.updatePendingProceeds(this.config.botKey, this.funds.pendingProceeds);
                 this.logger.log(`✓ Persisted pendingProceeds: Buy ${(this.funds.pendingProceeds.buy || 0).toFixed(8)}, Sell ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'debug');
-                return;  // Success
+
+                // Clear any previous persistence warning flag
+                if (this._persistenceWarning) {
+                    delete this._persistenceWarning;
+                }
+                return true;  // Success
             } catch (e) {
                 if (attempt === 3) {
-                    // All retries failed - fail hard
-                    this.logger.log(`CRITICAL: Failed to persist pendingProceeds after ${attempt} attempts: ${e.message}. Proceeds at risk of loss!`, 'error');
-                    throw e;
+                    // All retries failed - don't throw, just flag the issue
+                    this.logger.log(`CRITICAL: Failed to persist pendingProceeds after ${attempt} attempts: ${e.message}. Proceeds held in memory. Will retry on next cycle.`, 'error');
+
+                    // Flag this issue so caller can know persistence is degraded
+                    this._persistenceWarning = {
+                        type: 'pendingProceeds',
+                        error: e.message,
+                        timestamp: Date.now(),
+                        funds: { ...this.funds.pendingProceeds }
+                    };
+                    return false;  // Signal failure to caller
                 } else {
                     this.logger.log(`Failed to persist pendingProceeds (attempt ${attempt}/3): ${e.message}. Retrying...`, 'warn');
                     // Exponential backoff: 100ms, 200ms, 300ms
@@ -361,22 +375,38 @@ class OrderManager {
      * BTS fees accumulate during fill processing and must be persisted to prevent fund loss
      * if the bot crashes before rotation consumes the proceeds and fees.
      * Uses same retry pattern as _persistPendingProceeds with exponential backoff.
+     * On final failure, logs critical error but does NOT throw - allows processing to continue.
+     *
+     * @returns {boolean} true if persistence succeeded, false if failed
      */
     _persistBtsFeesOwed() {
         if (!this.config || !this.config.botKey || !this.accountOrders) {
-            return;
+            return true;  // Can't persist, but that's ok (e.g., dry run)
         }
 
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
                 this.accountOrders.updateBtsFeesOwed(this.config.botKey, this.funds.btsFeesOwed);
                 this.logger.log(`✓ Persisted BTS fees owed: ${(this.funds.btsFeesOwed || 0).toFixed(8)} BTS`, 'debug');
-                return;  // Success
+
+                // Clear any previous persistence warning flag
+                if (this._persistenceWarning) {
+                    delete this._persistenceWarning;
+                }
+                return true;  // Success
             } catch (e) {
                 if (attempt === 3) {
-                    // All retries failed - fail hard
-                    this.logger.log(`CRITICAL: Failed to persist BTS fees after ${attempt} attempts: ${e.message}. Fees at risk of loss!`, 'error');
-                    throw e;
+                    // All retries failed - don't throw, just flag the issue
+                    this.logger.log(`CRITICAL: Failed to persist BTS fees after ${attempt} attempts: ${e.message}. Fees held in memory. Will retry on next cycle.`, 'error');
+
+                    // Flag this issue so caller can know persistence is degraded
+                    this._persistenceWarning = {
+                        type: 'btsFeesOwed',
+                        error: e.message,
+                        timestamp: Date.now(),
+                        funds: this.funds.btsFeesOwed
+                    };
+                    return false;  // Signal failure to caller
                 } else {
                     this.logger.log(`Failed to persist BTS fees (attempt ${attempt}/3): ${e.message}. Retrying...`, 'warn');
                     // Exponential backoff: 100ms, 200ms, 300ms
@@ -386,6 +416,53 @@ class OrderManager {
                 }
             }
         }
+    }
+
+    /**
+     * Retry persistence of previously failed fund data.
+     * Called periodically when bot is in a stable state to retry saving funds that couldn't be persisted.
+     * Useful when disk I/O errors occur but later become transient.
+     *
+     * @returns {boolean} true if all retried data persisted successfully, false if some still failing
+     */
+    retryPersistenceIfNeeded() {
+        if (!this._persistenceWarning) {
+            return true;  // No pending persistence issues
+        }
+
+        const warning = this._persistenceWarning;
+        this.logger.log(`Retrying persistence for ${warning.type} (failed at ${new Date(warning.timestamp).toISOString()})...`, 'info');
+
+        try {
+            if (warning.type === 'pendingProceeds') {
+                const success = this._persistPendingProceeds();
+                if (success) {
+                    this.logger.log(`✓ Successfully retried pendingProceeds persistence`, 'info');
+                }
+                return success;
+            } else if (warning.type === 'btsFeesOwed') {
+                const success = this._persistBtsFeesOwed();
+                if (success) {
+                    this.logger.log(`✓ Successfully retried btsFeesOwed persistence`, 'info');
+                }
+                return success;
+            }
+        } catch (e) {
+            this.logger.log(`Error during persistence retry: ${e.message}`, 'error');
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if bot has any persistence warnings that need attention.
+     * Can be used by monitoring/alerting systems.
+     *
+     * @returns {Object|null} Persistence warning info or null if none
+     */
+    getPersistenceWarning() {
+        return this._persistenceWarning || null;
     }
 
     /**
@@ -1469,9 +1546,15 @@ class OrderManager {
 
         // CRITICAL: Persist pending proceeds and BTS fees so they survive bot restart
         // These funds from partial fills must not be lost when the bot restarts
-        this._persistPendingProceeds();
+        const proceedsPersistedOk = this._persistPendingProceeds();
+        if (!proceedsPersistedOk) {
+            this.logger.log(`⚠ Pending proceeds not persisted - will be held in memory and retried`, 'warn');
+        }
         if (this.funds.btsFeesOwed > 0) {
-            this._persistBtsFeesOwed();
+            const feesPersistedOk = this._persistBtsFeesOwed();
+            if (!feesPersistedOk) {
+                this.logger.log(`⚠ BTS fees not persisted - will be held in memory and retried`, 'warn');
+            }
         }
         
         if (this.logger.level === 'debug') this._logAvailable('after proceeds apply');
@@ -1521,9 +1604,12 @@ class OrderManager {
         this.recalculateFunds();
         
         this.logger.log(`Cleared pendingProceeds after rotation: Before Buy ${proceedsBeforeClear.buy.toFixed(8)} -> After ${(this.funds.pendingProceeds.buy || 0).toFixed(8)} | Before Sell ${proceedsBeforeClear.sell.toFixed(8)} -> After ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'info');
-        
+
         // CRITICAL: Persist cleared pendingProceeds so cleared state survives restart
-        this._persistPendingProceeds();
+        const proceedsCleared = this._persistPendingProceeds();
+        if (!proceedsCleared) {
+            this.logger.log(`⚠ Cleared proceeds not persisted - will retry on next cycle`, 'warn');
+        }
         
         this._logAvailable('after rotation clear');
 

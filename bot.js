@@ -642,6 +642,14 @@ class DEXBot {
                     if (validFills.length > 0) {
                         this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds, this.manager.funds.btsFeesOwed);
                     }
+
+                    // Attempt to retry any previously failed persistence operations
+                    if (typeof this.manager.retryPersistenceIfNeeded === 'function') {
+                        const persistenceOk = this.manager.retryPersistenceIfNeeded();
+                        if (persistenceOk) {
+                            this.manager.logger.log(`Persistence recovery check passed`, 'debug');
+                        }
+                    }
                 } catch (err) {
                     this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
                 } finally {
