@@ -1026,9 +1026,10 @@ class Grid {
 
         // Trigger auto-update for BUY side if metric exceeds threshold
         if (manager && buyMetric > (GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille / 1000)) {
+            const metricPromille = buyMetric * 1000;  // Convert metric to promille for logging
             const threshold = GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille;
             manager.logger?.log?.(
-                `Buy side divergence metric ${buyMetric.toFixed(6)} exceeds threshold ${threshold.toFixed(6)}. Triggering updateGridOrderSizesForSide...`,
+                `Buy side divergence metric ${metricPromille.toFixed(6)} exceeds threshold ${threshold.toFixed(6)}. Triggering updateGridOrderSizesForSide...`,
                 'info'
             );
 
@@ -1044,9 +1045,10 @@ class Grid {
 
         // Trigger auto-update for SELL side if metric exceeds threshold
         if (manager && sellMetric > (GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille / 1000)) {
+            const metricPromille = sellMetric * 1000;  // Convert metric to promille for logging
             const threshold = GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille;
             manager.logger?.log?.(
-                `Sell side divergence metric ${sellMetric.toFixed(6)} exceeds threshold ${threshold.toFixed(6)}. Triggering updateGridOrderSizesForSide...`,
+                `Sell side divergence metric ${metricPromille.toFixed(6)} exceeds threshold ${threshold.toFixed(6)}. Triggering updateGridOrderSizesForSide...`,
                 'info'
             );
 
