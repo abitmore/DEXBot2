@@ -273,14 +273,15 @@ class OrderManager {
     }
 
     /**
-     * Central calculation for available funds.
-     * Formula: available = max(0, chainFree - virtuel - cacheFunds) + (pendingProceeds - btsFeesOwed)
+     * Central calculation for available funds (pure calculation, no side effects).
+     * Formula: available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed) + pendingProceeds
      *
-     * Deducts BTS fees from pendingProceeds if BTS is the asset for this side,
-     * and updates both btsFeesOwed and pendingProceeds accordingly.
+     * NOTE: This is a PURE calculation function - it does NOT modify any state.
+     * It returns the theoretical available funds accounting for fees that WOULD be deducted.
+     * Actual fee deduction from pendingProceeds happens in deductBtsFees().
      *
      * @param {string} side - 'buy' or 'sell'
-     * @returns {number} Available funds for the given side
+     * @returns {number} Available funds for the given side (accounting for fees but not modifying state)
      */
     calculateAvailableFunds(side) {
         if (!side || (side !== 'buy' && side !== 'sell')) return 0;
@@ -288,21 +289,38 @@ class OrderManager {
         const chainFree = side === 'buy' ? (this.accountTotals?.buyFree || 0) : (this.accountTotals?.sellFree || 0);
         const virtuel = side === 'buy' ? (this.funds.virtuel?.buy || 0) : (this.funds.virtuel?.sell || 0);
         const cacheFunds = side === 'buy' ? (this.funds.cacheFunds?.buy || 0) : (this.funds.cacheFunds?.sell || 0);
-        let pending = side === 'buy' ? (this.funds.pendingProceeds?.buy || 0) : (this.funds.pendingProceeds?.sell || 0);
+        const pending = side === 'buy' ? (this.funds.pendingProceeds?.buy || 0) : (this.funds.pendingProceeds?.sell || 0);
 
-        // Deduct BTS fees from pendingProceeds if BTS is the asset for this side
+        // Check if BTS fees would apply to this side (pure calculation, no modification)
         const asset = side === 'buy' ? this.config.assetA : this.config.assetB;
+        let applicableBtsFeesOwed = 0;
         if (asset === 'BTS' && this.funds.btsFeesOwed > 0) {
-            const feesOwedThisSide = Math.min(this.funds.btsFeesOwed, pending);
-            if (feesOwedThisSide > 0) {
-                this.funds.btsFeesOwed -= feesOwedThisSide;
-                this.funds.pendingProceeds[side] -= feesOwedThisSide;
-                this.logger.log(`BTS fees deducted: ${feesOwedThisSide.toFixed(8)} BTS. Remaining fees: ${this.funds.btsFeesOwed.toFixed(8)} BTS`, 'debug');
-                pending -= feesOwedThisSide;
-            }
+            // Fees would be deducted from pendingProceeds, up to the amount available
+            applicableBtsFeesOwed = Math.min(this.funds.btsFeesOwed, pending);
         }
 
-        return Math.max(0, chainFree - virtuel - cacheFunds) + pending;
+        return Math.max(0, chainFree - virtuel - cacheFunds) + (pending - applicableBtsFeesOwed);
+    }
+
+    /**
+     * Actually deduct BTS fees from pendingProceeds (has side effects).
+     * Only call this during rotation processing, not during normal fund calculations.
+     *
+     * @param {string} side - 'buy' or 'sell'
+     */
+    deductBtsFees(side) {
+        if (!side || (side !== 'buy' && side !== 'sell')) return;
+
+        const asset = side === 'buy' ? this.config.assetA : this.config.assetB;
+        if (asset !== 'BTS' || this.funds.btsFeesOwed <= 0) return;
+
+        const pending = this.funds.pendingProceeds?.[side] || 0;
+        const feesOwedThisSide = Math.min(this.funds.btsFeesOwed, pending);
+        if (feesOwedThisSide > 0) {
+            this.funds.btsFeesOwed -= feesOwedThisSide;
+            this.funds.pendingProceeds[side] -= feesOwedThisSide;
+            this.logger.log(`BTS fees deducted: ${feesOwedThisSide.toFixed(8)} BTS. Remaining fees: ${this.funds.btsFeesOwed.toFixed(8)} BTS`, 'info');
+        }
     }
 
     /**
@@ -1373,9 +1391,17 @@ class OrderManager {
         const proceedsBefore = { buy: this.funds.pendingProceeds.buy || 0, sell: this.funds.pendingProceeds.sell || 0 };
         this.funds.pendingProceeds.buy = (this.funds.pendingProceeds.buy || 0) + proceedsBuy;
         this.funds.pendingProceeds.sell = (this.funds.pendingProceeds.sell || 0) + proceedsSell;
+
+        // Deduct BTS fees from proceeds immediately after adding them
+        // This ensures fees don't consume proceeds repeatedly during fund calculations
+        if (hasBtsPair && this.funds.btsFeesOwed > 0) {
+            this.deductBtsFees('buy');
+            this.deductBtsFees('sell');
+        }
+
         this.recalculateFunds();
         this.logger.log(`Proceeds applied: Before Buy ${proceedsBefore.buy.toFixed(8)} + ${proceedsBuy.toFixed(8)} = After ${(this.funds.pendingProceeds.buy || 0).toFixed(8)} | Before Sell ${proceedsBefore.sell.toFixed(8)} + ${proceedsSell.toFixed(8)} = After ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'info');
-        
+
         // CRITICAL: Persist pending proceeds so they survive bot restart
         // These funds from partial fills must not be lost when the bot restarts
         try {
@@ -1798,7 +1824,7 @@ class OrderManager {
             .sort((a, b) => targetType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
 
         // Calculate available funds using centralized function
-        // Deducts BTS fees from pendingProceeds automatically
+        // Accounts for BTS fees that were already deducted from pendingProceeds in processFilledOrders
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         let availableFunds = this.calculateAvailableFunds(side);
 
