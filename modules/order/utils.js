@@ -984,6 +984,58 @@ async function _fetchAssetMarketFees(assetSymbol, BitShares) {
 }
 
 // ---------------------------------------------------------------------------
+// Persistence helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Centralized grid persistence helper.
+ * Handles all persistence operations (grid snapshot + fund data) in one call.
+ * Automatically manages error handling without throwing exceptions.
+ *
+ * Usage: Instead of:
+ *   accountOrders.storeMasterGrid(botKey, Array.from(manager.orders.values()),
+ *                                  manager.funds.cacheFunds, manager.funds.pendingProceeds,
+ *                                  manager.funds.btsFeesOwed);
+ *   const proceedsOk = manager._persistPendingProceeds();
+ *   const feesOk = manager._persistBtsFeesOwed();
+ *
+ * Just use:
+ *   persistGridSnapshot(manager, accountOrders, botKey);
+ *
+ * @param {Object} manager - OrderManager instance
+ * @param {Object} accountOrders - AccountOrders instance for storage
+ * @param {string} botKey - Bot identifier key
+ * @returns {boolean} true if all persistence succeeded, false if any failed
+ */
+function persistGridSnapshot(manager, accountOrders, botKey) {
+    if (!manager || !accountOrders || !botKey) {
+        return false;
+    }
+
+    try {
+        // Persist the complete grid with all fund data
+        accountOrders.storeMasterGrid(
+            botKey,
+            Array.from(manager.orders.values()),
+            manager.funds.cacheFunds,
+            manager.funds.pendingProceeds,
+            manager.funds.btsFeesOwed
+        );
+
+        // Also try to persist individual fund components for redundancy
+        const proceedsOk = manager._persistPendingProceeds?.();
+        const feesOk = manager._persistBtsFeesOwed?.();
+
+        return (proceedsOk !== false) && (feesOk !== false);
+    } catch (e) {
+        if (manager.logger) {
+            manager.logger.log(`Error during grid persistence: ${e.message}`, 'error');
+        }
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 module.exports = {
@@ -1025,5 +1077,8 @@ module.exports = {
     initializeFeeCache,
     getCachedFees,
     clearFeeCache,
-    getAssetFees
+    getAssetFees,
+
+    // Persistence
+    persistGridSnapshot
 };
