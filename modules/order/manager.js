@@ -357,6 +357,38 @@ class OrderManager {
     }
 
     /**
+     * Persist BTS blockchain fees owed to disk with retry logic.
+     * BTS fees accumulate during fill processing and must be persisted to prevent fund loss
+     * if the bot crashes before rotation consumes the proceeds and fees.
+     * Uses same retry pattern as _persistPendingProceeds with exponential backoff.
+     */
+    _persistBtsFeesOwed() {
+        if (!this.config || !this.config.botKey || !this.accountOrders) {
+            return;
+        }
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                this.accountOrders.updateBtsFeesOwed(this.config.botKey, this.funds.btsFeesOwed);
+                this.logger.log(`✓ Persisted BTS fees owed: ${(this.funds.btsFeesOwed || 0).toFixed(8)} BTS`, 'debug');
+                return;  // Success
+            } catch (e) {
+                if (attempt === 3) {
+                    // All retries failed - fail hard
+                    this.logger.log(`CRITICAL: Failed to persist BTS fees after ${attempt} attempts: ${e.message}. Fees at risk of loss!`, 'error');
+                    throw e;
+                } else {
+                    this.logger.log(`Failed to persist BTS fees (attempt ${attempt}/3): ${e.message}. Retrying...`, 'warn');
+                    // Exponential backoff: 100ms, 200ms, 300ms
+                    const waitMs = attempt * 100;
+                    const start = Date.now();
+                    while (Date.now() - start < waitMs) { }  // Busy wait
+                }
+            }
+        }
+    }
+
+    /**
      * Recalculate all fund values based on current order states.
      *
      * This method iterates all orders and computes:
@@ -1435,9 +1467,12 @@ class OrderManager {
         this.recalculateFunds();
         this.logger.log(`Proceeds applied: Before Buy ${proceedsBefore.buy.toFixed(8)} + ${proceedsBuy.toFixed(8)} = After ${(this.funds.pendingProceeds.buy || 0).toFixed(8)} | Before Sell ${proceedsBefore.sell.toFixed(8)} + ${proceedsSell.toFixed(8)} = After ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'info');
 
-        // CRITICAL: Persist pending proceeds so they survive bot restart
+        // CRITICAL: Persist pending proceeds and BTS fees so they survive bot restart
         // These funds from partial fills must not be lost when the bot restarts
         this._persistPendingProceeds();
+        if (this.funds.btsFeesOwed > 0) {
+            this._persistBtsFeesOwed();
+        }
         
         if (this.logger.level === 'debug') this._logAvailable('after proceeds apply');
         const extraOrderCount = this.outOfSpread ? 1 : 0;

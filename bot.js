@@ -225,7 +225,7 @@ class DEXBot {
 
         if (this.config.dryRun) {
             this.manager.logger.log('Dry run enabled, skipping on-chain order placement.', 'info');
-            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
+            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds, this.manager.funds.btsFeesOwed);
             return;
         }
 
@@ -640,7 +640,7 @@ class DEXBot {
 
                     // Always persist snapshot after processing fills if we did anything
                     if (validFills.length > 0) {
-                        this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
+                        this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds, this.manager.funds.btsFeesOwed);
                     }
                 } catch (err) {
                     this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
@@ -676,12 +676,13 @@ class DEXBot {
         const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
         const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
         const persistedPendingProceeds = this.accountOrders.loadPendingProceeds(this.config.botKey);
-        
+        const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
+
         // Restore cacheFunds to manager if found
         if (persistedCacheFunds) {
             this.manager.funds.cacheFunds = { ...persistedCacheFunds };
         }
-        
+
         // CRITICAL: Restore pendingProceeds from partial fills
         // This ensures fill proceeds from before the restart are not lost
         if (persistedPendingProceeds) {
@@ -689,6 +690,13 @@ class DEXBot {
             console.log(`[bot.js] ✓ Restored pendingProceeds from startup: Buy ${(persistedPendingProceeds.buy || 0).toFixed(8)}, Sell ${(persistedPendingProceeds.sell || 0).toFixed(8)}`);
         } else {
             console.log(`[bot.js] ℹ No pendingProceeds to restore (fresh start or no partial fills)`);
+        }
+
+        // CRITICAL: Restore BTS fees owed from blockchain operations
+        // This ensures fees are properly deducted from proceeds, preventing fund loss on restart
+        if (persistedBtsFeesOwed > 0) {
+            this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
+            console.log(`[bot.js] ✓ Restored BTS fees owed: ${persistedBtsFeesOwed.toFixed(8)} BTS`);
         }
         
         // Use this.accountId which was set during initialize()
@@ -750,7 +758,7 @@ class DEXBot {
                 console.log('[bot.js] No existing chain orders found. Placing initial orders.');
                 await this.placeInitialOrders();
             }
-            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
+            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds, this.manager.funds.btsFeesOwed);
         } else {
             console.log('[bot.js] Found active session. Loading and syncing existing grid.');
             await Grid.loadGrid(this.manager, persistedGrid);
@@ -771,7 +779,7 @@ class DEXBot {
                 syncResult,
             });
 
-            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds);
+            this.accountOrders.storeMasterGrid(this.config.botKey, Array.from(this.manager.orders.values()), this.manager.funds.cacheFunds, this.manager.funds.pendingProceeds, this.manager.funds.btsFeesOwed);
         }
 
         // Main loop

@@ -15,6 +15,9 @@
  *     "botkey-0": {
  *       "meta": { name, assetA, assetB, active, index },
  *       "grid": [ { id, type, state, price, size, orderId }, ... ],
+ *       "cacheFunds": { buy: number, sell: number },
+ *       "pendingProceeds": { buy: number, sell: number },
+ *       "btsFeesOwed": number,
  *       "createdAt": "ISO timestamp",
  *       "lastUpdated": "ISO timestamp"
  *     }
@@ -147,6 +150,7 @@ class AccountOrders {
           grid: [],
           cacheFunds: { buy: 0, sell: 0 },
           pendingProceeds: { buy: 0, sell: 0 },
+          btsFeesOwed: 0,
           createdAt: meta.createdAt,
           lastUpdated: meta.updatedAt
         };
@@ -162,6 +166,12 @@ class AccountOrders {
         // Ensure pendingProceeds exists even for existing bots
         if (!entry.pendingProceeds || typeof entry.pendingProceeds.buy !== 'number' || typeof entry.pendingProceeds.sell !== 'number') {
           entry.pendingProceeds = { buy: 0, sell: 0 };
+          changed = true;
+        }
+
+        // Ensure btsFeesOwed exists even for existing bots
+        if (typeof entry.btsFeesOwed !== 'number') {
+          entry.btsFeesOwed = 0;
           changed = true;
         }
 
@@ -219,8 +229,10 @@ class AccountOrders {
    * @param {string} botKey - Bot identifier key
    * @param {Array} orders - Array of order objects from OrderManager
    * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
+   * @param {Object} pendingProceeds - Optional pending proceeds { buy: number, sell: number }
+   * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
    */
-  storeMasterGrid(botKey, orders = [], cacheFunds = null, pendingProceeds = null) {
+  storeMasterGrid(botKey, orders = [], cacheFunds = null, pendingProceeds = null, btsFeesOwed = null) {
     if (!botKey) return;
     
     // CRITICAL: Reload from disk before writing to prevent race conditions between bot processes
@@ -235,6 +247,7 @@ class AccountOrders {
         grid: snapshot,
         cacheFunds: cacheFunds || { buy: 0, sell: 0 },
         pendingProceeds: pendingProceeds || { buy: 0, sell: 0 },
+        btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
         createdAt: meta.createdAt,
         lastUpdated: meta.updatedAt
       };
@@ -245,6 +258,9 @@ class AccountOrders {
       }
       if (pendingProceeds) {
         this.data.bots[botKey].pendingProceeds = pendingProceeds;
+      }
+      if (Number.isFinite(btsFeesOwed)) {
+        this.data.bots[botKey].btsFeesOwed = btsFeesOwed;
       }
       const timestamp = nowIso();
       this.data.bots[botKey].lastUpdated = timestamp;
@@ -325,6 +341,40 @@ class AccountOrders {
       return;
     }
     this.data.bots[botKey].pendingProceeds = pendingProceeds || { buy: 0, sell: 0 };
+    this.data.lastUpdated = nowIso();
+    this._persist();
+  }
+
+  /**
+   * Load BTS blockchain fees owed for a bot.
+   * BTS fees accumulate during fill processing and must persist across restarts
+   * to ensure they are properly deducted from proceeds during rotation.
+   * @param {string} botKey - Bot identifier key
+   * @returns {number} BTS fees owed or 0 if not found
+   */
+  loadBtsFeesOwed(botKey) {
+    if (this.data && this.data.bots && this.data.bots[botKey]) {
+      const botData = this.data.bots[botKey];
+      const fees = botData.btsFeesOwed;
+      if (typeof fees === 'number' && Number.isFinite(fees)) {
+        return fees;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * Update (persist) BTS blockchain fees for a bot.
+   * BTS fees are deducted during fill processing and must be tracked across restarts
+   * to prevent fund loss if the bot crashes before rotation.
+   * @param {string} botKey - Bot identifier key
+   * @param {number} btsFeesOwed - BTS blockchain fees owed
+   */
+  updateBtsFeesOwed(botKey, btsFeesOwed) {
+    if (!botKey || !this.data || !this.data.bots || !this.data.bots[botKey]) {
+      return;
+    }
+    this.data.bots[botKey].btsFeesOwed = Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0;
     this.data.lastUpdated = nowIso();
     this._persist();
   }
