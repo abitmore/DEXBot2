@@ -74,18 +74,9 @@ done
 log_info ""
 
 # Ask for confirmation
-read -p "Delete all these order files? (y/n): " -r CONFIRM
+read -p "Delete these order files? (y/n): " -r CONFIRM
 
 if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
-    log_warning "Cancelled"
-    exit 0
-fi
-
-# Additional safety check
-log_warning "This action cannot be undone!"
-read -p "Are you absolutely sure? Type 'YES' to confirm: " -r FINAL_CONFIRM
-
-if [ "$FINAL_CONFIRM" != "YES" ]; then
     log_warning "Cancelled"
     exit 0
 fi
