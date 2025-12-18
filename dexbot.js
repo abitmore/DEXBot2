@@ -180,6 +180,7 @@ class DEXBot {
         this._fillDedupeWindowMs = 5000; // 5 second window to prevent duplicate processing
         this._processingFill = false; // Lock to prevent concurrent fill processing
         this._pendingFills = []; // Queue for fills that arrive while processing
+        this._runningDivergenceCorrections = false;  // Prevent rotation during divergence check/update
     }
 
     async initialize(masterPassword = null) {
@@ -524,10 +525,11 @@ class DEXBot {
         }
 
         if (operations.length === 0) {
-            return;
+            return { executed: false, hadRotation: false };  // No batch executed
         }
 
         // Step 4: Execute Batch
+        let hadRotation = false;
         try {
             this.manager.logger.log(`Broadcasting batch with ${operations.length} operations...`, 'info');
             const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
@@ -566,8 +568,15 @@ class DEXBot {
                 }
 
                 if (ctx.kind === 'rotation') {
+                    // Skip rotation if we're running divergence corrections (prevents feedback loops)
+                    if (this._runningDivergenceCorrections) {
+                        this.manager.logger.log(`Skipping rotation during divergence correction phase: ${ctx.rotation?.oldOrder?.orderId}`, 'debug');
+                        continue;
+                    }
+
+                    hadRotation = true;
                     const { rotation } = ctx;
-                    const { oldOrder, newPrice, newGridId } = rotation;
+                    const { oldOrder, newPrice, newGridId, newSize } = rotation;
 
                     if (rotation.usingOverride) {
                         const slot = this.manager.orders.get(newGridId) || { id: newGridId, type: rotation.type, price: newPrice, size: 0, state: ORDER_STATES.VIRTUAL };
@@ -593,7 +602,9 @@ class DEXBot {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
             // If batch fails, should we try to revert or just let the next sync fix it?
             // The next sync/loop will see discrepancies and fix them, though funds might be momentarily desync.
+            return { executed: false, hadRotation: false };
         }
+        return { executed: true, hadRotation };  // Return whether batch executed and if rotation happened
     }
 
     /**
@@ -776,22 +787,35 @@ class DEXBot {
                         // This updates funds with proceeds from ALL filled orders and returns the rebalance result
                         const rebalanceResult = await this.manager.processFilledOrders(allFilledOrders);
 
-                        // Execute batch transaction
-                        await this.updateOrdersOnChainBatch(rebalanceResult);
+                        // Execute batch transaction (returns object with executed flag and hadRotation flag)
+                        const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
 
                         // Always persist snapshot after placing orders on-chain
                         persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
 
-                        // After rotation, run grid comparisons to detect divergence and update _gridSidesUpdated
-                        await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
+                        // Only run divergence checks if rotation was completed
+                        if (batchResult.hadRotation) {
+                            try {
+                                // Set flag to prevent rotation during divergence correction phase
+                                this._runningDivergenceCorrections = true;
 
-                        // Apply order corrections for sides marked by grid comparisons
-                        await OrderUtils.applyGridDivergenceCorrections(
-                            this.manager,
-                            this.accountOrders,
-                            this.config.botKey,
-                            this.updateOrdersOnChainBatch.bind(this)
-                        );
+                                // After rotation, run grid comparisons to detect divergence and update _gridSidesUpdated
+                                await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
+
+                                // Apply order corrections for sides marked by grid comparisons
+                                await OrderUtils.applyGridDivergenceCorrections(
+                                    this.manager,
+                                    this.accountOrders,
+                                    this.config.botKey,
+                                    this.updateOrdersOnChainBatch.bind(this)
+                                );
+                            } finally {
+                                // Always clear flag when done, even if divergence corrections fail
+                                this._runningDivergenceCorrections = false;
+                            }
+                        } else {
+                            this.manager.logger.log(`No rotation occurred - skipping divergence checks`, 'debug');
+                        }
                     }
 
                     // Attempt to retry any previously failed persistence operations
