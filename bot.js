@@ -503,9 +503,47 @@ class DEXBot {
         }
     }
 
+    /**
+     * Safely drain pending fills queue on next event loop iteration.
+     *
+     * This method schedules a retry of fill processing when there are queued fills.
+     * Using setImmediate() ensures we don't block and prevents race conditions.
+     *
+     * Key design principles:
+     * - Called only from finally block (cleanup phase)
+     * - Uses setImmediate() to defer to next iteration (not blocking)
+     * - Prevents infinite loops with iteration limits in listenForFills
+     * - Allows new fills to arrive during the delay
+     *
+     * Why this is safe:
+     * - _processingFill flag is already false when called
+     * - New fills can queue while we schedule the retry
+     * - Timeout (100ms) gives time for batch accumulation
+     * - No re-entrancy into finally block
+     */
+    _schedulePendingFillsRetry(chainOrders) {
+        if (!chainOrders || this._pendingFills.length === 0) return;
+
+        const pendingCount = this._pendingFills.length;
+        this.manager?.logger?.log(
+            `Scheduling retry for ${pendingCount} pending fill(s) in 100ms`,
+            'debug'
+        );
+
+        // Schedule on next event loop iteration (non-blocking)
+        setImmediate(() => {
+            if (this._pendingFills.length > 0) {
+                // Small delay allows additional fills to accumulate before retry
+                setTimeout(() => {
+                    chainOrders.listenForFills(this.account, () => { });
+                }, 100);
+            }
+        });
+    }
+
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
-        
+
         // Create AccountOrders with bot-specific file (one file per bot)
         this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
         
@@ -659,15 +697,8 @@ class DEXBot {
                     this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
                 } finally {
                     this._processingFill = false;
-                    // Process any fills that arrived while we were busy
-                    if (this._pendingFills.length > 0) {
-                        const pending = this._pendingFills;
-                        this._pendingFills = [];
-                        // Re-invoke the listener with pending fills
-                        setTimeout(() => {
-                            chainOrders.listenForFills(this.account, () => { }); // dummy to trigger
-                        }, 100);
-                    }
+                    // Safely schedule retry for any fills that arrived during processing
+                    this._schedulePendingFillsRetry(chainOrders);
                 }
             }
         });
