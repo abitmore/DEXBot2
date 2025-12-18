@@ -340,12 +340,22 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
    - Example: Grid allocated 1000 BTS, cache reaches 15 BTS → ratio is 1.5% → triggers update
    - Updates buy and sell sides independently based on their respective ratios
 
-2. **Grid Divergence Threshold** (1% by default)
+2. **Grid Divergence Threshold** (1 promille by default)
    - Compares currently calculated grid with persisted grid state
-   - Uses quadratic deviation metric: measures relative size differences squared: `Σ((calculated - persisted) / persisted)² / count`
-   - Triggers when divergence metric × 100 > 1% threshold
+   - Uses quadratic deviation metric: `Σ((calculated - persisted) / persisted)² / count`
+   - Triggers when metric exceeds threshold (in promille, where 1 promille = 0.1%)
    - Penalizes larger deviations more heavily (10% error contributes 0.01, 50% error contributes 0.25)
-   - Example: If persisted orders are [100, 200, 150] and calculated are [100, 180, 160], metric is ~0.542%
+   - Example: If persisted orders are [100, 200, 150] and calculated are [100, 180, 160], metric is ~5.42 promille
+
+   **Threshold Reference Table:**
+   | Promille | Avg Error | Description |
+   |----------|-----------|-------------|
+   | 0.1 | ~1.0% | Very strict (almost no drift allowed) |
+   | 0.5 | ~2.2% | Strict |
+   | 1 | ~3.2% | Default (balanced) |
+   | 2 | ~4.5% | Lenient |
+   | 5 | ~7.1% | Very lenient |
+   | 10 | ~10% | Extremely lenient |
 
 **When Grid Recalculation Occurs:**
 - After order fills and proceeds are collected
