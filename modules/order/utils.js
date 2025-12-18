@@ -84,6 +84,50 @@ function resolveRelativePrice(value, marketPrice, mode = 'min') {
 }
 
 // ---------------------------------------------------------------------------
+// Fund calculation helpers
+// ---------------------------------------------------------------------------
+/**
+ * Computes chain fund totals by combining free balances with committed amounts.
+ *
+ * @param {Object} accountTotals - Account totals object with buyFree, sellFree, buy, sell
+ * @param {Object} committedChain - Committed chain funds with buy and sell properties
+ * @returns {Object} Object containing:
+ *   - chainFreeBuy/chainFreeSell: Free balances from account
+ *   - committedChainBuy/committedChainSell: Committed amounts
+ *   - freePlusLockedBuy/freePlusLockedSell: Sum of free + committed
+ *   - chainTotalBuy/chainTotalSell: Account totals or free+locked, whichever is greater
+ */
+function computeChainFundTotals(accountTotals, committedChain) {
+    const chainFreeBuy = Number.isFinite(Number(accountTotals?.buyFree)) ? Number(accountTotals.buyFree) : 0;
+    const chainFreeSell = Number.isFinite(Number(accountTotals?.sellFree)) ? Number(accountTotals.sellFree) : 0;
+    const committedChainBuy = Number(committedChain?.buy) || 0;
+    const committedChainSell = Number(committedChain?.sell) || 0;
+
+    const freePlusLockedBuy = chainFreeBuy + committedChainBuy;
+    const freePlusLockedSell = chainFreeSell + committedChainSell;
+
+    // Prefer accountTotals.buy/sell (free + locked in open orders) when available, but ensure
+    // we don't regress to free-only by treating totals as at least (free + locked).
+    const chainTotalBuy = Number.isFinite(Number(accountTotals?.buy))
+        ? Math.max(Number(accountTotals.buy), freePlusLockedBuy)
+        : freePlusLockedBuy;
+    const chainTotalSell = Number.isFinite(Number(accountTotals?.sell))
+        ? Math.max(Number(accountTotals.sell), freePlusLockedSell)
+        : freePlusLockedSell;
+
+    return {
+        chainFreeBuy,
+        chainFreeSell,
+        committedChainBuy,
+        committedChainSell,
+        freePlusLockedBuy,
+        freePlusLockedSell,
+        chainTotalBuy,
+        chainTotalSell
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Blockchain conversions
 // ---------------------------------------------------------------------------
 function blockchainToFloat(intValue, precision) {
@@ -1229,6 +1273,9 @@ module.exports = {
     isRelativeMultiplierString,
     parseRelativeMultiplierString,
     resolveRelativePrice,
+
+    // Fund calculations
+    computeChainFundTotals,
 
     // Conversions
     blockchainToFloat,

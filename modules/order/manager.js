@@ -35,7 +35,7 @@
  * 4. After rotation: pendingProceeds cleared as funds are consumed by new orders
  */
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('../constants');
-const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize, getAssetFees } = require('./utils');
+const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize, getAssetFees, computeChainFundTotals } = require('./utils');
 const Logger = require('./logger');
 // Grid functions (initialize/recalculate) are intended to be
 // called directly via require('./grid').initializeGrid(manager) by callers.
@@ -168,33 +168,7 @@ class OrderManager {
     }
 
     _computeChainFundTotals() {
-        const chainFreeBuy = Number.isFinite(Number(this.accountTotals?.buyFree)) ? Number(this.accountTotals.buyFree) : 0;
-        const chainFreeSell = Number.isFinite(Number(this.accountTotals?.sellFree)) ? Number(this.accountTotals.sellFree) : 0;
-        const committedChainBuy = Number(this.funds?.committed?.chain?.buy) || 0;
-        const committedChainSell = Number(this.funds?.committed?.chain?.sell) || 0;
-
-        const freePlusLockedBuy = chainFreeBuy + committedChainBuy;
-        const freePlusLockedSell = chainFreeSell + committedChainSell;
-
-        // Prefer accountTotals.buy/sell (free + locked in open orders) when available, but ensure
-        // we don't regress to free-only by treating totals as at least (free + locked).
-        const chainTotalBuy = Number.isFinite(Number(this.accountTotals?.buy))
-            ? Math.max(Number(this.accountTotals.buy), freePlusLockedBuy)
-            : freePlusLockedBuy;
-        const chainTotalSell = Number.isFinite(Number(this.accountTotals?.sell))
-            ? Math.max(Number(this.accountTotals.sell), freePlusLockedSell)
-            : freePlusLockedSell;
-
-        return {
-            chainFreeBuy,
-            chainFreeSell,
-            committedChainBuy,
-            committedChainSell,
-            freePlusLockedBuy,
-            freePlusLockedSell,
-            chainTotalBuy,
-            chainTotalSell
-        };
+        return computeChainFundTotals(this.accountTotals, this.funds?.committed?.chain);
     }
 
     getChainFundsSnapshot() {
