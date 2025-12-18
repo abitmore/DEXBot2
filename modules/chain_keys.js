@@ -471,28 +471,27 @@ async function main() {
             saveAccounts(accountsData);
             console.log(`Account '${accountName}' updated successfully.`);
         } else if (choice === '3') {
-            const accountName = readlineSync.question('Enter key name to remove: ');
-            if (accountsData.accounts[accountName]) {
+            const accountName = selectKeyName(accountsData.accounts, 'Select key to remove');
+            if (!accountName) continue;
+            const confirm = readlineSync.question(`Remove '${accountName}'? (y/n): `).trim().toLowerCase();
+            if (confirm === 'y') {
                 delete accountsData.accounts[accountName];
                 saveAccounts(accountsData);
                 console.log(`Account '${accountName}' removed successfully.`);
             } else {
-                console.log('Account not found.');
+                console.log('Cancelled.');
             }
         } else if (choice === '4') {
             listKeyNames(accountsData.accounts);
         } else if (choice === '5') {
-            const accountName = readlineSync.question('Enter key name to test: ');
-            if (accountsData.accounts[accountName]) {
-                try {
-                    const decryptedKey = decrypt(accountsData.accounts[accountName].encryptedKey, masterPassword);
-                    console.log(`First 5 characters: ${decryptedKey.substring(0, 5)}`);
-                    decryptedKey.replace(/./g, ' ');
-                } catch (error) {
-                    console.log('Decryption failed - wrong master password or corrupted data');
-                }
-            } else {
-                console.log('Account not found.');
+            const accountName = selectKeyName(accountsData.accounts, 'Select key to test');
+            if (!accountName) continue;
+            try {
+                const decryptedKey = decrypt(accountsData.accounts[accountName].encryptedKey, masterPassword);
+                console.log(`First 5 characters: ${decryptedKey.substring(0, 5)}`);
+                decryptedKey.replace(/./g, ' ');
+            } catch (error) {
+                console.log('Decryption failed - wrong master password or corrupted data');
             }
         } else if (choice === '6') {
             masterPassword = await changeMasterPassword(accountsData, masterPassword);

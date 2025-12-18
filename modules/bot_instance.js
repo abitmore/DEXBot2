@@ -14,6 +14,7 @@ const ordersModule = require('./chain_orders');
 const chainKeys = require('./chain_keys');
 const { BitShares } = require('./bitshares_client');
 const OrderManagerModule = require('./order');
+const { TIMING } = require('./constants');
 
 // Environment-driven instance settings
 const BOT_NUMBER = process.env.BOT_NUMBER || '00';
@@ -22,7 +23,7 @@ const ASSET_B_NAME = process.env.ASSET_B_NAME || process.env.ASSET_B || '';
 const MARKET = process.env.MARKET || (ASSET_A_NAME && ASSET_B_NAME ? `${ASSET_A_NAME}/${ASSET_B_NAME}` : 'unknown-market');
 const PREFERRED_ACCOUNT = process.env.PREFERRED_ACCOUNT || null;
 
-// When this file is inside modules/ the project root is one directory up 
+// When this file is inside modules/ the project root is one directory up
 // preserve the same semantics as when bot.js lived at repo root.
 const ROOT = path.resolve(__dirname, '..');
 
@@ -32,12 +33,71 @@ let activeAccountName = null;
 let activePrivateKey = null;
 let activeAccountId = null;
 let _accountUnsub = null;
+let _blockchainFetchInterval = null;
 
 const DRY_RUN = !((process.env.DRY_RUN || '').toString().toLowerCase() === 'false' || process.env.DRY_RUN === '0');
 
 function log(...args) {
     const assetContext = ASSET_A_NAME && ASSET_B_NAME ? `${ASSET_A_NAME}/${ASSET_B_NAME}` : MARKET;
     console.log(new Date().toISOString(), `[bot ${BOT_NUMBER} ${assetContext}]`, ...args);
+}
+
+/**
+ * Start periodic blockchain value updates.
+ * Fetches account totals at regular intervals to keep blockchain variables up-to-date.
+ * Only runs if the interval setting is valid (defined, is a number, and is not 0).
+ *
+ * @param {Object} manager - The OrderManager instance
+ * @param {string} accountId - Account ID or name to fetch balances for
+ * @returns {void}
+ */
+function startBlockchainFetchInterval(manager, accountId) {
+    // Clear any existing interval
+    stopBlockchainFetchInterval();
+
+    // Validate the interval setting
+    const intervalMin = TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN;
+    if (!Number.isFinite(intervalMin) || intervalMin <= 0) {
+        log(`Blockchain fetch interval disabled (value: ${intervalMin}). Periodic blockchain updates will not run.`);
+        return;
+    }
+
+    // Validate manager and account ID
+    if (!manager || typeof manager.fetchAccountTotals !== 'function') {
+        log('Cannot start blockchain fetch interval: manager or fetchAccountTotals method missing');
+        return;
+    }
+
+    if (!accountId) {
+        log('Cannot start blockchain fetch interval: account ID not available');
+        return;
+    }
+
+    // Convert minutes to milliseconds
+    const intervalMs = intervalMin * 60 * 1000;
+
+    // Set up the periodic fetch
+    _blockchainFetchInterval = setInterval(async () => {
+        try {
+            log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
+            await manager.fetchAccountTotals(accountId);
+        } catch (err) {
+            log(`Error during periodic blockchain fetch: ${err && err.message ? err.message : err}`);
+        }
+    }, intervalMs);
+
+    log(`Started periodic blockchain fetch interval: every ${intervalMin} minute(s)`);
+}
+
+/**
+ * Stop the periodic blockchain value fetch.
+ */
+function stopBlockchainFetchInterval() {
+    if (_blockchainFetchInterval !== null) {
+        clearInterval(_blockchainFetchInterval);
+        _blockchainFetchInterval = null;
+        log('Stopped periodic blockchain fetch interval');
+    }
 }
 
 // Boot up an OrderManager instance using available config/env and authenticate a preferred account if provided.
@@ -210,6 +270,9 @@ async function startBot(settingsOrPassword = {}) {
 
                                         orderManager.setAccountTotals({ buy: buyTotal, sell: sellTotal });
                                         log('Set accountTotals for OrderManager', { buy: buyTotal, sell: sellTotal });
+
+                                        // Start periodic blockchain fetch to keep blockchain variables updated
+                                        startBlockchainFetchInterval(orderManager, activeAccountId);
                                     } catch (errFs) {
                                         log('Failed to fetch balances for account when setting account totals:', errFs.message);
                                     }
@@ -234,6 +297,7 @@ async function startBot(settingsOrPassword = {}) {
 }
 
 module.exports = {
-    startBot
+    startBot,
+    stopBlockchainFetchInterval
 };
 
