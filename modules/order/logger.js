@@ -109,25 +109,44 @@ class Logger {
      */
     logFundsStatus(manager) {
         if (!manager) return;
+        // Only show detailed fund logging in debug mode
+        if (manager.logger?.level !== 'debug') return;
+
         const buyName = manager.config?.assetB || 'quote';
         const sellName = manager.config?.assetA || 'base';
         console.log('\n===== FUNDS STATUS =====');
 
         // Use new nested structure
-        const gridBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? manager.funds.available.buy.toFixed(8) : 'N/A';
-        const gridSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? manager.funds.available.sell.toFixed(8) : 'N/A';
+        const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? manager.funds.available.buy.toFixed(8) : 'N/A';
+        const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? manager.funds.available.sell.toFixed(8) : 'N/A';
+
+        // Chain balances (from accountTotals)
+        const chainFreeBuy = manager.accountTotals?.buyFree ?? 0;
+        const chainFreeSell = manager.accountTotals?.sellFree ?? 0;
         const totalChainBuy = manager.funds?.total?.chain?.buy ?? 0;
         const totalChainSell = manager.funds?.total?.chain?.sell ?? 0;
+
+        // Grid allocations
         const totalGridBuy = manager.funds?.total?.grid?.buy ?? 0;
         const totalGridSell = manager.funds?.total?.grid?.sell ?? 0;
         const virtuelBuy = manager.funds?.virtuel?.buy ?? 0;
         const virtuelSell = manager.funds?.virtuel?.sell ?? 0;
+
+        // Cache and pending
         const cacheBuy = manager.funds?.cacheFunds?.buy ?? 0;
         const cacheSell = manager.funds?.cacheFunds?.sell ?? 0;
+        const pendingBuy = manager.funds?.pendingProceeds?.buy ?? 0;
+        const pendingSell = manager.funds?.pendingProceeds?.sell ?? 0;
+
+        // Committed
         const committedGridBuy = manager.funds?.committed?.grid?.buy ?? 0;
         const committedGridSell = manager.funds?.committed?.grid?.sell ?? 0;
         const committedChainBuy = manager.funds?.committed?.chain?.buy ?? 0;
         const committedChainSell = manager.funds?.committed?.chain?.sell ?? 0;
+
+        // BTS fees
+        const btsFeesOwed = manager.funds?.btsFeesOwed ?? 0;
+        const btsSide = (manager.config?.assetA === 'BTS') ? 'sell' : (manager.config?.assetB === 'BTS') ? 'buy' : null;
 
         const c = this.colors;
         const debug = c.debug;
@@ -135,13 +154,28 @@ class Logger {
         const buy = c.buy;
         const sell = c.sell;
 
-        console.log(`funds.available: ${buy}Buy ${gridBuy}${reset} ${buyName} | ${sell}Sell ${gridSell}${reset} ${sellName}`);
+        console.log(`\n${debug}=== AVAILABLE CALCULATION ===${reset}`);
+        console.log(`funds.available: ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`);
+
+        console.log(`\n${debug}=== CHAIN BALANCES (from blockchain) ===${reset}`);
+        console.log(`chainFree: ${buy}Buy ${chainFreeBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${chainFreeSell.toFixed(8)}${reset} ${sellName}`);
         console.log(`total.chain: ${buy}Buy ${totalChainBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${totalChainSell.toFixed(8)}${reset} ${sellName}`);
+
+        console.log(`\n${debug}=== GRID ALLOCATIONS (locked in orders) ===${reset}`);
         console.log(`total.grid: ${buy}Buy ${totalGridBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${totalGridSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`virtuel.grid: ${buy}Buy ${virtuelBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${virtuelSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`cacheFunds: ${buy}Buy ${cacheBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${cacheSell.toFixed(8)}${reset} ${sellName}`);
         console.log(`committed.grid: ${buy}Buy ${committedGridBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${committedGridSell.toFixed(8)}${reset} ${sellName}`);
+        console.log(`virtuel (reserved): ${buy}Buy ${virtuelBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${virtuelSell.toFixed(8)}${reset} ${sellName}`);
+
+        console.log(`\n${debug}=== COMMITTED ON-CHAIN ===${reset}`);
         console.log(`committed.chain: ${buy}Buy ${committedChainBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${committedChainSell.toFixed(8)}${reset} ${sellName}`);
+
+        console.log(`\n${debug}=== DEDUCTIONS & PENDING ===${reset}`);
+        console.log(`cacheFunds: ${buy}Buy ${cacheBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${cacheSell.toFixed(8)}${reset} ${sellName}`);
+        console.log(`pendingProceeds: ${buy}Buy ${pendingBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${pendingSell.toFixed(8)}${reset} ${sellName}`);
+        console.log(`btsFeesOwed (all): ${btsFeesOwed.toFixed(8)} BTS`);
+        if (btsSide) console.log(`applicableBtsFeesOwed (${btsSide} side): ${Math.min(btsFeesOwed, (btsSide === 'buy' ? pendingBuy : pendingSell)).toFixed(8)} BTS`);
+
+        console.log(`\n${debug}=== FORMULA: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed) + pendingProceeds ===${reset}`);
     }
 
     // Print a comprehensive status summary using manager state.

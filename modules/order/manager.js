@@ -497,7 +497,9 @@ class OrderManager {
         if (gridOrder.type === ORDER_TYPES.SELL) {
             // SELL partial: receive quote asset; free balance rises, base total drops
             const proceeds = fillSize * price;
+            const oldBuyFree = this.accountTotals?.buyFree || 0;
             bumpTotal('buyFree', proceeds);
+            this.logger.log(`[chainFree update] Partial SELL fill: buyFree ${oldBuyFree.toFixed(8)} + ${proceeds.toFixed(8)} proceeds = ${this.accountTotals.buyFree.toFixed(8)} BTS`, 'debug');
             bumpTotal('buy', proceeds);
             bumpTotal('sell', -fillSize);
             this.recalculateFunds();
@@ -506,7 +508,9 @@ class OrderManager {
         } else if (gridOrder.type === ORDER_TYPES.BUY) {
             // BUY partial: receive base asset; free base rises, quote total drops
             const proceeds = fillSize / price;
+            const oldSellFree = this.accountTotals?.sellFree || 0;
             bumpTotal('sellFree', proceeds);
+            this.logger.log(`[chainFree update] Partial BUY fill: sellFree ${oldSellFree.toFixed(8)} + ${proceeds.toFixed(8)} proceeds = ${this.accountTotals.sellFree.toFixed(8)} ${this.config?.assetA}`, 'debug');
             bumpTotal('sell', proceeds);
             bumpTotal('buy', -fillSize);
             this.recalculateFunds();
@@ -1044,9 +1048,13 @@ class OrderManager {
                     if (gridOrder.state === ORDER_STATES.VIRTUAL && gridOrder.size > 0) {
                         const size = Number(gridOrder.size) || 0;
                         if (gridOrder.type === ORDER_TYPES.BUY && this.accountTotals?.buyFree !== undefined) {
+                            const oldFree = this.accountTotals.buyFree;
                             this.accountTotals.buyFree = Math.max(0, this.accountTotals.buyFree - size);
+                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving VIRTUAL->ACTIVE: ${oldFree.toFixed(8)} - ${size.toFixed(8)} = ${this.accountTotals.buyFree.toFixed(8)} BTS`, 'debug');
                         } else if (gridOrder.type === ORDER_TYPES.SELL && this.accountTotals?.sellFree !== undefined) {
+                            const oldFree = this.accountTotals.sellFree;
                             this.accountTotals.sellFree = Math.max(0, this.accountTotals.sellFree - size);
+                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving VIRTUAL->ACTIVE: ${oldFree.toFixed(8)} - ${size.toFixed(8)} = ${this.accountTotals.sellFree.toFixed(8)} ${this.config?.assetA}`, 'debug');
                         }
                     }
                     // Create a new object with updated state to avoid mutation bugs in _updateOrder
@@ -1068,9 +1076,13 @@ class OrderManager {
                     if (gridOrder.state === ORDER_STATES.ACTIVE && gridOrder.size > 0) {
                         const size = Number(gridOrder.size) || 0;
                         if (gridOrder.type === ORDER_TYPES.BUY && this.accountTotals?.buyFree !== undefined) {
+                            const oldFree = this.accountTotals.buyFree;
                             this.accountTotals.buyFree += size;
+                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving ACTIVE->VIRTUAL: ${oldFree.toFixed(8)} + ${size.toFixed(8)} = ${this.accountTotals.buyFree.toFixed(8)} BTS`, 'debug');
                         } else if (gridOrder.type === ORDER_TYPES.SELL && this.accountTotals?.sellFree !== undefined) {
+                            const oldFree = this.accountTotals.sellFree;
                             this.accountTotals.sellFree += size;
+                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving ACTIVE->VIRTUAL: ${oldFree.toFixed(8)} + ${size.toFixed(8)} = ${this.accountTotals.sellFree.toFixed(8)} ${this.config?.assetA}`, 'debug');
                         }
                     }
                     // Create a new object to avoid mutation bug
@@ -1370,10 +1382,10 @@ class OrderManager {
             // Calculate proceeds before converting to SPREAD
             if (filledOrder.type === ORDER_TYPES.SELL) {
                 const proceeds = filledOrder.size * filledOrder.price;
-                proceedsBuy += proceeds;  // Collect, don't add yet
+                proceedsBuy += proceeds;  // Collect in pendingProceeds only, NOT in chainFree (to avoid double-counting)
                 // SELL means we receive quote asset (buy side) and give up base asset (sell side)
-                deltaBuyFree += proceeds;
-                deltaBuyTotal += proceeds;
+                // NOTE: Do NOT add proceeds to deltaBuyFree - proceeds go to pendingProceeds, not chainFree
+                deltaBuyTotal += proceeds;  // But DO update total (free + committed)
                 // sellFree was reduced at order creation; the locked size is now sold, so only the total decreases
                 deltaSellTotal -= filledOrder.size;
                 const quoteName = this.config.assetB || 'quote';
@@ -1381,10 +1393,10 @@ class OrderManager {
                 this.logger.log(`Sell filled: +${proceeds.toFixed(8)} ${quoteName}, -${filledOrder.size.toFixed(8)} ${baseName} committed (orderId=${filledOrder.id}, size=${filledOrder.size.toFixed(8)}, price=${filledOrder.price}, isPartial=${filledOrder.isPartial})`, 'info');
             } else {
                 const proceeds = filledOrder.size / filledOrder.price;
-                proceedsSell += proceeds;  // Collect, don't add yet - BUY receives assetA/base which is used for sell orders
+                proceedsSell += proceeds;  // Collect in pendingProceeds only, NOT in chainFree (to avoid double-counting)
                 // BUY means we receive base asset (assetA, sell side) and spend quote asset (assetB, buy side)
-                deltaSellFree += proceeds;
-                deltaSellTotal += proceeds;
+                // NOTE: Do NOT add proceeds to deltaSellFree - proceeds go to pendingProceeds, not chainFree
+                deltaSellTotal += proceeds;  // But DO update total (free + committed)
                 // buyFree was reduced at order creation; only total decreases to reflect the spend
                 deltaBuyTotal -= filledOrder.size;
                 const quoteName = this.config.assetB || 'quote';
