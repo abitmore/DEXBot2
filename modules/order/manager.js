@@ -1435,12 +1435,12 @@ class OrderManager {
                 this.logger.log(`Sell filled: +${proceeds.toFixed(8)} ${quoteName}, -${filledOrder.size.toFixed(8)} ${baseName} committed (orderId=${filledOrder.id}, size=${filledOrder.size.toFixed(8)}, price=${filledOrder.price}, isPartial=${filledOrder.isPartial})`, 'info');
             } else {
                 const proceeds = filledOrder.size / filledOrder.price;
-                proceedsBuy += proceeds;  // Collect, don't add yet - BUY receives assetA/base which tracks on buy side
-                // BUY means we receive base asset (assetA, buy side) and spend quote asset (assetB, sell side)
-                deltaBuyFree += proceeds;
-                deltaBuyTotal += proceeds;
-                // sellFree was reduced at order creation; only total decreases to reflect the spend
-                deltaSellTotal -= filledOrder.size;
+                proceedsSell += proceeds;  // Collect, don't add yet - BUY receives assetA/base which is used for sell orders
+                // BUY means we receive base asset (assetA, sell side) and spend quote asset (assetB, buy side)
+                deltaSellFree += proceeds;
+                deltaSellTotal += proceeds;
+                // buyFree was reduced at order creation; only total decreases to reflect the spend
+                deltaBuyTotal -= filledOrder.size;
                 const quoteName = this.config.assetB || 'quote';
                 const baseName = this.config.assetA || 'base';
                 this.logger.log(`Buy filled: +${proceeds.toFixed(8)} ${baseName}, -${filledOrder.size.toFixed(8)} ${quoteName} committed (orderId=${filledOrder.id}, size=${filledOrder.size.toFixed(8)}, price=${filledOrder.price}, isPartial=${filledOrder.isPartial})`, 'info');
