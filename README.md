@@ -100,6 +100,7 @@ The update script automatically:
 - Installs any new dependencies
 - Reloads PM2 processes if running
 - Ensures your `profiles/` directory is protected and unchanged
+- Keeps your changes to `modules/constants.js`
 - Logs all operations to `update.log`
 
 ## 🔧 Configuration
@@ -117,14 +118,14 @@ Define each bot in `profiles/bots.json`. A minimal structure looks like this:
       "assetA": "IOB.XRP",
       "assetB": "BTS",
       "marketPrice": "pool",
-      "minPrice": "4x",
-      "maxPrice": "4x",
-      "incrementPercent": 1,
-      "targetSpreadPercent": 5,
+      "minPrice": "3x",
+      "maxPrice": "3x",
+      "incrementPercent": 0.5,
+      "targetSpreadPercent": 2,
       "weightDistribution": { "sell": 0.5, "buy": 0.5 },
       "botFunds": { "sell": "100%", "buy": "100%" },
       "activeOrders": { "sell": 20, "buy": 20 }
-    },
+    }
   ]
 }
 ```
@@ -142,7 +143,7 @@ Below is a concise description of each configuration option you may set per-bot 
 - **`marketPrice`**: number | string — preferred market price. You may provide a numeric value (e.g. `42000`) or let the bot derive it by setting `"pool"` (use liquidity pool) or `"market"` (use order book/ticker). If omitted the runtime will attempt to derive it from `assetA`/`assetB`.
 - **`minPrice`**: number | string — lower bound for allowed order prices. You may provide a concrete numeric value (e.g. `525`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `marketPrice` (e.g. `"5x"` -> `marketPrice / 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
 - **`maxPrice`**: number | string — upper bound for allowed order prices. You may provide a concrete numeric value (e.g. `8400`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `marketPrice` (e.g. `"5x"` -> `marketPrice * 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
-- **`incrementPercent`**: number — percent step between adjacent order price levels (e.g. `1` means 1% steps). Smaller values produce denser grids.
+- **`incrementPercent`**: number — percent step between adjacent order price levels (e.g. `0.5` means 0.5% steps). Smaller values produce denser grids.
 - **`targetSpreadPercent`**: number — target spread (in percent) around the market price that the grid should cover. The manager uses this to place buy/sell layers around the market.
 - **`weightDistribution`**: object — `{ "sell": <number>, "buy": <number> }`. Controls order sizing shape. Values are the distribution coefficient (examples below):
   - Typical values: `-1` = Super Valley (more weight far from market), `0` = Valley, `0.5` = Neutral, `1` = Mountain (more weight near market), `2` = Super Mountain.
@@ -354,19 +355,12 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
 2. **Grid Divergence Threshold** (1% by default)
    - Compares currently calculated grid with persisted grid state
-   - **What is the Divergence Threshold?** A relative quadratic error metric (RMS-based) that measures how much the calculated grid diverges from the persisted grid. It squares relative errors (penalizing larger deviations exponentially) and is expressed as a percentage (0.01 = 0.01% divergence allowed).
+   - **What is the Divergence Threshold?** A relative quadratic error metric that measures grid divergence by squaring relative errors before averaging—this penalizes uneven distributions. For the same 3.2% average error, uneven distributions require higher thresholds (1% vs 0.1%).
      ```
      Threshold = Σ((calculated - persisted) / persisted)² / count
      RMS = √(Threshold)  [Root Mean Square - quadratic mean of squared errors]
      Triggers update when: Threshold > (DIVERGENCE_THRESHOLD_PERCENTAGE / 100)
      ```
-
-   **Understanding RMS vs Simple Average:**
-   RMS stands for **Root Mean Square** - a quadratic mean that calculates the square root of the average of squared values. The RMS calculation penalizes uneven error distributions:
-   - **Simple Average**: (6.4% + 0%) / 2 = 3.2%
-   - **RMS (Quadratic Mean)**: √((6.4² + 0²) / 2) = 4.53%
-
-   When order errors are unevenly distributed, RMS will be higher than simple average, requiring a higher percentage threshold to tolerate the same scenario.
 
    **Divergence Threshold Reference Table:**
    For the same average error, shows how RMS and percentage thresholds differ between even (100% all same) and uneven (10% outliers, 90% perfect) distributions.

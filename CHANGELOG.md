@@ -2,6 +2,81 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-12-19 - Grid Divergence Detection & Percentage-Based Thresholds
+
+### Features
+- **Grid Divergence Detection System**: Intelligent grid state monitoring and automatic regeneration
+  - Quadratic error metric calculates divergence between in-memory and persisted grids: Σ((calculated - persisted) / persisted)² / count
+  - Automatic grid size recalculation when divergence exceeds DIVERGENCE_THRESHOLD_PERCENTAGE (default: 1%)
+  - Detects when cached fund reserves exceed configured percentage threshold (default: 2%)
+  - Two independent triggering mechanisms ensure grid stays synchronized with actual blockchain orders
+
+- **Percentage-Based Threshold System**: Standardized threshold configuration across the system
+  - Replaced promille-based thresholds (0-1000 scale) with percentage-based (0-100 scale)
+  - More intuitive configuration and easier to understand threshold values
+  - DIVERGENCE_THRESHOLD_PERCENTAGE: Controls grid divergence detection sensitivity
+  - GRID_REGENERATION_PERCENTAGE: Controls when cached funds trigger grid recalculation (default: 2%)
+
+- **Enhanced Documentation**: Comprehensive threshold documentation with distribution analysis
+  - Added Root Mean Square (RMS) explanation and threshold reference tables
+  - Distribution analysis showing how threshold requirements change with error distribution patterns
+  - Clear explanation of how same average error (e.g., 3.2%) requires different thresholds based on distribution
+  - Migration guide for percentage-based thresholds
+  - Mathematical formulas for threshold calculation and grid regeneration logic
+
+### Changed
+- **Breaking Change**: DIVERGENCE_THRESHOLD_Promille renamed to DIVERGENCE_THRESHOLD_PERCENTAGE
+  - Configuration files using old name must be updated
+  - Old: promille values (10 promille ≈ 1% divergence)
+  - New: percentage values (1 = 1% divergence threshold)
+  - Update pattern: divide old promille value by 10 to get new percentage value
+
+- **Default Threshold Changes**: Improved defaults based on real-world testing
+  - GRID_REGENERATION_PERCENTAGE: 1% → 2% (more stable, reduces unnecessary regeneration)
+  - DIVERGENCE_THRESHOLD_PERCENTAGE: 10 promille → 1% (more sensitive divergence detection)
+
+- **Grid Comparison Metrics**: Enhanced logging and comparison output
+  - All threshold comparisons now use percentage-based values
+  - Log output displays percentage divergence instead of promille
+  - Clearer threshold comparison messages in grid update logging
+
+### Fixed
+- **Threshold Comparison Logic**: Corrected grid comparison triggering mechanism
+  - Changed division from /1000 (promille) to /100 (percentage) in threshold calculations
+  - Applied fixes to both BUY and SELL side grid regeneration logic (grid.js lines 1038-1040, 1063-1065)
+  - Ensures accurate divergence detection and grid synchronization
+
+### Technical Details
+- **Quadratic Error Metric**: Sum of squared relative differences detects concentrated outliers
+  - Formula: Σ((calculated - persisted) / persisted)² / count
+  - Penalizes outliers more than simple average, reflects actual grid synchronization issues
+  - RMS (Root Mean Square) = √(metric), provides alternative view of error magnitude
+
+- **Distribution Scaling**: Threshold requirements scale with distribution evenness
+  - Theoretical relationship: promille ≈ 1 + n (where n = ratio of perfect orders)
+  - Example: 10% outlier distribution (n=9) requires ~10× higher threshold than 100% even distribution
+  - Reference table in README documents thresholds for 1%→10% average errors across distributions
+
+- **Grid Regeneration Mechanics**: Independent triggering mechanisms
+  - Mechanism 1: Cache funds accumulating to GRID_REGENERATION_PERCENTAGE (2%) triggers recalculation
+  - Mechanism 2: Grid divergence exceeding DIVERGENCE_THRESHOLD_PERCENTAGE (1%) triggers update
+  - Both operate independently, ensuring grid stays synchronized with actual blockchain state
+
+### Migration Guide
+If upgrading from v0.2.0:
+1. Update configuration files to use DIVERGENCE_THRESHOLD_PERCENTAGE instead of DIVERGENCE_THRESHOLD_Promille
+2. Convert threshold values: new_value = old_promille_value / 10
+   - Old: 10 promille → New: 1%
+   - Old: 100 promille → New: 10%
+3. Test with dryRun: true to verify threshold behavior matches expectations
+4. Default GRID_REGENERATION_PERCENTAGE (2%) is now more conservative; adjust if needed
+
+### Testing
+- Comprehensive test coverage for grid divergence detection (test_grid_comparison.js)
+- Validates quadratic error metric calculations across various distribution patterns
+- Tests both cache funds and divergence triggers independently and in combination
+- Percentage-based threshold comparisons verified across BUY and SELL sides
+
 ## [0.2.0] - 2025-12-12 - Startup Grid Reconciliation & Fee Caching System
 
 ### Features
