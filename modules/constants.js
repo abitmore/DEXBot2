@@ -60,9 +60,10 @@ const GRID_LIMITS = Object.freeze({
     // Grid regeneration threshold (percentage)
     // When (cacheFunds / total.grid) * 100 >= this percentage on one side, trigger Grid.updateGridOrderSizes() for that side
     // Checked independently for buy and sell sides
+    // Default: 3% (was 2%) — more conservative by default to reduce unnecessary churn
     // Example: If cacheFunds.buy = 100 and total.grid.buy = 1000, ratio = 10%
     // If threshold = 5%, then 10% >= 5% triggers update for buy side only
-    GRID_REGENERATION_PERCENTAGE: 2,
+    GRID_REGENERATION_PERCENTAGE: 3,
     // Grid comparison metrics
     // Stores the normalized sum of squared relative differences between calculated and persisted grids
     // Used to detect significant divergence between in-memory grid and persisted state

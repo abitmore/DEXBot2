@@ -347,10 +347,10 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
 **Two Independent Triggering Mechanisms:**
 
-1. **Cache Funds Threshold** (2% by default)
+1. **Cache Funds Threshold** (3% by default)
    - Monitors accumulated proceeds from filled orders (cached funds)
-   - Triggers when cache ≥ 2% of allocated grid capital on either side
-   - Example: Grid allocated 1000 BTS, cache reaches 20 BTS → ratio is 2% → triggers update
+   - Triggers when cache ≥ 3% of allocated grid capital on either side
+   - Example: Grid allocated 1000 BTS, cache reaches 30 BTS → ratio is 3% → triggers update
    - Updates buy and sell sides independently based on their respective ratios
 
 2. **Grid Divergence Threshold** (1% by default)
