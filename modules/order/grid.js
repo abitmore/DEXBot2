@@ -935,7 +935,7 @@ class Grid {
      * This metric helps detect significant divergence between the current in-memory grid
      * (after updateGridOrderSizes) and what was previously persisted to disk.
      * 
-     * When a side's metric exceeds GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille, automatically triggers
+     * When a side's metric exceeds GRID_COMPARISON.DIVERGENCE_THRESHOLD_PERCENTAGE, automatically triggers
      * updateGridOrderSizesForSide to regenerate sizes for that side only.
      * 
      * @param {Array} calculatedGrid - Current grid orders from manager (result of updateGridOrderSizes)
@@ -1035,11 +1035,11 @@ class Grid {
         let sellUpdated = false;
 
         // Trigger auto-update for BUY side if metric exceeds threshold
-        if (manager && buyMetric > (GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille / 1000)) {
-            const metricPromille = buyMetric * 1000;  // Metric is 0-1 scale, convert to promille (0-1000)
-            const threshold = GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille;
+        if (manager && buyMetric > (GRID_COMPARISON.DIVERGENCE_THRESHOLD_PERCENTAGE / 100)) {
+            const metricPercent = buyMetric * 100;  // Metric is 0-1 scale, convert to percentage (0-100)
+            const threshold = GRID_COMPARISON.DIVERGENCE_THRESHOLD_PERCENTAGE;
             manager.logger?.log?.(
-                `Buy side divergence metric ${metricPromille.toFixed(6)} promille exceeds threshold ${threshold.toFixed(6)} promille. Triggering updateGridOrderSizesForSide...`,
+                `Buy side divergence metric ${metricPercent.toFixed(4)}% exceeds threshold ${threshold}%. Triggering updateGridOrderSizesForSide...`,
                 'info'
             );
 
@@ -1060,11 +1060,11 @@ class Grid {
         }
 
         // Trigger auto-update for SELL side if metric exceeds threshold
-        if (manager && sellMetric > (GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille / 1000)) {
-            const metricPromille = sellMetric * 1000;  // Metric is 0-1 scale, convert to promille (0-1000)
-            const threshold = GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille;
+        if (manager && sellMetric > (GRID_COMPARISON.DIVERGENCE_THRESHOLD_PERCENTAGE / 100)) {
+            const metricPercent = sellMetric * 100;  // Metric is 0-1 scale, convert to percentage (0-100)
+            const threshold = GRID_COMPARISON.DIVERGENCE_THRESHOLD_PERCENTAGE;
             manager.logger?.log?.(
-                `Sell side divergence metric ${metricPromille.toFixed(6)} promille exceeds threshold ${threshold.toFixed(6)} promille. Triggering updateGridOrderSizesForSide...`,
+                `Sell side divergence metric ${metricPercent.toFixed(4)}% exceeds threshold ${threshold}%. Triggering updateGridOrderSizesForSide...`,
                 'info'
             );
 

@@ -332,11 +332,11 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
 }
 
 console.log('\n=== Test Summary ===');
-console.log(`Threshold: ${GRID_COMPARISON.DIVERGENCE_THRESHOLD_Promille} promille`);
+console.log(`Threshold: ${GRID_COMPARISON.DIVERGENCE_THRESHOLD_PERCENTAGE}% divergence`);
 console.log('Separate metrics for buy/sell sides');
 console.log('Independent auto-updates by side');
 
-console.log('\n=== Promille to Average Order Error Conversion Table ===');
+console.log('\n=== Percentage Divergence Threshold Reference ===');
 console.log('Formula: metric = Σ((calculated - persisted) / persisted)² / count');
 console.log('Promille value = metric × 1000');
 console.log('Average error = approximate average real order difference\n');

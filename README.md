@@ -346,18 +346,19 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
 **Two Independent Triggering Mechanisms:**
 
-1. **Cache Funds Threshold** (1% by default)
+1. **Cache Funds Threshold** (2% by default)
    - Monitors accumulated proceeds from filled orders (cached funds)
    - Triggers when cache ≥ 1% of allocated grid capital on either side
    - Example: Grid allocated 1000 BTS, cache reaches 15 BTS → ratio is 1.5% → triggers update
    - Updates buy and sell sides independently based on their respective ratios
 
-2. **Grid Divergence Threshold** (1 promille by default)
+2. **Grid Divergence Threshold** (1% by default)
    - Compares currently calculated grid with persisted grid state
-   - **What is Promille?** A relative quadratic error metric that measures how much the calculated grid diverges from the persisted grid. It squares relative errors (penalizing larger deviations exponentially) and is scaled by 1000 for readability. RMS and Promille are interchangeable: higher RMS = higher promille.
+   - **What is the Divergence Metric?** A relative quadratic error metric (RMS-based) that measures how much the calculated grid diverges from the persisted grid. It squares relative errors (penalizing larger deviations exponentially) and is expressed as a decimal (0.01 = 1% divergence).
      ```
-     Promille = Σ((calculated - persisted) / persisted)² / count × 1000
-     RMS = √(Promille / 1000)  [converts back to percentage]
+     Metric = Σ((calculated - persisted) / persisted)² / count
+     RMS = √(Metric)  [converts to percentage for threshold comparison]
+     Triggers update when: Metric > (DIVERGENCE_THRESHOLD_PERCENTAGE / 100)
      ```
 
    **Understanding RMS vs Simple Average:**
@@ -398,7 +399,7 @@ You can adjust thresholds in `modules/constants.js`:
 ```javascript
 GRID_REGENERATION_PERCENTAGE: 1,  // Cache funds threshold (%)
 GRID_COMPARISON: {
-    DIVERGENCE_THRESHOLD_Promille: 1  // Grid divergence threshold (promille = 0.1%)
+    DIVERGENCE_THRESHOLD_PERCENTAGE: 1  // Grid divergence threshold (%)
 }
 ```
 

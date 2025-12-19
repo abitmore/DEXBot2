@@ -71,27 +71,26 @@ const GRID_LIMITS = Object.freeze({
         // Represents average squared relative error across non-spread orders
         SUMMED_RELATIVE_SQUARED_DIFFERENCE: 'summedRelativeSquaredDiff',
 
-        // Divergence threshold for automatic grid regeneration (as promille)
-        // Promille = mean of squared relative errors × 1000 (RMS-based quadratic metric)
-        // When compareGrids() metric exceeds this value, updateGridOrderSizes will be triggered
+        // Divergence threshold for automatic grid regeneration (as percentage)
+        // Metric = mean of squared relative errors (as decimal: 0.01 = 1% divergence)
+        // When compareGrids() metric exceeds this threshold, updateGridOrderSizes will be triggered
         //
-        // Distribution unevenness scaling: promille ≈ 1 + n where n = ratio of perfect orders
+        // Distribution unevenness scaling: threshold ≈ base × (1 + n) where n = ratio of perfect orders
         // Distribution ratio: 1/(1+n) orders with errors, n/(1+n) perfect orders
-        // Example: 1/10 distribution (n=9) requires 10× higher promille than 100% distribution
+        // Example: 1/10 distribution (n=9) requires 10× higher threshold than 100% distribution
         //
         // Threshold Reference Table (for 1/10 distribution: 10% outliers, 90% perfect):
-        // Formula: RMS = √(promille / 1000)
-        // ┌──────────────────────────────────────────────────────────────┐
-        // │ Promille │ Avg Error │ RMS    │ Description                 │
-        // ├──────────────────────────────────────────────────────────────┤
-        // │ 1        │ ~1.0%     │ 3.16%  │ Very strict                 │
-        // │ 5        │ ~2.2%     │ 6.96%  │ Strict                      │
-        // │ 10       │ ~3.2%     │ 10.1%  │ Default (balanced)          │
-        // │ 20       │ ~4.5%     │ 14.2%  │ Lenient                     │
-        // │ 50       │ ~7.1%     │ 22.5%  │ Very lenient                │
-        // │ 100      │ ~10%      │ 31.6%  │ Extremely lenient           │
-        // └──────────────────────────────────────────────────────────────┘
-        DIVERGENCE_THRESHOLD_Promille: 10
+        // ┌────────────────────────────────────────────────────────┐
+        // │ % Threshold │ Avg Error │ Description                 │
+        // ├────────────────────────────────────────────────────────┤
+        // │ 0.1%        │ ~1.0%     │ Very strict                 │
+        // │ 0.5%        │ ~2.2%     │ Strict                      │
+        // │ 1%          │ ~3.2%     │ Default (balanced)          │
+        // │ 2%          │ ~4.5%     │ Lenient                     │
+        // │ 5%          │ ~7.1%     │ Very lenient                │
+        // │ 10%         │ ~10%      │ Extremely lenient           │
+        // └────────────────────────────────────────────────────────┘
+        DIVERGENCE_THRESHOLD_PERCENTAGE: 1
     })
 });
 
