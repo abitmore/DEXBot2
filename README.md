@@ -348,39 +348,39 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
 1. **Cache Funds Threshold** (2% by default)
    - Monitors accumulated proceeds from filled orders (cached funds)
-   - Triggers when cache ≥ 1% of allocated grid capital on either side
-   - Example: Grid allocated 1000 BTS, cache reaches 15 BTS → ratio is 1.5% → triggers update
+   - Triggers when cache ≥ 2% of allocated grid capital on either side
+   - Example: Grid allocated 1000 BTS, cache reaches 20 BTS → ratio is 2% → triggers update
    - Updates buy and sell sides independently based on their respective ratios
 
 2. **Grid Divergence Threshold** (1% by default)
    - Compares currently calculated grid with persisted grid state
-   - **What is the Divergence Metric?** A relative quadratic error metric (RMS-based) that measures how much the calculated grid diverges from the persisted grid. It squares relative errors (penalizing larger deviations exponentially) and is expressed as a decimal (0.01 = 1% divergence).
+   - **What is the Divergence Threshold?** A relative quadratic error metric (RMS-based) that measures how much the calculated grid diverges from the persisted grid. It squares relative errors (penalizing larger deviations exponentially) and is expressed as a percentage (0.01 = 0.01% divergence allowed).
      ```
-     Metric = Σ((calculated - persisted) / persisted)² / count
-     RMS = √(Metric)  [converts to percentage for threshold comparison]
-     Triggers update when: Metric > (DIVERGENCE_THRESHOLD_PERCENTAGE / 100)
+     Threshold = Σ((calculated - persisted) / persisted)² / count
+     RMS = √(Threshold)  [Root Mean Square - quadratic mean of squared errors]
+     Triggers update when: Threshold > (DIVERGENCE_THRESHOLD_PERCENTAGE / 100)
      ```
 
    **Understanding RMS vs Simple Average:**
-   The RMS (quadratic mean) calculation penalizes uneven error distributions:
+   RMS stands for **Root Mean Square** - a quadratic mean that calculates the square root of the average of squared values. The RMS calculation penalizes uneven error distributions:
    - **Simple Average**: (6.4% + 0%) / 2 = 3.2%
    - **RMS (Quadratic Mean)**: √((6.4² + 0²) / 2) = 4.53%
 
-   When order errors are unevenly distributed, RMS will be higher than simple average, requiring a higher promille threshold to tolerate the same scenario.
+   When order errors are unevenly distributed, RMS will be higher than simple average, requiring a higher percentage threshold to tolerate the same scenario.
 
-   **Promille Threshold Reference Table:**
-   For the same average error, shows how RMS and Promille values differ between even (100% all same) and uneven (10% outliers, 90% perfect) distributions.
+   **Divergence Threshold Reference Table:**
+   For the same average error, shows how RMS and percentage thresholds differ between even (100% all same) and uneven (10% outliers, 90% perfect) distributions.
    | Avg Error | 100% Distribution | Threshold || 10% Distribution | Threshold |
    |-----------|-------------------|---|---|-------------------|----------|
-   || RMS | Promille || RMS | Promille |
-   | 1.0% | 1.0% | 0.1 | | 3.16% | 1.0 |
-   | 2.2% | 2.2% | 0.5 | | 6.96% | 5.0 |
-   | 3.2% | 3.2% | 1 | | 10.1% | 10 |
-   | 4.5% | 4.5% | 2 | | 14.2% | 20 |
-   | 7.1% | 7.1% | 5 | | 22.5% | 50 |
-   | 10% | 10% | 10 | | 31.6% | 100 |
+   || RMS | % || RMS | % |
+   | 1.0% | 1.0% | 0.01% | | 3.16% | 0.1% |
+   | 2.2% | 2.2% | 0.05% | | 6.96% | 0.5% |
+   | 3.2% | 3.2% | 0.1% | | 10.1% | 1% |
+   | 4.5% | 4.5% | 0.2% | | 14.2% | 2% |
+   | 7.1% | 7.1% | 0.5% | | 22.5% | 5% |
+   | 10% | 10% | 1% | | 31.6% | 10% |
 
-   **Key Insight:** For uneven distributions, promille scales approximately as `1 + n`. Even if the simple average remains constant at 3.2%, having outlier orders with high errors requires a proportionally higher promille threshold when using RMS-based detection.
+   **Key Insight:** For uneven distributions, threshold scales approximately as `1 + n`. Even if the simple average remains constant at 3.2%, having outlier orders with high errors requires a proportionally higher percentage threshold when using RMS-based detection.
 
 **When Grid Recalculation Occurs:**
 - After order fills and proceeds are collected
@@ -397,7 +397,7 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 **Customization:**
 You can adjust thresholds in `modules/constants.js`:
 ```javascript
-GRID_REGENERATION_PERCENTAGE: 1,  // Cache funds threshold (%)
+GRID_REGENERATION_PERCENTAGE: 2,  // Cache funds threshold (%)
 GRID_COMPARISON: {
     DIVERGENCE_THRESHOLD_PERCENTAGE: 1  // Grid divergence threshold (%)
 }
