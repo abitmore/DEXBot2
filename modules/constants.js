@@ -76,18 +76,18 @@ const GRID_LIMITS = Object.freeze({
         // Divergence threshold for automatic grid regeneration (RMS as percentage)
         // When compareGrids() metric exceeds this threshold, updateGridOrderSizes will be triggered
         //
-        // RMS Threshold Reference Table (for 1/10 distribution: 10% outliers, 90% perfect):
+        // RMS Threshold Reference Table (for 5% distribution: 5% outliers, 95% perfect):
         // ┌────────────────────────────────────────────────────────┐
         // │ RMS %       │ Avg Error │ Description                 │
         // ├────────────────────────────────────────────────────────┤
-        // │ 3.162%      │ ~1.0%     │ Very strict                 │
-        // │ 7.071%      │ ~2.2%     │ Strict                      │
-        // │ 10%         │ ~3.2%     │ Default (balanced)          │
-        // │ 14.142%     │ ~4.5%     │ Lenient                     │
-        // │ 22.360%     │ ~7.1%     │ Very lenient                │
-        // │ 31.623%     │ ~10%      │ Extremely lenient           │
+        // │ 4.5%        │ ~1.0%     │ Very strict                 │
+        // │ 9.8%        │ ~2.2%     │ Strict                      │
+        // │ 14.3%       │ ~3.2%     │ Default (balanced)          │
+        // │ 20.1%       │ ~4.5%     │ Lenient                     │
+        // │ 31.7%       │ ~7.1%     │ Very lenient                │
+        // │ 44.7%       │ ~10%      │ Extremely lenient           │
         // └────────────────────────────────────────────────────────┘
-        RMS_PERCENTAGE: 32
+        RMS_PERCENTAGE: 14.3
     })
 });
 

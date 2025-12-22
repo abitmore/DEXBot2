@@ -347,16 +347,16 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
    **RMS Threshold Reference Table:**
    RMS increases as grid distribution worsens (more uneven/concentrated errors). Uneven distributions need higher thresholds to allow the same average error.
-   | Avg Error | 100% Distribution | 50% Distribution | 25% Distribution | 10% Distribution |
+   | Avg Error | 100% Distribution | 50% Distribution | 25% Distribution | 5% Distribution |
    |-----------|-------------------|------------------|------------------|------------------|
-   | 1.0% | 1.0% | 1.4% | 2.0% | 3.2% |
-   | 2.2% | 2.2% | 3.1% | 4.4% | 7.1% |
-   | 3.2% | 3.2% | 4.5% | 6.4% | 10.1% |
-   | 4.5% | 4.5% | 6.4% | 9.0% | 14.1% |
-   | 7.1% | 7.1% | 10.0% | 14.2% | 22.4% |
-   | 10% | 10% | 14.1% | 20% | 31.6% |
+   | 1.0% | 1.0% | 1.4% | 2.0% | 4.5% |
+   | 2.2% | 2.2% | 3.1% | 4.4% | 9.8% |
+   | 3.2% | 3.2% | 4.5% | 6.4% | 14.3% |
+   | 4.5% | 4.5% | 6.4% | 9.0% | 20.1% |
+   | 7.1% | 7.1% | 10.0% | 14.2% | 31.7% |
+   | 10% | 10% | 14.1% | 20% | 44.7% |
 
-   **Default: 10% RMS** - Allows 10% average error when evenly distributed, or 3.2% when concentrated in just 10% of orders.
+   **Default: 14.3% RMS** - Allows ~3.2% average error when concentrated in just 5% of orders (most realistic scenario).
 
 **When Grid Recalculation Occurs:**
 - After order fills and proceeds are collected
@@ -375,7 +375,7 @@ You can adjust thresholds in `modules/constants.js`:
 ```javascript
 GRID_REGENERATION_PERCENTAGE: 3,  // Cache funds threshold (%)
 GRID_COMPARISON: {
-    RMS_PERCENTAGE: 10  // Grid divergence RMS threshold (%)
+    RMS_PERCENTAGE: 14.3  // Grid divergence RMS threshold (%)
 }
 ```
 
