@@ -144,18 +144,17 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     const chainFree = side === 'buy' ? (accountTotals?.buyFree || 0) : (accountTotals?.sellFree || 0);
     const virtuel = side === 'buy' ? (funds.virtuel?.buy || 0) : (funds.virtuel?.sell || 0);
     const cacheFunds = side === 'buy' ? (funds.cacheFunds?.buy || 0) : (funds.cacheFunds?.sell || 0);
-    const pending = side === 'buy' ? (funds.pendingProceeds?.buy || 0) : (funds.pendingProceeds?.sell || 0);
 
     // Determine which side actually has BTS as the asset
     const btsSide = (assetA === 'BTS') ? 'sell' :
-                   (assetB === 'BTS') ? 'buy' : null;
+        (assetB === 'BTS') ? 'buy' : null;
     let applicableBtsFeesOwed = 0;
     if (btsSide === side && funds.btsFeesOwed > 0) {
-        // BTS fees would be deducted from pendingProceeds, up to the amount available
-        applicableBtsFeesOwed = Math.min(funds.btsFeesOwed, pending);
+        // BTS fees are deducted from the side where they are owed (usually from cache funds/proceeds)
+        applicableBtsFeesOwed = Math.min(funds.btsFeesOwed, cacheFunds);
     }
 
-    return Math.max(0, chainFree - virtuel - cacheFunds) + (pending - applicableBtsFeesOwed);
+    return Math.max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed);
 }
 
 /**
