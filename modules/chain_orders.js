@@ -409,8 +409,23 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
     const priceChanged = newReceiveInt !== currentReceiveInt;
     const amountChanged = deltaSellInt !== 0;
 
+    // PRECISION FIX for price-only updates: if price change is too small to detect (rounds to same value),
+    // adjust minToReceive by 1 unit in the appropriate direction to force the operation.
+    // This ensures partial orders are actually moved even when price change is < 1 blockchain unit.
+    if (!priceChanged && !amountChanged && newParams.newPrice !== undefined && newParams.newPrice !== null) {
+        if (newParams.orderType === 'sell') {
+            // SELL moving down = lower price = receive less → decrease by 1
+            newReceiveInt = currentReceiveInt - 1;
+            console.log(`[buildUpdateOrderOp] Price change too small for SELL order, adjusting minToReceive from ${currentReceiveInt} to ${newReceiveInt} (down by 1 unit)`);
+        } else if (newParams.orderType === 'buy') {
+            // BUY moving up = higher price = receive more → increase by 1
+            newReceiveInt = currentReceiveInt + 1;
+            console.log(`[buildUpdateOrderOp] Price change too small for BUY order, adjusting minToReceive from ${currentReceiveInt} to ${newReceiveInt} (up by 1 unit)`);
+        }
+    }
+
     // Skip update only if BOTH amount and price are unchanged
-    if (!amountChanged && !priceChanged) {
+    if (!amountChanged && newReceiveInt === currentReceiveInt) {
         return null;
     }
 
