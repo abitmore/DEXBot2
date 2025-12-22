@@ -329,10 +329,11 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
 **Two Independent Triggering Mechanisms:**
 
-1. **Cache Funds Threshold** (3% by default)
-   - Monitors accumulated proceeds from filled orders (cached funds)
-   - Triggers when cache ≥ 3% of allocated grid capital on either side
-   - Example: Grid allocated 1000 BTS, cache reaches 30 BTS → ratio is 3% → triggers update
+1. **Cache & Available Funds Threshold** (3% by default)
+   - Monitors cached funds (proceeds from fills) + newly available funds (deposits)
+   - Triggers when `(cacheFunds + availableFunds) ≥ 3%` of allocated grid capital on either side
+   - Example: Grid 1000 BTS + new deposit 200 BTS available → ratio 20% → triggers update
+   - Enables **automatic fund cycling**: new deposits are immediately resized into grid
    - Updates buy and sell sides independently based on their respective ratios
 
 2. **Grid Divergence Threshold** (10% RMS by default)
@@ -475,7 +476,7 @@ Below is a short summary of the modules in this repository and what they provide
 - `modules/chain_orders.js`: Account-level order operations: select account, create/update/cancel orders, listen for fills with deduplication, read open orders. Uses 'history' mode for fill processing which matches orders from blockchain events.
 - `modules/bitshares_client.js`: Shared BitShares client wrapper and connection utilities (`BitShares`, `createAccountClient`, `waitForConnected`).
 - `modules/btsdex_event_patch.js`: Runtime patch for `btsdex` library to improve history and account event handling.
-- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, cacheFunds, and pending proceeds (`profiles/orders/<bot-name>.json`). Manages bot-specific files with atomic updates and race-condition protection.
+- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-name>.json`). Manages bot-specific files with atomic updates and race-condition protection. **Note:** Legacy pendingProceeds data (pre-0.4.0) is migrated to cacheFunds via `scripts/migrate_pending_proceeds.js`.
 
 ### 📊 Order Subsystem (`modules/order/`)
 

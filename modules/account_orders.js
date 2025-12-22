@@ -11,13 +11,16 @@
  *     "botkey": {
  *       "meta": { name, assetA, assetB, active, index },
  *       "grid": [ { id, type, state, price, size, orderId }, ... ],
- *       "cacheFunds": { buy: number, sell: number },
+ *       "cacheFunds": { buy: number, sell: number },  // All unallocated funds (fill proceeds + surplus)
  *       "btsFeesOwed": number,
  *       "createdAt": "ISO timestamp",
  *       "lastUpdated": "ISO timestamp"
  *     }
  *   },
  *   "lastUpdated": "ISO timestamp"
+ *
+ * NOTE (v0.4.0+): Legacy `pendingProceeds` field is auto-migrated to cacheFunds
+ * on first load via `scripts/migrate_pending_proceeds.js`. No manual action needed.
  * }
  *
  * The grid snapshot allows the bot to resume from where it left off
