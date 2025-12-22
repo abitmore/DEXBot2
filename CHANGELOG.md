@@ -46,6 +46,12 @@ All notable changes to this project will be documented in this file.
   - Removed orphaned variable definitions
   - Cleaned up fund display logic in logFundsStatus()
 
+- **Bot Metadata Initialization**: Fixed new order files being created with null metadata
+  - Ensured `ensureBotEntries()` is called before any Grid initialization
+  - Prevents order files from having null values for name, assetA, assetB
+  - Metadata properly initialized from bot configuration in profiles/bots.json at startup
+  - Applied fix to both bot.js and dexbot.js DEXBot classes
+
 ### Migration Guide
 1. **Backup** your `profiles/orders/` directory before updating
 2. **Run migration** (if you have existing bots with pendingProceeds):

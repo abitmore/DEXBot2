@@ -607,6 +607,21 @@ class DEXBot {
         // Create AccountOrders with bot-specific file (one file per bot)
         this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
 
+        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
+        // This prevents new order files from being created with null values for assetA, assetB, name
+        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+        const allActiveBots = allBotsConfig
+            .filter(b => b.active !== false)
+            .map((b, idx) => normalizeBotEntry(b, idx));
+
+        // DEBUG: Log what we're passing to ensureBotEntries
+        console.log(`[bot.js] DEBUG ensureBotEntries: passing ${allActiveBots.length} active bot(s):`);
+        allActiveBots.forEach(bot => {
+          console.log(`  - name=${bot.name}, assetA=${bot.assetA}, assetB=${bot.assetB}, active=${bot.active}, index=${bot.botIndex}, botKey=${bot.botKey}`);
+        });
+
+        this.accountOrders.ensureBotEntries(allActiveBots);
+
         if (!this.manager) {
             this.manager = new OrderManager(this.config || {});
             this.manager.account = this.account;
@@ -775,14 +790,6 @@ class DEXBot {
                 }
             }
         });
-
-        // Ensure entries exist for ALL active bots (prevents pruning other bots)
-        // Must be done BEFORE loading persisted grid to avoid overwriting saved grids
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
-        const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
-        this.accountOrders.ensureBotEntries(allActiveBots);
 
         const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
         const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);

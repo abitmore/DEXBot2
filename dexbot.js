@@ -703,10 +703,24 @@ class DEXBot {
      */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
-        
+
         // Create AccountOrders with bot-specific file (one file per bot)
         this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
-        
+
+        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
+        // This prevents new order files from being created with null values for assetA, assetB, name
+        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+        // Normalize all bots first (to get correct indices), then filter to active ones
+        const allActiveBots = normalizeBotEntries(allBotsConfig)
+            .filter(b => b.active !== false);
+
+        console.log(`[dexbot.js] DEBUG ensureBotEntries: passing ${allActiveBots.length} active bot(s):`);
+        allActiveBots.forEach(bot => {
+          console.log(`  - name=${bot.name}, assetA=${bot.assetA}, assetB=${bot.assetB}, active=${bot.active}, index=${bot.botIndex}, botKey=${bot.botKey}`);
+        });
+
+        this.accountOrders.ensureBotEntries(allActiveBots);
+
         if (!this.manager) {
             this.manager = new OrderManager(this.config || {});
             // Attach account identifiers so OrderManager can fetch on-chain totals when needed

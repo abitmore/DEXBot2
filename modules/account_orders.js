@@ -146,7 +146,9 @@ class AccountOrders {
     const entriesToProcess = this.botKey
       ? botEntries.filter(bot => {
           const key = bot.botKey || createBotKey(bot, botEntries.indexOf(bot));
-          return key === this.botKey;
+          const matches = key === this.botKey;
+          console.log(`[AccountOrders] per-bot filter: checking bot name=${bot.name}, key=${key}, this.botKey=${this.botKey}, matches=${matches}`);
+          return matches;
         })
       : botEntries;
 
@@ -186,9 +188,16 @@ class AccountOrders {
 
         entry.grid = entry.grid || [];
         if (this._metaChanged(entry.meta, meta)) {
+          console.log(`[AccountOrders] Metadata changed for bot ${key}: updating from old metadata to new`);
+          console.log(`  OLD: name=${entry.meta?.name}, assetA=${entry.meta?.assetA}, assetB=${entry.meta?.assetB}, active=${entry.meta?.active}`);
+          console.log(`  NEW: name=${meta.name}, assetA=${meta.assetA}, assetB=${meta.assetB}, active=${meta.active}`);
           entry.meta = { ...entry.meta, ...meta, createdAt: entry.meta?.createdAt || meta.createdAt };
           entry.lastUpdated = nowIso();
           changed = true;
+        } else {
+          console.log(`[AccountOrders] No metadata change for bot ${key} - skipping update`);
+          console.log(`  CURRENT: name=${entry.meta?.name}, assetA=${entry.meta?.assetA}, assetB=${entry.meta?.assetB}, active=${entry.meta?.active}`);
+          console.log(`  PASSED:  name=${meta.name}, assetA=${meta.assetA}, assetB=${meta.assetB}, active=${meta.active}`);
         }
       }
       bot.botKey = key;
