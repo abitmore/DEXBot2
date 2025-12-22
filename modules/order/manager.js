@@ -21,18 +21,18 @@
  * - virtuel: Sum of VIRTUAL order sizes (grid positions not yet placed on-chain)
  * - committed.grid: Sum of ACTIVE order sizes (internal grid tracking)
  * - committed.chain: Sum of ACTIVE orders that have an orderId (confirmed on-chain)
- * - pendingProceeds: Temporary proceeds from fills awaiting rotation consumption
+ * - cacheFunds: Unallocated funds waiting for rotation (includes fill proceeds)
  * 
  * Calculated values:
- * - available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed) + pendingProceeds
+ * - available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed)
  * - total.chain = chainFree + committed.chain
  * - total.grid = committed.grid + virtuel
  * 
  * Fund flow lifecycle:
  * 1. Startup: chainFree fetched from chain, virtuel = sum of grid VIRTUAL orders
  * 2. Order placement (VIRTUAL → ACTIVE): virtuel decreases, committed increases
- * 3. Order fill: pendingProceeds set with fill value, available increases temporarily
- * 4. After rotation: pendingProceeds cleared as funds are consumed by new orders
+ * 3. Order fill: proceeds added directly to cacheFunds
+ * 4. After rotation: cacheFunds updated to reflect leftovers (surplus)
  */
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('../constants');
 const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize, getAssetFees, computeChainFundTotals, calculateAvailableFundsValue, calculateSpreadFromOrders, resolveConfigValue } = require('./utils');
@@ -60,7 +60,7 @@ const Logger = require('./logger');
  * Funds structure (this.funds):
  * ┌─────────────────────────────────────────────────────────────────────────┐
  * │ available    = max(0, chainFree - virtuel - cacheFunds                │
- * │                     - btsFeesOwed) + pendingProceeds                   │
+ * │                     - btsFeesOwed)                                     │
  * │               Free funds that can be used for new orders or rotations  │
  * ├─────────────────────────────────────────────────────────────────────────┤
  * │ total.chain  = chainFree + committed.chain                             │
@@ -76,11 +76,8 @@ const Logger = require('./logger');
  * │ committed.grid  = Sum of ACTIVE order sizes (internal tracking)        │
  * │ committed.chain = Sum of ACTIVE orders with orderId (on-chain)         │
  * ├─────────────────────────────────────────────────────────────────────────┤
- * │ pendingProceeds = Temporary fill proceeds awaiting rotation            │
- * │                   Cleared after rotation consumes the funds            │
- * ├─────────────────────────────────────────────────────────────────────────┤
- * │ cacheFunds   = Leftover funds from rotation sizing (below precision)   │
- * │               Persisted per-bot for consistent grid rebuilding         │
+ * │ cacheFunds   = Unallocated funds waiting for rotation (fill proceeds +  │
+ * │               rounding surplus). Persisted per-bot.                    │
  * ├─────────────────────────────────────────────────────────────────────────┤
  * │ btsFeesOwed  = BTS blockchain fees from filled orders                  │
  * │               Only tracked if BTS is in the trading pair               │
@@ -89,8 +86,8 @@ const Logger = require('./logger');
  * Fund lifecycle:
  * 1. Startup: chainFree from chain, virtuel from grid VIRTUAL orders
  * 2. Order placement (VIRTUAL → ACTIVE): virtuel↓, committed↑
- * 3. Order fill: pendingProceeds set, available↑ temporarily
- * 4. Rotation complete: pendingProceeds cleared, funds consumed
+ * 3. Order fill: proceeds added directly to cacheFunds
+ * 4. Rotation complete: cacheFunds updated with any surplus
  * 
  * Price tolerance:
  * - Chain orders may have slightly different prices due to integer rounding
@@ -188,7 +185,7 @@ class OrderManager {
      * - Bot2 with botFunds.buy="10%" gets 10% of remaining chainFree
      *
      * During trading, available funds are recalculated normally without this constraint
-     * (available = chainFree - virtuel + pendingProceeds)
+     * (available = chainFree - virtuel - cacheFunds - btsFeesOwed)
      */
     applyBotFundsAllocation() {
         if (!this.config.botFunds || !this.accountTotals) return;
@@ -245,40 +242,37 @@ class OrderManager {
 
     /**
      * Central calculation for available funds (pure calculation, no side effects).
-     * Formula: available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed) + pendingProceeds
+     * Formula: available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed)
      *
      * NOTE: This is a PURE calculation function - it does NOT modify any state.
-     * It returns the theoretical available funds accounting for fees that WOULD be deducted.
-     * Actual fee deduction from pendingProceeds happens in deductBtsFees().
-     *
-     * @param {string} side - 'buy' or 'sell'
-     * @returns {number} Available funds for the given side (accounting for fees but not modifying state)
      */
     calculateAvailableFunds(side) {
         return calculateAvailableFundsValue(side, this.accountTotals, this.funds, this.config.assetA, this.config.assetB);
     }
 
     /**
-     * Actually deduct BTS fees from pendingProceeds (has side effects).
-     * Only call this during rotation processing, not during normal fund calculations.
-     *
-     * @param {string} side - 'buy' or 'sell'
+     * Actually deduct BTS fees from cacheFunds (has side effects).
+     * Called by processFilledOrders() after all proceeds have been added to cacheFunds.
      */
-    deductBtsFees(side) {
-        // BTS fees can ONLY be deducted from the side where we actually received BTS
-        // Determine which side has BTS as the actual asset
-        const btsSide = (this.config.assetA === 'BTS') ? 'sell' :
-                       (this.config.assetB === 'BTS') ? 'buy' : null;
+    deductBtsFees() {
+        if (!this.funds.btsFeesOwed || this.funds.btsFeesOwed <= 0) return;
 
-        // Only deduct fees from the side that actually has BTS proceeds
-        if (!btsSide || side !== btsSide || this.funds.btsFeesOwed <= 0) return;
+        const assetA = this.config.assetA;
+        const assetB = this.config.assetB;
+        const side = (assetA === 'BTS') ? 'sell' :
+            (assetB === 'BTS') ? 'buy' : null;
 
-        const pending = this.funds.pendingProceeds?.[side] || 0;
-        const feesOwedThisSide = Math.min(this.funds.btsFeesOwed, pending);
-        if (feesOwedThisSide > 0) {
+        if (side) {
+            const cache = this.funds.cacheFunds?.[side] || 0;
+            const feesOwedThisSide = Math.min(this.funds.btsFeesOwed, cache);
+
+            this.logger.log(`Deducting ${feesOwedThisSide.toFixed(8)} BTS fees from cacheFunds.${side}. Remaining fees: ${(this.funds.btsFeesOwed - feesOwedThisSide).toFixed(8)} BTS`, 'info');
+
+            this.funds.cacheFunds[side] -= feesOwedThisSide;
             this.funds.btsFeesOwed -= feesOwedThisSide;
-            this.funds.pendingProceeds[side] -= feesOwedThisSide;
-            this.logger.log(`BTS fees deducted: ${feesOwedThisSide.toFixed(8)} BTS. Remaining fees: ${this.funds.btsFeesOwed.toFixed(8)} BTS`, 'info');
+
+            this._persistCacheFunds(); // Merged persistence call
+            this._persistBtsFeesOwed();
         }
     }
 
@@ -289,7 +283,7 @@ class OrderManager {
      * Flags persistenceWarning so bot can retry persistence later.
      *
      * @param {Function} persistFn - Function that performs the persistence (should throw on failure)
-     * @param {string} dataType - Human-readable name of data type (e.g., 'pendingProceeds', 'btsFeesOwed')
+     * @param {string} dataType - Human-readable name of data type (e.g., 'cacheFunds', 'btsFeesOwed')
      * @param {*} dataValue - The value being persisted (for logging and warning flag)
      * @param {number} maxAttempts - Maximum retry attempts (default: 3)
      * @returns {boolean} true if persistence succeeded, false if failed
@@ -334,18 +328,14 @@ class OrderManager {
     }
 
     /**
-     * Persist pending proceeds to disk with retry logic.
+     * Persist cache funds to disk with retry logic.
      * Retries up to 3 times with exponential backoff on transient failures.
-     * On final failure, logs critical error but does NOT throw - allows processing to continue
-     * with in-memory proceeds. Flags persistenceWarning so bot can retry persistence later.
-     *
-     * @returns {boolean} true if persistence succeeded, false if failed
      */
-    _persistPendingProceeds() {
+    _persistCacheFunds() {
         return this._persistWithRetry(
-            () => this.accountOrders.updatePendingProceeds(this.config.botKey, this.funds.pendingProceeds),
-            `pendingProceeds: Buy ${(this.funds.pendingProceeds.buy || 0).toFixed(8)}, Sell ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`,
-            { ...this.funds.pendingProceeds }
+            () => this.accountOrders.updateCacheFunds(this.config.botKey, this.funds.cacheFunds),
+            `cacheFunds: Buy ${(this.funds.cacheFunds.buy || 0).toFixed(8)}, Sell ${(this.funds.cacheFunds.sell || 0).toFixed(8)}`,
+            { ...this.funds.cacheFunds }
         );
     }
 
@@ -386,7 +376,7 @@ class OrderManager {
      * - virtuel: Sum of VIRTUAL order sizes (reserved for future placement)
      *
      * Then calculates derived values:
-     * - available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed) + pendingProceeds
+     * - available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed)
      * - total.chain = chainFree + committed.chain
      * - total.grid = committed.grid + virtuel
      *
@@ -446,7 +436,7 @@ class OrderManager {
         this.funds.total.grid = { buy: gridBuy + virtuelBuy, sell: gridSell + virtuelSell };
 
         // Set available using centralized calculation function
-        // Formula: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed) + pendingProceeds
+        // Formula: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed)
         this.funds.available.buy = this.calculateAvailableFunds('buy');
         this.funds.available.sell = this.calculateAvailableFunds('sell');
     }
@@ -466,9 +456,9 @@ class OrderManager {
     _logAvailable(label = '') {
         if (!this.logger) return;
         const avail = this.funds?.available || { buy: 0, sell: 0 };
-        const pend = this.funds?.pendingProceeds || { buy: 0, sell: 0 };
+        const cache = this.funds?.cacheFunds || { buy: 0, sell: 0 };
         this.logger.log(
-            `Available${label ? ' [' + label + ']' : ''}: buy=${(avail.buy || 0).toFixed(8)}, sell=${(avail.sell || 0).toFixed(8)}, pendingProceeds buy=${(pend.buy || 0).toFixed(8)}, sell=${(pend.sell || 0).toFixed(8)}`,
+            `Available${label ? ' [' + label + ']' : ''}: buy=${(avail.buy || 0).toFixed(8)}, sell=${(avail.sell || 0).toFixed(8)}, cacheFunds buy=${(cache.buy || 0).toFixed(8)}, sell=${(cache.sell || 0).toFixed(8)}`,
             'info'
         );
     }
@@ -492,8 +482,8 @@ class OrderManager {
             this.accountTotals[key] = next < 0 ? 0 : next;
         };
 
-        // Partial proceeds: ONLY update chain totals/free, NOT pendingProceeds
-        // (pendingProceeds will be calculated once by processFilledOrders to avoid double-counting)
+        // Partial proceeds: ONLY update chain totals/free, NOT cacheFunds
+        // (cacheFunds will be updated once by processFilledOrders to avoid double-counting)
         if (gridOrder.type === ORDER_TYPES.SELL) {
             // SELL partial: receive quote asset; free balance rises, base total drops
             const proceeds = fillSize * price;
@@ -529,29 +519,23 @@ class OrderManager {
     /**
      * Initialize the funds structure with zeroed values.
      * Sets up accountTotals (buyFree/sellFree from chain) and the funds object
-     * with available, total, virtuel, committed, and pendingProceeds.
+     * with available, total, virtuel, committed, and cacheFunds.
      */
     resetFunds() {
         this.accountTotals = this.accountTotals || (this.config.accountTotals ? { ...this.config.accountTotals } : { buy: null, sell: null, buyFree: null, sellFree: null });
 
         this.funds = {
             available: { buy: 0, sell: 0 },
-            total: {
-                chain: { buy: 0, sell: 0 },
-                grid: { buy: 0, sell: 0 }
-            },
+            total: { chain: { buy: 0, sell: 0 }, grid: { buy: 0, sell: 0 } },
             virtuel: { buy: 0, sell: 0 },
             reserved: { buy: 0, sell: 0 }, // backwards compat alias
-            committed: {
-                grid: { buy: 0, sell: 0 },
-                chain: { buy: 0, sell: 0 }
-            },
-            pendingProceeds: { buy: 0, sell: 0 },  // Proceeds from fills awaiting rotation
-            cacheFunds: { buy: 0, sell: 0 },     // Leftover funds from rotation sizing (below precision threshold)
-            btsFeesOwed: 0  // BTS blockchain fees from filled orders (only if BTS is in pair)
+            committed: { chain: { buy: 0, sell: 0 }, grid: { buy: 0, sell: 0 } },
+            cacheFunds: { buy: 0, sell: 0 },       // Surplus from rotation + fill proceeds
+            btsFeesOwed: 0                         // Unpaid BTS fees (deducted from cache)
         };
         // Make reserved an alias for virtuel
         this.funds.reserved = this.funds.virtuel;
+        // (Removed legacy `pendingProceeds` accessor; use `cacheFunds` instead.)
     }
 
     /**
@@ -974,16 +958,22 @@ class OrderManager {
             }
         }
 
-        const newSize = Math.max(0, currentSize - filledAmount);
-
         // Check if fully filled or partially filled
         // Use blockchain integer comparison for precision
         const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-        const newSizeInt = floatToBlockchainInt(newSize, precision);
+
+        // CRITICAL FIX: Use integer-based subtraction of blockchain units to avoid floating point noise
+        // This prevents small floats (like 1e-18) from keeping an order in PARTIAL state when it's actually finished.
+        const currentSizeInt = floatToBlockchainInt(currentSize, precision);
+        const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
+        const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
+
+        // Convert back to float for the rest of the logic
+        const newSize = blockchainToFloat(newSizeInt, precision);
 
         if (newSizeInt <= 0) {
             // Fully filled
-            this.logger.log(`Order ${matchedGridOrder.id} (${orderId}) FULLY FILLED (filled ${filledAmount.toFixed(8)}), pendingProceeds: Buy ${(this.funds.pendingProceeds.buy || 0).toFixed(8)} | Sell ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'info');
+            this.logger.log(`Order ${matchedGridOrder.id} (${orderId}) FULLY FILLED (filled ${filledAmount.toFixed(8)}), cacheFunds: Buy ${(this.funds.cacheFunds.buy || 0).toFixed(8)} | Sell ${(this.funds.cacheFunds.sell || 0).toFixed(8)}`, 'info');
             const filledOrder = { ...matchedGridOrder };
 
             // Create copy for update - convert to SPREAD placeholder
@@ -993,7 +983,7 @@ class OrderManager {
             filledOrders.push(filledOrder);
         } else {
             // Partially filled - transition to PARTIAL state
-            this.logger.log(`Order ${matchedGridOrder.id} (${orderId}) PARTIALLY FILLED: ${filledAmount.toFixed(8)} filled, remaining ${newSize.toFixed(8)}, pendingProceeds: Buy ${(this.funds.pendingProceeds.buy || 0).toFixed(8)} | Sell ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'info');
+            this.logger.log(`Order ${matchedGridOrder.id} (${orderId}) PARTIALLY FILLED: ${filledAmount.toFixed(8)} filled, remaining ${newSize.toFixed(8)}, cacheFunds: Buy ${(this.funds.cacheFunds.buy || 0).toFixed(8)} | Sell ${(this.funds.cacheFunds.sell || 0).toFixed(8)}`, 'info');
 
             // Create a "virtual" filled order with just the filled amount for proceeds calculation
             // Mark as partial so processFilledOrders knows NOT to trigger rebalancing
@@ -1395,9 +1385,9 @@ class OrderManager {
                         feeInfo = ` (net after market fee: ${netProceeds.toFixed(8)})`;
                     }
                 }
-                proceedsBuy += netProceeds;  // Collect in pendingProceeds only, NOT in chainFree (to avoid double-counting)
+                proceedsBuy += netProceeds;  // Collect in cacheFunds only, NOT in chainFree
                 // SELL means we receive quote asset (buy side) and give up base asset (sell side)
-                // NOTE: Do NOT add proceeds to deltaBuyFree - proceeds go to pendingProceeds, not chainFree
+                // NOTE: Do NOT add proceeds to deltaBuyFree - proceeds go to cacheFunds, not chainFree
                 deltaBuyTotal += netProceeds;  // But DO update total (free + committed) with net amount after market fee
                 // sellFree was reduced at order creation; the locked size is now sold, so only the total decreases
                 deltaSellTotal -= filledOrder.size;
@@ -1417,9 +1407,9 @@ class OrderManager {
                         feeInfo = ` (net after market fee: ${netProceeds.toFixed(8)})`;
                     }
                 }
-                proceedsSell += netProceeds;  // Collect in pendingProceeds only, NOT in chainFree (to avoid double-counting)
+                proceedsSell += netProceeds;  // Collect in cacheFunds only, NOT in chainFree
                 // BUY means we receive base asset (assetA, sell side) and spend quote asset (assetB, buy side)
-                // NOTE: Do NOT add proceeds to deltaSellFree - proceeds go to pendingProceeds, not chainFree
+                // NOTE: Do NOT add proceeds to deltaSellFree - proceeds go to cacheFunds, not chainFree
                 deltaSellTotal += netProceeds;  // But DO update total (free + committed) with net amount after market fee
                 // buyFree was reduced at order creation; only total decreases to reflect the spend
                 deltaBuyTotal -= filledOrder.size;
@@ -1444,13 +1434,13 @@ class OrderManager {
             }
         }
 
-        // Accumulate BTS fees based on number of fills: (number_of_fills × total_fee)
+        // Accumulate BTS fees based on number of FULL fills (partially filled orders do not incur the maker net fee)
         if (hasBtsPair && filledOrders.length > 0) {
             const btsFeeData = getAssetFees('BTS', 0);
-            const totalFillCount = filledOrders.length;
-            const btsFeesForFills = totalFillCount * btsFeeData.total;
+            const fullFillCount = filledCounts[ORDER_TYPES.BUY] + filledCounts[ORDER_TYPES.SELL];
+            const btsFeesForFills = fullFillCount * btsFeeData.total;
             this.funds.btsFeesOwed += btsFeesForFills;
-            this.logger.log(`BTS fees for ${totalFillCount} fill(s): ${btsFeesForFills.toFixed(8)} BTS (total owed: ${this.funds.btsFeesOwed.toFixed(8)} BTS)`, 'debug');
+            this.logger.log(`BTS fees for ${fullFillCount} full fill(s) (ignoring ${filledOrders.length - fullFillCount} partial): ${btsFeesForFills.toFixed(8)} BTS (total owed: ${this.funds.btsFeesOwed.toFixed(8)} BTS)`, 'debug');
         }
 
         // Apply proceeds directly to accountTotals so availability reflects fills immediately (no waiting for a chain refresh)
@@ -1469,25 +1459,32 @@ class OrderManager {
         bumpTotal('buy', deltaBuyTotal);
         bumpTotal('sell', deltaSellTotal);
 
-        // Hold proceeds in pendingProceeds so availability reflects them through rotation
-        // This is the single source of truth for proceeds calculation (not _adjustFunds)
-        const proceedsBefore = { buy: this.funds.pendingProceeds.buy || 0, sell: this.funds.pendingProceeds.sell || 0 };
-        this.funds.pendingProceeds.buy = (this.funds.pendingProceeds.buy || 0) + proceedsBuy;
-        this.funds.pendingProceeds.sell = (this.funds.pendingProceeds.sell || 0) + proceedsSell;
+        // SYNC FUND CYCLING: Move any existing 'available' funds into cacheFunds 
+        // before adding proceeds. This ensures depositors' funds are cycled 
+        // into the grid during the rotation that follows a fill.
+        const currentAvailBuy = this.calculateAvailableFunds('buy');
+        const currentAvailSell = this.calculateAvailableFunds('sell');
 
-        // Deduct BTS fees from proceeds immediately after adding them
-        // This ensures fees don't consume proceeds repeatedly during fund calculations
+        // Hold proceeds + available in cacheFunds so availability reflects them through rotation
+        const proceedsBefore = { buy: this.funds.cacheFunds.buy || 0, sell: this.funds.cacheFunds.sell || 0 };
+        this.funds.cacheFunds.buy = (this.funds.cacheFunds.buy || 0) + proceedsBuy + currentAvailBuy;
+        this.funds.cacheFunds.sell = (this.funds.cacheFunds.sell || 0) + proceedsSell + currentAvailSell;
+
+        this.logger.log(`Proceeds + available funds added to cacheFunds: ` +
+            `Before Buy ${proceedsBefore.buy.toFixed(8)} + fill ${proceedsBuy.toFixed(8)} + avail ${currentAvailBuy.toFixed(8)} = After ${(this.funds.cacheFunds.buy || 0).toFixed(8)} | ` +
+            `Before Sell ${proceedsBefore.sell.toFixed(8)} + fill ${proceedsSell.toFixed(8)} + avail ${currentAvailSell.toFixed(8)} = After ${(this.funds.cacheFunds.sell || 0).toFixed(8)}`, 'info');
+
+        // Note: deductBtsFees() now subtracts from cacheFunds
         if (hasBtsPair && this.funds.btsFeesOwed > 0) {
             this.deductBtsFees('buy');
             this.deductBtsFees('sell');
         }
 
         this.recalculateFunds();
-        this.logger.log(`Proceeds applied: Before Buy ${proceedsBefore.buy.toFixed(8)} + ${proceedsBuy.toFixed(8)} = After ${(this.funds.pendingProceeds.buy || 0).toFixed(8)} | Before Sell ${proceedsBefore.sell.toFixed(8)} + ${proceedsSell.toFixed(8)} = After ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'info');
 
         // CRITICAL: Persist pending proceeds and BTS fees so they survive bot restart
         // These funds from partial fills must not be lost when the bot restarts
-        const proceedsPersistedOk = this._persistPendingProceeds();
+        const proceedsPersistedOk = this._persistCacheFunds();
         if (!proceedsPersistedOk) {
             this.logger.log(`⚠ Pending proceeds not persisted - will be held in memory and retried`, 'warn');
         }
@@ -1497,7 +1494,7 @@ class OrderManager {
                 this.logger.log(`⚠ BTS fees not persisted - will be held in memory and retried`, 'warn');
             }
         }
-        
+
         if (this.logger.level === 'debug') this._logAvailable('after proceeds apply');
         const extraOrderCount = this.outOfSpread ? 1 : 0;
         if (this.outOfSpread) {
@@ -1507,17 +1504,17 @@ class OrderManager {
         // Log available funds before rotation
         this.logger.log(`Available funds before rotation: Buy ${this.funds.available.buy.toFixed(8)} | Sell ${this.funds.available.sell.toFixed(8)}`, 'info');
         this._logAvailable('before rotation');
-        
+
         // CRITICAL: Only rebalance if there are ACTUAL fully-filled orders, not just partial fills
         // Partial fills don't need rotations - the remaining amount stays locked and the order continues
         const hasFullFills = filledCounts[ORDER_TYPES.BUY] > 0 || filledCounts[ORDER_TYPES.SELL] > 0;
         const onlyPartialFills = !hasFullFills && (partialFillCount[ORDER_TYPES.BUY] > 0 || partialFillCount[ORDER_TYPES.SELL] > 0);
-        
+
         if (onlyPartialFills) {
             this.logger.log(`Only partial fills detected (no rotations needed). Skipping rebalance.`, 'info');
             return { ordersToPlace: [], ordersToRotate: [], partialMoves: [] };
         }
-        
+
         const newOrders = await this.rebalanceOrders(filledCounts, extraOrderCount, excludeOrderIds);
 
         // Add updateFee to BTS fees if partial orders were moved during rotation
@@ -1531,27 +1528,12 @@ class OrderManager {
             this.logger.log(`Added updateFee for ${newOrders.partialMoves.length} partial move(s): +${totalUpdateFee.toFixed(8)} BTS (total fees owed: ${this.funds.btsFeesOwed.toFixed(8)} BTS)`, 'info');
         }
 
-        // Clear pending proceeds only for sides that had fills processed
-        // (preserve pending proceeds from partial fills on the other side)
-        const proceedsBeforeClear = { buy: this.funds.pendingProceeds.buy || 0, sell: this.funds.pendingProceeds.sell || 0 };
-        if (filledCounts[ORDER_TYPES.SELL] > 0) {
-            // SELL fills produce buy-side proceeds (quote asset received)
-            this.funds.pendingProceeds.buy = 0;
-        }
-        if (filledCounts[ORDER_TYPES.BUY] > 0) {
-            // BUY fills produce sell-side proceeds (base asset received)
-            this.funds.pendingProceeds.sell = 0;
-        }
         this.recalculateFunds();
-        
-        this.logger.log(`Cleared pendingProceeds after rotation: Before Buy ${proceedsBeforeClear.buy.toFixed(8)} -> After ${(this.funds.pendingProceeds.buy || 0).toFixed(8)} | Before Sell ${proceedsBeforeClear.sell.toFixed(8)} -> After ${(this.funds.pendingProceeds.sell || 0).toFixed(8)}`, 'info');
 
-        // CRITICAL: Persist cleared pendingProceeds so cleared state survives restart
-        const proceedsCleared = this._persistPendingProceeds();
-        if (!proceedsCleared) {
-            this.logger.log(`⚠ Cleared proceeds not persisted - will retry on next cycle`, 'warn');
-        }
-        
+        // PERSISTENCE: Since cacheFunds now includes proceeds, ensure it is persisted
+        this._persistCacheFunds();
+        // No longer clearing cacheFunds, so no proceedsCleared check needed here.
+
         this._logAvailable('after rotation clear');
 
         // After rotation, mark any on-chain orders that had their sizes updated by grid triggers for correction
@@ -1622,7 +1604,7 @@ class OrderManager {
             // Step 1: Activate closest virtual SELL orders - these need on-chain placement
             const activatedSells = await this.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.SELL, count);
             ordersToPlace.push(...activatedSells);
-            this.logger.log(`Prepared ${activatedSells.length} virtual SELL orders for on-chain placement`, 'info');
+            this.logger.log(`Prepared ${activatedSells.length} virtual SELL orders for on-chain placement`, 'debug');
 
             // Step 2: Move partial BUY (opposite side) before we select spread targets for rotation
             const partialBuys = this.getPartialOrdersOnSide(ORDER_TYPES.BUY);
@@ -1631,7 +1613,7 @@ class OrderManager {
                 const moveInfo = this.preparePartialOrderMove(partialBuys[0], partialMoveSlots, reservedBuyGridIds);
                 if (moveInfo) {
                     partialMoves.push(moveInfo);
-                    this.logger.log(`Prepared partial BUY move: ${moveInfo.partialOrder.id} -> ${moveInfo.newGridId}`, 'info');
+                    this.logger.log(`Prepared partial BUY move: ${moveInfo.partialOrder.id} -> ${moveInfo.newGridId}`, 'debug');
                 }
             } else if (partialBuys.length > 1) {
                 this.logger.log(`WARNING: ${partialBuys.length} partial BUY orders exist - skipping partial move`, 'warn');
@@ -1639,7 +1621,8 @@ class OrderManager {
 
             // Step 3: Find furthest active BUY orders and prepare them for rotation (cancel + recreate)
             // Rotation requires available funds - new order consumes available, old order moves to reserved
-            if (this.calculateAvailableFunds('buy') > 0) {
+            // Rotation Budget: Use cacheFunds or any truly free available funds
+            if (this.calculateAvailableFunds('buy') > 0 || (this.funds.cacheFunds && this.funds.cacheFunds.buy > 0)) {
                 const rotatedBuys = await this.prepareFurthestOrdersForRotation(
                     ORDER_TYPES.BUY,
                     count,
@@ -1649,7 +1632,8 @@ class OrderManager {
                         avoidPrices: partialMoves.map(m => m.newPrice),
                         preferredSlots: partialMoves
                             .filter(m => m.partialOrder.type === ORDER_TYPES.BUY)
-                            .map(m => ({ id: m.vacatedGridId, price: m.vacatedPrice }))
+                            .map(m => ({ id: m.vacatedGridId, price: m.vacatedPrice })),
+                        partialMoves: partialMoves // Pass partial moves for boundary calculation
                     }
                 );
                 ordersToRotate.push(...rotatedBuys);
@@ -1670,7 +1654,7 @@ class OrderManager {
             // Step 1: Activate closest virtual BUY orders - these need on-chain placement
             const activatedBuys = await this.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.BUY, count);
             ordersToPlace.push(...activatedBuys);
-            this.logger.log(`Prepared ${activatedBuys.length} virtual BUY orders for on-chain placement`, 'info');
+            this.logger.log(`Prepared ${activatedBuys.length} virtual BUY orders for on-chain placement`, 'debug');
 
             // Step 2: Move partial SELL (opposite side) before we select spread targets for rotation
             const partialSells = this.getPartialOrdersOnSide(ORDER_TYPES.SELL);
@@ -1679,7 +1663,7 @@ class OrderManager {
                 const moveInfo = this.preparePartialOrderMove(partialSells[0], partialMoveSlots, reservedSellGridIds);
                 if (moveInfo) {
                     partialMoves.push(moveInfo);
-                    this.logger.log(`Prepared partial SELL move: ${moveInfo.partialOrder.id} -> ${moveInfo.newGridId}`, 'info');
+                    this.logger.log(`Prepared partial SELL move: ${moveInfo.partialOrder.id} -> ${moveInfo.newGridId}`, 'debug');
                 }
             } else if (partialSells.length > 1) {
                 this.logger.log(`WARNING: ${partialSells.length} partial SELL orders exist - skipping partial move`, 'warn');
@@ -1687,7 +1671,8 @@ class OrderManager {
 
             // Step 3: Find furthest active SELL orders and prepare them for rotation
             // Rotation requires available funds - new order consumes available, old order moves to reserved
-            if (this.calculateAvailableFunds('sell') > 0) {
+            // Rotation Budget: Use cacheFunds or any truly free available funds
+            if (this.calculateAvailableFunds('sell') > 0 || (this.funds.cacheFunds && this.funds.cacheFunds.sell > 0)) {
                 const rotatedSells = await this.prepareFurthestOrdersForRotation(
                     ORDER_TYPES.SELL,
                     count,
@@ -1697,7 +1682,8 @@ class OrderManager {
                         avoidPrices: partialMoves.map(m => m.newPrice),
                         preferredSlots: partialMoves
                             .filter(m => m.partialOrder.type === ORDER_TYPES.SELL)
-                            .map(m => ({ id: m.vacatedGridId, price: m.vacatedPrice }))
+                            .map(m => ({ id: m.vacatedGridId, price: m.vacatedPrice })),
+                        partialMoves: partialMoves
                     }
                 );
                 ordersToRotate.push(...rotatedSells);
@@ -1802,7 +1788,8 @@ class OrderManager {
         );
 
         // Count grid size changes vs price mismatches for logging
-        const gridSizeCorrections = (this.ordersNeedingPriceCorrection || []).filter(c => c.sizeChanged).length;
+        const gridSizeCorrections = (this.ordersNeedingPriceCorrection || [])
+            .filter(c => c.sizeChanged).length;
         const priceCorrections = priceMismatchOrderIds.size;
 
         // Also exclude recently rotated orders (prevents double-rotation from rapid fill events)
@@ -1850,14 +1837,20 @@ class OrderManager {
 
         // Enforce layering: partials stay closest to spread; rotations must not place new orders inside the partial boundary.
         const partialsOnSide = this.getPartialOrdersOnSide(targetType) || [];
+        let boundaryPrices = partialsOnSide.map(p => {
+            // Check if this partial is moving
+            const move = (options.partialMoves || []).find(m => m.partialOrder.id === p.id);
+            return move ? move.newPrice : (Number(p.price) || 0);
+        });
+
         let boundaryPrice = null;
-        if (partialsOnSide.length > 0) {
+        if (boundaryPrices.length > 0) {
             if (targetType === ORDER_TYPES.SELL) {
                 // Sells decrease toward spread; the lowest price partial is closest to spread
-                boundaryPrice = Math.min(...partialsOnSide.map(p => Number(p.price) || 0));
+                boundaryPrice = Math.min(...boundaryPrices);
             } else {
                 // Buys increase toward spread; the highest price partial is closest to spread
-                boundaryPrice = Math.max(...partialsOnSide.map(p => Number(p.price) || 0));
+                boundaryPrice = Math.max(...boundaryPrices);
             }
         }
 
@@ -1904,13 +1897,22 @@ class OrderManager {
             // For SELL: highest price first (edge closest to sell orders)
             .sort((a, b) => targetType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
 
-        // Calculate available funds using centralized function
-        // Accounts for BTS fees that were already deducted from pendingProceeds in processFilledOrders
+        // Calculate available budget for rotation (Proceeds + Cached surplus)
+        // Accounts for BTS fees that were already deducted from cacheFunds
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-        let availableFunds = this.calculateAvailableFunds(side);
+        const currentCache = this.funds.cacheFunds[side] || 0;
+        const rotationBudget = currentCache;
+
+        this.logger.log(`Preparing rotation for ${count} ${side} order(s). Rotation Budget: ${rotationBudget.toFixed(8)} (from cacheFunds)`, 'info');
 
         const orderCount = Math.min(ordersToProcess.length, eligibleSpreadOrders.length);
-        const simpleDistribution = orderCount > 0 ? availableFunds / orderCount : 0;
+        let simpleDistribution = 0;
+        if (orderCount > 0) {
+            const simpleDistributionRaw = rotationBudget / orderCount;
+            const precision = side === 'buy' ? (this.assets?.assetB?.precision ?? 8) : (this.assets?.assetA?.precision ?? 8);
+            simpleDistribution = blockchainToFloat(floatToBlockchainInt(simpleDistributionRaw, precision), precision);
+            this.logger.log(`Using simple distribution for rotation: ${simpleDistribution.toFixed(8)} (budget ${rotationBudget.toFixed(8)} / ${orderCount} orders)`, 'debug');
+        }
 
         // Calculate geometric distribution across ALL grid slots
         // This ensures the rotation order size reflects what a full grid reset would allocate
@@ -1919,7 +1921,7 @@ class OrderManager {
         let allocatedSum = 0;
         if (orderCount > 0) {
             const Grid = require('./grid');
-            
+
             // Get all orders on this side (both ACTIVE and VIRTUAL)
             // CRITICAL: Add filledCount to account for filled orders that were just converted to SPREAD placeholders
             // When opposite-side orders fill, they're converted to SPREAD orders, expanding the total grid
@@ -1928,25 +1930,25 @@ class OrderManager {
                 ...this.getOrdersByTypeAndState(targetType, ORDER_STATES.VIRTUAL)
             ];
             const totalSlots = allOrdersOnSide.length + filledCount;
-            
+
             // Calculate total funds for rotation sizing
-            // Total = total.grid (committed + virtuel) + cacheFunds + pendingProceeds
+            // Total = total.grid (committed + virtuel) + cacheFunds
             const totalFunds = side === 'buy'
-                ? (this.funds.total?.grid?.buy || 0) + (this.funds.cacheFunds?.buy || 0) + (this.funds.pendingProceeds?.buy || 0)
-                : (this.funds.total?.grid?.sell || 0) + (this.funds.cacheFunds?.sell || 0) + (this.funds.pendingProceeds?.sell || 0);
-            
+                ? (this.funds.total?.grid?.buy || 0) + (this.funds.cacheFunds?.buy || 0)
+                : (this.funds.total?.grid?.sell || 0) + (this.funds.cacheFunds?.sell || 0);
+
             // Create dummy orders matching the actual grid structure (all active + virtual)
             const dummyOrders = Array(totalSlots).fill(null).map((_, i) => ({
                 id: `dummy-${i}`,
                 type: targetType,
                 price: 0 // price doesn't matter for sizing
             }));
-            
+
             // Calculate sizes using the same logic as grid.initializeGrid
             const precision = side === 'buy' ? (this.assets?.assetB?.precision ?? 8) : (this.assets?.assetA?.precision ?? 8);
             const sellFunds = side === 'sell' ? totalFunds : 0;
             const buyFunds = side === 'buy' ? totalFunds : 0;
-            
+
             const sizedOrders = Grid.calculateOrderSizes(
                 dummyOrders,
                 this.config,
@@ -1957,7 +1959,7 @@ class OrderManager {
                 precision,
                 precision
             );
-            
+
             // Extract sizes for the orders being rotated
             // For SELL: sizes are [smallest, ..., largest] → take from END (largest)
             // For BUY: sizes are [largest, ..., smallest] → take from BEGINNING (largest)
@@ -1966,7 +1968,7 @@ class OrderManager {
             } else {
                 geometricSizes = sizedOrders.slice(0, orderCount).map(o => o.size);
             }
-            
+
             const totalGeometric = geometricSizes.reduce((s, v) => s + (Number(v) || 0), 0);
             const totalAllSlots = sizedOrders.reduce((s, o) => s + (Number(o.size) || 0), 0);
             const weight = side === 'buy' ? this.config.weightDistribution?.buy : this.config.weightDistribution?.sell;
@@ -1978,7 +1980,7 @@ class OrderManager {
                     'debug'
                 );
                 this.logger?.log?.(
-                    `DEBUG Funds: chainSnapshot=${totalFunds.toFixed(8)}`,
+                    `DEBUG Funds: chainSnapshot=${totalFunds.toFixed(8)}, cache=${currentCache.toFixed(8)}, budget=${rotationBudget.toFixed(8)}`,
                     'debug'
                 );
                 const allSlotsSized = sizedOrders.map(o => Number(o.size).toFixed(8));
@@ -1995,18 +1997,22 @@ class OrderManager {
                 );
             } catch (e) { this.logger?.log?.(`Warning: failed to log rotation geometric details: ${e.message}`, 'warn'); }
 
-            if (totalGeometric > 0 && totalGeometric > availableFunds) {
-                // Scale down all geometric sizes proportionally so the total equals availableFunds
-                const scale = availableFunds / totalGeometric;
+            if (totalGeometric > 0 && totalGeometric > rotationBudget) {
+                // Scale down all geometric sizes proportionally so the total equals rotationBudget
+                const scale = rotationBudget / totalGeometric;
+                const precision = side === 'buy' ? (this.assets?.assetB?.precision ?? 8) : (this.assets?.assetA?.precision ?? 8);
+
                 for (let i = 0; i < orderCount; i++) {
                     const g = geometricSizes[i] !== undefined ? geometricSizes[i] : 0;
-                    const allocated = g * scale;
+                    const allocatedRaw = g * scale;
+                    // Quantize the result of scaling to ensure it matches blockchain increments
+                    const allocated = blockchainToFloat(floatToBlockchainInt(allocatedRaw, precision), precision);
                     allocatedSizes.push(allocated);
                     allocatedSum += allocated;
                 }
                 try { const allocSized = allocatedSizes.map(s => Number(s).toFixed(8)); const allocDisplay = allocSized.length > 1 ? `[${allocSized[0]}, ... ${allocSized[allocSized.length - 1]}]` : `[${allocSized.join(', ')}]`; this.logger?.log?.(`DEBUG Rotation Scaled Allocated: ${allocDisplay}, sum=${allocatedSum.toFixed(8)}`, 'debug'); } catch (e) { this.logger?.log?.(`Warning: failed to log scaled allocated sizes: ${e.message}`, 'warn'); }
             } else {
-                // Use geometric sizes as-is (may sum to less than availableFunds)
+                // Use geometric sizes as-is (may sum to less than rotationBudget)
                 for (let i = 0; i < orderCount; i++) {
                     const g = geometricSizes[i] !== undefined ? geometricSizes[i] : 0;
                     allocatedSizes.push(g);
@@ -2016,35 +2022,33 @@ class OrderManager {
             }
         }
 
-        // Determine surplus (availableFunds unallocated after sizing) and add to cacheFunds only if positive
+        // Determine surplus (rotationBudget unallocated after sizing) and recycling to cacheFunds
         let surplus = 0;
         const EPS = 1e-12;
-        if (availableFunds - allocatedSum > EPS) {
-            surplus = availableFunds - allocatedSum;
-            try { this.logger?.log?.(`DEBUG Rotation Surplus: available=${availableFunds.toFixed(8)}, allocated=${allocatedSum.toFixed(8)}, surplus=${surplus.toFixed(8)}`, 'debug'); } catch (e) { this.logger?.log?.(`Warning: failed to log rotation surplus: ${e.message}`, 'warn'); }
-            const oldCacheFundsValue = this.funds.cacheFunds[side] || 0;
-            const newCacheFundsValue = oldCacheFundsValue + surplus;
-            this.funds.cacheFunds[side] = newCacheFundsValue;
-            this.logger.log(`Allocated sum (${allocatedSum.toFixed(8)}) smaller than available (${availableFunds.toFixed(8)}). Adding surplus ${surplus.toFixed(8)} to cacheFunds.${side}`, 'info');
-
-            // Persist cacheFunds when value changes
-            try {
-                const { AccountOrders } = require('../account_orders');
-                if (this.config && this.config.botKey) {
-                    const accountDb = this.accountOrders || new AccountOrders({ botKey: this.config.botKey });
-                    accountDb.updateCacheFunds(this.config.botKey, this.funds.cacheFunds);
-                    this.logger.log(`Persisted cacheFunds.${side} = ${newCacheFundsValue.toFixed(8)}`, 'debug');
-                }
-            } catch (err) {
-                this.logger?.log && this.logger.log(
-                    `Warning: Could not persist cacheFunds after rotation: ${err.message}`,
-                    'warn'
-                );
-            }
+        if (rotationBudget - allocatedSum > EPS) {
+            surplus = rotationBudget - allocatedSum;
+            try { this.logger?.log?.(`DEBUG Rotation Surplus: budget=${rotationBudget.toFixed(8)}, allocated=${allocatedSum.toFixed(8)}, surplus=${surplus.toFixed(8)}`, 'debug'); } catch (e) { this.logger?.log?.(`Warning: failed to log rotation surplus: ${e.message}`, 'warn'); }
         }
 
+        this.funds.cacheFunds[side] = surplus;
+        this.logger.log(`Rotation complete. Updating cacheFunds.${side} to ${surplus.toFixed(8)} (budget was ${rotationBudget.toFixed(8)})`, 'info');
+
+        // Persist cacheFunds when value changes
+        try {
+            if (this.config && this.config.botKey) {
+                this._persistCacheFunds();
+                this.logger.log(`Persisted cacheFunds.${side} = ${surplus.toFixed(8)}`, 'debug');
+            }
+        } catch (err) {
+            this.logger?.log && this.logger.log(
+                `Warning: Could not persist cacheFunds after rotation: ${err.message}`,
+                'warn'
+            );
+        }
+
+
         // Track remaining funds locally since this.funds.available gets reset by recalculateFunds
-        let remainingFunds = Math.max(0, availableFunds - allocatedSum - surplus);
+        let remainingFunds = Math.max(0, rotationBudget - allocatedSum);
 
         for (let i = 0; i < ordersToProcess.length; i++) {
             const oldOrder = ordersToProcess[i];
@@ -2160,7 +2164,11 @@ class OrderManager {
         const currentPosition = parseInt(match[2], 10);
 
         // Walk toward market by the requested number of grid slots.
-        const direction = orderSide === 'sell' ? 1 : -1; // sells increase index toward spread; buys decrease index
+        // In the standardized grid (ID indexing 0...N), SELL IDs increase index toward market,
+        // and BUY IDs decrease index toward market.
+        // However, if an order has crossed sides (e.g. is a BUY in a sell-N slot), we must move it 
+        // based on its INTENDED target direction (SELL move = price ↓ = index ↑, BUY move = price ↑ = index ↓).
+        const direction = partialOrder.type === ORDER_TYPES.SELL ? 1 : -1;
         const startPosition = currentPosition + (direction * gridSlotsToMove);
         if (startPosition < 0) {
             this.logger.log(`Cannot move ${partialOrder.id} by ${gridSlotsToMove} - would go below index 0`, 'warn');

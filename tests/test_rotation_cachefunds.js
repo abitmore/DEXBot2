@@ -39,39 +39,42 @@ function seedGridForRotation(mgr, targetType, orderCount) {
     // Test 1: geometric sizes sum < available -> surplus should be added to cacheFunds
     const mgr1 = await makeManager();
     seedGridForRotation(mgr1, ORDER_TYPES.BUY, 4);
-    mgr1.funds.pendingProceeds = { buy: 100, sell: 0 };
-    mgr1.funds.cacheFunds = { buy: 0, sell: 0 };
+    mgr1.funds.cacheFunds = { buy: 100, sell: 0 };
 
     // Monkeypatch geometric sizing to sum to 80
     const GridModule = require('../modules/order/grid');
-    const origFn = GridModule.calculateRotationOrderSizes;
-    GridModule.calculateRotationOrderSizes = () => [30, 20, 20, 10]; // sum=80
+    const origFn = GridModule.calculateOrderSizes;
+    GridModule.calculateOrderSizes = (orders) => orders.map((o, i) => ({ ...o, size: [30, 20, 20, 10][i] || 0 }));
 
     const rotations1 = await mgr1.prepareFurthestOrdersForRotation(ORDER_TYPES.BUY, 4);
-    // After allocation, we expect surplus = 20 added to cacheFunds.buy
+    // Budget: cacheFunds (100)
+    // patch sum: 80
+    // Surplus = 100 - 80 = 20
     const cached1 = mgr1.funds.cacheFunds.buy || 0;
     assert(Math.abs(cached1 - 20) < 1e-8, `Expected cacheFunds.buy ~= 20, got ${cached1}`);
-    console.log('Test 1 passed: surplus added to cacheFunds when geometric < available');
+    console.log('Test 1 passed: surplus added to cacheFunds when geometric < cache');
 
     // Restore
-    GridModule.calculateRotationOrderSizes = origFn;
+    GridModule.calculateOrderSizes = origFn;
 
     // Test 2: geometric sizes sum > available -> sizes scaled, no surplus
     const mgr2 = await makeManager();
+    mgr2.setAccountTotals({ buy: 0, sell: 0, buyFree: 0, sellFree: 0 });
     seedGridForRotation(mgr2, ORDER_TYPES.BUY, 4);
-    mgr2.funds.pendingProceeds = { buy: 100, sell: 0 };
-    mgr2.funds.cacheFunds = { buy: 0, sell: 0 };
+    mgr2.funds.cacheFunds = { buy: 100, sell: 0 };
 
     // Patch to sum to 120
-    GridModule.calculateRotationOrderSizes = () => [40, 30, 30, 20]; // sum=120
+    GridModule.calculateOrderSizes = (orders) => orders.map((o, i) => ({ ...o, size: [40, 30, 30, 20][i] || 0 }));
+    // Budget: cache (100)
+    // Sizing 120 > 100, so scales to 100.
 
     const rotations2 = await mgr2.prepareFurthestOrdersForRotation(ORDER_TYPES.BUY, 4);
     const cached2 = mgr2.funds.cacheFunds.buy || 0;
     assert(Math.abs(cached2 - 0) < 1e-8, `Expected cacheFunds.buy == 0 after scaling, got ${cached2}`);
-    console.log('Test 2 passed: geometric > available scaled and no cacheFunds added');
+    console.log('Test 2 passed: geometric > cache scaled and no surplus added');
 
     // Restore original
-    GridModule.calculateRotationOrderSizes = origFn;
+    GridModule.calculateOrderSizes = origFn;
 
     console.log('rotation cacheFunds tests passed');
 })();

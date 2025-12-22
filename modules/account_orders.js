@@ -11,14 +11,16 @@
  *     "botkey": {
  *       "meta": { name, assetA, assetB, active, index },
  *       "grid": [ { id, type, state, price, size, orderId }, ... ],
- *       "cacheFunds": { buy: number, sell: number },
- *       "pendingProceeds": { buy: number, sell: number },
+ *       "cacheFunds": { buy: number, sell: number },  // All unallocated funds (fill proceeds + surplus)
  *       "btsFeesOwed": number,
  *       "createdAt": "ISO timestamp",
  *       "lastUpdated": "ISO timestamp"
  *     }
  *   },
  *   "lastUpdated": "ISO timestamp"
+ *
+ * NOTE (v0.4.0+): Legacy `pendingProceeds` field is auto-migrated to cacheFunds
+ * on first load via `scripts/migrate_pending_proceeds.js`. No manual action needed.
  * }
  *
  * The grid snapshot allows the bot to resume from where it left off
@@ -144,7 +146,9 @@ class AccountOrders {
     const entriesToProcess = this.botKey
       ? botEntries.filter(bot => {
           const key = bot.botKey || createBotKey(bot, botEntries.indexOf(bot));
-          return key === this.botKey;
+          const matches = key === this.botKey;
+          console.log(`[AccountOrders] per-bot filter: checking bot name=${bot.name}, key=${key}, this.botKey=${this.botKey}, matches=${matches}`);
+          return matches;
         })
       : botEntries;
 
@@ -161,7 +165,6 @@ class AccountOrders {
           meta,
           grid: [],
           cacheFunds: { buy: 0, sell: 0 },
-          pendingProceeds: { buy: 0, sell: 0 },
           btsFeesOwed: 0,
           createdAt: meta.createdAt,
           lastUpdated: meta.updatedAt
@@ -175,11 +178,7 @@ class AccountOrders {
           changed = true;
         }
 
-        // Ensure pendingProceeds exists even for existing bots
-        if (!entry.pendingProceeds || typeof entry.pendingProceeds.buy !== 'number' || typeof entry.pendingProceeds.sell !== 'number') {
-          entry.pendingProceeds = { buy: 0, sell: 0 };
-          changed = true;
-        }
+        
 
         // Ensure btsFeesOwed exists even for existing bots
         if (typeof entry.btsFeesOwed !== 'number') {
@@ -189,9 +188,16 @@ class AccountOrders {
 
         entry.grid = entry.grid || [];
         if (this._metaChanged(entry.meta, meta)) {
+          console.log(`[AccountOrders] Metadata changed for bot ${key}: updating from old metadata to new`);
+          console.log(`  OLD: name=${entry.meta?.name}, assetA=${entry.meta?.assetA}, assetB=${entry.meta?.assetB}, active=${entry.meta?.active}`);
+          console.log(`  NEW: name=${meta.name}, assetA=${meta.assetA}, assetB=${meta.assetB}, active=${meta.active}`);
           entry.meta = { ...entry.meta, ...meta, createdAt: entry.meta?.createdAt || meta.createdAt };
           entry.lastUpdated = nowIso();
           changed = true;
+        } else {
+          console.log(`[AccountOrders] No metadata change for bot ${key} - skipping update`);
+          console.log(`  CURRENT: name=${entry.meta?.name}, assetA=${entry.meta?.assetA}, assetB=${entry.meta?.assetB}, active=${entry.meta?.active}`);
+          console.log(`  PASSED:  name=${meta.name}, assetA=${meta.assetA}, assetB=${meta.assetB}, active=${meta.active}`);
         }
       }
       bot.botKey = key;
@@ -246,11 +252,10 @@ class AccountOrders {
    *
    * @param {string} botKey - Bot identifier key
    * @param {Array} orders - Array of order objects from OrderManager
-   * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
-   * @param {Object} pendingProceeds - Optional pending proceeds { buy: number, sell: number }
-   * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
-   */
-  storeMasterGrid(botKey, orders = [], cacheFunds = null, pendingProceeds = null, btsFeesOwed = null) {
+  * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
+  * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
+  */
+  storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null) {
     if (!botKey) return;
 
     // CRITICAL: Reload from disk before writing to prevent race conditions between bot processes
@@ -265,7 +270,6 @@ class AccountOrders {
         meta,
         grid: snapshot,
         cacheFunds: cacheFunds || { buy: 0, sell: 0 },
-        pendingProceeds: pendingProceeds || { buy: 0, sell: 0 },
         btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
         createdAt: meta.createdAt,
         lastUpdated: meta.updatedAt
@@ -275,9 +279,7 @@ class AccountOrders {
       if (cacheFunds) {
         this.data.bots[botKey].cacheFunds = cacheFunds;
       }
-      if (pendingProceeds) {
-        this.data.bots[botKey].pendingProceeds = pendingProceeds;
-      }
+      
       if (Number.isFinite(btsFeesOwed)) {
         this.data.bots[botKey].btsFeesOwed = btsFeesOwed;
       }
@@ -339,44 +341,7 @@ class AccountOrders {
     this._persist();
   }
 
-  /**
-   * Load pending proceeds for a bot (funds from partial fills awaiting rotation).
-   * @param {string} botKey - Bot identifier key
-   * @returns {Object|null} Pending proceeds { buy, sell } or { buy: 0, sell: 0 } if not found
-   */
-  loadPendingProceeds(botKey) {
-    if (this.data && this.data.bots && this.data.bots[botKey]) {
-      const botData = this.data.bots[botKey];
-      const pp = botData.pendingProceeds;
-      if (pp && typeof pp.buy === 'number' && typeof pp.sell === 'number') {
-        return pp;
-      }
-    }
-    return { buy: 0, sell: 0 };
-  }
-
-  /**
-   * Update (persist) pending proceeds for a bot.
-   * Pending proceeds are temporary funds from partial order fills that are awaiting consumption
-   * during the next rotation. They must persist across restarts so fills aren't lost.
-   * @param {string} botKey - Bot identifier key
-   * @param {Object} pendingProceeds - Pending proceeds { buy, sell }
-   */
-  updatePendingProceeds(botKey, pendingProceeds) {
-    if (!botKey) return;
-
-    // Reload from disk in per-bot mode to ensure consistency
-    if (this.botKey) {
-      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
-    }
-
-    if (!this.data || !this.data.bots || !this.data.bots[botKey]) {
-      return;
-    }
-    this.data.bots[botKey].pendingProceeds = pendingProceeds || { buy: 0, sell: 0 };
-    this.data.lastUpdated = nowIso();
-    this._persist();
-  }
+  /* `pendingProceeds` storage removed. */
 
   /**
    * Load BTS blockchain fees owed for a bot.

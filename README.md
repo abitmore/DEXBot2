@@ -329,10 +329,11 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
 **Two Independent Triggering Mechanisms:**
 
-1. **Cache Funds Threshold** (3% by default)
-   - Monitors accumulated proceeds from filled orders (cached funds)
-   - Triggers when cache ≥ 3% of allocated grid capital on either side
-   - Example: Grid allocated 1000 BTS, cache reaches 30 BTS → ratio is 3% → triggers update
+1. **Cache & Available Funds Threshold** (3% by default)
+   - Monitors cached funds (proceeds from fills) + newly available funds (deposits)
+   - Triggers when `(cacheFunds + availableFunds) ≥ 3%` of allocated grid capital on either side
+   - Example: Grid 1000 BTS + new deposit 200 BTS available → ratio 20% → triggers update
+   - Enables **automatic fund cycling**: new deposits are immediately resized into grid
    - Updates buy and sell sides independently based on their respective ratios
 
 2. **Grid Divergence Threshold** (10% RMS by default)
@@ -346,16 +347,16 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
    **RMS Threshold Reference Table:**
    RMS increases as grid distribution worsens (more uneven/concentrated errors). Uneven distributions need higher thresholds to allow the same average error.
-   | Avg Error | 100% Distribution | 50% Distribution | 25% Distribution | 10% Distribution |
+   | Avg Error | 100% Distribution | 50% Distribution | 25% Distribution | 5% Distribution |
    |-----------|-------------------|------------------|------------------|------------------|
-   | 1.0% | 1.0% | 1.4% | 2.0% | 3.2% |
-   | 2.2% | 2.2% | 3.1% | 4.4% | 7.1% |
-   | 3.2% | 3.2% | 4.5% | 6.4% | 10.1% |
-   | 4.5% | 4.5% | 6.4% | 9.0% | 14.1% |
-   | 7.1% | 7.1% | 10.0% | 14.2% | 22.4% |
-   | 10% | 10% | 14.1% | 20% | 31.6% |
+   | 1.0% | 1.0% | 1.4% | 2.0% | 4.5% |
+   | 2.2% | 2.2% | 3.1% | 4.4% | 9.8% |
+   | 3.2% | 3.2% | 4.5% | 6.4% | 14.3% |
+   | 4.5% | 4.5% | 6.4% | 9.0% | 20.1% |
+   | 7.1% | 7.1% | 10.0% | 14.2% | 31.7% |
+   | 10% | 10% | 14.1% | 20% | 44.7% |
 
-   **Default: 10% RMS** - Allows 10% average error when evenly distributed, or 3.2% when concentrated in just 10% of orders.
+   **Default: 14.3% RMS** - Allows ~3.2% average error when concentrated in just 5% of orders (most realistic scenario).
 
 **When Grid Recalculation Occurs:**
 - After order fills and proceeds are collected
@@ -374,7 +375,7 @@ You can adjust thresholds in `modules/constants.js`:
 ```javascript
 GRID_REGENERATION_PERCENTAGE: 3,  // Cache funds threshold (%)
 GRID_COMPARISON: {
-    RMS_PERCENTAGE: 10  // Grid divergence RMS threshold (%)
+    RMS_PERCENTAGE: 14.3  // Grid divergence RMS threshold (%)
 }
 ```
 
@@ -475,7 +476,7 @@ Below is a short summary of the modules in this repository and what they provide
 - `modules/chain_orders.js`: Account-level order operations: select account, create/update/cancel orders, listen for fills with deduplication, read open orders. Uses 'history' mode for fill processing which matches orders from blockchain events.
 - `modules/bitshares_client.js`: Shared BitShares client wrapper and connection utilities (`BitShares`, `createAccountClient`, `waitForConnected`).
 - `modules/btsdex_event_patch.js`: Runtime patch for `btsdex` library to improve history and account event handling.
-- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, cacheFunds, and pending proceeds (`profiles/orders/<bot-name>.json`). Manages bot-specific files with atomic updates and race-condition protection.
+- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-name>.json`). Manages bot-specific files with atomic updates and race-condition protection. **Note:** Legacy pendingProceeds data (pre-0.4.0) is migrated to cacheFunds via `scripts/migrate_pending_proceeds.js`.
 
 ### 📊 Order Subsystem (`modules/order/`)
 

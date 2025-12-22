@@ -2,6 +2,74 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2025-12-22 - Fund Management Consolidation & Automatic Fund Cycling
+
+### Features
+- **Automatic Fund Cycling**: Available funds now automatically included in cacheFunds before rotation
+  - Newly deposited funds immediately available for grid sizing
+  - Grid resizes when deposits arrive, not just after fills
+  - More responsive to market changes and new capital inflows
+
+- **Unified Fund Management**: Complete consolidation of pendingProceeds into cacheFunds
+  - Simplified fund tracking: single cacheFunds field for all unallocated funds
+  - Cleaner codebase (272 line reduction in complexity)
+  - Backward compatible: legacy pendingProceeds automatically migrated
+
+### Changed
+- **BREAKING CHANGE**: `pendingProceeds` field removed from storage schema
+  - Affects: `profiles/orders/<bot-name>.json` files for existing bots
+  - Migration: Use `scripts/migrate_pending_proceeds.js` before first startup with v0.4.0
+  - Backward compat: Legacy pendingProceeds merged into cacheFunds on load
+
+- **Fund Formula Updated**:
+  ```
+  OLD: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed) + pendingProceeds
+  NEW: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed)
+  ```
+
+- **Grid Regeneration Threshold**: Now includes available funds
+  - OLD: Checked only `cacheFunds / gridAllocation`
+  - NEW: Checks `(cacheFunds + availableFunds) / gridAllocation`
+  - Result: Grid resizes when deposits arrive, enabling fund cycling
+
+- **Fee Deduction**: Now deducts BTS fees from cacheFunds instead of pendingProceeds
+  - Called once per rotation cycle after all proceeds added
+  - Cleaner integration with fund cycling
+
+### Fixed
+- **Partial Order Precision**: Fixed floating-point noise in partial fill detection
+  - Now uses integer-based subtraction (blockchain-safe precision)
+  - Converts orders to blockchain units, subtracts, converts back
+  - Prevents false PARTIAL states from float arithmetic errors (e.g., 1e-18 floats)
+
+- **Logger Undefined Variables**: Fixed references to removed pendingProceeds variables
+  - Removed orphaned variable definitions
+  - Cleaned up fund display logic in logFundsStatus()
+
+- **Bot Metadata Initialization**: Fixed new order files being created with null metadata
+  - Ensured `ensureBotEntries()` is called before any Grid initialization
+  - Prevents order files from having null values for name, assetA, assetB
+  - Metadata properly initialized from bot configuration in profiles/bots.json at startup
+  - Applied fix to both bot.js and dexbot.js DEXBot classes
+
+### Migration Guide
+1. **Backup** your `profiles/orders/` directory before updating
+2. **Run migration** (if you have existing bots with pendingProceeds):
+   ```bash
+   node scripts/migrate_pending_proceeds.js
+   ```
+3. **Restart bots**: Legacy data automatically merged into cacheFunds on load
+   - No data loss - all proceeds preserved
+   - Grid sizing adjusted automatically
+
+### Technical Details
+- **Fund Consolidation**: All proceeds and surpluses now consolidated in single cacheFunds field
+- **Backward Compatibility**: Automatic merge of legacy pendingProceeds into cacheFunds during grid load
+- **Storage**: Updated account_orders.js schema, removed pendingProceeds persistence methods
+- **Test Coverage**: Added test_fund_cycling_trigger.js, test_crossed_rotation.js, test_fee_refinement.js
+
+---
+
 ## [0.3.0] - 2025-12-19 - Grid Divergence Detection & Percentage-Based Thresholds
 
 ### Features

@@ -227,7 +227,7 @@ class DEXBot {
     async placeInitialOrders() {
         if (!this.manager) {
             this.manager = new OrderManager(this.config);
-            this.manager.accountOrders = this.accountOrders;  // Enable pendingProceeds persistence
+            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
         }
         // If botFunds are percentage-based and account info is available, try to
         // fetch on-chain balances first so percentages resolve correctly.
@@ -247,9 +247,7 @@ class DEXBot {
 
         if (this.config.dryRun) {
             this.manager.logger.log('Dry run enabled, skipping on-chain order placement.', 'info');
-            // CRITICAL: Reset pendingProceeds when initial grid is placed
-            // Fresh start means no prior partial fills exist
-            this.manager.funds.pendingProceeds = { buy: 0, sell: 0 };
+            // Legacy `pendingProceeds` reset removed; persisted proceeds are migrated to `cacheFunds`.
             persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
             return;
         }
@@ -705,16 +703,30 @@ class DEXBot {
      */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
-        
+
         // Create AccountOrders with bot-specific file (one file per bot)
         this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
-        
+
+        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
+        // This prevents new order files from being created with null values for assetA, assetB, name
+        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+        // Normalize all bots first (to get correct indices), then filter to active ones
+        const allActiveBots = normalizeBotEntries(allBotsConfig)
+            .filter(b => b.active !== false);
+
+        console.log(`[dexbot.js] DEBUG ensureBotEntries: passing ${allActiveBots.length} active bot(s):`);
+        allActiveBots.forEach(bot => {
+          console.log(`  - name=${bot.name}, assetA=${bot.assetA}, assetB=${bot.assetB}, active=${bot.active}, index=${bot.botIndex}, botKey=${bot.botKey}`);
+        });
+
+        this.accountOrders.ensureBotEntries(allActiveBots);
+
         if (!this.manager) {
             this.manager = new OrderManager(this.config || {});
             // Attach account identifiers so OrderManager can fetch on-chain totals when needed
             this.manager.account = this.account;
             this.manager.accountId = this.accountId;
-            this.manager.accountOrders = this.accountOrders;  // Enable pendingProceeds persistence
+            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
         }
 
         // Start listening for fills BEFORE any order operations to avoid missing fills
@@ -900,9 +912,7 @@ class DEXBot {
                     privateKey: this.privateKey,
                     config: this.config,
                 });
-                // CRITICAL: Reset pendingProceeds when grid is regenerated
-                // New grid means old partial fill proceeds are no longer relevant
-                this.manager.funds.pendingProceeds = { buy: 0, sell: 0 };
+                // Grid regenerated; legacy pending proceeds removed from schema.
                 persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
 
                 if (fs.existsSync(this.triggerFile)) {
@@ -921,7 +931,6 @@ class DEXBot {
         } else {
             const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
             const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
-            const persistedPendingProceeds = this.accountOrders.loadPendingProceeds(this.config.botKey);
             const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
 
             // Restore cacheFunds to manager if found
@@ -929,14 +938,7 @@ class DEXBot {
                 this.manager.funds.cacheFunds = { ...persistedCacheFunds };
             }
 
-            // CRITICAL: Restore pendingProceeds from partial fills
-            // This ensures fill proceeds from before the restart are not lost
-            if (persistedPendingProceeds) {
-                this.manager.funds.pendingProceeds = { ...persistedPendingProceeds };
-                this.manager.logger.log(`✓ Restored pendingProceeds from startup: Buy ${(persistedPendingProceeds.buy || 0).toFixed(8)}, Sell ${(persistedPendingProceeds.sell || 0).toFixed(8)}`, 'info');
-            } else {
-                this.manager.logger.log(`ℹ No pendingProceeds to restore (fresh start or no partial fills)`, 'info');
-            }
+            // Legacy `pendingProceeds` handling removed; migrate using the provided script if needed.
 
             // CRITICAL: Restore BTS fees owed from blockchain operations
             // This ensures fees are properly deducted from proceeds, preventing fund loss on restart
@@ -984,9 +986,7 @@ class DEXBot {
                 this.manager.logger.log('Generating new grid.', 'info');
                 await Grid.initializeGrid(this.manager);
 
-                // CRITICAL: Reset pendingProceeds when grid is regenerated during startup
-                // New grid means old partial fill proceeds are no longer relevant
-                this.manager.funds.pendingProceeds = { buy: 0, sell: 0 };
+                // Legacy `pendingProceeds` reset removed; persisted proceeds are migrated to `cacheFunds`.
 
                 // If there are existing on-chain orders, sync them onto the new grid
                 // using price+size matching, then reconcile counts by updating/cancelling/creating.
