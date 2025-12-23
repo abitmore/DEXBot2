@@ -242,12 +242,15 @@ class OrderManager {
 
     /**
      * Central calculation for available funds (pure calculation, no side effects).
-     * Formula: available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed)
+     * Formula: available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed - btsFeesReservation)
+     *
+     * The btsFeesReservation ensures enough BTS is reserved for updating target open orders
+     * when applyGridDivergenceCorrections regenerates orders on-chain.
      *
      * NOTE: This is a PURE calculation function - it does NOT modify any state.
      */
     calculateAvailableFunds(side) {
-        return calculateAvailableFundsValue(side, this.accountTotals, this.funds, this.config.assetA, this.config.assetB);
+        return calculateAvailableFundsValue(side, this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders);
     }
 
     /**

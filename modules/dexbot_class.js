@@ -336,6 +336,7 @@ class DEXBot {
 
         // Step 4: Execute Batch
         let hadRotation = false;
+        let updateOperationCount = 0;  // Track update operations for fee accounting
         try {
             this.manager.logger.log(`Broadcasting batch with ${operations.length} operations...`, 'info');
             const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
@@ -370,6 +371,7 @@ class DEXBot {
                         `Partial move complete: ${moveInfo.partialOrder.orderId} moved to ${moveInfo.newPrice.toFixed(4)}`,
                         'info'
                     );
+                    updateOperationCount++;  // Count as update operation
                     continue;
                 }
 
@@ -404,6 +406,28 @@ class DEXBot {
                     this.manager.completeOrderRotation(oldOrder);
                     await this.manager.synchronizeWithChain({ gridOrderId: newGridId, chainOrderId: oldOrder.orderId, isPartialPlacement }, 'createOrder');
                     this.manager.logger.log(`Order size updated: ${oldOrder.orderId} new price ${newPrice.toFixed(4)}, new size ${actualSize.toFixed(8)}`, 'info');
+                    updateOperationCount++;  // Count as update operation
+                }
+            }
+
+            // Account for BTS update fees paid during batch operations
+            // Only if BTS is in the trading pair
+            if (updateOperationCount > 0 && (this.manager.config.assetA === 'BTS' || this.manager.config.assetB === 'BTS')) {
+                try {
+                    const { getAssetFees } = require('./order/utils');
+                    const btsFeeData = getAssetFees('BTS', 1);
+                    const totalUpdateFees = btsFeeData.updateFee * updateOperationCount;
+
+                    this.manager.funds.btsFeesOwed += totalUpdateFees;
+                    this.manager.logger.log(
+                        `BTS update fees for batch: ${updateOperationCount} update operations × ${btsFeeData.updateFee.toFixed(8)} = +${totalUpdateFees.toFixed(8)} BTS (total owed: ${this.manager.funds.btsFeesOwed.toFixed(8)} BTS)`,
+                        'info'
+                    );
+
+                    // Persist the updated fees owed
+                    await this.manager._persistBtsFeesOwed();
+                } catch (err) {
+                    this.manager.logger.log(`Warning: Could not account for BTS update fees: ${err.message}`, 'warn');
                 }
             }
 

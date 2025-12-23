@@ -138,7 +138,7 @@ function computeChainFundTotals(accountTotals, committedChain) {
  * @param {string} assetB - Asset B symbol (to determine BTS side)
  * @returns {number} Available funds for the side, always >= 0
  */
-function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB) {
+function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null) {
     if (!side || (side !== 'buy' && side !== 'sell')) return 0;
 
     const chainFree = side === 'buy' ? (accountTotals?.buyFree || 0) : (accountTotals?.sellFree || 0);
@@ -154,7 +154,28 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
         applicableBtsFeesOwed = Math.min(funds.btsFeesOwed, cacheFunds);
     }
 
-    return Math.max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed);
+    // Reserve BTS fees for updating target open orders (needed when regenerating grid)
+    // This ensures fees are available when applyGridDivergenceCorrections updates orders on-chain
+    // Use 3x multiplier for buffer to ensure sufficient funds for multiple rotation cycles
+    let btsFeesReservation = 0;
+    if (btsSide === side && activeOrders) {
+        try {
+            const targetBuy = Math.max(0, Number.isFinite(Number(activeOrders?.buy)) ? Number(activeOrders.buy) : 1);
+            const targetSell = Math.max(0, Number.isFinite(Number(activeOrders?.sell)) ? Number(activeOrders.sell) : 1);
+            const totalTargetOrders = targetBuy + targetSell;
+            const FEE_MULTIPLIER = 3; // 3x buffer for rotation cycles
+
+            if (totalTargetOrders > 0) {
+                const btsFeeData = getAssetFees('BTS', 1);
+                btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_MULTIPLIER;
+            }
+        } catch (err) {
+            // If fee calculation fails, proceed without this reservation
+            btsFeesReservation = 0;
+        }
+    }
+
+    return Math.max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed - btsFeesReservation);
 }
 
 /**
