@@ -932,8 +932,10 @@ class Grid {
         }
 
         const { ORDER_STATES } = require('../constants'); // Moved up for use in filtering
-        // Separate orders by type and filter out partial orders from the comparison calculation
-        // This ensures divergence metric reflects the true grid structure, not temporary fill states
+        // Separate orders by type and filter out PARTIAL and SPREAD orders from the comparison calculation
+        // PARTIAL: temporary states (remainder being filled) - excluded because they're transient
+        // SPREAD: placeholders with size 0 (filled orders) - excluded because they don't represent active grid
+        // This ensures divergence metric reflects the true active grid structure (ACTIVE orders only)
         const calculatedBuys = calculatedGrid.filter(o => o && o.type === ORDER_TYPES.BUY && o.state !== ORDER_STATES.PARTIAL);
         const calculatedSells = calculatedGrid.filter(o => o && o.type === ORDER_TYPES.SELL && o.state !== ORDER_STATES.PARTIAL);
         const persistedBuys = persistedGrid.filter(o => o && o.type === ORDER_TYPES.BUY && o.state !== ORDER_STATES.PARTIAL);
