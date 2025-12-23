@@ -242,12 +242,16 @@ class OrderManager {
 
     /**
      * Central calculation for available funds (pure calculation, no side effects).
-     * Formula: available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed)
+     * Formula: available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed - 4xReservation)
+     *
+     * The 4x fee reservation ensures sufficient BTS is reserved for:
+     * - 1x: current operation fees
+     * - 3x: buffer for multiple rotation cycles
      *
      * NOTE: This is a PURE calculation function - it does NOT modify any state.
      */
     calculateAvailableFunds(side) {
-        return calculateAvailableFundsValue(side, this.accountTotals, this.funds, this.config.assetA, this.config.assetB);
+        return calculateAvailableFundsValue(side, this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders);
     }
 
     /**
@@ -436,7 +440,7 @@ class OrderManager {
         this.funds.total.grid = { buy: gridBuy + virtuelBuy, sell: gridSell + virtuelSell };
 
         // Set available using centralized calculation function
-        // Formula: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed)
+        // Formula: available = max(0, chainFree - virtuel - cacheFunds - btsFeesOwed - 4xReservation)
         this.funds.available.buy = this.calculateAvailableFunds('buy');
         this.funds.available.sell = this.calculateAvailableFunds('sell');
     }

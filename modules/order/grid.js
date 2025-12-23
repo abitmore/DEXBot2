@@ -353,7 +353,8 @@ class Grid {
         const sizingSnap = Grid._getFundSnapshot(manager);
         Grid._logSizingInput(manager, sizingSnap);
 
-        // Deduct BTS createFee for orders that will be created during grid initialization
+        // Deduct BTS fees for orders: 2x multiplier accounts for both creation and rotation buffer
+        // This keeps grid initialization in sync with calculateAvailableFundsValue fee reservation
         // Only if BTS is in the trading pair
         let btsFeesForCreation = 0;
         const assetA = manager.config.assetA;
@@ -366,21 +367,24 @@ class Grid {
                 const targetBuy = Math.max(0, Number.isFinite(Number(manager.config.activeOrders?.buy)) ? Number(manager.config.activeOrders.buy) : 1);
                 const targetSell = Math.max(0, Number.isFinite(Number(manager.config.activeOrders?.sell)) ? Number(manager.config.activeOrders.sell) : 1);
 
-                // Ignore open orders at startup - calculate fees for all target orders as if we're creating them from scratch
-                // This ensures we reserve enough BTS for order creation regardless of current state
+                // Calculate fees for all target orders with 4x multiplier:
+                // 1x for initial order creation
+                // 3x as buffer for potential future rotations/updates
+                // This ensures grid initialization reserves sufficient BTS for multiple rotation cycles
                 const totalOrdersToCreate = targetBuy + targetSell;
+                const FEE_MULTIPLIER = 4; // Creation (1x) + Rotation buffer (3x)
 
                 if (totalOrdersToCreate > 0) {
                     const btsFeeData = getAssetFees('BTS', 1); // Amount doesn't matter for create fee
-                    btsFeesForCreation = btsFeeData.createFee * totalOrdersToCreate;
+                    btsFeesForCreation = btsFeeData.createFee * totalOrdersToCreate * FEE_MULTIPLIER;
                     manager.logger.log(
-                        `BTS fee reservation: ${totalOrdersToCreate} orders to create (buy=${targetBuy}, sell=${targetSell}) = ${btsFeesForCreation.toFixed(8)} BTS`,
+                        `BTS fee reservation: ${totalOrdersToCreate} orders × ${FEE_MULTIPLIER}x (creation + rotation buffer) (buy=${targetBuy}, sell=${targetSell}) = ${btsFeesForCreation.toFixed(8)} BTS`,
                         'info'
                     );
                 }
             } catch (err) {
                 manager.logger?.log?.(
-                    `Warning: Could not calculate BTS creation fees: ${err.message}`,
+                    `Warning: Could not calculate BTS fees: ${err.message}`,
                     'warn'
                 );
             }
