@@ -776,12 +776,24 @@ class OrderManager {
 
                     // Create copy for update
                     const updatedOrder = { ...gridOrder };
-                    applyChainSizeToGridOrder(this, updatedOrder, newSize);
 
-                    // Transition to PARTIAL state since it was partially filled
-                    if (updatedOrder.state === ORDER_STATES.ACTIVE) {
-                        updatedOrder.state = ORDER_STATES.PARTIAL;
+                    if (newInt > 0) {
+                        // Partially filled - has remainder, transition to PARTIAL state
+                        applyChainSizeToGridOrder(this, updatedOrder, newSize);
+                        if (updatedOrder.state === ORDER_STATES.ACTIVE) {
+                            updatedOrder.state = ORDER_STATES.PARTIAL;
+                        }
+                        this.logger.log(`Order ${gridOrder.id}: transitioned to PARTIAL with remaining size ${newSize.toFixed(8)}`, 'debug');
+                    } else {
+                        // Fully filled (newSize = 0) - convert to SPREAD placeholder
+                        updatedOrder.type = ORDER_TYPES.SPREAD;
+                        updatedOrder.state = ORDER_STATES.VIRTUAL;
+                        updatedOrder.size = 0;
+                        updatedOrder.orderId = null;
+                        this.logger.log(`Order ${gridOrder.id}: fully filled, converted to SPREAD placeholder`, 'debug');
+                        filledOrders.push({ ...gridOrder });
                     }
+
                     this._updateOrder(updatedOrder);
                     updatedOrders.push(updatedOrder);
                 } else {
