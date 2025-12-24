@@ -1308,20 +1308,8 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
     const { ORDER_STATES } = require('../constants');
     const Grid = require('./grid');
 
-    // Fetch fresh blockchain data and recalculate grid for marked sides
-    // Note: fromBlockchainTimer=false because this is triggered by divergence detection, not the 4-hour timer
-    try {
-        const buyUpdated = manager._gridSidesUpdated.includes('buy');
-        const sellUpdated = manager._gridSidesUpdated.includes('sell');
-        const orderType = Grid._getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated);
-
-        await Grid.updateGridFromBlockchainSnapshot(manager, orderType, false);
-
-        manager.logger?.log?.(`Updated grid from blockchain snapshot for sides: ${manager._gridSidesUpdated.join(', ')}`, 'debug');
-    } catch (err) {
-        manager?.logger?.log?.(`Warning: Could not update grid from blockchain snapshot: ${err.message}`, 'warn');
-        // Continue anyway - we'll apply corrections with current in-memory grid
-    }
+    // NOTE: Grid recalculation is already done by the caller (Grid.updateGridFromBlockchainSnapshot)
+    // This function only applies the corrections on-chain, no need to recalculate again
 
     // Build array of orders needing correction from sides marked by grid comparisons
     for (const orderType of manager._gridSidesUpdated) {
