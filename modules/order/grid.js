@@ -644,7 +644,7 @@ class Grid {
         for (const s of sides) {
             if (s.grid <= 0) continue;
 
-            // Include available funds in the regeneration check so newly added funds 
+            // Include available funds in the regeneration check so newly added funds
             // trigger a grid resize during the next fill/comparison cycle.
             const avail = manager.calculateAvailableFunds(s.name);
             const totalPending = s.cache + avail;
@@ -652,13 +652,10 @@ class Grid {
 
             if (ratio >= threshold) {
                 manager.logger?.log(
-                    `Unallocated funds ratio for ${s.name} side (cache=${s.cache.toFixed(8)}, available=${avail.toFixed(8)}): ${ratio.toFixed(2)}% >= ${threshold}% threshold. Updating ${s.name} order sizes.`,
+                    `Unallocated funds ratio for ${s.name} side (cache=${s.cache.toFixed(8)}, available=${avail.toFixed(8)}): ${ratio.toFixed(2)}% >= ${threshold}% threshold. Marking for grid update.`,
                     'info'
                 );
-                Grid.updateGridOrderSizesForSide(manager, s.orderType, cacheFunds);
-                // Persist the updated cacheFunds (which now includes the surplus)
-                Grid._persistCacheFunds(manager, s.name);
-                // Track which sides had sizes updated for later correction on-chain
+                // Mark which sides need grid update - caller will handle actual update via updateGridFromBlockchainSnapshot()
                 if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
                 manager._gridSidesUpdated.push(s.orderType);
                 if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
@@ -674,34 +671,39 @@ class Grid {
     }
 
     /**
-     * Update order sizes for a specific side (buy or sell) based on cache and grid allocation.
-     * Helper for checkAndUpdateGridIfNeeded to update only one side at a time.
+     * Recalculate grid order sizes for a side using fresh blockchain totals.
+     * Used during divergence/threshold recalculation - NOT for initial grid creation.
+     *
+     * Applies botFunds allocation constraints (same as initial grid creation).
+     * This respects percentage-based botFunds config when multiple bots share an account.
+     * Uses allocated funds (respecting botFunds percentage) - not cache+grid+available approach.
      *
      * @param {Object} manager - OrderManager instance
      * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
-     * @param {Object} cacheFunds - Cached funds { buy, sell }
      * @returns {void} Updates orders in-place
+     * @private
      */
-    static updateGridOrderSizesForSide(manager, orderType, cacheFunds = { buy: 0, sell: 0 }) {
-        if (!manager) throw new Error('updateGridOrderSizesForSide requires a manager instance');
+    static _recalculateGridOrderSizesFromBlockchain(manager, orderType) {
+        if (!manager) throw new Error('_recalculateGridOrderSizesFromBlockchain requires manager');
 
         const config = manager.config || {};
         const isBuy = orderType === ORDER_TYPES.BUY;
         const sideName = isBuy ? 'buy' : 'sell';
 
-        // Get funds components
-        const cacheFundsValue = isBuy ? Number(cacheFunds?.buy || 0) : Number(cacheFunds?.sell || 0);
-        const gridValue = isBuy
-            ? manager.funds?.total?.grid?.buy || 0
-            : manager.funds?.total?.grid?.sell || 0;
-        const availableValue = manager.calculateAvailableFunds(isBuy ? 'buy' : 'sell');
+        // Apply botFunds allocation constraints (same as initial grid creation)
+        // This respects percentage-based botFunds config when multiple bots share an account
+        if (manager.applyBotFundsAllocation && typeof manager.applyBotFundsAllocation === 'function') {
+            manager.applyBotFundsAllocation();
+        }
 
-        // Total Input = Cache + Grid + Available
-        // We use ALL available funds to resize the grid, attempting to "reset available to 0".
-        const totalInput = cacheFundsValue + gridValue + availableValue;
+        // Get allocated funds for this side (respects botFunds percentage if configured)
+        // Falls back to blockchain total if no botFunds allocation is set
+        const allocatedFunds = isBuy
+            ? manager.funds?.allocated?.buy || manager.accountTotals?.buy || 0
+            : manager.funds?.allocated?.sell || manager.accountTotals?.sell || 0;
 
         manager.logger?.log(
-            `Updating ${sideName} side order sizes: cache=${cacheFundsValue.toFixed(8)} + grid=${gridValue.toFixed(8)} + available=${availableValue.toFixed(8)} = ${totalInput.toFixed(8)}`,
+            `Recalculating ${sideName} side order sizes from allocated funds: ${allocatedFunds.toFixed(8)}`,
             'info'
         );
 
@@ -712,18 +714,17 @@ class Grid {
         const orders = Array.from(manager.orders.values()).filter(o => o.type === orderType);
 
         if (orders.length === 0) {
-            manager.logger?.log(`No ${sideName} orders found to update`, 'warn');
+            manager.logger?.log(`No ${sideName} orders found to recalculate`, 'warn');
             return;
         }
 
-        // Calculate new sizes for this side only
+        // Calculate new sizes using blockchain total only
         const precision = isBuy ? manager.assets?.assetB?.precision : manager.assets?.assetA?.precision;
 
-        // Note: we pass 0 for 'availableFunds' arg to calculateRotationOrderSizes because we've already
-        // summed it into our totalInput (passed as the first arg).
+        // Use allocated funds directly for sizing (respects botFunds percentage if configured)
         const newSizes = Grid.calculateRotationOrderSizes(
-            totalInput, // Use total input as the "fund context" for sizing
-            0,          // Treat gridValue as 0 here because totalInput covers everything
+            allocatedFunds,   // Use allocated funds as sole fund source
+            0,                // availableFunds = 0 (already in allocatedFunds)
             orders.length,
             orderType,
             config,
@@ -736,27 +737,22 @@ class Grid {
             const minSize = Math.min(...newSizes);
             const maxSize = Math.max(...newSizes);
             const avgSize = newSizes.reduce((a, b) => a + b, 0) / newSizes.length;
-            manager.logger?.log?.(`DEBUG Calculated Sizes (${sideName}): count=${newSizes.length}, total=${totalInput.toFixed(8)}, min=${minSize.toFixed(8)}, max=${maxSize.toFixed(8)}, avg=${avgSize.toFixed(8)}`, 'debug');
+            manager.logger?.log?.(`DEBUG Blockchain Recalc Sizes (${sideName}): count=${newSizes.length}, total=${allocatedFunds.toFixed(8)}, min=${minSize.toFixed(8)}, max=${maxSize.toFixed(8)}, avg=${avgSize.toFixed(8)}`, 'debug');
         } catch (e) { manager.logger?.log?.(`Warning: failed to log calculated sizes: ${e.message}`, 'warn'); }
 
         // Update orders with new sizes
         Grid._updateOrdersForSide(manager, orderType, newSizes, orders);
 
-        // NOTE: `pendingProceeds` handling removed; available funds are consumed by sizing.
-
         // Recalculate funds after updating this side
-        // This will update 'available', which should now be near 0 (minus dust)
         manager.recalculateFunds();
 
-        manager.logger?.log(`${sideName} side order sizes updated`, 'info');
+        manager.logger?.log(`${sideName} side order sizes recalculated from allocated funds`, 'info');
 
-        // Calculate surplus (totalInput - totalAllocated) to be recycled into cacheFunds
-        // Ensure we compare apples to apples using blockchain integer precision
+        // Calculate surplus and recycle to cacheFunds
         if (precision !== undefined && precision !== null) {
-            const totalInputInt = floatToBlockchainInt(totalInput, precision);
+            const totalInputInt = floatToBlockchainInt(allocatedFunds, precision);
             let totalAllocatedInt = 0;
 
-            // Sum up the actual allocated sizes (quantized)
             newSizes.forEach(size => {
                 totalAllocatedInt += floatToBlockchainInt(size, precision);
             });
@@ -766,20 +762,84 @@ class Grid {
 
             try {
                 manager.logger?.log?.(
-                    `DEBUG Side Surplus (${sideName}): totalInput=${totalInput.toFixed(8)}, allocated=${blockchainToFloat(totalAllocatedInt, precision).toFixed(8)}, surplus=${surplus.toFixed(8)}`,
+                    `DEBUG Blockchain Recalc Surplus (${sideName}): total=${allocatedFunds.toFixed(8)}, allocated=${blockchainToFloat(totalAllocatedInt, precision).toFixed(8)}, surplus=${surplus.toFixed(8)}`,
                     'debug'
                 );
-            } catch (e) { manager.logger?.log?.(`Warning: failed to log side surplus: ${e.message}`, 'warn'); }
+            } catch (e) { manager.logger?.log?.(`Warning: failed to log surplus: ${e.message}`, 'warn'); }
 
             // Add surplus back to cacheFunds
             if (!manager.funds.cacheFunds) manager.funds.cacheFunds = { buy: 0, sell: 0 };
             manager.funds.cacheFunds[sideName] = surplus;
 
             manager.logger?.log(
-                `DEBUG Recalc Surplus: input=${totalInput.toFixed(8)}, allocated=${blockchainToFloat(totalAllocatedInt, precision).toFixed(8)}, surplus=${surplus.toFixed(8)} added to cache`,
+                `DEBUG Blockchain Recalc: surplus=${surplus.toFixed(8)} added to cache`,
                 'debug'
             );
         }
+    }
+
+    /**
+     * Recalculate grid order sizes when threshold or divergence is detected.
+     * Main entry point for grid updates triggered by market conditions.
+     *
+     * Keeps CURRENT price and spread structure, only recalculates order SIZES
+     * using allocated funds (respecting botFunds percentage configuration).
+     * This maintains bot configuration consistency while adapting to fund changes.
+     *
+     * Data sources for sizing:
+     * - Fresh blockchain totals (from manager.accountTotals after fetchAccountTotals)
+     * - Allocated funds with botFunds percentage applied (same as initial grid creation)
+     * - NOT cache+grid+available (that's only for initial grid creation)
+     *
+     * @param {Object} manager - OrderManager instance
+     * @param {string} orderType - ORDER_TYPES.BUY, ORDER_TYPES.SELL, or 'both'
+     * @param {boolean} fromBlockchainTimer - If true, blockchain data already fresh from 4-hour timer.
+     *                                        If false, called from external trigger (needs refetch).
+     * @returns {Promise<void>}
+     */
+    static async updateGridFromBlockchainSnapshot(manager, orderType = 'both', fromBlockchainTimer = false) {
+        if (!manager) throw new Error('updateGridFromBlockchainSnapshot requires manager');
+
+        try {
+            // If NOT from blockchain timer, fetch fresh blockchain data first
+            if (!fromBlockchainTimer) {
+                // Fetch fresh blockchain account values
+                // This updates manager.accountTotals with current on-chain balances
+                const accountId = manager.config?.accountId;
+                if (accountId) {
+                    await manager.fetchAccountTotals(accountId);
+                }
+            }
+            // Otherwise blockchain data is already fresh from 4-hour timer
+
+            // Recalculate order sizes using BLOCKCHAIN TOTALS ONLY (not cache+grid+available)
+            // (keeps existing market price and bounds, only adjusts sizes for fund changes)
+            if (orderType === ORDER_TYPES.BUY || orderType === 'both') {
+                Grid._recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.BUY);
+            }
+            if (orderType === ORDER_TYPES.SELL || orderType === 'both') {
+                Grid._recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.SELL);
+            }
+        } catch (err) {
+            manager.logger?.log?.(
+                `Error recalculating grid from blockchain snapshot: ${err.message}`,
+                'error'
+            );
+            throw err;
+        }
+    }
+
+    /**
+     * Convert buy/sell update flags to orderType string.
+     * Helper to reduce code repetition when determining which sides need updates.
+     *
+     * @param {boolean} buyUpdated - Whether buy side was updated
+     * @param {boolean} sellUpdated - Whether sell side was updated
+     * @returns {string} 'both', 'buy', or 'sell'
+     * @private
+     */
+    static _getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
+        return (buyUpdated && sellUpdated) ? 'both' : (buyUpdated ? 'buy' : 'sell');
     }
 
     /**
@@ -1014,52 +1074,48 @@ class Grid {
         let buyUpdated = false;
         let sellUpdated = false;
 
-        // Trigger auto-update for BUY side if RMS metric exceeds threshold
+        // Mark BUY side for update if RMS metric exceeds threshold
         if (manager && buyMetric > (GRID_COMPARISON.RMS_PERCENTAGE / 100)) {
             const metricPercent = buyMetric * 100;  // RMS is 0-1 scale, convert to percentage (0-100)
             const threshold = GRID_COMPARISON.RMS_PERCENTAGE;
             manager.logger?.log?.(
-                `Buy side RMS divergence ${metricPercent.toFixed(2)}% exceeds threshold ${threshold}%. Triggering updateGridOrderSizesForSide...`,
+                `Buy side RMS divergence ${metricPercent.toFixed(2)}% exceeds threshold ${threshold}%. Marking for grid update.`,
                 'info'
             );
 
-            const funds = cacheFunds || { buy: 0, sell: 0 };
-            Grid.updateGridOrderSizesForSide(manager, ORDER_TYPES.BUY, funds);
-            buyUpdated = true;
-
-            // Track which sides were updated so rotation can apply new sizes on-chain
+            // Track which sides were updated so caller can apply grid updates
             if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
             if (!manager._gridSidesUpdated.includes(ORDER_TYPES.BUY)) {
                 manager._gridSidesUpdated.push(ORDER_TYPES.BUY);
             }
 
+            buyUpdated = true;
+
             manager.logger?.log?.(
-                `Buy side order sizes updated due to high divergence metric (${buyMetric.toFixed(6)})`,
+                `Buy side marked for grid update due to high divergence metric (${buyMetric.toFixed(6)})`,
                 'info'
             );
         }
 
-        // Trigger auto-update for SELL side if RMS metric exceeds threshold
+        // Mark SELL side for update if RMS metric exceeds threshold
         if (manager && sellMetric > (GRID_COMPARISON.RMS_PERCENTAGE / 100)) {
             const metricPercent = sellMetric * 100;  // RMS is 0-1 scale, convert to percentage (0-100)
             const threshold = GRID_COMPARISON.RMS_PERCENTAGE;
             manager.logger?.log?.(
-                `Sell side RMS divergence ${metricPercent.toFixed(2)}% exceeds threshold ${threshold}%. Triggering updateGridOrderSizesForSide...`,
+                `Sell side RMS divergence ${metricPercent.toFixed(2)}% exceeds threshold ${threshold}%. Marking for grid update.`,
                 'info'
             );
 
-            const funds = cacheFunds || { buy: 0, sell: 0 };
-            Grid.updateGridOrderSizesForSide(manager, ORDER_TYPES.SELL, funds);
-            sellUpdated = true;
-
-            // Track which sides were updated so rotation can apply new sizes on-chain
+            // Track which sides were updated so caller can apply grid updates
             if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
             if (!manager._gridSidesUpdated.includes(ORDER_TYPES.SELL)) {
                 manager._gridSidesUpdated.push(ORDER_TYPES.SELL);
             }
 
+            sellUpdated = true;
+
             manager.logger?.log?.(
-                `Sell side order sizes updated due to high divergence metric (${sellMetric.toFixed(6)})`,
+                `Sell side marked for grid update due to high divergence metric (${sellMetric.toFixed(6)})`,
                 'info'
             );
         }

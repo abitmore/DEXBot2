@@ -1036,7 +1036,7 @@ class OrderManager {
             const updatedOrder = { ...matchedGridOrder };
 
             // Update state to PARTIAL first to ensure correct index updates
-            // (applyChainSizeToGridOrder calls _updateOrder internally)
+            // applyChainSizeToGridOrder will call _updateOrder internally to sync to orders Map
             updatedOrder.state = ORDER_STATES.PARTIAL;
 
             applyChainSizeToGridOrder(this, updatedOrder, newSize);
@@ -1047,7 +1047,6 @@ class OrderManager {
                 updatedOrder.orderId = orderId;
             }
 
-            this._updateOrder(updatedOrder);
             updatedOrders.push(updatedOrder);
             partialFill = true;
         }

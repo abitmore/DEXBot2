@@ -810,6 +810,12 @@ class DEXBot {
 
                         if (comparisonResult.buy.updated || comparisonResult.sell.updated) {
                             this._log(`Grid divergence detected at startup: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`);
+
+                            // Update grid with blockchain snapshot already fresh from initialization
+                            // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
+                            const orderType = Grid._getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
+                            await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+
                             persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
 
                             // Apply grid corrections on-chain immediately
@@ -958,7 +964,12 @@ class DEXBot {
                     this.manager && this.manager.orders && this.manager.orders.size > 0) {
                     const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
                     if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                        this._log(`Grid updated from periodic blockchain fetch (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+                        this._log(`Cache ratio threshold triggered grid update (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+
+                        // Update grid with fresh blockchain snapshot from 4-hour timer
+                        const orderType = Grid._getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
+                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+
                         persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
 
                         // Apply grid corrections on-chain to use new funds
