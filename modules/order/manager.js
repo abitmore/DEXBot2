@@ -1709,10 +1709,50 @@ class OrderManager {
 
                 this.logger.log(`Active BUY orders (${currentActiveBuys}) below target (${targetBuys}). Creating ${buyOrdersToCreate} new orders instead of rotating.`, 'info');
 
-                const newBuyOrders = await this.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.BUY, buyOrdersToCreate);
-                ordersToPlace.push(...newBuyOrders);
+                // First, use vacated partial slots (they have proper positions for new orders)
+                const vacatedBuySlots = partialMoves
+                    .filter(m => m.partialOrder.type === ORDER_TYPES.BUY)
+                    .map(m => ({ id: m.vacatedGridId, price: m.vacatedPrice }));
 
-                this.logger.log(`Prepared ${newBuyOrders.length} new BUY orders to rebuild grid coverage`, 'debug');
+                let ordersCreated = 0;
+                for (const slot of vacatedBuySlots) {
+                    if (ordersCreated >= buyOrdersToCreate) break;
+                    const gridOrder = this.orders.get(slot.id);
+                    if (!gridOrder) continue;
+
+                    // Size using cacheFunds (proceeds from fills)
+                    const buyCache = this.funds.cacheFunds?.buy || 0;
+                    const remainingOrders = buyOrdersToCreate - ordersCreated;
+                    const sizePerOrder = buyCache / remainingOrders;
+                    if (sizePerOrder <= 0) {
+                        this.logger.log(`No cacheFunds available for vacated slot ${slot.id}`, 'warn');
+                        continue;
+                    }
+
+                    // Quantize to blockchain precision
+                    const precision = this.assets?.assetB?.precision || 8;
+                    const { floatToBlockchainInt, blockchainToFloat } = require('./utils');
+                    const quantizedSize = blockchainToFloat(floatToBlockchainInt(sizePerOrder, precision), precision);
+
+                    const newOrder = {
+                        ...gridOrder,
+                        type: ORDER_TYPES.BUY,
+                        size: quantizedSize,
+                        price: slot.price
+                    };
+                    ordersToPlace.push(newOrder);
+                    ordersCreated++;
+                    this.logger.log(`Using vacated partial slot ${slot.id} for new BUY at price ${slot.price.toFixed(4)}, size ${quantizedSize.toFixed(8)}`, 'info');
+                }
+
+                // Fall back to activating virtuals for any remaining orders
+                if (ordersCreated < buyOrdersToCreate) {
+                    const remaining = buyOrdersToCreate - ordersCreated;
+                    const newBuyOrders = await this.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.BUY, remaining);
+                    ordersToPlace.push(...newBuyOrders);
+                }
+
+                this.logger.log(`Prepared ${ordersCreated} new BUY orders (${vacatedBuySlots.length} from vacated slots) to rebuild grid coverage`, 'debug');
             } else {
                 // Current BUY count >= target: proceed with normal rotation
                 const rotatedBuys = await this.prepareFurthestOrdersForRotation(
@@ -1773,10 +1813,50 @@ class OrderManager {
 
                 this.logger.log(`Active SELL orders (${currentActiveSells}) below target (${targetSells}). Creating ${sellOrdersToCreate} new orders instead of rotating.`, 'info');
 
-                const newSellOrders = await this.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.SELL, sellOrdersToCreate);
-                ordersToPlace.push(...newSellOrders);
+                // First, use vacated partial slots (they have proper positions for new orders)
+                const vacatedSellSlots = partialMoves
+                    .filter(m => m.partialOrder.type === ORDER_TYPES.SELL)
+                    .map(m => ({ id: m.vacatedGridId, price: m.vacatedPrice }));
 
-                this.logger.log(`Prepared ${newSellOrders.length} new SELL orders to rebuild grid coverage`, 'debug');
+                let ordersCreated = 0;
+                for (const slot of vacatedSellSlots) {
+                    if (ordersCreated >= sellOrdersToCreate) break;
+                    const gridOrder = this.orders.get(slot.id);
+                    if (!gridOrder) continue;
+
+                    // Size using cacheFunds (proceeds from fills)
+                    const sellCache = this.funds.cacheFunds?.sell || 0;
+                    const remainingOrders = sellOrdersToCreate - ordersCreated;
+                    const sizePerOrder = sellCache / remainingOrders;
+                    if (sizePerOrder <= 0) {
+                        this.logger.log(`No cacheFunds available for vacated slot ${slot.id}`, 'warn');
+                        continue;
+                    }
+
+                    // Quantize to blockchain precision
+                    const precision = this.assets?.assetA?.precision || 8;
+                    const { floatToBlockchainInt, blockchainToFloat } = require('./utils');
+                    const quantizedSize = blockchainToFloat(floatToBlockchainInt(sizePerOrder, precision), precision);
+
+                    const newOrder = {
+                        ...gridOrder,
+                        type: ORDER_TYPES.SELL,
+                        size: quantizedSize,
+                        price: slot.price
+                    };
+                    ordersToPlace.push(newOrder);
+                    ordersCreated++;
+                    this.logger.log(`Using vacated partial slot ${slot.id} for new SELL at price ${slot.price.toFixed(4)}, size ${quantizedSize.toFixed(8)}`, 'info');
+                }
+
+                // Fall back to activating virtuals for any remaining orders
+                if (ordersCreated < sellOrdersToCreate) {
+                    const remaining = sellOrdersToCreate - ordersCreated;
+                    const newSellOrders = await this.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.SELL, remaining);
+                    ordersToPlace.push(...newSellOrders);
+                }
+
+                this.logger.log(`Prepared ${ordersCreated} new SELL orders (${vacatedSellSlots.length} from vacated slots) to rebuild grid coverage`, 'debug');
             } else {
                 // Current SELL count >= target: proceed with normal rotation
                 const rotatedSells = await this.prepareFurthestOrdersForRotation(
@@ -2364,16 +2444,22 @@ class OrderManager {
     completePartialOrderMove(moveInfo) {
         const { partialOrder, newGridId, newPrice } = moveInfo;
 
-        // Old slot becomes virtual again
+        // Old slot becomes virtual again - but only if it wasn't already claimed by a new order
         const oldGridOrder = this.orders.get(partialOrder.id);
         if (oldGridOrder) {
-            const updatedOld = {
-                ...oldGridOrder,
-                state: ORDER_STATES.VIRTUAL,
-                orderId: null,
-                size: 0
-            };
-            this._updateOrder(updatedOld);
+            // If the slot already has a different orderId (new order placed), don't overwrite it
+            if (oldGridOrder.orderId && oldGridOrder.orderId !== partialOrder.orderId) {
+                this.logger.log(`Vacated slot ${partialOrder.id} already claimed by order ${oldGridOrder.orderId}, skipping reset`, 'debug');
+            } else {
+                // Preserve the original size - it will be recalculated when activated
+                const updatedOld = {
+                    ...oldGridOrder,
+                    state: ORDER_STATES.VIRTUAL,
+                    orderId: null
+                    // Don't set size: 0 - preserve original size for future activation sizing
+                };
+                this._updateOrder(updatedOld);
+            }
         }
 
         // New slot becomes PARTIAL with the moved order (still partial filled)
