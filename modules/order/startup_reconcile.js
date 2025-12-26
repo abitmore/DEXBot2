@@ -119,11 +119,12 @@ function _findLargestOrder(unmatchedOrders, updateCount) {
 }
 
 /**
- * Reduce the largest order to size 1 to free up maximum funds.
- * Returns the orderId, index, and original size for restoration later.
+ * Cancel the largest unmatched order to free up maximum funds.
+ * This is more efficient than reducing to size 1 and then updating twice.
+ * Returns the grid slot index and grid order that needs to be filled.
  * @private
  */
-async function _reduceMaxOrderToMinimal({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun }) {
+async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun }) {
     if (dryRun) return null;
     if (!Array.isArray(unmatchedOrders) || unmatchedOrders.length === 0) return null;
 
@@ -138,22 +139,20 @@ async function _reduceMaxOrderToMinimal({ chainOrders, account, privateKey, mana
     const orderId = largestOrder.id;
 
     logger?.log?.(
-        `Grid edge detected: reducing largest order ${orderId} (size ${originalSize}) to size 1 to free up funds`,
+        `Grid edge detected: cancelling largest order ${orderId} (size ${originalSize}) to free up funds`,
         'info'
     );
 
     try {
-        // Update only the largest order to minimal size 1
-        await chainOrders.updateOrder(account, privateKey, orderId, {
-            amountToSell: 1,
-            orderType,
-        });
-        logger?.log?.(`Reduced largest order ${orderId} to size 1`, 'info');
+        // Cancel the largest order on blockchain
+        await chainOrders.cancelOrder(account, privateKey, orderId);
+        logger?.log?.(`Cancelled largest order ${orderId}`, 'info');
 
-        // Return info needed to restore this order later
-        return { orderId, index: largestIndex, originalSize, orderType };
+        // Mark for removal from unmatched list (handled by caller)
+        // Return info needed to create this order fresh later
+        return { index: largestIndex, orderType };
     } catch (err) {
-        logger?.log?.(`Warning: Could not reduce largest order ${orderId}: ${err.message}`, 'warn');
+        logger?.log?.(`Warning: Could not cancel largest order ${orderId}: ${err.message}`, 'warn');
         return null;
     }
 }
@@ -350,31 +349,30 @@ async function reconcileStartupOrders({
         });
 
     const sellUpdates = Math.min(sortedUnmatchedSells.length, desiredSellSlots.length);
-    let reducedSellOrder = null;
+    let cancelledSellIndex = null;
 
-    // PHASE 1: Only reduce if grid edge is fully active (all balance committed to edge orders)
+    // PHASE 1: Cancel largest order if grid edge is fully active (frees maximum funds)
     if (sellUpdates > 0 && _isGridEdgeFullyActive(manager, ORDER_TYPES.SELL, sellUpdates)) {
-        logger && logger.log && logger.log(`Startup: SELL grid edge is fully active, applying two-phase update strategy`, 'info');
-        reducedSellOrder = await _reduceMaxOrderToMinimal({
+        logger && logger.log && logger.log(`Startup: SELL grid edge is fully active, cancelling largest order to free funds`, 'info');
+        const cancelInfo = await _cancelLargestOrder({
             chainOrders, account, privateKey, manager,
             unmatchedOrders: sortedUnmatchedSells,
             updateCount: sellUpdates,
             orderType: ORDER_TYPES.SELL,
             dryRun
         });
+        if (cancelInfo) {
+            cancelledSellIndex = cancelInfo.index;
+            // Don't splice - keep index alignment with desiredSellSlots
+        }
     }
 
-    // PHASE 2: Update to target sizes (skip if order was reduced - it will be restored in Phase 3)
+    // PHASE 2: Update remaining unmatched orders to their target sizes
     for (let i = 0; i < sellUpdates; i++) {
-        // Skip this order if it was reduced in Phase 1 (will be restored in Phase 3)
-        if (reducedSellOrder && i === reducedSellOrder.index) {
-            logger && logger.log && logger.log(
-                `Startup: Skipping Phase 2 update for reduced SELL ${reducedSellOrder.orderId} (will be restored in Phase 3)`,
-                'debug'
-            );
+        // Skip the cancelled order's slot - will be handled in Phase 3
+        if (cancelledSellIndex !== null && i === cancelledSellIndex) {
             continue;
         }
-
         const chainOrder = sortedUnmatchedSells[i];
         const gridOrder = desiredSellSlots[i];
         logger && logger.log && logger.log(
@@ -388,24 +386,23 @@ async function reconcileStartupOrders({
         }
     }
 
-    // PHASE 3: Restore the reduced order to its target size
-    if (reducedSellOrder && !dryRun) {
-        const targetGridOrder = desiredSellSlots[reducedSellOrder.index];
+    // PHASE 3: Create new order for the grid slot that had the cancelled order
+    if (cancelledSellIndex !== null && !dryRun) {
+        const targetGridOrder = desiredSellSlots[cancelledSellIndex];
         if (targetGridOrder) {
             logger && logger.log && logger.log(
-                `Startup: Restoring reduced SELL ${reducedSellOrder.orderId} to target size ${targetGridOrder.size.toFixed(8)}`,
+                `Startup: Creating new SELL for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
                 'info'
             );
             try {
-                await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: reducedSellOrder.orderId, gridOrder: targetGridOrder, dryRun });
+                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
             } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to restore SELL ${reducedSellOrder.orderId}: ${err.message}`, 'error');
+                logger && logger.log && logger.log(`Startup: Failed to create SELL for cancelled slot: ${err.message}`, 'error');
             }
         }
     }
 
-    // Remove processed orders from the unmatched list (use sorted array since that's what we processed)
-    // This ensures we don't try to cancel orders we just updated
+    // Remove processed orders from the unmatched list
     unmatchedSells = sortedUnmatchedSells.slice(sellUpdates);
 
     const chainSellCount = chainSells.length;
@@ -476,31 +473,30 @@ async function reconcileStartupOrders({
         });
 
     const buyUpdates = Math.min(sortedUnmatchedBuys.length, desiredBuySlots.length);
-    let reducedBuyOrder = null;
+    let cancelledBuyIndex = null;
 
-    // PHASE 1: Only reduce if grid edge is fully active (all balance committed to edge orders)
+    // PHASE 1: Cancel largest order if grid edge is fully active (frees maximum funds)
     if (buyUpdates > 0 && _isGridEdgeFullyActive(manager, ORDER_TYPES.BUY, buyUpdates)) {
-        logger && logger.log && logger.log(`Startup: BUY grid edge is fully active, applying two-phase update strategy`, 'info');
-        reducedBuyOrder = await _reduceMaxOrderToMinimal({
+        logger && logger.log && logger.log(`Startup: BUY grid edge is fully active, cancelling largest order to free funds`, 'info');
+        const cancelInfo = await _cancelLargestOrder({
             chainOrders, account, privateKey, manager,
             unmatchedOrders: sortedUnmatchedBuys,
             updateCount: buyUpdates,
             orderType: ORDER_TYPES.BUY,
             dryRun
         });
+        if (cancelInfo) {
+            cancelledBuyIndex = cancelInfo.index;
+            // Don't splice - keep index alignment with desiredBuySlots
+        }
     }
 
-    // PHASE 2: Update to target sizes (skip if order was reduced - it will be restored in Phase 3)
+    // PHASE 2: Update remaining unmatched orders to their target sizes
     for (let i = 0; i < buyUpdates; i++) {
-        // Skip this order if it was reduced in Phase 1 (will be restored in Phase 3)
-        if (reducedBuyOrder && i === reducedBuyOrder.index) {
-            logger && logger.log && logger.log(
-                `Startup: Skipping Phase 2 update for reduced BUY ${reducedBuyOrder.orderId} (will be restored in Phase 3)`,
-                'debug'
-            );
+        // Skip the cancelled order's slot - will be handled in Phase 3
+        if (cancelledBuyIndex !== null && i === cancelledBuyIndex) {
             continue;
         }
-
         const chainOrder = sortedUnmatchedBuys[i];
         const gridOrder = desiredBuySlots[i];
         logger && logger.log && logger.log(
@@ -514,24 +510,23 @@ async function reconcileStartupOrders({
         }
     }
 
-    // PHASE 3: Restore the reduced order to its target size
-    if (reducedBuyOrder && !dryRun) {
-        const targetGridOrder = desiredBuySlots[reducedBuyOrder.index];
+    // PHASE 3: Create new order for the grid slot that had the cancelled order
+    if (cancelledBuyIndex !== null && !dryRun) {
+        const targetGridOrder = desiredBuySlots[cancelledBuyIndex];
         if (targetGridOrder) {
             logger && logger.log && logger.log(
-                `Startup: Restoring reduced BUY ${reducedBuyOrder.orderId} to target size ${targetGridOrder.size.toFixed(8)}`,
+                `Startup: Creating new BUY for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
                 'info'
             );
             try {
-                await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: reducedBuyOrder.orderId, gridOrder: targetGridOrder, dryRun });
+                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
             } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to restore BUY ${reducedBuyOrder.orderId}: ${err.message}`, 'error');
+                logger && logger.log && logger.log(`Startup: Failed to create BUY for cancelled slot: ${err.message}`, 'error');
             }
         }
     }
 
-    // Remove processed orders from the unmatched list (use sorted array since that's what we processed)
-    // This ensures we don't try to cancel orders we just updated
+    // Remove processed orders from the unmatched list
     unmatchedBuys = sortedUnmatchedBuys.slice(buyUpdates);
 
     const chainBuyCount = chainBuys.length;
