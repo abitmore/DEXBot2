@@ -36,6 +36,12 @@ All notable changes to this project will be documented in this file.
   - Phase 3: Create new order for cancelled slot
   - Simplified logic with proper index alignment
 
+- **Vacated Slot Size Preservation**: Fixed orphaned virtual orders from partial moves
+  - Don't set vacated slots to size: 0 after partial order moves
+  - Prevents "no size defined" warnings when slots are reused for new orders
+  - Detects already-claimed slots to avoid conflicts with new order placement
+  - Complements the "below target" path that uses vacated slots for new order creation
+
 ### Changed
 - Removed unused `bot_instance.js` module for code cleanup
 - Enhanced `startup_reconcile` documentation in README
