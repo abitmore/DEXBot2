@@ -25,9 +25,21 @@ All notable changes to this project will be documented in this file.
   - Respect 4x blockchain fee buffer consistently during order resizing
   - Added 100 BTS fallback for adequate fee reservation
 
+- **Grid Edge State Synchronization**: Fixed manager state sync after reducing largest order
+  - Search by blockchain orderId to find matching grid order in manager.orders
+  - Ensures manager's local grid state matches blockchain after order reduction
+
+- **Grid Edge Order Reconciliation**: Refactored cancel+create for better efficiency
+  - Replace reduce+restore with cancel+create approach (N+1 vs N+2 operations)
+  - Phase 1: Cancel largest order to free funds
+  - Phase 2: Update remaining orders to targets
+  - Phase 3: Create new order for cancelled slot
+  - Simplified logic with proper index alignment
+
 ### Changed
 - Removed unused `bot_instance.js` module for code cleanup
 - Enhanced `startup_reconcile` documentation in README
+- Optimized grid edge reconciliation strategy for fewer blockchain operations
 
 ---
 
