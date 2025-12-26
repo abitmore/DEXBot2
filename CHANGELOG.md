@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.3] - 2025-12-26 - Order Pairing, Rebalance & Fee Reservation Fixes
+
+### Fixed
+- **Asymmetric Rebalance Orders Logic for BUY Fills**: Corrected order matching in rebalanceOrders function
+  - Fixed logic that incorrectly paired BUY orders during rebalancing operations
+  - Ensures proper order pairing for asymmetric buy/sell scenarios
+
+- **Order Pairing Sorting & Startup Reconciliation**: Optimized order matching algorithm
+  - Implemented proper sorting for order pairing to ensure consistent matching
+  - Improved startup reconciliation performance and reliability
+
+- **Grid Data Corruption Prevention**: Added validation for order sizes and IDs
+  - Prevented undefined size values from corrupting grid data
+  - Added null ID checks to prevent invalid order state
+
+- **BTS Fee Reservation During Resize**: Fixed target order selection
+  - Use target orders for BTS fee reservation calculations during order resizing
+  - Ensures accurate fee reservation across resize operations
+
+- **4x Blockchain Fee Buffer Enforcement**: Corrected fee buffer application
+  - Respect 4x blockchain fee buffer consistently during order resizing
+  - Added 100 BTS fallback for adequate fee reservation
+
+### Changed
+- Removed unused `bot_instance.js` module for code cleanup
+- Enhanced `startup_reconcile` documentation in README
+
+---
+
 ## [0.4.2] - 2025-12-24 - Grid Recalculation Fixes & Documentation Updates
 
 ### Fixed
