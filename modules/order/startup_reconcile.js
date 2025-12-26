@@ -27,7 +27,9 @@ function _pickVirtualSlotsToActivate(manager, type, count) {
     }
 
     const block = allVirtual.slice(0, count);
-    const valid = block.filter(o => (Number(o.size) || 0) >= effectiveMin);
+    // Filter for valid orders: must have proper id AND sufficient size
+    // Orders with null/undefined id would corrupt the grid
+    const valid = block.filter(o => o.id && (Number(o.size) || 0) >= effectiveMin);
 
     // Outside-in ordering
     if (type === ORDER_TYPES.SELL) valid.sort((a, b) => (b.price || 0) - (a.price || 0));

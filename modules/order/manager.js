@@ -446,6 +446,17 @@ class OrderManager {
     }
 
     _updateOrder(order) {
+        // CRITICAL: Reject orders with null/undefined id to prevent grid corruption
+        // This guards against bugs that create synthetic orders with invalid ids
+        if (order.id === undefined || order.id === null) {
+            this.logger?.log?.(
+                `WARNING: Rejecting order update with invalid id (${order.id}). ` +
+                `type=${order.type}, price=${order.price}, size=${order.size}, state=${order.state}`,
+                'warn'
+            );
+            return;
+        }
+
         const existing = this.orders.get(order.id);
         if (existing) {
             this._ordersByState[existing.state]?.delete(order.id);

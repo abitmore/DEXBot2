@@ -1389,9 +1389,17 @@ class Grid {
 
         ords.forEach((order, i) => {
             const newSize = newSizes[i] || 0;
-            if (Math.abs(order.size - newSize) > 1e-8) {
+            // CRITICAL: Always update if order.size is undefined/null to prevent data corruption
+            // NaN comparisons (undefined - number) always return false, silently skipping updates
+            const currentSize = order.size;
+            const needsUpdate = currentSize === undefined || currentSize === null ||
+                                !Number.isFinite(currentSize) || Math.abs(currentSize - newSize) > 1e-8;
+            if (needsUpdate) {
+                const oldSizeStr = (currentSize === undefined || currentSize === null)
+                    ? 'undefined'
+                    : (Number.isFinite(currentSize) ? currentSize.toFixed(8) : String(currentSize));
                 manager.logger?.log(
-                    `${sideName.charAt(0).toUpperCase() + sideName.slice(1)} ${order.id} @ ${order.price.toFixed(6)}: ${order.size.toFixed(8)} → ${newSize.toFixed(8)}`,
+                    `${sideName.charAt(0).toUpperCase() + sideName.slice(1)} ${order.id} @ ${order.price?.toFixed(6) || 'N/A'}: ${oldSizeStr} → ${newSize.toFixed(8)}`,
                     'debug'
                 );
                 const updatedOrder = { ...order, size: newSize };

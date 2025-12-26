@@ -386,7 +386,22 @@ class DEXBot {
                     const { rotation } = ctx;
                     const { oldOrder, newPrice, newGridId, newSize } = rotation;
 
-                    // ALWAYS update target grid slot with new rotation size (not just when usingOverride)
+                    // SIZE-CORRECTION rotations (divergence/threshold triggered) don't have newGridId
+                    // They just resize existing on-chain orders - grid slots already have correct prices/sizes
+                    // Don't create synthetic slots with undefined id which corrupts the grid
+                    if (!newGridId) {
+                        // Just mark the rotation complete and count the update
+                        this.manager.completeOrderRotation(oldOrder);
+                        const sizeStr = (newSize !== undefined && newSize !== null && Number.isFinite(newSize))
+                            ? newSize.toFixed(8) : 'N/A';
+                        const priceStr = (newPrice !== undefined && newPrice !== null && Number.isFinite(newPrice))
+                            ? newPrice.toFixed(4) : 'N/A';
+                        this.manager.logger.log(`Size correction applied: ${oldOrder.orderId} resized to ${sizeStr} @ ${priceStr}`, 'info');
+                        updateOperationCount++;
+                        continue;
+                    }
+
+                    // FILL-TRIGGERED rotations have newGridId - update target grid slot
                     const actualSize = newSize;  // Use the rounded newAmountToSell/newMinToReceive
                     const slot = this.manager.orders.get(newGridId) || { id: newGridId, type: rotation.type, price: newPrice, size: 0, state: ORDER_STATES.VIRTUAL };
                     const updatedSlot = {
