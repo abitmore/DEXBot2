@@ -38,6 +38,40 @@ function _pickVirtualSlotsToActivate(manager, type, count) {
     return valid;
 }
 
+/**
+ * Detect if grid edge is fully occupied with active orders.
+ * When all outermost (furthest from market) orders are ACTIVE with orderId,
+ * we're at grid edge and all balance is committed to those orders.
+ *
+ * @param {Object} manager - OrderManager instance
+ * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {number} updateCount - Number of orders being updated
+ * @returns {boolean} true if edge orders are all active
+ * @private
+ */
+function _isGridEdgeFullyActive(manager, orderType, updateCount) {
+    if (!manager || updateCount <= 0) return false;
+
+    // Get all orders of this type
+    const allOrders = Array.from(manager.orders.values()).filter(o => o.type === orderType);
+    if (allOrders.length === 0) return false;
+
+    // Sort: for BUY (highest to lowest price), for SELL (lowest to highest)
+    // This puts market edge first, grid edge (furthest) last
+    const sorted = orderType === ORDER_TYPES.BUY
+        ? allOrders.sort((a, b) => (b.price || 0) - (a.price || 0))  // Buy: high to low price
+        : allOrders.sort((a, b) => (a.price || 0) - (b.price || 0));  // Sell: low to high price
+
+    // Get the outermost orders (last N in sorted = furthest from market)
+    const outerEdgeCount = Math.min(updateCount, sorted.length);
+    const edgeOrders = sorted.slice(-outerEdgeCount);
+
+    // Check if ALL edge orders are ACTIVE (have orderId set)
+    const allEdgeActive = edgeOrders.every(o => o.orderId && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL));
+
+    return allEdgeActive;
+}
+
 async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId, gridOrder, dryRun }) {
     if (dryRun) return;
 
@@ -56,6 +90,72 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
 
     const updatedGrid = { ...gridOrder, orderId: chainOrderId, state: ORDER_STATES.ACTIVE };
     manager._updateOrder(updatedGrid);
+}
+
+/**
+ * Find the largest order among those being updated.
+ * Returns both the order and its index in unmatchedOrders for pairing with gridOrders.
+ * @private
+ */
+function _findLargestOrder(unmatchedOrders, updateCount) {
+    if (!Array.isArray(unmatchedOrders) || unmatchedOrders.length === 0) return null;
+
+    const ordersToCheck = unmatchedOrders.slice(0, updateCount);
+    let largestOrder = null;
+    let largestIndex = -1;
+    let largestSize = 0;
+
+    for (let i = 0; i < ordersToCheck.length; i++) {
+        const order = ordersToCheck[i];
+        const size = Number(order.for_sale) || 0;
+        if (size > largestSize) {
+            largestSize = size;
+            largestOrder = order;
+            largestIndex = i;
+        }
+    }
+
+    return largestIndex >= 0 ? { order: largestOrder, index: largestIndex } : null;
+}
+
+/**
+ * Reduce the largest order to size 1 to free up maximum funds.
+ * Returns the orderId, index, and original size for restoration later.
+ * @private
+ */
+async function _reduceMaxOrderToMinimal({ chainOrders, account, privateKey, manager, unmatchedOrders, updateCount, orderType, dryRun }) {
+    if (dryRun) return null;
+    if (!Array.isArray(unmatchedOrders) || unmatchedOrders.length === 0) return null;
+
+    const logger = manager && manager.logger;
+
+    // Find the largest order among those being updated
+    const largestInfo = _findLargestOrder(unmatchedOrders, updateCount);
+    if (!largestInfo) return null;
+
+    const { order: largestOrder, index: largestIndex } = largestInfo;
+    const originalSize = Number(largestOrder.for_sale) || 0;
+    const orderId = largestOrder.id;
+
+    logger?.log?.(
+        `Grid edge detected: reducing largest order ${orderId} (size ${originalSize}) to size 1 to free up funds`,
+        'info'
+    );
+
+    try {
+        // Update only the largest order to minimal size 1
+        await chainOrders.updateOrder(account, privateKey, orderId, {
+            amountToSell: 1,
+            orderType,
+        });
+        logger?.log?.(`Reduced largest order ${orderId} to size 1`, 'info');
+
+        // Return info needed to restore this order later
+        return { orderId, index: largestIndex, originalSize, orderType };
+    } catch (err) {
+        logger?.log?.(`Warning: Could not reduce largest order ${orderId}: ${err.message}`, 'warn');
+        return null;
+    }
 }
 
 async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }) {
@@ -239,9 +339,43 @@ async function reconcileStartupOrders({
     const needSellSlots = Math.max(0, targetSell - matchedSell);
     const desiredSellSlots = _pickVirtualSlotsToActivate(manager, ORDER_TYPES.SELL, needSellSlots);
 
-    const sellUpdates = Math.min(unmatchedSells.length, desiredSellSlots.length);
+    // Sort unmatched SELL orders by price (low to high) to pair with desiredSellSlots
+    // which are already sorted by price (closest to market first)
+    const sortedUnmatchedSells = unmatchedSells
+        .slice(0)  // Create copy to avoid mutating original
+        .sort((a, b) => {
+            const priceA = OrderUtils.parseChainOrder(a, manager.assets)?.price || 0;
+            const priceB = OrderUtils.parseChainOrder(b, manager.assets)?.price || 0;
+            return priceA - priceB;  // Low to high (market to edge)
+        });
+
+    const sellUpdates = Math.min(sortedUnmatchedSells.length, desiredSellSlots.length);
+    let reducedSellOrder = null;
+
+    // PHASE 1: Only reduce if grid edge is fully active (all balance committed to edge orders)
+    if (sellUpdates > 0 && _isGridEdgeFullyActive(manager, ORDER_TYPES.SELL, sellUpdates)) {
+        logger && logger.log && logger.log(`Startup: SELL grid edge is fully active, applying two-phase update strategy`, 'info');
+        reducedSellOrder = await _reduceMaxOrderToMinimal({
+            chainOrders, account, privateKey, manager,
+            unmatchedOrders: sortedUnmatchedSells,
+            updateCount: sellUpdates,
+            orderType: ORDER_TYPES.SELL,
+            dryRun
+        });
+    }
+
+    // PHASE 2: Update to target sizes (skip if order was reduced - it will be restored in Phase 3)
     for (let i = 0; i < sellUpdates; i++) {
-        const chainOrder = unmatchedSells[i];
+        // Skip this order if it was reduced in Phase 1 (will be restored in Phase 3)
+        if (reducedSellOrder && i === reducedSellOrder.index) {
+            logger && logger.log && logger.log(
+                `Startup: Skipping Phase 2 update for reduced SELL ${reducedSellOrder.orderId} (will be restored in Phase 3)`,
+                'debug'
+            );
+            continue;
+        }
+
+        const chainOrder = sortedUnmatchedSells[i];
         const gridOrder = desiredSellSlots[i];
         logger && logger.log && logger.log(
             `Startup: Updating chain SELL ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
@@ -253,7 +387,26 @@ async function reconcileStartupOrders({
             logger && logger.log && logger.log(`Startup: Failed to update SELL ${chainOrder.id}: ${err.message}`, 'error');
         }
     }
-    unmatchedSells = unmatchedSells.slice(sellUpdates);
+
+    // PHASE 3: Restore the reduced order to its target size
+    if (reducedSellOrder && !dryRun) {
+        const targetGridOrder = desiredSellSlots[reducedSellOrder.index];
+        if (targetGridOrder) {
+            logger && logger.log && logger.log(
+                `Startup: Restoring reduced SELL ${reducedSellOrder.orderId} to target size ${targetGridOrder.size.toFixed(8)}`,
+                'info'
+            );
+            try {
+                await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: reducedSellOrder.orderId, gridOrder: targetGridOrder, dryRun });
+            } catch (err) {
+                logger && logger.log && logger.log(`Startup: Failed to restore SELL ${reducedSellOrder.orderId}: ${err.message}`, 'error');
+            }
+        }
+    }
+
+    // Remove processed orders from the unmatched list (use sorted array since that's what we processed)
+    // This ensures we don't try to cancel orders we just updated
+    unmatchedSells = sortedUnmatchedSells.slice(sellUpdates);
 
     const chainSellCount = chainSells.length;
     const sellCreateCount = Math.max(0, targetSell - chainSellCount);
@@ -312,9 +465,43 @@ async function reconcileStartupOrders({
     const needBuySlots = Math.max(0, targetBuy - matchedBuy);
     const desiredBuySlots = _pickVirtualSlotsToActivate(manager, ORDER_TYPES.BUY, needBuySlots);
 
-    const buyUpdates = Math.min(unmatchedBuys.length, desiredBuySlots.length);
+    // Sort unmatched BUY orders by price (high to low) to pair with desiredBuySlots
+    // which are already sorted by price (closest to market first = highest to lowest)
+    const sortedUnmatchedBuys = unmatchedBuys
+        .slice(0)  // Create copy to avoid mutating original
+        .sort((a, b) => {
+            const priceA = OrderUtils.parseChainOrder(a, manager.assets)?.price || 0;
+            const priceB = OrderUtils.parseChainOrder(b, manager.assets)?.price || 0;
+            return priceB - priceA;  // High to low (market to edge)
+        });
+
+    const buyUpdates = Math.min(sortedUnmatchedBuys.length, desiredBuySlots.length);
+    let reducedBuyOrder = null;
+
+    // PHASE 1: Only reduce if grid edge is fully active (all balance committed to edge orders)
+    if (buyUpdates > 0 && _isGridEdgeFullyActive(manager, ORDER_TYPES.BUY, buyUpdates)) {
+        logger && logger.log && logger.log(`Startup: BUY grid edge is fully active, applying two-phase update strategy`, 'info');
+        reducedBuyOrder = await _reduceMaxOrderToMinimal({
+            chainOrders, account, privateKey, manager,
+            unmatchedOrders: sortedUnmatchedBuys,
+            updateCount: buyUpdates,
+            orderType: ORDER_TYPES.BUY,
+            dryRun
+        });
+    }
+
+    // PHASE 2: Update to target sizes (skip if order was reduced - it will be restored in Phase 3)
     for (let i = 0; i < buyUpdates; i++) {
-        const chainOrder = unmatchedBuys[i];
+        // Skip this order if it was reduced in Phase 1 (will be restored in Phase 3)
+        if (reducedBuyOrder && i === reducedBuyOrder.index) {
+            logger && logger.log && logger.log(
+                `Startup: Skipping Phase 2 update for reduced BUY ${reducedBuyOrder.orderId} (will be restored in Phase 3)`,
+                'debug'
+            );
+            continue;
+        }
+
+        const chainOrder = sortedUnmatchedBuys[i];
         const gridOrder = desiredBuySlots[i];
         logger && logger.log && logger.log(
             `Startup: Updating chain BUY ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
@@ -326,7 +513,26 @@ async function reconcileStartupOrders({
             logger && logger.log && logger.log(`Startup: Failed to update BUY ${chainOrder.id}: ${err.message}`, 'error');
         }
     }
-    unmatchedBuys = unmatchedBuys.slice(buyUpdates);
+
+    // PHASE 3: Restore the reduced order to its target size
+    if (reducedBuyOrder && !dryRun) {
+        const targetGridOrder = desiredBuySlots[reducedBuyOrder.index];
+        if (targetGridOrder) {
+            logger && logger.log && logger.log(
+                `Startup: Restoring reduced BUY ${reducedBuyOrder.orderId} to target size ${targetGridOrder.size.toFixed(8)}`,
+                'info'
+            );
+            try {
+                await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: reducedBuyOrder.orderId, gridOrder: targetGridOrder, dryRun });
+            } catch (err) {
+                logger && logger.log && logger.log(`Startup: Failed to restore BUY ${reducedBuyOrder.orderId}: ${err.message}`, 'error');
+            }
+        }
+    }
+
+    // Remove processed orders from the unmatched list (use sorted array since that's what we processed)
+    // This ensures we don't try to cancel orders we just updated
+    unmatchedBuys = sortedUnmatchedBuys.slice(buyUpdates);
 
     const chainBuyCount = chainBuys.length;
     const buyCreateCount = Math.max(0, targetBuy - chainBuyCount);
