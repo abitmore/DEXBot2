@@ -163,7 +163,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
             const targetBuy = Math.max(0, Number.isFinite(Number(activeOrders?.buy)) ? Number(activeOrders.buy) : 1);
             const targetSell = Math.max(0, Number.isFinite(Number(activeOrders?.sell)) ? Number(activeOrders.sell) : 1);
             const totalTargetOrders = targetBuy + targetSell;
-            const FEE_MULTIPLIER = 4; // 4x multiplier: 1x for creation + 3x for rotation buffer
+            const FEE_MULTIPLIER = 5; // 5x multiplier: 1x for creation + 4x for rotation buffer
 
             if (totalTargetOrders > 0) {
                 const btsFeeData = getAssetFees('BTS', 1);
@@ -1406,6 +1406,565 @@ function buildCreateOrderArgs(order, assetA, assetB) {
 }
 
 // ---------------------------------------------------------------------------
+// Numeric Validation Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Safely convert a value to a finite number with fallback.
+ * @param {*} value - Value to convert
+ * @param {number} defaultValue - Fallback if not finite (default: 0)
+ * @returns {number} Finite number or default
+ */
+function toFiniteNumber(value, defaultValue = 0) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : defaultValue;
+}
+
+/**
+ * Check if a value is defined and represents a finite number.
+ * @param {*} value - Value to check
+ * @returns {boolean} True if value is defined and finite
+ */
+function isValidNumber(value) {
+    return value !== null && value !== undefined && Number.isFinite(Number(value));
+}
+
+/**
+ * Compare two sizes at blockchain integer precision.
+ * @param {number} size1 - First size
+ * @param {number} size2 - Second size
+ * @param {number} precision - Blockchain precision
+ * @returns {number} -1 if size1 < size2, 0 if equal, 1 if size1 > size2
+ */
+function compareBlockchainSizes(size1, size2, precision) {
+    const int1 = floatToBlockchainInt(size1, precision);
+    const int2 = floatToBlockchainInt(size2, precision);
+    if (int1 === int2) return 0;
+    return int1 > int2 ? 1 : -1;
+}
+
+/**
+ * Compute remaining size after a fill at blockchain precision.
+ * @param {number} currentSize - Current order size
+ * @param {number} filledAmount - Amount filled
+ * @param {number} precision - Blockchain precision
+ * @returns {number} Remaining size after fill
+ */
+function computeSizeAfterFill(currentSize, filledAmount, precision) {
+    const currentInt = floatToBlockchainInt(currentSize, precision);
+    const filledInt = floatToBlockchainInt(filledAmount, precision);
+    const remainingInt = Math.max(0, currentInt - filledInt);
+    return blockchainToFloat(remainingInt, precision);
+}
+
+/**
+ * Filter orders by type.
+ * @param {Array<Object>} orders - Orders to filter
+ * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @returns {Array<Object>} Filtered orders
+ */
+function filterOrdersByType(orders, orderType) {
+    return Array.isArray(orders) ? orders.filter(o => o && o.type === orderType) : [];
+}
+
+/**
+ * Filter orders by type and exclude a specific state.
+ * @param {Array<Object>} orders - Orders to filter
+ * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {string|null} excludeState - State to exclude (optional)
+ * @returns {Array<Object>} Filtered orders
+ */
+function filterOrdersByTypeAndState(orders, orderType, excludeState = null) {
+    return Array.isArray(orders) ? orders.filter(o => o && o.type === orderType && (!excludeState || o.state !== excludeState)) : [];
+}
+
+/**
+ * Sum all sizes in an array of orders.
+ * @param {Array<Object>} orders - Orders with size property
+ * @returns {number} Total of all sizes
+ */
+function sumOrderSizes(orders) {
+    return Array.isArray(orders) ? orders.reduce((sum, o) => sum + (Number(o.size) || 0), 0) : 0;
+}
+
+/**
+ * Extract sizes from orders as an array of numbers.
+ * @param {Array<Object>} orders - Orders with size property
+ * @returns {Array<number>} Sizes as numbers
+ */
+function mapOrderSizes(orders) {
+    return Array.isArray(orders) ? orders.map(o => Number(o.size || 0)) : [];
+}
+
+// ---------------------------------------------------------------------------
+// Precision Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Get blockchain precision for an order type.
+ * SELL orders use assetA precision, BUY orders use assetB precision.
+ * @param {Object} assets - Assets object with assetA and assetB precision
+ * @param {string} orderType - ORDER_TYPES.SELL or ORDER_TYPES.BUY
+ * @returns {number} Precision (defaults to 8)
+ */
+function getPrecisionByOrderType(assets, orderType) {
+    const { ORDER_TYPES } = require('../constants');
+    return orderType === ORDER_TYPES.SELL
+        ? (assets?.assetA?.precision ?? 8)
+        : (assets?.assetB?.precision ?? 8);
+}
+
+/**
+ * Get blockchain precision for a side string.
+ * @param {Object} assets - Assets object with assetA and assetB precision
+ * @param {string} side - 'buy' or 'sell'
+ * @returns {number} Precision (defaults to 8)
+ */
+function getPrecisionForSide(assets, side) {
+    return side === 'buy'
+        ? (assets?.assetB?.precision ?? 8)
+        : (assets?.assetA?.precision ?? 8);
+}
+
+/**
+ * Get both asset precisions at once.
+ * @param {Object} assets - Assets object with assetA and assetB precision
+ * @returns {Object} { A: precisionA, B: precisionB }
+ */
+function getPrecisionsForManager(assets) {
+    return {
+        A: assets?.assetA?.precision ?? 8,
+        B: assets?.assetB?.precision ?? 8
+    };
+}
+
+/**
+ * Check if trading pair includes BTS as one of the assets.
+ * @param {string} assetA - First asset symbol
+ * @param {string} assetB - Second asset symbol
+ * @returns {boolean} True if either asset is BTS
+ */
+function hasBtsPair(assetA, assetB) {
+    return assetA === 'BTS' || assetB === 'BTS';
+}
+
+/**
+ * Check if any order sizes fall below a minimum threshold.
+ * Uses precision-aware integer comparison when available.
+ * @param {Array<number>} sizes - Order sizes to check
+ * @param {number} minSize - Minimum allowed size
+ * @param {number|null} precision - Blockchain precision for integer comparison
+ * @returns {boolean} True if any size is below minimum
+ */
+function checkSizesBeforeMinimum(sizes, minSize, precision) {
+    if (minSize <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
+
+    if (precision !== undefined && precision !== null && Number.isFinite(precision)) {
+        const minInt = floatToBlockchainInt(minSize, precision);
+        return sizes.some(sz =>
+            (!Number.isFinite(sz)) ||
+            (Number.isFinite(sz) && sz > 0 && floatToBlockchainInt(sz, precision) < minInt)
+        );
+    } else {
+        return sizes.some(sz =>
+            (!Number.isFinite(sz)) ||
+            (Number.isFinite(sz) && sz > 0 && sz < (minSize - 1e-8))
+        );
+    }
+}
+
+/**
+ * Check if any order sizes fall near a warning threshold.
+ * Uses precision-aware integer comparison when available.
+ * @param {Array<number>} sizes - Order sizes to check
+ * @param {number} warningSize - Warning threshold size
+ * @param {number|null} precision - Blockchain precision for integer comparison
+ * @returns {boolean} True if any size is near/below warning threshold
+ */
+function checkSizesNearMinimum(sizes, warningSize, precision) {
+    if (warningSize <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
+
+    if (precision !== undefined && precision !== null && Number.isFinite(precision)) {
+        const warnInt = floatToBlockchainInt(warningSize, precision);
+        return sizes.some(sz => Number.isFinite(sz) && sz > 0 && floatToBlockchainInt(sz, precision) < warnInt);
+    } else {
+        return sizes.some(sz => Number.isFinite(sz) && sz > 0 && sz < (warningSize - 1e-8));
+    }
+}
+
+/**
+ * Calculate BTS fees needed for creating target orders (with 5x buffer for rotations).
+ * Returns 0 if pair doesn't include BTS, or 100 as fallback if calculation fails.
+ * @param {string} assetA - First asset symbol
+ * @param {string} assetB - Second asset symbol
+ * @param {number} totalOrders - Total number of orders to create
+ * @param {number} feeMultiplier - Multiplier for fees (default: 5 for creation + rotation buffer)
+ * @returns {number} Total BTS fees to reserve
+ */
+function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier = 5) {
+    if (assetA !== 'BTS' && assetB !== 'BTS') return 0;
+
+    try {
+        if (totalOrders > 0) {
+            const btsFeeData = getAssetFees('BTS', 1);
+            return btsFeeData.createFee * totalOrders * feeMultiplier;
+        }
+    } catch (err) {
+        // Return fallback
+        return 100;
+    }
+
+    return 0;
+}
+
+/**
+ * Apply order creation fee deduction to input funds for the appropriate side.
+ * Returns adjusted funds after fee reservation with logging.
+ * @param {number} buyFunds - Original buy-side funds
+ * @param {number} sellFunds - Original sell-side funds
+ * @param {number} fees - Total fees to deduct
+ * @param {Object} config - Config object with assetA, assetB
+ * @param {Object} logger - Logger instance (optional)
+ * @returns {Object} { buyFunds, sellFunds } - Adjusted funds after fees
+ */
+function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = null) {
+    let finalBuy = buyFunds;
+    let finalSell = sellFunds;
+
+    if (fees > 0) {
+        if (config?.assetB === 'BTS') {
+            finalBuy = Math.max(0, buyFunds - fees);
+            if (logger?.log) {
+                logger.log(
+                    `Reduced available BTS (buy) funds by ${fees.toFixed(8)} for order creation fees: ${buyFunds.toFixed(8)} -> ${finalBuy.toFixed(8)}`,
+                    'info'
+                );
+            }
+        } else if (config?.assetA === 'BTS') {
+            finalSell = Math.max(0, sellFunds - fees);
+            if (logger?.log) {
+                logger.log(
+                    `Reduced available BTS (sell) funds by ${fees.toFixed(8)} for order creation fees: ${sellFunds.toFixed(8)} -> ${finalSell.toFixed(8)}`,
+                    'info'
+                );
+            }
+        }
+    }
+
+    return { buyFunds: finalBuy, sellFunds: finalSell };
+}
+
+// ---------------------------------------------------------------------------
+// Grid Sizing & Allocation (moved from grid.js)
+// ---------------------------------------------------------------------------
+
+/**
+ * Allocate funds across n orders using geometric weighting.
+ * Creates exponentially-scaled order sizes based on position and weight distribution.
+ *
+ * @param {number} totalFunds - Total funds to distribute
+ * @param {number} n - Number of orders
+ * @param {number} weight - Weight distribution (-1 to 2): controls exponential scaling
+ * @param {number} incrementFactor - Increment percentage / 100 (e.g., 0.01 for 1%)
+ * @param {boolean} reverse - If true, reverse position indexing (for sell orders high→low)
+ * @param {number} minSize - Minimum order size
+ * @param {number|null} precision - Blockchain precision for quantization
+ * @returns {Array<number>} Array of order sizes
+ */
+function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse = false, minSize = 0, precision = null) {
+    if (n <= 0) return [];
+    if (!Number.isFinite(totalFunds) || totalFunds <= 0) return new Array(n).fill(0);
+
+    const MIN_WEIGHT = -1;
+    const MAX_WEIGHT = 2;
+    if (!Number.isFinite(weight) || weight < MIN_WEIGHT || weight > MAX_WEIGHT) {
+        throw new Error(`Invalid weight distribution: ${weight}. Must be between ${MIN_WEIGHT} and ${MAX_WEIGHT}.`);
+    }
+
+    // CRITICAL: Validate increment factor (0.01 to 0.10 for 1% to 10%)
+    // If incrementFactor is 0, base = 1, and all orders get equal weight (loses position weighting)
+    // If incrementFactor >= 1, base <= 0, causing invalid exponential calculation
+    if (incrementFactor <= 0 || incrementFactor >= 1) {
+        throw new Error(`Invalid incrementFactor: ${incrementFactor}. Must be between 0.0001 (0.01%) and 0.10 (10%).`);
+    }
+
+    // Step 1: Calculate base factor from increment
+    // base = (1 - increment) creates exponential decay/growth
+    // e.g., 1% increment → base = 0.99
+    const base = 1 - incrementFactor;
+
+    // Step 2: Calculate raw weights for each order position
+    // The formula: weight[i] = base^(idx * weight)
+    // - base^0 = 1.0 (first position always gets base weight)
+    // - base^(idx*weight) scales exponentially based on position and weight coefficient
+    // - reverse parameter inverts the position index so sell orders decrease geometrically
+    const rawWeights = new Array(n);
+    for (let i = 0; i < n; i++) {
+        const idx = reverse ? (n - 1 - i) : i;
+        rawWeights[i] = Math.pow(base, idx * weight);
+    }
+
+    // Step 3: Normalize weights to sum to 1, then scale by totalFunds
+    // This ensures all funds are distributed and ratios are preserved
+    const sizes = new Array(n).fill(0);
+    const totalWeight = rawWeights.reduce((s, w) => s + w, 0) || 1;
+
+    if (precision !== null && precision !== undefined) {
+        // Quantitative allocation: use units to avoid floating point noise from the start
+        // This ensures every order in the grid is perfectly aligned with blockchain increments.
+        const totalUnits = floatToBlockchainInt(totalFunds, precision);
+        let unitsSummary = 0;
+        const units = new Array(n);
+
+        for (let i = 0; i < n; i++) {
+            units[i] = Math.round((rawWeights[i] / totalWeight) * totalUnits);
+            unitsSummary += units[i];
+        }
+
+        // Adjust for rounding discrepancy in units calculation (usually +/- 1 unit)
+        const diff = totalUnits - unitsSummary;
+        if (diff !== 0 && n > 0) {
+            // Adjust first order for simplicity (closest to market in mountain style)
+            units[0] = Math.max(0, units[0] + diff);
+        }
+
+        for (let i = 0; i < n; i++) {
+            sizes[i] = blockchainToFloat(units[i], precision);
+        }
+    } else {
+        // Fallback for cases without precision (not recommended for grid orders)
+        for (let i = 0; i < n; i++) {
+            sizes[i] = (rawWeights[i] / totalWeight) * totalFunds;
+        }
+    }
+
+    return sizes;
+}
+
+/**
+ * Size orders based on config weight distribution and available funds.
+ * Applies sizes proportionally to sell and buy order lists.
+ *
+ * @param {Array<Object>} orders - Order array with type property
+ * @param {Object} config - Config with incrementPercent and weightDistribution
+ * @param {number} sellFunds - Available sell-side funds
+ * @param {number} buyFunds - Available buy-side funds
+ * @param {number} minSellSize - Minimum sell order size
+ * @param {number} minBuySize - Minimum buy order size
+ * @param {number|null} precisionA - Asset A precision for quantization
+ * @param {number|null} precisionB - Asset B precision for quantization
+ * @returns {Array<Object>} Orders with assigned sizes
+ */
+function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 0, minBuySize = 0, precisionA = null, precisionB = null) {
+    const { ORDER_TYPES } = require('../constants');
+    const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
+    const incrementFactor = incrementPercent / 100;
+
+    const sellOrders = filterOrdersByType(orders, ORDER_TYPES.SELL);
+    const buyOrders = filterOrdersByType(orders, ORDER_TYPES.BUY);
+
+    const sellSizes = allocateFundsByWeights(sellFunds, sellOrders.length, sellWeight, incrementFactor, true, minSellSize, precisionA);
+    const buySizes = allocateFundsByWeights(buyFunds, buyOrders.length, buyWeight, incrementFactor, false, minBuySize, precisionB);
+
+    const sizeMap = { [ORDER_TYPES.SELL]: { sizes: sellSizes, index: 0 }, [ORDER_TYPES.BUY]: { sizes: buySizes, index: 0 } };
+    return orders.map(order => ({
+        ...order,
+        size: sizeMap[order.type] ? sizeMap[order.type].sizes[sizeMap[order.type].index++] : 0
+    }));
+}
+
+/**
+ * Calculate order sizes for rotation cycles based on available and grid funds.
+ *
+ * @param {number} availableFunds - Available funds for new orders
+ * @param {number} totalGridAllocation - Total currently allocated to grid
+ * @param {number} orderCount - Number of orders to size
+ * @param {string} orderType - ORDER_TYPES.SELL or ORDER_TYPES.BUY
+ * @param {Object} config - Config with incrementPercent and weightDistribution
+ * @param {number} minSize - Minimum order size
+ * @param {number|null} precision - Blockchain precision for quantization
+ * @returns {Array<number>} Order sizes for rotation
+ */
+function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderCount, orderType, config, minSize = 0, precision = null) {
+    const { ORDER_TYPES } = require('../constants');
+
+    if (orderCount <= 0) {
+        return [];
+    }
+
+    // Combine available + grid allocation to calculate total sizing context
+    // This represents the "full reset" amount if we were regenerating the entire grid
+    const totalFunds = availableFunds + totalGridAllocation;
+
+    if (!Number.isFinite(totalFunds) || totalFunds <= 0) {
+        return new Array(orderCount).fill(0);
+    }
+
+    const { incrementPercent, weightDistribution } = config;
+    const incrementFactor = incrementPercent / 100;
+
+    // Select weight distribution based on side (buy or sell)
+    const weight = (orderType === ORDER_TYPES.SELL) ? weightDistribution.sell : weightDistribution.buy;
+
+    // Reverse the allocation for sell orders so they're ordered from high to low price
+    const reverse = (orderType === ORDER_TYPES.SELL);
+
+    // Allocate total funds using geometric weighting
+    return allocateFundsByWeights(totalFunds, orderCount, weight, incrementFactor, reverse, minSize, precision);
+}
+
+/**
+ * Calculate RMS divergence metric between calculated and persisted grid sides.
+ * Matches orders by ID and compares sizes; unmatched orders treated as max divergence.
+ *
+ * @param {Array<Object>} calculatedOrders - Orders generated by grid algorithm
+ * @param {Array<Object>} persistedOrders - Orders persisted in storage
+ * @param {string} sideName - Side name for logging ('buy', 'sell')
+ * @returns {number} RMS metric (0 = perfect match, higher = more divergence)
+ */
+function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, sideName = 'unknown') {
+    if (!Array.isArray(calculatedOrders) || !Array.isArray(persistedOrders)) {
+        return 0;
+    }
+
+    if (calculatedOrders.length === 0 && persistedOrders.length === 0) {
+        return 0;
+    }
+
+    // Build lookup map by grid ID for stable matching
+    const persistedMap = new Map();
+    for (const order of persistedOrders) {
+        if (order.id) {
+            persistedMap.set(order.id, order);
+        }
+    }
+
+    let sumSquaredDiff = 0;
+    let matchCount = 0;
+    let unmatchedCount = 0;
+    let maxRelativeDiff = 0;
+
+    // Compare each calculated order with its persisted counterpart by ID
+    const largeDeviations = [];
+
+    for (const calcOrder of calculatedOrders) {
+        const persOrder = persistedMap.get(calcOrder.id);
+
+        if (persOrder) {
+            // Matched by ID: compare sizes
+            const calcSize = Number(calcOrder.size) || 0;
+            const persSize = Number(persOrder.size) || 0;
+
+            if (persSize > 0) {
+                // Normal relative difference when both sizes are positive
+                const relativeDiff = (calcSize - persSize) / persSize;
+                const relativePercent = Math.abs(relativeDiff) * 100;
+
+                // Track large deviations for debugging
+                if (relativePercent > 10) {  // More than 10% different
+                    largeDeviations.push({
+                        id: calcOrder.id,
+                        persSize: persSize.toFixed(8),
+                        calcSize: calcSize.toFixed(8),
+                        percentDiff: relativePercent.toFixed(2)
+                    });
+                }
+
+                sumSquaredDiff += relativeDiff * relativeDiff;
+                maxRelativeDiff = Math.max(maxRelativeDiff, Math.abs(relativeDiff));
+                matchCount++;
+            } else if (calcSize > 0) {
+                // If persisted size is 0 but calculated size is > 0, treat as maximum divergence
+                largeDeviations.push({
+                    id: calcOrder.id,
+                    persSize: '0.00000000',
+                    calcSize: calcSize.toFixed(8),
+                    percentDiff: 'Infinity'
+                });
+                sumSquaredDiff += 1.0;
+                maxRelativeDiff = Math.max(maxRelativeDiff, 1.0);
+                matchCount++;
+            } else {
+                // Both are zero: perfect match
+                matchCount++;
+            }
+        } else {
+            // Unmatched by ID: grid structure mismatch
+            largeDeviations.push({
+                id: calcOrder.id,
+                persSize: 'NOT_FOUND',
+                calcSize: (Number(calcOrder.size) || 0).toFixed(8),
+                percentDiff: 'Unmatched'
+            });
+            sumSquaredDiff += 1.0;
+            maxRelativeDiff = Math.max(maxRelativeDiff, 1.0);
+            unmatchedCount++;
+        }
+    }
+
+    // Check for persisted orders that don't exist in calculated
+    for (const persOrder of persistedOrders) {
+        if (!calculatedOrders.some(c => c.id === persOrder.id)) {
+            largeDeviations.push({
+                id: persOrder.id,
+                persSize: (Number(persOrder.size) || 0).toFixed(8),
+                calcSize: 'NOT_FOUND',
+                percentDiff: 'Unmatched'
+            });
+            sumSquaredDiff += 1.0;
+            maxRelativeDiff = Math.max(maxRelativeDiff, 1.0);
+            unmatchedCount++;
+        }
+    }
+
+    // Return RMS (Root Mean Square) metric
+    const totalOrders = matchCount + unmatchedCount;
+    const meanSquaredDiff = totalOrders > 0 ? sumSquaredDiff / totalOrders : 0;
+    const metric = Math.sqrt(meanSquaredDiff);
+
+    // Log divergence breakdown if significant
+    if (metric > 0.1) {
+        console.log(`\nDEBUG [${sideName}] Divergence Calculation Breakdown:`);
+        console.log(`  Matched orders: ${matchCount}`);
+        console.log(`  Unmatched orders: ${unmatchedCount}`);
+        console.log(`  RMS (Root Mean Square): ${metric.toFixed(4)} (${(metric * 100).toFixed(2)}%)`);
+        if (largeDeviations.length > 0) {
+            console.log(`  Large deviations (>10%): ${largeDeviations.length}`);
+        }
+    }
+
+    return metric;
+}
+
+/**
+ * Map blockchain update flags to order type string.
+ *
+ * @param {boolean} buyUpdated - Buy side was updated
+ * @param {boolean} sellUpdated - Sell side was updated
+ * @returns {string} 'buy', 'sell', or 'both'
+ */
+function getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
+    return (buyUpdated && sellUpdated) ? 'both' : (buyUpdated ? 'buy' : 'sell');
+}
+
+/**
+ * Resolve a configured price bound (absolute or relative).
+ * Used during grid initialization to parse min/max price bounds.
+ *
+ * @param {*} value - Raw config value (string, number, or expression)
+ * @param {number} fallback - Fallback value if resolution fails
+ * @param {number} marketPrice - Market price for relative calculations
+ * @param {string} mode - Relative resolution mode ('absolute', 'percentage', 'multiplier')
+ * @returns {number} Resolved price bound
+ */
+function resolveConfiguredPriceBound(value, fallback, marketPrice, mode) {
+    const relative = resolveRelativePrice(value, marketPrice, mode);
+    if (Number.isFinite(relative)) return relative;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 module.exports = {
@@ -1464,5 +2023,41 @@ module.exports = {
     applyGridDivergenceCorrections,
 
     // Order building
-    buildCreateOrderArgs
+    buildCreateOrderArgs,
+
+    // Numeric validation helpers
+    toFiniteNumber,
+    isValidNumber,
+    compareBlockchainSizes,
+    computeSizeAfterFill,
+
+    // Order filtering helpers
+    filterOrdersByType,
+    filterOrdersByTypeAndState,
+    sumOrderSizes,
+    mapOrderSizes,
+
+    // Precision helpers
+    getPrecisionByOrderType,
+    getPrecisionForSide,
+    getPrecisionsForManager,
+
+    // Pair detection
+    hasBtsPair,
+
+    // Size validation helpers
+    checkSizesBeforeMinimum,
+    checkSizesNearMinimum,
+
+    // Fee helpers
+    calculateOrderCreationFees,
+    deductOrderFeesFromFunds,
+
+    // Grid sizing & allocation (moved from grid.js)
+    allocateFundsByWeights,
+    calculateOrderSizes,
+    calculateRotationOrderSizes,
+    calculateGridSideDivergenceMetric,
+    getOrderTypeFromUpdatedFlags,
+    resolveConfiguredPriceBound
 };

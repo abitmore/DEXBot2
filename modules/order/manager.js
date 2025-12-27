@@ -35,7 +35,7 @@
  * 4. After rotation: cacheFunds updated to reflect leftovers (surplus)
  */
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('../constants');
-const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize, getAssetFees, computeChainFundTotals, calculateAvailableFundsValue, calculateSpreadFromOrders, resolveConfigValue } = require('./utils');
+const { parsePercentageString, blockchainToFloat, floatToBlockchainInt, resolveRelativePrice, calculatePriceTolerance, checkPriceWithinTolerance, parseChainOrder, findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory, applyChainSizeToGridOrder, correctOrderPriceOnChain, getMinOrderSize, getAssetFees, computeChainFundTotals, calculateAvailableFundsValue, calculateSpreadFromOrders, resolveConfigValue, compareBlockchainSizes, filterOrdersByType, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, calculateOrderSizes } = require('./utils');
 const Logger = require('./logger');
 // Grid functions (initialize/recalculate) are intended to be
 // called directly via require('./grid').initializeGrid(manager) by callers.
@@ -174,6 +174,72 @@ class OrderManager {
             allocatedBuy,
             allocatedSell
         };
+    }
+
+    // -------------------------------------------------------------------------
+    // Helper Methods - Precision, Funds, ChainFree
+    // -------------------------------------------------------------------------
+
+    /**
+     * Get cacheFunds value for a side with safe fallback.
+     * @param {string} side - 'buy' or 'sell'
+     * @returns {number} CacheFunds value or 0
+     */
+    _getCacheFunds(side) {
+        return Number(this.funds?.cacheFunds?.[side] || 0);
+    }
+
+    /**
+     * Get grid total value for a side with safe fallback.
+     * @param {string} side - 'buy' or 'sell'
+     * @returns {number} Grid total or 0
+     */
+    _getGridTotal(side) {
+        return Number(this.funds?.total?.grid?.[side] || 0);
+    }
+
+    /**
+     * Deduct from chainFree (accountTotals) for an order type.
+     * Used when moving from VIRTUAL→ACTIVE (funds become locked).
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {number} size - Amount to deduct
+     * @param {string} operation - Description for logging
+     */
+    _deductFromChainFree(orderType, size, operation = 'move') {
+        const isBuy = orderType === ORDER_TYPES.BUY;
+        const key = isBuy ? 'buyFree' : 'sellFree';
+
+        if (this.accountTotals && this.accountTotals[key] !== undefined) {
+            const oldFree = this.accountTotals[key];
+            this.accountTotals[key] = Math.max(0, oldFree - size);
+            const asset = isBuy ? (this.config?.assetB || 'quote') : (this.config?.assetA || 'base');
+            this.logger.log(
+                `[chainFree update] ${orderType} order ${operation}: ${oldFree.toFixed(8)} - ${size.toFixed(8)} = ${this.accountTotals[key].toFixed(8)} ${asset}`,
+                'debug'
+            );
+        }
+    }
+
+    /**
+     * Add to chainFree (accountTotals) for an order type.
+     * Used when moving from ACTIVE→VIRTUAL (funds become free).
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {number} size - Amount to add
+     * @param {string} operation - Description for logging
+     */
+    _addToChainFree(orderType, size, operation = 'release') {
+        const isBuy = orderType === ORDER_TYPES.BUY;
+        const key = isBuy ? 'buyFree' : 'sellFree';
+
+        if (this.accountTotals && this.accountTotals[key] !== undefined) {
+            const oldFree = this.accountTotals[key];
+            this.accountTotals[key] = oldFree + size;
+            const asset = isBuy ? (this.config?.assetB || 'quote') : (this.config?.assetA || 'base');
+            this.logger.log(
+                `[chainFree update] ${orderType} order ${operation}: ${oldFree.toFixed(8)} + ${size.toFixed(8)} = ${this.accountTotals[key].toFixed(8)} ${asset}`,
+                'debug'
+            );
+        }
     }
 
     /**
@@ -796,11 +862,9 @@ class OrderManager {
 
                 // Compare using asset precision so we only treat on-chain-significant
                 // size changes as different. Use the order-type to pick precision.
-                const precision = (gridOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                const precision = getPrecisionByOrderType(this.assets, gridOrder.type);
                 // Use integer equality to detect chain-significant size changes
-                const oldInt = floatToBlockchainInt(oldSize, precision);
-                const newInt = floatToBlockchainInt(newSize, precision);
-                if (oldInt !== newInt) {
+                if (compareBlockchainSizes(oldSize, newSize, precision) !== 0) {
                     const fillAmount = oldSize - newSize;
                     this.logger.log(`Order ${gridOrder.id} (${gridOrder.orderId}): size changed ${oldSize.toFixed(8)} -> ${newSize.toFixed(8)} (filled: ${fillAmount.toFixed(8)})`, 'info');
 
@@ -1088,16 +1152,7 @@ class OrderManager {
                     // Deduct order size from chainFree when moving from VIRTUAL to ACTIVE
                     // This keeps accountTotals.buyFree/sellFree accurate without re-fetching
                     if (gridOrder.state === ORDER_STATES.VIRTUAL && gridOrder.size > 0) {
-                        const size = Number(gridOrder.size) || 0;
-                        if (gridOrder.type === ORDER_TYPES.BUY && this.accountTotals?.buyFree !== undefined) {
-                            const oldFree = this.accountTotals.buyFree;
-                            this.accountTotals.buyFree = Math.max(0, this.accountTotals.buyFree - size);
-                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving VIRTUAL->ACTIVE: ${oldFree.toFixed(8)} - ${size.toFixed(8)} = ${this.accountTotals.buyFree.toFixed(8)} BTS`, 'debug');
-                        } else if (gridOrder.type === ORDER_TYPES.SELL && this.accountTotals?.sellFree !== undefined) {
-                            const oldFree = this.accountTotals.sellFree;
-                            this.accountTotals.sellFree = Math.max(0, this.accountTotals.sellFree - size);
-                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving VIRTUAL->ACTIVE: ${oldFree.toFixed(8)} - ${size.toFixed(8)} = ${this.accountTotals.sellFree.toFixed(8)} ${this.config?.assetA}`, 'debug');
-                        }
+                        this._deductFromChainFree(gridOrder.type, Number(gridOrder.size) || 0, 'VIRTUAL->ACTIVE');
                     }
                     // Create a new object with updated state to avoid mutation bugs in _updateOrder
                     // (if we mutate in place, _updateOrder can't find the old state index to remove from)
@@ -1116,16 +1171,7 @@ class OrderManager {
                     // Restore order size to chainFree when moving from ACTIVE to VIRTUAL
                     // This keeps accountTotals.buyFree/sellFree accurate without re-fetching
                     if (gridOrder.state === ORDER_STATES.ACTIVE && gridOrder.size > 0) {
-                        const size = Number(gridOrder.size) || 0;
-                        if (gridOrder.type === ORDER_TYPES.BUY && this.accountTotals?.buyFree !== undefined) {
-                            const oldFree = this.accountTotals.buyFree;
-                            this.accountTotals.buyFree += size;
-                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving ACTIVE->VIRTUAL: ${oldFree.toFixed(8)} + ${size.toFixed(8)} = ${this.accountTotals.buyFree.toFixed(8)} BTS`, 'debug');
-                        } else if (gridOrder.type === ORDER_TYPES.SELL && this.accountTotals?.sellFree !== undefined) {
-                            const oldFree = this.accountTotals.sellFree;
-                            this.accountTotals.sellFree += size;
-                            this.logger.log(`[chainFree update] ${gridOrder.type} order moving ACTIVE->VIRTUAL: ${oldFree.toFixed(8)} + ${size.toFixed(8)} = ${this.accountTotals.sellFree.toFixed(8)} ${this.config?.assetA}`, 'debug');
-                        }
+                        this._addToChainFree(gridOrder.type, Number(gridOrder.size) || 0, 'ACTIVE->VIRTUAL');
                     }
                     // Create a new object to avoid mutation bug
                     // Cancelled surplus orders: preserve original type (BUY/SELL) and size for grid history
@@ -1721,7 +1767,7 @@ class OrderManager {
                     if (!gridOrder) continue;
 
                     // Size using cacheFunds (proceeds from fills)
-                    const buyCache = this.funds.cacheFunds?.buy || 0;
+                    const buyCache = this._getCacheFunds('buy');
                     const remainingOrders = buyOrdersToCreate - ordersCreated;
                     const sizePerOrder = buyCache / remainingOrders;
                     if (sizePerOrder <= 0) {
@@ -1730,7 +1776,7 @@ class OrderManager {
                     }
 
                     // Quantize to blockchain precision
-                    const precision = this.assets?.assetB?.precision || 8;
+                    const precision = getPrecisionForSide(this.assets, 'buy');
                     const { floatToBlockchainInt, blockchainToFloat } = require('./utils');
                     const quantizedSize = blockchainToFloat(floatToBlockchainInt(sizePerOrder, precision), precision);
 
@@ -1825,7 +1871,7 @@ class OrderManager {
                     if (!gridOrder) continue;
 
                     // Size using cacheFunds (proceeds from fills)
-                    const sellCache = this.funds.cacheFunds?.sell || 0;
+                    const sellCache = this._getCacheFunds('sell');
                     const remainingOrders = sellOrdersToCreate - ordersCreated;
                     const sizePerOrder = sellCache / remainingOrders;
                     if (sizePerOrder <= 0) {
@@ -1834,7 +1880,7 @@ class OrderManager {
                     }
 
                     // Quantize to blockchain precision
-                    const precision = this.assets?.assetA?.precision || 8;
+                    const precision = getPrecisionForSide(this.assets, 'sell');
                     const { floatToBlockchainInt, blockchainToFloat } = require('./utils');
                     const quantizedSize = blockchainToFloat(floatToBlockchainInt(sizePerOrder, precision), precision);
 
@@ -2093,7 +2139,7 @@ class OrderManager {
         let simpleDistribution = 0;
         if (orderCount > 0) {
             const simpleDistributionRaw = rotationBudget / orderCount;
-            const precision = side === 'buy' ? (this.assets?.assetB?.precision ?? 8) : (this.assets?.assetA?.precision ?? 8);
+            const precision = getPrecisionForSide(this.assets, side);
             simpleDistribution = blockchainToFloat(floatToBlockchainInt(simpleDistributionRaw, precision), precision);
             this.logger.log(`Using simple distribution for rotation: ${simpleDistribution.toFixed(8)} (budget ${rotationBudget.toFixed(8)} / ${orderCount} orders)`, 'debug');
         }
@@ -2117,9 +2163,7 @@ class OrderManager {
 
             // Calculate total funds for rotation sizing
             // Total = total.grid (committed + virtuel) + cacheFunds
-            const totalFunds = side === 'buy'
-                ? (this.funds.total?.grid?.buy || 0) + (this.funds.cacheFunds?.buy || 0)
-                : (this.funds.total?.grid?.sell || 0) + (this.funds.cacheFunds?.sell || 0);
+            const totalFunds = this._getGridTotal(side) + this._getCacheFunds(side);
 
             // Create dummy orders matching the actual grid structure (all active + virtual)
             const dummyOrders = Array(totalSlots).fill(null).map((_, i) => ({
@@ -2129,11 +2173,11 @@ class OrderManager {
             }));
 
             // Calculate sizes using the same logic as grid.initializeGrid
-            const precision = side === 'buy' ? (this.assets?.assetB?.precision ?? 8) : (this.assets?.assetA?.precision ?? 8);
+            const precision = getPrecisionForSide(this.assets, side);
             const sellFunds = side === 'sell' ? totalFunds : 0;
             const buyFunds = side === 'buy' ? totalFunds : 0;
 
-            const sizedOrders = Grid.calculateOrderSizes(
+            const sizedOrders = calculateOrderSizes(
                 dummyOrders,
                 this.config,
                 sellFunds,
@@ -2184,7 +2228,7 @@ class OrderManager {
             if (totalGeometric > 0 && totalGeometric > rotationBudget) {
                 // Scale down all geometric sizes proportionally so the total equals rotationBudget
                 const scale = rotationBudget / totalGeometric;
-                const precision = side === 'buy' ? (this.assets?.assetB?.precision ?? 8) : (this.assets?.assetA?.precision ?? 8);
+                const precision = getPrecisionForSide(this.assets, side);
 
                 for (let i = 0; i < orderCount; i++) {
                     const g = geometricSizes[i] !== undefined ? geometricSizes[i] : 0;
