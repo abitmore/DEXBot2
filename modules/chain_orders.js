@@ -318,19 +318,6 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
         newSellFloat = blockchainToFloat(currentSellInt, sellPrecision);
     }
 
-    // Debug logging for partial order updates
-    if (newParams.minToReceive !== undefined && newParams.minToReceive !== null &&
-        (newParams.amountToSell === undefined || newParams.amountToSell === null)) {
-        console.log(`[buildUpdateOrderOp DEBUG] Partial order update (price-only):
-  orderId: ${orderId}
-  currentSellInt: ${currentSellInt}
-  newSellInt: ${newSellInt}
-  newSellFloat: ${newSellFloat}
-  minToReceive: ${newParams.minToReceive}
-  sellPrecision: ${sellPrecision}
-  receivePrecision: ${receivePrecision}`);
-    }
-
     // Determine an initial receive amount for price-change detection.
     // Policy:
     // - If minToReceive is provided: use it as an absolute override.
@@ -375,18 +362,9 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
 
         // If they match after rounding to precision, use the current amount (delta = 0)
         if (roundedNewSellInt === roundedCurrentSellInt || Math.abs(roundedNewSellInt - roundedCurrentSellInt) <= 1) {
-            console.log(`[buildUpdateOrderOp DEBUG] Precision fix: Adjusting amount from ${newSellInt} to ${currentSellInt} (delta was ${deltaSellInt}, now 0)`);
             newSellInt = currentSellInt;
             deltaSellInt = 0;
         }
-    }
-
-    // Debug logging for delta calculation
-    if (newParams.minToReceive !== undefined && newParams.minToReceive !== null &&
-        (newParams.amountToSell === undefined || newParams.amountToSell === null)) {
-        console.log(`[buildUpdateOrderOp DEBUG] Delta calculation:
-  deltaSellInt: ${deltaSellInt}
-  (newSellInt: ${newSellInt} - currentSellInt: ${currentSellInt})`);
     }
 
     // First, compute the receive amount with the current delta (not adjusted yet)
@@ -416,11 +394,9 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
         if (newParams.orderType === 'sell') {
             // SELL moving down = lower price = receive less → decrease by 1
             newReceiveInt = currentReceiveInt - 1;
-            console.log(`[buildUpdateOrderOp DEBUG] Price change too small for SELL order, adjusting minToReceive from ${currentReceiveInt} to ${newReceiveInt} (down by 1 unit)`);
         } else if (newParams.orderType === 'buy') {
             // BUY moving up = higher price = receive more → increase by 1
             newReceiveInt = currentReceiveInt + 1;
-            console.log(`[buildUpdateOrderOp DEBUG] Price change too small for BUY order, adjusting minToReceive from ${currentReceiveInt} to ${newReceiveInt} (up by 1 unit)`);
         }
     }
 
@@ -434,10 +410,6 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
     // we need to enforce a minimum delta of +1 to ensure operation validity
     if (!amountChanged && !priceChanged) {
         deltaSellInt = 1;
-        console.log(
-            `[buildUpdateOrderOp DEBUG] Neither amount nor price changed, but enforcing minimum delta: +1 ` +
-            `(order ${orderId}, ${newParams.orderType})`
-        );
     }
 
     // Adjust newSellInt to strict logic: current + delta
@@ -489,13 +461,10 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
     };
     // Only include delta_amount_to_sell if non-zero (BitShares rejects zero delta)
     if (deltaSellInt !== 0) {
-        console.log(`[buildUpdateOrderOp DEBUG] Adding delta_amount_to_sell: ${deltaSellInt} for order ${orderId}`);
         op.op_data.delta_amount_to_sell = {
             amount: deltaSellInt,
             asset_id: sellAssetId
         };
-    } else {
-        console.log(`[buildUpdateOrderOp DEBUG] No delta_amount_to_sell (deltaSellInt is 0) for order ${orderId}`);
     }
     if (newParams.expiration) op.op_data.expiration = newParams.expiration;
 

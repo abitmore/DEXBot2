@@ -16,7 +16,7 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { persistGridSnapshot, retryPersistenceIfNeeded, buildCreateOrderArgs } = OrderUtils;
+const { persistGridSnapshot, retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags } = OrderUtils;
 const { ORDER_STATES } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders } = require('./account_orders');
@@ -653,7 +653,7 @@ class DEXBot {
                                 // Update grid with recalculated sizes BEFORE applying corrections
                                 // (matches startup and 4-hour timer flows)
                                 if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) {
-                                    const orderType = Grid._getOrderTypeFromUpdatedFlags(
+                                    const orderType = getOrderTypeFromUpdatedFlags(
                                         this.manager._gridSidesUpdated.includes('buy'),
                                         this.manager._gridSidesUpdated.includes('sell')
                                     );
@@ -839,7 +839,7 @@ class DEXBot {
 
                             // Update grid with blockchain snapshot already fresh from initialization
                             // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
-                            const orderType = Grid._getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
+                            const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
                             await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
 
                             persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
@@ -992,14 +992,16 @@ class DEXBot {
                     if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
                         this._log(`Cache ratio threshold triggered grid update (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
 
-                        // Update grid with fresh blockchain snapshot from 4-hour timer
-                        const orderType = Grid._getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-
-                        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
-
-                        // Apply grid corrections on-chain to use new funds
+                        // Set flag to prevent fill-triggered rotations during divergence correction
+                        this._runningDivergenceCorrections = true;
                         try {
+                            // Update grid with fresh blockchain snapshot from 4-hour timer
+                            const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
+                            await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+
+                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+
+                            // Apply grid corrections on-chain to use new funds
                             await OrderUtils.applyGridDivergenceCorrections(
                                 this.manager,
                                 this.accountOrders,
@@ -1009,6 +1011,8 @@ class DEXBot {
                             this._log(`Grid corrections applied on-chain from periodic blockchain fetch`);
                         } catch (err) {
                             this._warn(`Error applying grid corrections during periodic fetch: ${err.message}`);
+                        } finally {
+                            this._runningDivergenceCorrections = false;
                         }
                     }
                 }
