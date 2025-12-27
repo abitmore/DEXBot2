@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.5] - 2025-12-27 - Partial Order Counting & Grid Navigation Fix
+
+### Fixed
+- **Partial Orders Not Counted in Grid Targets**: Critical bug in rebalancing logic
+  - Partial filled orders were excluded from order target counting
+  - Caused bot to create unnecessary orders even when at target capacity
+  - Now counts both ACTIVE and PARTIAL orders toward target
+  - Prevents "mixing up" of grid positions and erroneous order creation
+
+- **Grid Navigation Limited by ID Namespace**: Critical bug in partial order movement
+  - `preparePartialOrderMove()` used ID-based navigation (sell-N/buy-N)
+  - Could not move partial orders across sell-*/buy-* namespace boundaries
+  - Example: sell-173 (highest sell slot) couldn't move to buy-0 (adjacent by price)
+  - **Now uses price-sorted navigation** for fluid grid movement
+  - Partial orders can now move anywhere in the grid without artificial boundaries
+
+### Added
+- **`countOrdersByType()` Helper Function** in utils.js
+  - Counts both ACTIVE and PARTIAL orders by type
+  - Used consistently across order target comparisons
+  - Ensures partial orders take up real grid positions
+
+### Changed
+- **Order Target Checks**: Updated to include partial orders
+  - `checkSpreadCondition()` (line 1396): Includes partials in "both sides" check
+  - Rebalancing checks (lines 1747, 1851): Uses `countOrdersByType()`
+
+- **Spread Calculation**: Updated to include partial orders
+  - `calculateCurrentSpread()` (line 2577): Combines ACTIVE + PARTIAL orders
+  - Partial orders are on-chain and affect actual market spread
+
+### Technical Details
+- Grid is now treated as fluid: no artificial boundaries during fill handling
+- Price-sorted navigation allows unrestricted partial order movement
+- All 18 test suites pass
+- Fixed crossed rotation test expectations (test_crossed_rotation.js)
+
+---
+
 ## [0.4.4] - 2025-12-27 - Code Consolidation & BTS Fee Deduction Fix
 
 ### Fixed
