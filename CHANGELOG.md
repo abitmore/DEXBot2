@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.4] - 2025-12-27 - Code Consolidation & BTS Fee Deduction Fix
+
+### Fixed
+- **BTS Fee Deduction on Wrong Side**: Critical bug in grid resize operations
+  - Fixed fee deduction logic that incorrectly applied to non-BTS side during order resizing
+  - XRP/BTS pairs: BTS fees no longer deducted from XRP (SELL side) funds
+  - Buy side (assetB): Only deduct if assetB === 'BTS'
+  - Sell side (assetA): Only deduct if assetA === 'BTS'
+  - Fixes 70% order size reduction issue during grid resize
+
+### Changed
+- **Fee Multiplier Update**: Increased from 4x to 5x
+  - Now reserves: 1x for initial creation + 4x for rotation buffer (was 3x)
+  - Provides better buffer for multiple rotation cycles
+
+### Refactored
+- **Code Consolidation**: Moved 22 grid utility functions from grid.js to utils.js
+  - Eliminated duplicate code and scattered inline requires
+  - Centralized reusable utilities for consistent access across modules
+  - Added 15 new utility functions for common operations
+
+- **Grid Utilities Added to utils.js**:
+  - Numeric: `toFiniteNumber`, `isValidNumber`, `compareBlockchainSizes`, `computeSizeAfterFill`
+  - Order filtering: `filterOrdersByType`, `filterOrdersByTypeAndState`, `sumOrderSizes`, `mapOrderSizes`
+  - Precision: `getPrecisionByOrderType`, `getPrecisionForSide`, `getPrecisionsForManager`
+  - Size validation: `checkSizesBeforeMinimum`, `checkSizesNearMinimum`
+  - Fee calculation: `calculateOrderCreationFees`, `deductOrderFeesFromFunds`
+  - Grid sizing: `allocateFundsByWeights`, `calculateOrderSizes`, `calculateRotationOrderSizes`, `calculateGridSideDivergenceMetric`, `getOrderTypeFromUpdatedFlags`, `resolveConfiguredPriceBound`
+
+- **Manager Helper Methods**: Added fund/chainFree tracking
+  - `_getCacheFunds(side)`: Safe access to cache funds
+  - `_getGridTotal(side)`: Safe access to grid totals
+  - `_deductFromChainFree(orderType, size, operation)`: Track fund movements
+  - `_addToChainFree(orderType, size, operation)`: Track fund releases
+
+- **Code Cleanup**: Removed debug console.log statements from chain_orders.js
+
+### Technical Details
+- Reduced grid.js from 1190 to 635 lines (-46%)
+- All 18 test suites pass
+- Rotation and divergence check behavior unchanged
+- Net +166 lines: Justified by new utilities and JSDoc documentation
+
+---
+
 ## [0.4.3] - 2025-12-26 - Order Pairing, Rebalance & Fee Reservation Fixes
 
 ### Fixed
