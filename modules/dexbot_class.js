@@ -218,6 +218,31 @@ class DEXBot {
 
                         // Attempt to retry any previously failed persistence operations
                         await retryPersistenceIfNeeded(this.manager);
+
+                        // Save processed fills to persistent storage to prevent reprocessing after restart
+                        // This protects against fee double-deduction if fills are reprocessed due to crash/restart
+                        if (validFills.length > 0 && this.accountOrders) {
+                            try {
+                                const fillsToSave = {};
+                                for (const fillKey of processedFillKeys) {
+                                    fillsToSave[fillKey] = this._recentlyProcessedFills.get(fillKey) || Date.now();
+                                }
+                                await this.accountOrders.updateProcessedFillsBatch(this.config.botKey, fillsToSave);
+                                this.manager.logger.log(`Persisted ${processedFillKeys.size} fill records to prevent reprocessing`, 'debug');
+                            } catch (err) {
+                                this.manager?.logger?.log(`Warning: Failed to persist processed fills: ${err.message}`, 'warn');
+                            }
+                        }
+
+                        // Periodically clean up old fill records (older than 1 hour by default)
+                        // Only run cleanup ~10% of batches to reduce I/O overhead
+                        if (Math.random() < 0.1) {
+                            try {
+                                await this.accountOrders.cleanOldProcessedFills(this.config.botKey, 3600000);
+                            } catch (err) {
+                                this.manager?.logger?.log(`Warning: Failed to clean old processed fills: ${err.message}`, 'warn');
+                            }
+                        }
                     });
                 } catch (err) {
                     this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
@@ -623,6 +648,16 @@ class DEXBot {
 
         // Create AccountOrders with bot-specific file (one file per bot)
         this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
+
+        // Load persisted processed fills to prevent reprocessing after restart
+        // This prevents double-deduction of fees if fills are reprocessed
+        const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
+        for (const [fillKey, timestamp] of persistedFills) {
+            this._recentlyProcessedFills.set(fillKey, timestamp);
+        }
+        if (persistedFills.size > 0) {
+            this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
+        }
 
         // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
         const { parseJsonWithComments } = require('./account_bots');

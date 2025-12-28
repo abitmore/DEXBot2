@@ -285,6 +285,7 @@ class AccountOrders {
           grid: snapshot,
           cacheFunds: cacheFunds || { buy: 0, sell: 0 },
           btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
+          processedFills: {},
           createdAt: meta.createdAt,
           lastUpdated: meta.updatedAt
         };
@@ -296,6 +297,10 @@ class AccountOrders {
 
         if (Number.isFinite(btsFeesOwed)) {
           this.data.bots[botKey].btsFeesOwed = btsFeesOwed;
+        }
+        // Initialize processedFills if missing (backward compat)
+        if (!this.data.bots[botKey].processedFills) {
+          this.data.bots[botKey].processedFills = {};
         }
         const timestamp = nowIso();
         this.data.bots[botKey].lastUpdated = timestamp;
@@ -416,6 +421,132 @@ class AccountOrders {
       this.data.bots[botKey].btsFeesOwed = Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0;
       this.data.lastUpdated = nowIso();
       this._persist();
+    });
+  }
+
+  /**
+   * Load processed fill IDs for a bot to prevent reprocessing fills across restarts.
+   * Returns a Map of fillKey => timestamp for fills already processed.
+   * @param {string} botKey - Bot identifier key
+   * @param {boolean} forceReload - If true, reload from disk to ensure fresh data
+   * @returns {Map} Map of fillKey => timestamp
+   */
+  loadProcessedFills(botKey, forceReload = false) {
+    // Optionally reload from disk to prevent using stale in-memory data
+    if (forceReload) {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+    }
+
+    if (this.data && this.data.bots && this.data.bots[botKey]) {
+      const botData = this.data.bots[botKey];
+      const fills = botData.processedFills || {};
+      // Convert stored object to Map
+      const fillMap = new Map(Object.entries(fills));
+      return fillMap;
+    }
+    return new Map();
+  }
+
+  /**
+   * Add or update a processed fill record (prevents reprocessing same fills).
+   * @param {string} botKey - Bot identifier key
+   * @param {string} fillKey - Unique fill identifier (e.g., "order_id:block_num:history_id")
+   * @param {number} timestamp - Timestamp when fill was processed
+   */
+  async updateProcessedFills(botKey, fillKey, timestamp) {
+    if (!botKey || !fillKey) return;
+
+    // Use AsyncLock to serialize writes
+    await this._persistenceLock.acquire(async () => {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+
+      if (!this.data || !this.data.bots || !this.data.bots[botKey]) {
+        return;
+      }
+
+      if (!this.data.bots[botKey].processedFills) {
+        this.data.bots[botKey].processedFills = {};
+      }
+
+      // Store fill with timestamp
+      this.data.bots[botKey].processedFills[fillKey] = timestamp;
+      this.data.lastUpdated = nowIso();
+      this._persist();
+    });
+  }
+
+  /**
+   * Update multiple processed fills at once (more efficient than updating one-by-one).
+   * @param {string} botKey - Bot identifier key
+   * @param {Map|Object} fills - Map or object of fillKey => timestamp
+   */
+  async updateProcessedFillsBatch(botKey, fills) {
+    if (!botKey || !fills || (fills instanceof Map && fills.size === 0) || (typeof fills === 'object' && Object.keys(fills).length === 0)) {
+      return;
+    }
+
+    // Use AsyncLock to serialize writes
+    await this._persistenceLock.acquire(async () => {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+
+      if (!this.data || !this.data.bots || !this.data.bots[botKey]) {
+        return;
+      }
+
+      if (!this.data.bots[botKey].processedFills) {
+        this.data.bots[botKey].processedFills = {};
+      }
+
+      // Merge fills
+      if (fills instanceof Map) {
+        for (const [key, timestamp] of fills) {
+          this.data.bots[botKey].processedFills[key] = timestamp;
+        }
+      } else {
+        Object.assign(this.data.bots[botKey].processedFills, fills);
+      }
+
+      this.data.lastUpdated = nowIso();
+      this._persist();
+    });
+  }
+
+  /**
+   * Clean up old processed fill records (remove entries older than specified age).
+   * Prevents processedFills from growing unbounded over time.
+   * @param {string} botKey - Bot identifier key
+   * @param {number} olderThanMs - Remove fills processed more than this many milliseconds ago
+   */
+  async cleanOldProcessedFills(botKey, olderThanMs = 3600000) {
+    // Default: 1 hour (3600000ms)
+    if (!botKey) return;
+
+    await this._persistenceLock.acquire(async () => {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+
+      if (!this.data || !this.data.bots || !this.data.bots[botKey]) {
+        return;
+      }
+
+      if (!this.data.bots[botKey].processedFills) {
+        return;
+      }
+
+      const now = Date.now();
+      const fills = this.data.bots[botKey].processedFills;
+      let deletedCount = 0;
+
+      for (const [fillKey, timestamp] of Object.entries(fills)) {
+        if (now - timestamp > olderThanMs) {
+          delete fills[fillKey];
+          deletedCount++;
+        }
+      }
+
+      if (deletedCount > 0) {
+        this.data.lastUpdated = nowIso();
+        this._persist();
+      }
     });
   }
 
