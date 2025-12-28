@@ -2,6 +2,94 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.6] - 2025-12-28 - Race Condition Prevention with AsyncLock Pattern
+
+### Fixed
+- **20+ Race Conditions Across Codebase**: Comprehensive race condition prevention using AsyncLock pattern
+  - TOCTOU (Time-of-Check-Time-of-Use) in file persistence operations
+  - Read-modify-write races on global state variables
+  - Concurrent account subscription management
+  - Account resolution cache synchronization
+  - Order grid synchronization races
+  - Concurrent fill processing with AsyncLock queuing
+
+### Added
+- **AsyncLock Utility**: New queue-based mutual exclusion system (modules/order/async_lock.js)
+  - FIFO queue-based synchronization for async operations
+  - Prevents concurrent operations from interfering with critical sections
+  - Proper error handling and re-throwing
+  - Used to protect all critical sections across codebase
+
+- **Fresh Data Reload on Write**: All write operations reload from disk before persisting
+  - `storeMasterGrid()`: Reloads before writing grid snapshot
+  - `updateCacheFunds()`: Always reload to prevent stale data overwrites
+  - `updateBtsFeesOwed()`: Always reload to ensure fresh state
+  - Fixes race between processes where stale in-memory data overwrites fresh state
+
+- **forceReload Option**: Added to all load methods for explicit fresh data reads
+  - `loadBotGrid(botKey, forceReload)`: Optional fresh disk read
+  - `loadCacheFunds(botKey, forceReload)`: Optional fresh disk read
+  - `loadBtsFeesOwed(botKey, forceReload)`: Optional fresh disk read
+  - `getDBAssetBalances(botKeyOrName, forceReload)`: Optional fresh disk read
+
+### Changed
+- **Per-Bot File Architecture**: Now protected with AsyncLock for safe concurrent writes
+  - Existing per-bot mode (each bot has own file: `profiles/orders/{botKey}.json`) now race-safe
+  - `_persistenceLock` serializes all write operations to prevent TOCTOU races
+  - `ensureBotEntries()` now async with lock protection
+  - Per-bot subscriptions and resolution cache also protected
+  - Legacy shared mode still supported for backward compatibility
+
+- **AsyncLock Patterns**: Multiple lock instances for different critical sections
+  - `_fillProcessingLock`: Serializes fill event processing in dexbot_class
+  - `_divergenceLock`: Protects divergence correction operations
+  - `_correctionsLock`: Protects ordersNeedingPriceCorrection in manager
+  - `_persistenceLock`: Protects file I/O operations in account_orders
+  - `_subscriptionLock`: Protects accountSubscriptions map in chain_orders
+  - `_preferredAccountLock`: Protects preferredAccount global state
+  - `_resolutionLock`: Protects account resolution cache
+
+- **Persistence Methods Now Async**:
+  - `manager.deductBtsFees()`: Made async, uses lock
+  - `manager._persistWithRetry()`: Made async
+  - `manager._persistCacheFunds()`: Made async
+  - `manager._persistBtsFeesOwed()`: Made async
+  - `grid._clearAndPersistCacheFunds()`: Made async, awaited
+  - `grid._persistCacheFunds()`: Made async, awaited
+  - All callers properly await these methods
+
+- **Account Subscription Management**: Atomic check-and-set with AsyncLock
+  - `_ensureAccountSubscriber()`: Uses lock to prevent duplicate subscriptions
+  - `listenForFills()`: Protects callback registration inside lock
+  - `unsubscribe()`: Atomic removal with lock protection
+
+### Technical Details
+- **TOCTOU Fix**: Reload-before-write prevents stale in-memory overwrites
+  - Example: Process A reads file, Process B writes update, Process A overwrites with stale data
+  - Solution: Always reload immediately before writing
+  - Applied to: storeMasterGrid, updateCacheFunds, updateBtsFeesOwed
+
+- **Async/Await Consistency**: All async operations properly awaited
+  - No fire-and-forget promises
+  - Proper error propagation throughout call chains
+  - Busy-wait loops replaced with proper async setTimeout
+
+- **Lock Nesting**: Careful lock ordering prevents deadlocks
+  - No nested lock acquisition (locks released before acquiring another)
+  - Each critical section has single responsible lock
+
+### Testing
+- All 20 integration tests passing ✅
+- Test coverage includes: ensureBotEntries, storeMasterGrid, cacheFunds persistence, fee deduction
+- Grid comparison, startup reconciliation, partial order handling all verified
+
+### Migration
+- **Backward Compatible**: No breaking changes to APIs or configuration
+- **No Schema Changes**: File format unchanged; existing bot data continues to work
+- **Transparent to Users**: Race condition fixes are internal improvements
+
+---
+
 ## [0.4.5] - 2025-12-27 - Partial Order Counting & Grid Navigation Fix
 
 ### Fixed

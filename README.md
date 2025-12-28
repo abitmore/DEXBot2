@@ -6,9 +6,10 @@ A sophisticated market making bot for the BitShares Decentralized Exchange (DEX)
 
 - **Staggered Order Grid**: Creates geometric order grids around market price for efficient market making.
 - **Dynamic Rebalancing**: Automatically adjusts orders after fills to maintain optimal spread.
-- **Multi-Bot Support**: Run multiple bots simultaneously on different trading pairs.
+- **Multi-Bot Support**: Run multiple bots simultaneously on different trading pairs with race-condition protection.
 - **PM2 Process Management**: Automatic restart and monitoring for production use.
 - **Master Password Security**: Encrypted key storage with RAM-only password handling.
+- **Race Condition Prevention**: AsyncLock-based concurrency control for safe multi-bot operations and file persistence.
 
 ## 🔥 Quick Start
 
@@ -473,11 +474,11 @@ Below is a short summary of the modules in this repository and what they provide
 
 - `modules/account_bots.js`: Interactive editor for bot configurations (`profiles/bots.json`). Prompts accept numbers, percentages and multiplier strings (e.g. `5x`).
 - `modules/chain_keys.js`: Encrypted master-password storage for private keys (`profiles/keys.json`), plus key authentication and management utilities.
-- `modules/chain_orders.js`: Account-level order operations: select account, create/update/cancel orders, listen for fills with deduplication, read open orders. Uses 'history' mode for fill processing which matches orders from blockchain events.
+- `modules/chain_orders.js`: Account-level order operations: select account, create/update/cancel orders, listen for fills with deduplication, read open orders. Uses 'history' mode for fill processing which matches orders from blockchain events. Protected with AsyncLock for subscription management and account state.
 - `modules/bitshares_client.js`: Shared BitShares client wrapper and connection utilities (`BitShares`, `createAccountClient`, `waitForConnected`).
 - `modules/btsdex_event_patch.js`: Runtime patch for `btsdex` library to improve history and account event handling.
-- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-key>.json`). Manages bot-specific files with atomic updates and race-condition protection. **Note:** Legacy pendingProceeds data (pre-0.4.0) is migrated to cacheFunds via `scripts/migrate_pending_proceeds.js`.
-- `modules/dexbot_class.js`: Core `DEXBot` class — handles bot initialization, account setup, order placement, fill processing, grid rebalancing, and divergence detection. Shared implementation used by both `bot.js` (single-bot) and `dexbot.js` (multi-bot orchestration).
+- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-key>.json`). Manages bot-specific files with AsyncLock-protected atomic updates, reload-before-write TOCTOU prevention, and optional forceReload for fresh disk reads. **Note:** Legacy pendingProceeds data (pre-0.4.0) is migrated to cacheFunds via `scripts/migrate_pending_proceeds.js`.
+- `modules/dexbot_class.js`: Core `DEXBot` class — handles bot initialization, account setup, order placement, fill processing, grid rebalancing, and divergence detection. Fill processing protected by AsyncLock to safely handle concurrent fills. Shared implementation used by both `bot.js` (single-bot) and `dexbot.js` (multi-bot orchestration).
 
 ### 📊 Order Subsystem (`modules/order/`)
 
@@ -486,10 +487,11 @@ Core order generation, management, and grid algorithms:
 - `modules/constants.js`: Centralized order constants (types: `SELL`, `BUY`, `SPREAD`; states: `VIRTUAL`, `ACTIVE`, `PARTIAL`), timing constants, and `DEFAULT_CONFIG`.
 - `modules/order/index.js`: Public entry point: exports `OrderManager` and `runOrderManagerCalculation()` (dry-run helper).
 - `modules/order/logger.js`: Colored console logger and `logOrderGrid()` helper for formatted output.
-- `modules/order/manager.js`: `OrderManager` class — derives market price, resolves bounds, builds and manages the grid, handles fills and rebalancing.
-- `modules/order/grid.js`: Grid generation algorithms, order sizing, weight distribution, and minimum size validation.
+- `modules/order/async_lock.js`: Queue-based AsyncLock utility for race condition prevention. Provides FIFO mutual exclusion for protecting critical sections across the codebase. Used by all modules that require atomic operations.
+- `modules/order/manager.js`: `OrderManager` class — derives market price, resolves bounds, builds and manages the grid, handles fills and rebalancing. Persistence methods are async with AsyncLock protection. Includes optional `forceReload` for fresh data reads.
+- `modules/order/grid.js`: Grid generation algorithms, order sizing, weight distribution, and minimum size validation. Persistence operations are async with proper await handling.
 - `modules/order/runner.js`: Runner for calculation passes and dry-runs without blockchain interaction.
-- `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers).
+- `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers). Includes grid utility functions (filter, sum, precision handling, fee calculation).
 - `modules/order/startup_reconcile.js`: Startup grid reconciliation and synchronization. Compares persisted grid state with on-chain open orders to detect offline fills and decide grid recovery strategy.
 
 ## 🔐 Environment Variables
