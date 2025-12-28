@@ -2,9 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.6] - 2025-12-28 - Race Condition Prevention with AsyncLock Pattern
+---
+
+**Note on v0.4.6**: This version includes a backported critical cacheFunds double-counting fix that was originally released in v0.4.7, then retagged to v0.4.6 for proper patch versioning. v0.4.7 release was deleted. Users should upgrade to v0.4.6 to fix the 649.72 BTS discrepancy issue.
+
+---
+
+## [0.4.6] - 2025-12-28 - CacheFunds Double-Counting Fix & Race Condition Prevention
 
 ### Fixed
+- **CRITICAL: CacheFunds Double-Counting in Partial Fills**: Fixed proceeds being counted twice
+  - **Problem**: When partial fill occurred, proceeds added to chainFree, then available recalculated from updated chainFree (which included proceeds), resulting in both proceeds + available added to cacheFunds
+  - **Impact**: User reported 649.72 BTS discrepancy in fund accounting
+  - **Solution**: Store available funds before updating chainFree in `_adjustFunds()`, use pre-update value in `processFilledOrders()` instead of recalculating
+  - **Result**: Proceeds counted once while preserving fund cycling feature for new deposits
+  - **Bug Timeline**: Introduced in v0.4.0 with fund consolidation refactor, present through v0.4.5
+
 - **20+ Race Conditions Across Codebase**: Comprehensive race condition prevention using AsyncLock pattern
   - TOCTOU (Time-of-Check-Time-of-Use) in file persistence operations
   - Read-modify-write races on global state variables
