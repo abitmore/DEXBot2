@@ -20,6 +20,7 @@ const { persistGridSnapshot, retryPersistenceIfNeeded, buildCreateOrderArgs, get
 const { ORDER_STATES } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders } = require('./account_orders');
+const AsyncLock = require('./order/async_lock');
 
 const PROFILES_BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
@@ -37,13 +38,16 @@ class DEXBot {
         this.privateKey = null;
         this.manager = null;
         this.accountOrders = null;  // Will be initialized in start()
-        this.isResyncing = false;
         this.triggerFile = path.join(PROFILES_DIR, `recalculate.${config.botKey}.trigger`);
         this._recentlyProcessedFills = new Map();
         this._fillDedupeWindowMs = 5000;
-        this._processingFill = false;
+
+        // AsyncLock instances to prevent TOCTOU races (instead of boolean flags)
+        // These ensure only one fill processing or divergence correction runs at a time
+        this._fillProcessingLock = new AsyncLock();
+        this._divergenceLock = new AsyncLock();
+
         this._pendingFills = [];
-        this._runningDivergenceCorrections = false;  // Prevent rotation during divergence check/update
         this.logPrefix = options.logPrefix || '';
     }
 
@@ -61,6 +65,165 @@ class DEXBot {
         } else {
             console.warn(msg);
         }
+    }
+
+    /**
+     * Create the fill callback for listenForFills.
+     * Separated from start() to allow deferred activation after startup completes.
+     * @param {Object} chainOrders - Chain orders module for blockchain operations
+     * @returns {Function} Async callback for processing fills
+     * @private
+     */
+    _createFillCallback(chainOrders) {
+        return async (fills) => {
+            if (this.manager && !this.config.dryRun) {
+                // Use AsyncLock to ensure only one fill processing runs at a time
+                // This prevents TOCTOU race where multiple callbacks could interleave
+                try {
+                    await this._fillProcessingLock.acquire(async () => {
+                        const allFills = [...fills, ...this._pendingFills];
+                        this._pendingFills = [];
+
+                        const validFills = [];
+                        const processedFillKeys = new Set();
+
+                        // 1. Filter and Deduplicate
+                        for (const fill of allFills) {
+                            if (fill && fill.op && fill.op[0] === 4) {
+                                const fillOp = fill.op[1];
+                                if (fillOp.is_maker === false) {
+                                    this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
+                                    continue;
+                                }
+
+                                // Use (order_id, block_num, history_id) as unique key to handle multiple fills in same block
+                                const fillKey = `${fillOp.order_id}:${fill.block_num}:${fill.id || ''}`;
+                                const now = Date.now();
+                                if (this._recentlyProcessedFills.has(fillKey)) {
+                                    const lastProcessed = this._recentlyProcessedFills.get(fillKey);
+                                    if (now - lastProcessed < this._fillDedupeWindowMs) {
+                                        this.manager.logger.log(`Skipping duplicate fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
+                                        continue;
+                                    }
+                                }
+
+                                // Check local dedupe set for this batch
+                                if (processedFillKeys.has(fillKey)) continue;
+
+                                processedFillKeys.add(fillKey);
+                                this._recentlyProcessedFills.set(fillKey, now);
+                                validFills.push(fill);
+
+                                // Log nicely formatted fill info
+                                const paysAmount = fillOp.pays ? fillOp.pays.amount : '?';
+                                const paysAsset = fillOp.pays ? fillOp.pays.asset_id : '?';
+                                const receivesAmount = fillOp.receives ? fillOp.receives.amount : '?';
+                                const receivesAsset = fillOp.receives ? fillOp.receives.asset_id : '?';
+                                console.log(`\n===== FILL DETECTED =====`);
+                                console.log(`Order ID: ${fillOp.order_id}`);
+                                console.log(`Pays: ${paysAmount} (asset ${paysAsset})`);
+                                console.log(`Receives: ${receivesAmount} (asset ${receivesAsset})`);
+                                console.log(`is_maker: ${fillOp.is_maker}`);
+                                console.log(`Block: ${fill.block_num}, Time: ${fill.block_time}`);
+                                console.log(`History ID: ${fill.id || 'N/A'}`);
+                                console.log(`=========================\n`);
+                            }
+                        }
+
+                        // Clean up old entries
+                        const now = Date.now();
+                        for (const [key, timestamp] of this._recentlyProcessedFills) {
+                            if (now - timestamp > this._fillDedupeWindowMs * 2) {
+                                this._recentlyProcessedFills.delete(key);
+                            }
+                        }
+
+                        if (validFills.length === 0) return;
+
+                        // 2. Sync and Collect Filled Orders
+                        const allFilledOrders = [];
+                        let ordersNeedingCorrection = [];
+                        const fillMode = chainOrders.getFillProcessingMode();
+
+                        if (fillMode === 'history') {
+                            this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'history' mode`, 'info');
+                            for (const fill of validFills) {
+                                const fillOp = fill.op[1];
+                                const result = this.manager.syncFromFillHistory(fillOp);
+                                if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
+                            }
+                        } else {
+                            // Open orders mode: fetch once, then sync each fill against it
+                            this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'open' mode`, 'info');
+                            const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
+                            const result = this.manager.syncFromOpenOrders(chainOpenOrders, validFills[0].op[1]);
+                            if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
+                            if (result.ordersNeedingCorrection) ordersNeedingCorrection = result.ordersNeedingCorrection;
+                        }
+
+                        // 3. Handle Price Corrections (immediate, loose - keeping original logic for now)
+                        if (ordersNeedingCorrection.length > 0) {
+                            this.manager.logger.log(`Correcting ${ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');
+                            const correctionResult = await OrderUtils.correctAllPriceMismatches(
+                                this.manager, this.account, this.privateKey, chainOrders
+                            );
+                            if (correctionResult.failed > 0) {
+                                this.manager.logger.log(`${correctionResult.failed} order correction(s) failed`, 'error');
+                            }
+                        }
+
+                        // 4. Batch Rebalance and Execution
+                        if (allFilledOrders.length > 0) {
+                            this.manager.logger.log(`Aggregating ${allFilledOrders.length} filled orders for batch processing...`, 'info');
+
+                            // This updates funds with proceeds from ALL filled orders and returns the rebalance result
+                            const rebalanceResult = await this.manager.processFilledOrders(allFilledOrders);
+
+                            // Execute batch transaction (returns object with executed flag and hadRotation flag)
+                            const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
+
+                            // Always persist snapshot after placing orders on-chain
+                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+
+                            // Only run divergence checks if rotation was completed
+                            if (batchResult.hadRotation) {
+                                // Use AsyncLock for divergence corrections to prevent concurrent grid updates
+                                await this._divergenceLock.acquire(async () => {
+                                    // After rotation, run grid comparisons to detect divergence and update _gridSidesUpdated
+                                    await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
+
+                                    // Update grid with recalculated sizes BEFORE applying corrections
+                                    // (matches startup and 4-hour timer flows)
+                                    if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) {
+                                        const orderType = getOrderTypeFromUpdatedFlags(
+                                            this.manager._gridSidesUpdated.includes('buy'),
+                                            this.manager._gridSidesUpdated.includes('sell')
+                                        );
+                                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
+                                        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                    }
+
+                                    // Apply order corrections for sides marked by grid comparisons
+                                    await OrderUtils.applyGridDivergenceCorrections(
+                                        this.manager,
+                                        this.accountOrders,
+                                        this.config.botKey,
+                                        this.updateOrdersOnChainBatch.bind(this)
+                                    );
+                                });
+                            } else {
+                                this.manager.logger.log(`No rotation occurred - skipping divergence checks`, 'debug');
+                            }
+                        }
+
+                        // Attempt to retry any previously failed persistence operations
+                        retryPersistenceIfNeeded(this.manager);
+                    });
+                } catch (err) {
+                    this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
+                }
+            }
+        };
     }
 
     async initialize(masterPassword = null) {
@@ -377,7 +540,8 @@ class DEXBot {
 
                 if (ctx.kind === 'rotation') {
                     // Skip rotation if we're running divergence corrections (prevents feedback loops)
-                    if (this._runningDivergenceCorrections) {
+                    // Check if divergence lock is currently processing (locked or queued)
+                    if (this._divergenceLock.isLocked() || this._divergenceLock.getQueueLength() > 0) {
                         this.manager.logger.log(`Skipping rotation during divergence correction phase: ${ctx.rotation?.oldOrder?.orderId}`, 'debug');
                         continue;
                     }
@@ -453,25 +617,6 @@ class DEXBot {
         return { executed: true, hadRotation };  // Return whether batch executed and if rotation happened
     }
 
-    _schedulePendingFillsRetry(chainOrders) {
-        if (!chainOrders || this._pendingFills.length === 0) return;
-
-        const pendingCount = this._pendingFills.length;
-        this.manager?.logger?.log(
-            `Scheduling retry for ${pendingCount} pending fill(s) in 100ms`,
-            'debug'
-        );
-
-        // Schedule on next event loop iteration (non-blocking)
-        setImmediate(() => {
-            if (this._pendingFills.length > 0) {
-                // Small delay allows additional fills to accumulate before retry
-                setTimeout(() => {
-                    chainOrders.listenForFills(this.account, () => { });
-                }, 100);
-            }
-        });
-    }
 
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
@@ -524,170 +669,6 @@ class DEXBot {
         } catch (err) {
             this._warn(`Fee cache initialization failed: ${err.message}`);
         }
-
-        // Start listening for fills
-        await chainOrders.listenForFills(this.account || undefined, async (fills) => {
-            if (this.manager && !this.isResyncing && !this.config.dryRun) {
-                // Queue fills if already processing to prevent concurrent operations
-                if (this._processingFill) {
-                    this._pendingFills.push(...fills);
-                    this.manager.logger.log(`Fill processing in progress, queued ${fills.length} fill(s)`, 'debug');
-                    return;
-                }
-                this._processingFill = true;
-
-                try {
-                    const allFills = [...fills, ...this._pendingFills];
-                    this._pendingFills = [];
-
-                    const validFills = [];
-                    const processedFillKeys = new Set();
-
-                    // 1. Filter and Deduplicate
-                    for (const fill of allFills) {
-                        if (fill && fill.op && fill.op[0] === 4) {
-                            const fillOp = fill.op[1];
-                            if (fillOp.is_maker === false) {
-                                this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
-                                continue;
-                            }
-
-                            // Use (order_id, block_num, history_id) as unique key to handle multiple fills in same block
-                            const fillKey = `${fillOp.order_id}:${fill.block_num}:${fill.id || ''}`;
-                            const now = Date.now();
-                            if (this._recentlyProcessedFills.has(fillKey)) {
-                                const lastProcessed = this._recentlyProcessedFills.get(fillKey);
-                                if (now - lastProcessed < this._fillDedupeWindowMs) {
-                                    this.manager.logger.log(`Skipping duplicate fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
-                                    continue;
-                                }
-                            }
-
-                            // Check local dedupe set for this batch
-                            if (processedFillKeys.has(fillKey)) continue;
-
-                            processedFillKeys.add(fillKey);
-                            this._recentlyProcessedFills.set(fillKey, now);
-                            validFills.push(fill);
-
-                            // Log nicely formatted fill info
-                            const paysAmount = fillOp.pays ? fillOp.pays.amount : '?';
-                            const paysAsset = fillOp.pays ? fillOp.pays.asset_id : '?';
-                            const receivesAmount = fillOp.receives ? fillOp.receives.amount : '?';
-                            const receivesAsset = fillOp.receives ? fillOp.receives.asset_id : '?';
-                            console.log(`\n===== FILL DETECTED =====`);
-                            console.log(`Order ID: ${fillOp.order_id}`);
-                            console.log(`Pays: ${paysAmount} (asset ${paysAsset})`);
-                            console.log(`Receives: ${receivesAmount} (asset ${receivesAsset})`);
-                            console.log(`is_maker: ${fillOp.is_maker}`);
-                            console.log(`Block: ${fill.block_num}, Time: ${fill.block_time}`);
-                            console.log(`History ID: ${fill.id || 'N/A'}`);
-                            console.log(`=========================\n`);
-                        }
-                    }
-
-                    // Clean up old entries
-                    const now = Date.now();
-                    for (const [key, timestamp] of this._recentlyProcessedFills) {
-                        if (now - timestamp > this._fillDedupeWindowMs * 2) {
-                            this._recentlyProcessedFills.delete(key);
-                        }
-                    }
-
-                    if (validFills.length === 0) return;
-
-                    // 2. Sync and Collect Filled Orders
-                    const allFilledOrders = [];
-                    let ordersNeedingCorrection = [];
-                    const fillMode = chainOrders.getFillProcessingMode();
-
-                    if (fillMode === 'history') {
-                        this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'history' mode`, 'info');
-                        for (const fill of validFills) {
-                            const fillOp = fill.op[1];
-                            const result = this.manager.syncFromFillHistory(fillOp);
-                            if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
-                        }
-                    } else {
-                        // Open orders mode: fetch once, then sync each fill against it
-                        this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'open' mode`, 'info');
-                        const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
-                        const result = this.manager.syncFromOpenOrders(chainOpenOrders, validFills[0].op[1]);
-                        if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
-                        if (result.ordersNeedingCorrection) ordersNeedingCorrection = result.ordersNeedingCorrection;
-                    }
-
-                    // 3. Handle Price Corrections (immediate, loose - keeping original logic for now)
-                    if (ordersNeedingCorrection.length > 0) {
-                        this.manager.logger.log(`Correcting ${ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');
-                        const correctionResult = await OrderUtils.correctAllPriceMismatches(
-                            this.manager, this.account, this.privateKey, chainOrders
-                        );
-                        if (correctionResult.failed > 0) {
-                            this.manager.logger.log(`${correctionResult.failed} order correction(s) failed`, 'error');
-                        }
-                    }
-
-                    // 4. Batch Rebalance and Execution
-                    if (allFilledOrders.length > 0) {
-                        this.manager.logger.log(`Aggregating ${allFilledOrders.length} filled orders for batch processing...`, 'info');
-
-                        // This updates funds with proceeds from ALL filled orders and returns the rebalance result
-                        const rebalanceResult = await this.manager.processFilledOrders(allFilledOrders);
-
-                        // Execute batch transaction (returns object with executed flag and hadRotation flag)
-                        const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
-
-                        // Always persist snapshot after placing orders on-chain
-                        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
-
-                        // Only run divergence checks if rotation was completed
-                        if (batchResult.hadRotation) {
-                            try {
-                                // Set flag to prevent rotation during divergence correction phase
-                                this._runningDivergenceCorrections = true;
-
-                                // After rotation, run grid comparisons to detect divergence and update _gridSidesUpdated
-                                await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
-
-                                // Update grid with recalculated sizes BEFORE applying corrections
-                                // (matches startup and 4-hour timer flows)
-                                if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) {
-                                    const orderType = getOrderTypeFromUpdatedFlags(
-                                        this.manager._gridSidesUpdated.includes('buy'),
-                                        this.manager._gridSidesUpdated.includes('sell')
-                                    );
-                                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
-                                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
-                                }
-
-                                // Apply order corrections for sides marked by grid comparisons
-                                await OrderUtils.applyGridDivergenceCorrections(
-                                    this.manager,
-                                    this.accountOrders,
-                                    this.config.botKey,
-                                    this.updateOrdersOnChainBatch.bind(this)
-                                );
-                            } finally {
-                                // Always clear flag when done, even if divergence corrections fail
-                                this._runningDivergenceCorrections = false;
-                            }
-                        } else {
-                            this.manager.logger.log(`No rotation occurred - skipping divergence checks`, 'debug');
-                        }
-                    }
-
-                    // Attempt to retry any previously failed persistence operations
-                    retryPersistenceIfNeeded(this.manager);
-                } catch (err) {
-                    this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
-                } finally {
-                    this._processingFill = false;
-                    // Safely schedule retry for any fills that arrived during processing
-                    this._schedulePendingFillsRetry(chainOrders);
-                }
-            }
-        });
 
         const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
         const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
@@ -869,37 +850,34 @@ class DEXBot {
         /**
          * Perform a full grid resync: cancel orphan orders and regenerate grid.
          * Triggered by the presence of a `recalculate.<botKey>.trigger` file.
+         * Uses AsyncLock to prevent concurrent resync/fill processing.
          */
         const performResync = async () => {
-            if (this.isResyncing) {
-                this._log('Resync already in progress, skipping trigger.');
-                return;
-            }
-            this.isResyncing = true;
-            try {
+            // Use fill lock to prevent concurrent modifications during resync
+            await this._fillProcessingLock.acquire(async () => {
                 this._log('Grid regeneration triggered. Performing full grid resync...');
-                const readFn = () => chainOrders.readOpenOrders(this.accountId);
-                await Grid.recalculateGrid(this.manager, {
-                    readOpenOrdersFn: readFn,
-                    chainOrders,
-                    account: this.account,
-                    privateKey: this.privateKey,
-                    config: this.config,
-                });
-                // Reset cacheFunds when grid is regenerated
-                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                this.manager.funds.btsFeesOwed = 0;
-                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                try {
+                    const readFn = () => chainOrders.readOpenOrders(this.accountId);
+                    await Grid.recalculateGrid(this.manager, {
+                        readOpenOrdersFn: readFn,
+                        chainOrders,
+                        account: this.account,
+                        privateKey: this.privateKey,
+                        config: this.config,
+                    });
+                    // Reset cacheFunds when grid is regenerated
+                    this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+                    this.manager.funds.btsFeesOwed = 0;
+                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
 
-                if (fs.existsSync(this.triggerFile)) {
-                    fs.unlinkSync(this.triggerFile);
-                    this._log('Removed trigger file.');
+                    if (fs.existsSync(this.triggerFile)) {
+                        fs.unlinkSync(this.triggerFile);
+                        this._log('Removed trigger file.');
+                    }
+                } catch (err) {
+                    this._log(`Error during triggered resync: ${err.message}`);
                 }
-            } catch (err) {
-                this._log(`Error during triggered resync: ${err.message}`);
-            } finally {
-                this.isResyncing = false;
-            }
+            });
         };
 
         if (fs.existsSync(this.triggerFile)) {
@@ -928,6 +906,11 @@ class DEXBot {
             this._warn(`Failed to setup file watcher: ${err.message}`);
         }
 
+        // Activate fill listener AFTER all startup operations complete
+        // This prevents race conditions between startup grid operations and fill processing
+        await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+        this._log('Fill listener activated (after startup complete)');
+
         // Start periodic blockchain fetch to keep blockchain variables updated
         this._setupBlockchainFetchInterval();
 
@@ -938,8 +921,11 @@ class DEXBot {
         (async () => {
             while (true) {
                 try {
-                    if (this.manager && !this.isResyncing) {
-                        await this.manager.fetchOrderUpdates();
+                    if (this.manager && !this.config.dryRun) {
+                        // Wrap fetchOrderUpdates in fill lock to prevent concurrent modifications
+                        await this._fillProcessingLock.acquire(async () => {
+                            await this.manager.fetchOrderUpdates();
+                        });
                     }
                 } catch (err) { console.error('Order manager loop error:', err.message); }
                 await new Promise(resolve => setTimeout(resolve, loopDelayMs));
@@ -979,43 +965,39 @@ class DEXBot {
         const intervalMs = intervalMin * 60 * 1000;
 
         // Set up the periodic fetch
+        // Entire callback wrapped in fill lock to prevent race with fill processing
         this._blockchainFetchInterval = setInterval(async () => {
             try {
-                this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
-                await this.manager.fetchAccountTotals(this.accountId);
+                await this._fillProcessingLock.acquire(async () => {
+                    this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
+                    await this.manager.fetchAccountTotals(this.accountId);
 
-                // Check if newly fetched blockchain funds trigger a grid update
-                // Only update grid if no fills are being processed (prevent concurrent modifications)
-                if (!this._processingFill && !this._runningDivergenceCorrections &&
-                    this.manager && this.manager.orders && this.manager.orders.size > 0) {
-                    const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
-                    if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                        this._log(`Cache ratio threshold triggered grid update (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+                    // Check if newly fetched blockchain funds trigger a grid update
+                    if (this.manager && this.manager.orders && this.manager.orders.size > 0) {
+                        const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+                        if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
+                            this._log(`Cache ratio threshold triggered grid update (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
 
-                        // Set flag to prevent fill-triggered rotations during divergence correction
-                        this._runningDivergenceCorrections = true;
-                        try {
-                            // Update grid with fresh blockchain snapshot from 4-hour timer
-                            const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-                            await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+                            // Divergence lock for grid updates (nested inside fill lock)
+                            await this._divergenceLock.acquire(async () => {
+                                // Update grid with fresh blockchain snapshot from 4-hour timer
+                                const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
+                                await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
 
-                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
 
-                            // Apply grid corrections on-chain to use new funds
-                            await OrderUtils.applyGridDivergenceCorrections(
-                                this.manager,
-                                this.accountOrders,
-                                this.config.botKey,
-                                this.updateOrdersOnChainBatch.bind(this)
-                            );
-                            this._log(`Grid corrections applied on-chain from periodic blockchain fetch`);
-                        } catch (err) {
-                            this._warn(`Error applying grid corrections during periodic fetch: ${err.message}`);
-                        } finally {
-                            this._runningDivergenceCorrections = false;
+                                // Apply grid corrections on-chain to use new funds
+                                await OrderUtils.applyGridDivergenceCorrections(
+                                    this.manager,
+                                    this.accountOrders,
+                                    this.config.botKey,
+                                    this.updateOrdersOnChainBatch.bind(this)
+                                );
+                                this._log(`Grid corrections applied on-chain from periodic blockchain fetch`);
+                            });
                         }
                     }
-                }
+                });
             } catch (err) {
                 this._warn(`Error during periodic blockchain fetch: ${err && err.message ? err.message : err}`);
             }
