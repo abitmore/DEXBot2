@@ -1166,8 +1166,10 @@ class OrderManager {
             }
             case 'cancelOrder': {
                 const orderId = chainData;
+                this.logger.log(`[CANCEL_DEBUG] Received cancelOrder event for chain orderId: ${orderId}`, 'debug');
                 const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: this.orders, ordersByState: this._ordersByState, assets: this.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, this.assets), logger: this.logger });
                 if (gridOrder) {
+                    this.logger.log(`[CANCEL_DEBUG] Found matching grid order: gridId=${gridOrder.id}, state=${gridOrder.state}, size=${gridOrder.size}, type=${gridOrder.type}`, 'debug');
                     // Restore order size to chainFree when moving from ACTIVE/PARTIAL to VIRTUAL
                     // This keeps accountTotals.buyFree/sellFree accurate without re-fetching
                     // PARTIAL orders also have on-chain locked funds that need restoration
@@ -1180,6 +1182,8 @@ class OrderManager {
                     const updatedOrder = { ...gridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
                     this._updateOrder(updatedOrder);
                     this.logger.log(`Order ${updatedOrder.id} (${orderId}) cancelled and reverted to VIRTUAL ${gridOrder.type.toUpperCase()} (size preserved: ${gridOrder.size?.toFixed(8) || 0})`, 'info');
+                } else {
+                    this.logger.log(`[CANCEL_DEBUG] WARNING: No matching grid order found for cancelled chain orderId: ${orderId}. Grid has ${this.orders.size} orders. Possible reasons: order already processed, or grid lookup failed.`, 'warn');
                 }
                 break;
             }

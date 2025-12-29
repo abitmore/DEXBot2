@@ -433,6 +433,7 @@ async function reconcileStartupOrders({
             logger && logger.log && logger.log(`Startup: Cancelling excess SELL chain order ${x.chain.id}`, 'info');
             try {
                 await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: x.chain.id, dryRun });
+                logger && logger.log && logger.log(`Startup: Successfully cancelled excess SELL order ${x.chain.id}`, 'info');
                 sellCancelCount--;
             } catch (err) {
                 logger && logger.log && logger.log(`Startup: Failed to cancel SELL ${x.chain.id}: ${err.message}`, 'error');
@@ -449,6 +450,7 @@ async function reconcileStartupOrders({
                 logger && logger.log && logger.log(`Startup: Cancelling excess matched SELL ${o.orderId} (grid ${o.id})`, 'warn');
                 try {
                     await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun });
+                    logger && logger.log && logger.log(`Startup: Successfully cancelled excess matched SELL order ${o.orderId} (grid ${o.id})`, 'info');
                     sellCancelCount--;
                 } catch (err) {
                     logger && logger.log && logger.log(`Startup: Failed to cancel matched SELL ${o.orderId}: ${err.message}`, 'error');
@@ -557,6 +559,7 @@ async function reconcileStartupOrders({
             logger && logger.log && logger.log(`Startup: Cancelling excess BUY chain order ${x.chain.id}`, 'info');
             try {
                 await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: x.chain.id, dryRun });
+                logger && logger.log && logger.log(`Startup: Successfully cancelled excess BUY order ${x.chain.id}`, 'info');
                 buyCancelCount--;
             } catch (err) {
                 logger && logger.log && logger.log(`Startup: Failed to cancel BUY ${x.chain.id}: ${err.message}`, 'error');
@@ -573,6 +576,7 @@ async function reconcileStartupOrders({
                 logger && logger.log && logger.log(`Startup: Cancelling excess matched BUY ${o.orderId} (grid ${o.id})`, 'warn');
                 try {
                     await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun });
+                    logger && logger.log && logger.log(`Startup: Successfully cancelled excess matched BUY order ${o.orderId} (grid ${o.id})`, 'info');
                     buyCancelCount--;
                 } catch (err) {
                     logger && logger.log && logger.log(`Startup: Failed to cancel matched BUY ${o.orderId}: ${err.message}`, 'error');
