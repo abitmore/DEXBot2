@@ -1130,7 +1130,7 @@ class Grid {
             // NaN comparisons (undefined - number) always return false, silently skipping updates
             const currentSize = order.size;
             const needsUpdate = currentSize === undefined || currentSize === null ||
-                                !Number.isFinite(currentSize) || Math.abs(currentSize - newSize) > 1e-8;
+                !Number.isFinite(currentSize) || Math.abs(currentSize - newSize) > 1e-8;
             if (needsUpdate) {
                 const oldSizeStr = (currentSize === undefined || currentSize === null)
                     ? 'undefined'
@@ -1232,8 +1232,17 @@ class Grid {
         const onChainBuys = [...activeBuys, ...partialBuys];
         const onChainSells = [...activeSells, ...partialSells];
 
-        const virtualBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL);
-        const virtualSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL);
+        const virtualBuys = Array.from(manager.orders.values()).filter(o => 
+            (o.type === ORDER_TYPES.BUY || o.type === ORDER_TYPES.SPREAD) && 
+            o.state === ORDER_STATES.VIRTUAL &&
+            o.price < (manager.config.marketPrice || Infinity)
+        );
+        const virtualSells = Array.from(manager.orders.values()).filter(o => 
+            (o.type === ORDER_TYPES.SELL || o.type === ORDER_TYPES.SPREAD) && 
+            o.state === ORDER_STATES.VIRTUAL &&
+            o.price > (manager.config.marketPrice || 0)
+        );
+
         return calculateSpreadFromOrders(onChainBuys, onChainSells, virtualBuys, virtualSells);
     }
 
@@ -1661,47 +1670,61 @@ class Grid {
                     'info'
                 );
             }
-        } else if (partialMoves.length === 0) {
-            // No partials to move - activate a SPREAD virtual slot (interior position) instead
+        } else {
+            // No partials to move (or no vacated slots) - activate a pool of candidate slots (VIRTUAL or SPREAD)
             manager.logger.log(
-                `No partials to move - activating SPREAD virtual slot for spread correction`,
+                `Selecting candidate slot for spread correction (pooling VIRTUAL and SPREAD slots)`,
                 'debug'
             );
 
-            // Priority 1: Activate SPREAD virtual orders (these are filled order placeholders at spread positions)
-            // CRITICAL: SPREAD orders have type="spread" in the grid, not a buy/sell designation
-            // We need to search by type only, regardless of state value
-            let spreadVirtuals = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.SPREAD);
+            // Pool all candidate slots that are not currently active
+            // This includes SPREAD orders (size 0 placeholders) and VIRTUAL orders (intended grid levels)
+            const candidates = Array.from(manager.orders.values()).filter(o =>
+                (o.type === ORDER_TYPES.SPREAD || o.state === ORDER_STATES.VIRTUAL) &&
+                (o.size === 0 || o.state === ORDER_STATES.VIRTUAL) &&
+                !o.orderId // Must not be on-chain
+            );
 
-            // Filter SPREAD orders to only those matching the side we need to correct
-            // Since SPREAD orders don't have buy/sell designation, we filter by their position in the grid
-            // (interior SPREAD orders can be converted to either BUY or SELL as needed)
-            // For now, take all SPREAD orders and let price selection determine which to use
-            spreadVirtuals = spreadVirtuals.filter(o => {
-                // Only consider SPREAD orders that have not been used for other purposes
-                // (in a proper implementation, SPREAD orders would be tagged with available slots)
-                return o.size === 0;  // SPREAD orders have size 0
-            });
+            if (candidates.length > 0) {
+                // Find the boundary price (closest active/partial to the spread on this side)
+                const activeOrPartials = [
+                    ...manager.getOrdersByTypeAndState(oppositeType, ORDER_STATES.ACTIVE),
+                    ...manager.getOrdersByTypeAndState(oppositeType, ORDER_STATES.PARTIAL)
+                ];
 
-            if (spreadVirtuals.length > 0) {
-                // Select the SPREAD order closest to market:
-                // For SELL: highest price (closest to market from above)
-                // For BUY: lowest price (closest to market from below)
-                let spreadOrder;
+                let boundaryPrice = null;
+                if (activeOrPartials.length > 0) {
+                    if (oppositeType === ORDER_TYPES.SELL) {
+                        boundaryPrice = Math.min(...activeOrPartials.map(o => o.price));
+                    } else {
+                        boundaryPrice = Math.max(...activeOrPartials.map(o => o.price));
+                    }
+                }
+
+                // Filter candidates: they should ideally be between the market and our first active/partial order
+                let filteredCandidates = candidates.filter(o => {
+                    if (boundaryPrice === null) return true; // Fallback if no active orders
+                    if (oppositeType === ORDER_TYPES.SELL) {
+                        return o.price < boundaryPrice; // Narrow the gap from above
+                    } else {
+                        return o.price > boundaryPrice; // Narrow the gap from below
+                    }
+                });
+
+                if (filteredCandidates.length === 0) {
+                    // If no slots found inside the gap, just use all available candidates
+                    filteredCandidates = candidates;
+                }
+
+                // Select the candidate closest to the active cluster:
+                // For SELL: HIGHEST price that is < boundary (closest to boundary)
+                // For BUY: LOWEST price that is > boundary (closest to boundary)
+                // This provides a "top-down" refill of the gap
+                let selectedSlot;
                 if (oppositeType === ORDER_TYPES.SELL) {
-                    // For SELL correction: pick highest SPREAD price (closest to market)
-                    spreadOrder = spreadVirtuals.reduce((max, o) => o.price > max.price ? o : max);
-                    manager.logger.log(
-                        `DEBUG SELL SPREAD selection (filtered by type=sell): comparing prices: ${spreadVirtuals.map(o => `${o.id}=${o.price.toFixed(4)}`).join(', ')} -> selected ${spreadOrder.id}=${spreadOrder.price.toFixed(4)}`,
-                        'debug'
-                    );
+                    selectedSlot = filteredCandidates.reduce((max, o) => o.price > max.price ? o : max);
                 } else {
-                    // For BUY correction: pick lowest SPREAD price (closest to market)
-                    spreadOrder = spreadVirtuals.reduce((min, o) => o.price < min.price ? o : min);
-                    manager.logger.log(
-                        `DEBUG BUY SPREAD selection (filtered by type=buy): comparing prices: ${spreadVirtuals.map(o => `${o.id}=${o.price.toFixed(4)}`).join(', ')} -> selected ${spreadOrder.id}=${spreadOrder.price.toFixed(4)}`,
-                        'debug'
-                    );
+                    selectedSlot = filteredCandidates.reduce((min, o) => o.price < min.price ? o : min);
                 }
 
                 // Calculate geometric size based on redistributing available funds across the grid
@@ -1716,7 +1739,6 @@ class Grid {
                 }
 
                 // Check if available funds can support the calculated geometric size
-                // Use available + cacheFunds (same as fund analysis comparison)
                 const availableFunds = getAvailableFundsForPlacement(manager.funds, side);
                 const baseAvailable = manager.funds.available?.[side] || 0;
 
@@ -1729,51 +1751,35 @@ class Grid {
                 }
 
                 // Create the order with calculated geometric size
-                // Set state to ACTIVE as this order will be placed on-chain immediately
                 const convertedOrder = {
-                    ...spreadOrder,
+                    ...selectedSlot,
                     type: oppositeType,
                     size: geometricSize,
                     state: ORDER_STATES.ACTIVE  // Will be confirmed ACTIVE after broadcast
                 };
                 ordersToPlace.push(convertedOrder);
 
-                // CRITICAL: Update the order in manager.orders to reflect the type change
-                // This ensures the order is tracked correctly as the new type, not as SPREAD
-                manager.orders.set(spreadOrder.id, convertedOrder);
+                // Update the order in manager.orders to reflect the type change (especially if it was SPREAD)
+                manager.orders.set(selectedSlot.id, convertedOrder);
 
                 // Update fund variables immediately
                 const fundsBefore = availableFunds;
                 manager.funds.available[side] = Math.max(0, baseAvailable - geometricSize);
                 manager.funds.committed.grid[side] = (manager.funds.committed.grid[side] || 0) + geometricSize;
 
-                // Log SPREAD order selection details
                 manager.logger.log(
-                    `SPREAD order selection for ${oppositeType}: selected ${spreadOrder.id} from ${spreadVirtuals.length} SPREAD order(s) ` +
-                    `(price: ${spreadOrder.price.toFixed(4)})`,
-                    'debug'
+                    `Selected candidate slot for spread correction: ${selectedSlot.id} (${selectedSlot.type}) at ${selectedSlot.price.toFixed(4)}, ` +
+                    `new size ${geometricSize.toFixed(8)} (boundary was ${boundaryPrice ? boundaryPrice.toFixed(4) : 'N/A'})`,
+                    'info'
                 );
 
                 manager.logger.log(
-                    `Activated SPREAD virtual slot for spread correction: ${spreadOrder.id} -> ${oppositeType} at ${spreadOrder.price.toFixed(4)}, geometric size ${geometricSize.toFixed(8)} ` +
+                    `Activated slot for spread correction: ${selectedSlot.id} -> ${oppositeType} at ${selectedSlot.price.toFixed(4)}, size ${geometricSize.toFixed(8)} ` +
                     `(available: ${fundsBefore.toFixed(8)} -> ${(baseAvailable - geometricSize).toFixed(8)}, committed: +${geometricSize.toFixed(8)})`,
                     'info'
                 );
             } else {
-                // Fallback: Activate closest virtual order of opposite type if no SPREAD virtuals available
-                manager.logger.log(
-                    `No SPREAD virtual orders available - falling back to closest VIRTUAL`,
-                    'debug'
-                );
-
-                const virtualOrders = await manager.activateClosestVirtualOrdersForPlacement(oppositeType, 1);
-                if (virtualOrders && virtualOrders.length > 0) {
-                    ordersToPlace.push(...virtualOrders);
-                    manager.logger.log(
-                        `Activated closest virtual order for spread correction: ${virtualOrders[0].id}`,
-                        'debug'
-                    );
-                }
+                manager.logger.log(`No SPREAD or VIRTUAL candidate slots available for spread correction`, 'warn');
             }
         }
 
