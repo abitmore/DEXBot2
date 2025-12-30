@@ -343,6 +343,8 @@ class DEXBot {
         }
 
         const { assetA, assetB } = this.manager.assets;
+        const { getAssetFees } = require('./order/utils');
+        const btsFeeData = getAssetFees('BTS', 1);
 
         const createAndSyncOrder = async (order) => {
             this.manager.logger.log(`Placing ${order.type} order: size=${order.size}, price=${order.price}`, 'debug');
@@ -355,7 +357,11 @@ class DEXBot {
             if (!chainOrderId) {
                 throw new Error('Order creation response missing order_id');
             }
-            await this.manager.synchronizeWithChain({ gridOrderId: order.id, chainOrderId }, 'createOrder');
+            await this.manager.synchronizeWithChain({
+                gridOrderId: order.id,
+                chainOrderId,
+                fee: btsFeeData.createFee
+            }, 'createOrder');
         };
 
         const placeOrderGroup = async (ordersGroup) => {
@@ -548,6 +554,8 @@ class DEXBot {
 
             // Step 5: Map results in operation order (supports atomic partial-move + rotation swaps)
             const results = (result && result[0] && result[0].trx && result[0].trx.operation_results) || [];
+            const { getAssetFees } = require('./order/utils');
+            const btsFeeData = getAssetFees('BTS', 1);
 
             for (let i = 0; i < opContexts.length; i++) {
                 const ctx = opContexts[i];
@@ -557,7 +565,11 @@ class DEXBot {
                     const { order } = ctx;
                     const chainOrderId = res && res[1];
                     if (chainOrderId) {
-                        await this.manager.synchronizeWithChain({ gridOrderId: order.id, chainOrderId }, 'createOrder');
+                        await this.manager.synchronizeWithChain({
+                            gridOrderId: order.id,
+                            chainOrderId,
+                            fee: btsFeeData.createFee
+                        }, 'createOrder');
                         this.manager.logger.log(`Placed ${order.type} order ${order.id} -> ${chainOrderId}`, 'info');
                     } else {
                         this.manager.logger.log(`Batch result missing ID for created order ${order.id}`, 'warn');
@@ -569,7 +581,11 @@ class DEXBot {
                     const { moveInfo } = ctx;
                     this.manager.completePartialOrderMove(moveInfo);
                     await this.manager.synchronizeWithChain(
-                        { gridOrderId: moveInfo.newGridId, chainOrderId: moveInfo.partialOrder.orderId },
+                        {
+                            gridOrderId: moveInfo.newGridId,
+                            chainOrderId: moveInfo.partialOrder.orderId,
+                            fee: btsFeeData.updateFee
+                        },
                         'createOrder'
                     );
                     this.manager.logger.log(
@@ -603,6 +619,14 @@ class DEXBot {
                         const priceStr = (newPrice !== undefined && newPrice !== null && Number.isFinite(newPrice))
                             ? newPrice.toFixed(4) : 'N/A';
                         this.manager.logger.log(`Size correction applied: ${oldOrder.orderId} resized to ${sizeStr} @ ${priceStr}`, 'info');
+
+                        // Optimistically deduct the update fee if BTS is the pair asset
+                        if (this.manager.config.assetA === 'BTS' || this.manager.config.assetB === 'BTS') {
+                            const btsSide = (this.manager.config.assetA === 'BTS') ? 'sell' : 'buy';
+                            const orderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+                            this.manager._deductFromChainFree(orderType, btsFeeData.updateFee, 'resize-fee');
+                        }
+
                         updateOperationCount++;
                         continue;
                     }
@@ -633,7 +657,12 @@ class DEXBot {
 
                     // Synchronize new grid slot with blockchain (MUST succeed or grid is inconsistent)
                     try {
-                        await this.manager.synchronizeWithChain({ gridOrderId: newGridId, chainOrderId: oldOrder.orderId, isPartialPlacement }, 'createOrder');
+                        await this.manager.synchronizeWithChain({
+                            gridOrderId: newGridId,
+                            chainOrderId: oldOrder.orderId,
+                            isPartialPlacement,
+                            fee: btsFeeData.updateFee
+                        }, 'createOrder');
                         this.manager.logger.log(`Order size updated: ${oldOrder.orderId} new price ${newPrice.toFixed(4)}, new size ${actualSize.toFixed(8)}`, 'info');
                         updateOperationCount++;  // Count as update operation
                     } catch (err) {
@@ -709,7 +738,7 @@ class DEXBot {
 
         this._log(`DEBUG ensureBotEntries: passing ${allActiveBots.length} active bot(s):`);
         allActiveBots.forEach(bot => {
-          this._log(`  - name=${bot.name}, assetA=${bot.assetA}, assetB=${bot.assetB}, active=${bot.active}, index=${bot.botIndex}, botKey=${bot.botKey}`);
+            this._log(`  - name=${bot.name}, assetA=${bot.assetA}, assetB=${bot.assetB}, active=${bot.active}, index=${bot.botIndex}, botKey=${bot.botKey}`);
         });
 
         await this.accountOrders.ensureBotEntries(allActiveBots);

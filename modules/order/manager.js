@@ -224,6 +224,58 @@ class OrderManager {
     }
 
     /**
+     * Unified helper to update the optimistic chainFree balance based on order state/size changes.
+     * Centralizing this logic prevents "fund leaks" during complex state transitions.
+     *
+     * @param {Object} oldOrder - Order state before change
+     * @param {Object} newOrder - Order state after change
+     * @param {string} context - Logging context
+     * @param {number} fee - Optional transaction fee to deduct from chainFree (if BTS side)
+     */
+    _updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
+        if (!oldOrder || !newOrder) return;
+
+        const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
+        const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
+        const oldSize = Number(oldOrder.size) || 0;
+        const newSize = Number(newOrder.size) || 0;
+
+        // Determine which side (if any) is BTS, as fees are taken from BTS balance
+        const btsSide = (this.config?.assetA === 'BTS') ? 'sell' :
+            (this.config?.assetB === 'BTS') ? 'buy' : null;
+
+        // Transition: VIRTUAL -> ACTIVE (Activation/Placement)
+        if (!oldIsActive && newIsActive) {
+            if (newSize > 0) {
+                this._deductFromChainFree(newOrder.type, newSize, `${context} (${oldOrder.state}->${newOrder.state})`);
+            }
+            // Deduct BTS fee if this side is the BTS balance side
+            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
+                this._deductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
+            }
+        }
+        // Transition: ACTIVE -> VIRTUAL (Cancellation/Cleanup)
+        else if (oldIsActive && !newIsActive) {
+            if (oldSize > 0) {
+                this._addToChainFree(oldOrder.type, oldSize, `${context} (${oldOrder.state}->${newOrder.state})`);
+            }
+        }
+        // Check for size resize (already Active)
+        else if (oldIsActive && newIsActive) {
+            const sizeDelta = newSize - oldSize;
+            if (sizeDelta > 0) {
+                this._deductFromChainFree(newOrder.type, sizeDelta, `${context} (resize-up)`);
+            } else if (sizeDelta < 0) {
+                this._addToChainFree(newOrder.type, Math.abs(sizeDelta), `${context} (resize-down)`);
+            }
+            // If fee is provided for an update/rotation, deduct on BTS side
+            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
+                this._deductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
+            }
+        }
+    }
+
+    /**
      * Apply botFunds allocation constraints to available funds.
      * Called at grid initialization to respect percentage-based botFunds when multiple bots share an account.
      *
@@ -541,17 +593,17 @@ class OrderManager {
             this.accountTotals = { buy: 0, sell: 0, buyFree: 0, sellFree: 0 };
         }
 
+        const bumpTotal = (key, delta) => {
+            const next = (Number(this.accountTotals[key]) || 0) + delta;
+            this.accountTotals[key] = next < 0 ? 0 : next;
+        };
+
         // CRITICAL FIX: Calculate available BEFORE updating chainFree
         // This prevents double-counting proceeds in cacheFunds when processFilledOrders adds both proceeds and available
         // Store the pre-update values so processFilledOrders can use them instead of recalculating
         const availBeforeUpdate = {
             buy: calculateAvailableFundsValue('buy', this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders),
             sell: calculateAvailableFundsValue('sell', this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders)
-        };
-
-        const bumpTotal = (key, delta) => {
-            const next = (Number(this.accountTotals[key]) || 0) + delta;
-            this.accountTotals[key] = next < 0 ? 0 : next;
         };
 
         // Partial proceeds: ONLY update chain totals/free, NOT cacheFunds
@@ -570,8 +622,6 @@ class OrderManager {
             this._preFillAvailable = availBeforeUpdate;
 
             this.recalculateFunds();
-            // Note: Don't log available here - proceeds not yet added to pendingProceeds
-            // They will be added later by processFilledOrders()
         } else if (gridOrder.type === ORDER_TYPES.BUY) {
             // BUY partial: receive base asset; free base rises, quote total drops
             const proceeds = fillSize / price;
@@ -586,8 +636,6 @@ class OrderManager {
             this._preFillAvailable = availBeforeUpdate;
 
             this.recalculateFunds();
-            // Note: Don't log available here - proceeds not yet added to pendingProceeds
-            // They will be added later by processFilledOrders()
         }
     }
 
@@ -1146,19 +1194,18 @@ class OrderManager {
         this.logger.log(`DEBUG: synchronizeWithChain entering switch, source=${source}, chainData.length=${Array.isArray(chainData) ? chainData.length : 'N/A'}`, 'debug');
         switch (source) {
             case 'createOrder': {
-                const { gridOrderId, chainOrderId, isPartialPlacement } = chainData;
+                const { gridOrderId, chainOrderId, isPartialPlacement, fee } = chainData;
                 const gridOrder = this.orders.get(gridOrderId);
                 if (gridOrder) {
-                    // Deduct order size from chainFree when moving from VIRTUAL to ACTIVE
-                    // This keeps accountTotals.buyFree/sellFree accurate without re-fetching
-                    if (gridOrder.state === ORDER_STATES.VIRTUAL && gridOrder.size > 0) {
-                        this._deductFromChainFree(gridOrder.type, Number(gridOrder.size) || 0, 'VIRTUAL->ACTIVE');
-                    }
                     // Create a new object with updated state to avoid mutation bugs in _updateOrder
                     // (if we mutate in place, _updateOrder can't find the old state index to remove from)
                     // Determine state: PARTIAL if rotation placed with proceeds (size < grid slot), otherwise ACTIVE
                     const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : (gridOrder.state === ORDER_STATES.PARTIAL ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE);
                     const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
+
+                    // Centralized fund tracking: Deduct order size (and optional fee) from chainFree 
+                    this._updateOptimisticFreeBalance(gridOrder, updatedOrder, 'createOrder', fee);
+
                     this._updateOrder(updatedOrder);
                     this.logger.log(`Order ${updatedOrder.id} synced with on-chain ID ${updatedOrder.orderId} (state=${newState})`, 'info');
                 }
@@ -1170,16 +1217,15 @@ class OrderManager {
                 const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: this.orders, ordersByState: this._ordersByState, assets: this.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, this.assets), logger: this.logger });
                 if (gridOrder) {
                     this.logger.log(`[CANCEL_DEBUG] Found matching grid order: gridId=${gridOrder.id}, state=${gridOrder.state}, size=${gridOrder.size}, type=${gridOrder.type}`, 'debug');
-                    // Restore order size to chainFree when moving from ACTIVE/PARTIAL to VIRTUAL
-                    // This keeps accountTotals.buyFree/sellFree accurate without re-fetching
-                    // PARTIAL orders also have on-chain locked funds that need restoration
-                    if ((gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) && gridOrder.size > 0) {
-                        this._addToChainFree(gridOrder.type, Number(gridOrder.size) || 0, `${gridOrder.state}->VIRTUAL`);
-                    }
+
                     // Create a new object to avoid mutation bug
                     // Cancelled surplus orders: preserve original type (BUY/SELL) and size for grid history
                     // Only FILLED orders become VIRTUAL SPREAD with size: 0 - cancelled orders preserve allocation
                     const updatedOrder = { ...gridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
+
+                    // Centralized fund tracking: Restore order size to chainFree when moving from ACTIVE/PARTIAL to VIRTUAL
+                    this._updateOptimisticFreeBalance(gridOrder, updatedOrder, 'cancelOrder');
+
                     this._updateOrder(updatedOrder);
                     this.logger.log(`Order ${updatedOrder.id} (${orderId}) cancelled and reverted to VIRTUAL ${gridOrder.type.toUpperCase()} (size preserved: ${gridOrder.size?.toFixed(8) || 0})`, 'info');
                 } else {
@@ -1492,7 +1538,8 @@ class OrderManager {
                 }
                 proceedsBuy += netProceeds;  // Collect in cacheFunds only, NOT in chainFree
                 // SELL means we receive quote asset (buy side) and give up base asset (sell side)
-                // NOTE: Do NOT add proceeds to deltaBuyFree - proceeds go to cacheFunds, not chainFree
+                // Reflect received funds in local Free balance (optimistic)
+                deltaBuyFree += netProceeds;
                 deltaBuyTotal += netProceeds;  // But DO update total (free + committed) with net amount after market fee
                 // sellFree was reduced at order creation; the locked size is now sold, so only the total decreases
                 deltaSellTotal -= filledOrder.size;
@@ -1518,7 +1565,8 @@ class OrderManager {
                 }
                 proceedsSell += netProceeds;  // Collect in cacheFunds only, NOT in chainFree
                 // BUY means we receive base asset (assetA, sell side) and spend quote asset (assetB, buy side)
-                // NOTE: Do NOT add proceeds to deltaSellFree - proceeds go to cacheFunds, not chainFree
+                // Reflect received funds in local Free balance (optimistic)
+                deltaSellFree += netProceeds;
                 deltaSellTotal += netProceeds;  // But DO update total (free + committed) with net amount after market fee
                 // buyFree was reduced at order creation; only total decreases to reflect the spend
                 deltaBuyTotal -= filledOrder.size;
@@ -2306,7 +2354,14 @@ class OrderManager {
             // The order keeps its original grid size so it can be re-activated later when price moves back.
             // No funds adjustment here - the old order's committed funds were already released when it was cancelled,
             // and the new order's funds were committed in prepareFurthestOrdersForRotation.
+
             const virtualOrder = { ...order, state: ORDER_STATES.VIRTUAL, orderId: null };
+
+            // Centralized fund tracking: Restore old order size to chainFree.
+            // It's effectively "released" from this slot, and the new slot it moves into
+            // will perform its own _deductFromChainFree in synchronizeWithChain('createOrder').
+            this._updateOptimisticFreeBalance(order, virtualOrder, 'rotation');
+
             this._updateOrder(virtualOrder);
             this.logger.log(`Rotated order ${oldOrderInfo.id} (${oldOrderInfo.type}) at price ${oldOrderInfo.price.toFixed(4)} -> VIRTUAL (size preserved: ${order.size?.toFixed(8) || 0})`, 'info');
 
@@ -2455,6 +2510,10 @@ class OrderManager {
                     orderId: null
                     // Don't set size: 0 - preserve original size for future activation sizing
                 };
+
+                // Fund update: release funds from the vacated slot
+                this._updateOptimisticFreeBalance(oldGridOrder, updatedOld, 'move-vacate');
+
                 this._updateOrder(updatedOld);
             }
         }
@@ -2471,6 +2530,10 @@ class OrderManager {
                 size: partialOrder.size,
                 price: newPrice
             };
+
+            // Fund update: deduct funds for the new occupied slot
+            this._updateOptimisticFreeBalance(targetGridOrder, updatedNew, 'move-occupy');
+
             this._updateOrder(updatedNew);
         }
 
@@ -2514,6 +2577,10 @@ class OrderManager {
         actualOrders.forEach(order => {
             if (fundsPerOrder <= 0) return;
             const activatedOrder = { ...order, type: targetType, size: fundsPerOrder, state: ORDER_STATES.ACTIVE };
+
+            // Unified fund update: deduct funds for new activation
+            this._updateOptimisticFreeBalance(order, activatedOrder, 'spread-activation');
+
             this._updateOrder(activatedOrder);
             activatedOrders.push(activatedOrder);
             this.currentSpreadCount--;

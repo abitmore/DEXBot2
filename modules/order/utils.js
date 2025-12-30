@@ -157,11 +157,6 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     // Determine which side actually has BTS as the asset
     const btsSide = (assetA === 'BTS') ? 'sell' :
         (assetB === 'BTS') ? 'buy' : null;
-    let applicableBtsFeesOwed = 0;
-    if (btsSide === side && funds.btsFeesOwed > 0) {
-        // BTS fees are deducted from the side where they are owed (usually from cache funds/proceeds)
-        applicableBtsFeesOwed = Math.min(funds.btsFeesOwed, cacheFunds);
-    }
 
     // Reserve BTS fees for updating target open orders (needed when regenerating grid)
     // This ensures fees are available when applyGridDivergenceCorrections updates orders on-chain
@@ -184,7 +179,9 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
         }
     }
 
-    return Math.max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed - btsFeesReservation);
+    // CRITICAL: btsFeesOwed is NOT subtracted here because spent fees are already gone from chainFree balance.
+    // Subtracting them again would cause a double-deduction.
+    return Math.max(0, chainFree - virtuel - cacheFunds - btsFeesReservation);
 }
 
 /**
@@ -2064,9 +2061,9 @@ function getGridTotalValue(funds, side) {
  */
 function getTotalGridFundsAvailable(funds, side) {
     return (funds?.available?.[side] || 0) +
-           (funds?.committed?.grid?.[side] || 0) +
-           (funds?.virtuel?.[side] || 0) +
-           (funds?.cacheFunds?.[side] || 0);
+        (funds?.committed?.grid?.[side] || 0) +
+        (funds?.virtuel?.[side] || 0) +
+        (funds?.cacheFunds?.[side] || 0);
 }
 
 /**
@@ -2087,7 +2084,7 @@ function getTotalGridFundsAvailable(funds, side) {
  */
 function getAvailableFundsForPlacement(funds, side) {
     return (funds?.available?.[side] || 0) +
-           (funds?.cacheFunds?.[side] || 0);
+        (funds?.cacheFunds?.[side] || 0);
 }
 
 /**
@@ -2105,9 +2102,9 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
     const sellKey = checkFree ? 'sellFree' : 'sell';
 
     return (accountTotals[buyKey] !== null &&
-            accountTotals[buyKey] !== undefined &&
-            Number.isFinite(Number(accountTotals[buyKey]))) &&
-           (accountTotals[sellKey] !== null &&
+        accountTotals[buyKey] !== undefined &&
+        Number.isFinite(Number(accountTotals[buyKey]))) &&
+        (accountTotals[sellKey] !== null &&
             accountTotals[sellKey] !== undefined &&
             Number.isFinite(Number(accountTotals[sellKey])));
 }

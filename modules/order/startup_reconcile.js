@@ -88,14 +88,16 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
         orderType: gridOrder.type,
     });
 
-    // CRITICAL: Deduct from chainFree when VIRTUAL grid slot becomes ACTIVE on-chain
-    // This keeps accountTotals.buyFree/sellFree accurate without re-fetching
-    if (gridOrder.state === ORDER_STATES.VIRTUAL && gridOrder.size > 0) {
-        manager._deductFromChainFree(gridOrder.type, Number(gridOrder.size) || 0, 'VIRTUAL->ACTIVE (update)');
-    }
+    const { getAssetFees } = require('./order/utils');
+    const btsFeeData = getAssetFees('BTS', 1);
 
-    const updatedGrid = { ...gridOrder, orderId: chainOrderId, state: ORDER_STATES.ACTIVE };
-    manager._updateOrder(updatedGrid);
+    // Centralized Fund Tracking: Use manager's sync core to handle state transition and fund deduction
+    await manager.synchronizeWithChain({
+        gridOrderId: gridOrder.id,
+        chainOrderId,
+        isPartialPlacement: false,
+        fee: btsFeeData.updateFee
+    }, 'createOrder');
 }
 
 /**
@@ -201,15 +203,17 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         result[0].trx.operation_results[0][1];
 
     if (chainOrderId) {
-        // CRITICAL: Deduct from chainFree when VIRTUAL order becomes ACTIVE on-chain
-        // This keeps accountTotals.buyFree/sellFree accurate without re-fetching
-        // Same logic as in manager.synchronizeWithChain for 'createOrder' case
-        if (gridOrder.state === ORDER_STATES.VIRTUAL && gridOrder.size > 0) {
-            manager._deductFromChainFree(gridOrder.type, Number(gridOrder.size) || 0, 'VIRTUAL->ACTIVE (startup)');
-        }
+        const { getAssetFees } = require('./order/utils');
+        const btsFeeData = getAssetFees('BTS', 1);
 
-        const updatedGrid = { ...gridOrder, orderId: chainOrderId, state: ORDER_STATES.ACTIVE };
-        manager._updateOrder(updatedGrid);
+        // Centralized Fund Tracking: Use manager's sync core to handle state transition and fund deduction
+        // This keeps accountBalances accurate during startup by using the same logic as synchronizeWithChain
+        await manager.synchronizeWithChain({
+            gridOrderId: gridOrder.id,
+            chainOrderId,
+            isPartialPlacement: false,
+            fee: btsFeeData.createFee
+        }, 'createOrder');
     }
 }
 
