@@ -407,16 +407,17 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
     // Determine an initial receive amount for price-change detection.
     // Policy:
     // - If minToReceive is provided: use it as an absolute override.
-    // - Else if newPrice is provided: compute receive from the new sell amount.
+    // - Else if newPrice is provided: compute receive from the (new or current) sell amount.
     // - Else: keep the existing on-chain price by scaling receive with sell.
     let candidateReceiveInt;
     if (newParams.minToReceive !== undefined && newParams.minToReceive !== null) {
         candidateReceiveInt = floatToBlockchainInt(newParams.minToReceive, receivePrecision);
     } else if (newParams.newPrice !== undefined && newParams.newPrice !== null) {
         const price = Number(newParams.newPrice);
+        const sellFloat = (newParams.amountToSell !== undefined && newParams.amountToSell !== null) ? newParams.amountToSell : currentSellFloat;
         const receiveFloat = (newParams.orderType === 'sell')
-            ? (newSellFloat * price)
-            : (newSellFloat / price);
+            ? (sellFloat * price)
+            : (sellFloat / price);
         candidateReceiveInt = floatToBlockchainInt(receiveFloat, receivePrecision);
     } else {
         candidateReceiveInt = Math.round((newSellInt * priceRatioQuote) / priceRatioBase);

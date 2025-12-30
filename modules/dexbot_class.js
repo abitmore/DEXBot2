@@ -568,7 +568,12 @@ class DEXBot {
 
                     const op = await chainOrders.buildUpdateOrderOp(
                         this.account, oldOrder.orderId,
-                        { amountToSell: newAmountToSell, minToReceive: newMinToReceive }
+                        { 
+                            amountToSell: newAmountToSell, 
+                            minToReceive: newMinToReceive,
+                            newPrice: newPrice,
+                            orderType: type
+                        }
                     );
 
                     if (op) {
