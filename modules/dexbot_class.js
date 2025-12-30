@@ -610,6 +610,16 @@ class DEXBot {
                     // FILL-TRIGGERED rotations have newGridId - update target grid slot
                     const actualSize = newSize;  // Use the rounded newAmountToSell/newMinToReceive
                     const slot = this.manager.orders.get(newGridId) || { id: newGridId, type: rotation.type, price: newPrice, size: 0, state: ORDER_STATES.VIRTUAL };
+
+                    // Detect if rotation was placed with partial proceeds (size < grid slot size)
+                    const isPartialPlacement = slot.size > 0 && actualSize < slot.size;
+
+                    // CRITICAL: Complete old rotation BEFORE updating new slot state
+                    // This ensures if synchronization fails, old order is properly marked complete
+                    this.manager.completeOrderRotation(oldOrder);
+
+                    // Update the target grid slot with actual size and price from rotation
+                    // NOTE: state=VIRTUAL, orderId=null initially - synchronizeWithChain will update to ACTIVE+orderId
                     const updatedSlot = {
                         ...slot,
                         id: newGridId,
@@ -621,13 +631,20 @@ class DEXBot {
                     };
                     this.manager._updateOrder(updatedSlot);
 
-                    // Detect if rotation was placed with partial proceeds (size < grid slot size)
-                    const isPartialPlacement = slot.size > 0 && actualSize < slot.size;
-
-                    this.manager.completeOrderRotation(oldOrder);
-                    await this.manager.synchronizeWithChain({ gridOrderId: newGridId, chainOrderId: oldOrder.orderId, isPartialPlacement }, 'createOrder');
-                    this.manager.logger.log(`Order size updated: ${oldOrder.orderId} new price ${newPrice.toFixed(4)}, new size ${actualSize.toFixed(8)}`, 'info');
-                    updateOperationCount++;  // Count as update operation
+                    // Synchronize new grid slot with blockchain (MUST succeed or grid is inconsistent)
+                    try {
+                        await this.manager.synchronizeWithChain({ gridOrderId: newGridId, chainOrderId: oldOrder.orderId, isPartialPlacement }, 'createOrder');
+                        this.manager.logger.log(`Order size updated: ${oldOrder.orderId} new price ${newPrice.toFixed(4)}, new size ${actualSize.toFixed(8)}`, 'info');
+                        updateOperationCount++;  // Count as update operation
+                    } catch (err) {
+                        this.manager.logger.log(
+                            `ERROR: Synchronization failed for rotation ${oldOrder.orderId} -> ${newGridId}: ${err.message}. ` +
+                            `Grid slot stuck in VIRTUAL state. Manual recovery may be needed.`,
+                            'error'
+                        );
+                        // NOTE: Grid is now inconsistent - slot has size but no orderId and state=VIRTUAL
+                        // This should trigger grid reconciliation on next sync to recover
+                    }
                 }
             }
 
