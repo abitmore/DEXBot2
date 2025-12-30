@@ -47,7 +47,7 @@ class DEXBot {
         this._fillProcessingLock = new AsyncLock();
         this._divergenceLock = new AsyncLock();
 
-        this._pendingFills = [];
+        this._incomingFillQueue = [];
         this.logPrefix = options.logPrefix || '';
     }
 
@@ -77,195 +77,237 @@ class DEXBot {
     _createFillCallback(chainOrders) {
         return async (fills) => {
             if (this.manager && !this.config.dryRun) {
-                // Use AsyncLock to ensure only one fill processing runs at a time
-                // This prevents TOCTOU race where multiple callbacks could interleave
-                try {
-                    await this._fillProcessingLock.acquire(async () => {
-                        const allFills = [...fills, ...this._pendingFills];
-                        this._pendingFills = [];
+                // PUSH to queue immediately (non-blocking)
+                this._incomingFillQueue.push(...fills);
 
-                        const validFills = [];
-                        const processedFillKeys = new Set();
-
-                        // 1. Filter and Deduplicate
-                        for (const fill of allFills) {
-                            if (fill && fill.op && fill.op[0] === 4) {
-                                const fillOp = fill.op[1];
-                                if (fillOp.is_maker === false) {
-                                    this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
-                                    continue;
-                                }
-
-                                // Use (order_id, block_num, history_id) as unique key to handle multiple fills in same block
-                                const fillKey = `${fillOp.order_id}:${fill.block_num}:${fill.id || ''}`;
-                                const now = Date.now();
-                                if (this._recentlyProcessedFills.has(fillKey)) {
-                                    const lastProcessed = this._recentlyProcessedFills.get(fillKey);
-                                    if (now - lastProcessed < this._fillDedupeWindowMs) {
-                                        this.manager.logger.log(`Skipping duplicate fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
-                                        continue;
-                                    }
-                                }
-
-                                // Check local dedupe set for this batch
-                                if (processedFillKeys.has(fillKey)) continue;
-
-                                processedFillKeys.add(fillKey);
-                                this._recentlyProcessedFills.set(fillKey, now);
-                                validFills.push(fill);
-
-                                // Log nicely formatted fill info
-                                const paysAmount = fillOp.pays ? fillOp.pays.amount : '?';
-                                const paysAsset = fillOp.pays ? fillOp.pays.asset_id : '?';
-                                const receivesAmount = fillOp.receives ? fillOp.receives.amount : '?';
-                                const receivesAsset = fillOp.receives ? fillOp.receives.asset_id : '?';
-                                console.log(`\n===== FILL DETECTED =====`);
-                                console.log(`Order ID: ${fillOp.order_id}`);
-                                console.log(`Pays: ${paysAmount} (asset ${paysAsset})`);
-                                console.log(`Receives: ${receivesAmount} (asset ${receivesAsset})`);
-                                console.log(`is_maker: ${fillOp.is_maker}`);
-                                console.log(`Block: ${fill.block_num}, Time: ${fill.block_time}`);
-                                console.log(`History ID: ${fill.id || 'N/A'}`);
-                                console.log(`=========================\n`);
-                            }
-                        }
-
-                        // Clean up old entries
-                        const now = Date.now();
-                        for (const [key, timestamp] of this._recentlyProcessedFills) {
-                            if (now - timestamp > this._fillDedupeWindowMs * 2) {
-                                this._recentlyProcessedFills.delete(key);
-                            }
-                        }
-
-                        if (validFills.length === 0) return;
-
-                        // 2. Sync and Collect Filled Orders
-                        const allFilledOrders = [];
-                        let ordersNeedingCorrection = [];
-                        const fillMode = chainOrders.getFillProcessingMode();
-
-                        if (fillMode === 'history') {
-                            this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'history' mode`, 'info');
-                            for (const fill of validFills) {
-                                const fillOp = fill.op[1];
-                                const result = this.manager.syncFromFillHistory(fillOp);
-                                if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
-                            }
-                        } else {
-                            // Open orders mode: fetch once, then sync each fill against it
-                            this.manager.logger.log(`Processing batch of ${validFills.length} fills using 'open' mode`, 'info');
-                            const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
-                            const result = this.manager.syncFromOpenOrders(chainOpenOrders, validFills[0].op[1]);
-                            if (result.filledOrders) allFilledOrders.push(...result.filledOrders);
-                            if (result.ordersNeedingCorrection) ordersNeedingCorrection = result.ordersNeedingCorrection;
-                        }
-
-                        // 3. Handle Price Corrections (immediate, loose - keeping original logic for now)
-                        if (ordersNeedingCorrection.length > 0) {
-                            this.manager.logger.log(`Correcting ${ordersNeedingCorrection.length} order(s) with price mismatch...`, 'info');
-                            const correctionResult = await OrderUtils.correctAllPriceMismatches(
-                                this.manager, this.account, this.privateKey, chainOrders
-                            );
-                            if (correctionResult.failed > 0) {
-                                this.manager.logger.log(`${correctionResult.failed} order correction(s) failed`, 'error');
-                            }
-                        }
-
-                        // 4. Batch Rebalance and Execution
-                        if (allFilledOrders.length > 0) {
-                            this.manager.logger.log(`Aggregating ${allFilledOrders.length} filled orders for batch processing...`, 'info');
-
-                            // This updates funds with proceeds from ALL filled orders and returns the rebalance result
-                            const rebalanceResult = await this.manager.processFilledOrders(allFilledOrders);
-
-                            // Execute batch transaction (returns object with executed flag and hadRotation flag)
-                            const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
-
-                            // Always persist snapshot after placing orders on-chain
-                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
-
-                            // Check spread condition after rotations (rotation changes order positions)
-                            // PROACTIVE: immediately corrects spread if rotation widened it
-                            if (batchResult.hadRotation) {
-                                // CRITICAL: Recalculate funds after rotation to ensure consistent state
-                                this.manager.recalculateFunds();
-
-                                const spreadResult = await this.manager.checkSpreadCondition(
-                                    this.BitShares,
-                                    this.updateOrdersOnChainBatch.bind(this)
-                                );
-                                if (spreadResult.ordersPlaced > 0) {
-                                    this._log(`✓ Spread correction after rotation: ${spreadResult.ordersPlaced} order(s) placed, ` +
-                                        `${spreadResult.partialsMoved} partial(s) moved`);
-                                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
-                                }
-                            }
-
-                            // Only run divergence checks if rotation was completed
-                            if (batchResult.hadRotation) {
-                                // Use AsyncLock for divergence corrections to prevent concurrent grid updates
-                                await this._divergenceLock.acquire(async () => {
-                                    // After rotation, run grid comparisons to detect divergence and update _gridSidesUpdated
-                                    await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
-
-                                    // Update grid with recalculated sizes BEFORE applying corrections
-                                    // (matches startup and 4-hour timer flows)
-                                    if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) {
-                                        const orderType = getOrderTypeFromUpdatedFlags(
-                                            this.manager._gridSidesUpdated.includes('buy'),
-                                            this.manager._gridSidesUpdated.includes('sell')
-                                        );
-                                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
-                                        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
-                                    }
-
-                                    // Apply order corrections for sides marked by grid comparisons
-                                    await OrderUtils.applyGridDivergenceCorrections(
-                                        this.manager,
-                                        this.accountOrders,
-                                        this.config.botKey,
-                                        this.updateOrdersOnChainBatch.bind(this)
-                                    );
-                                });
-                            } else {
-                                this.manager.logger.log(`No rotation occurred - skipping divergence checks`, 'debug');
-                            }
-                        }
-
-                        // Attempt to retry any previously failed persistence operations
-                        await retryPersistenceIfNeeded(this.manager);
-
-                        // Save processed fills to persistent storage to prevent reprocessing after restart
-                        // This protects against fee double-deduction if fills are reprocessed due to crash/restart
-                        if (validFills.length > 0 && this.accountOrders) {
-                            try {
-                                const fillsToSave = {};
-                                for (const fillKey of processedFillKeys) {
-                                    fillsToSave[fillKey] = this._recentlyProcessedFills.get(fillKey) || Date.now();
-                                }
-                                await this.accountOrders.updateProcessedFillsBatch(this.config.botKey, fillsToSave);
-                                this.manager.logger.log(`Persisted ${processedFillKeys.size} fill records to prevent reprocessing`, 'debug');
-                            } catch (err) {
-                                this.manager?.logger?.log(`Warning: Failed to persist processed fills: ${err.message}`, 'warn');
-                            }
-                        }
-
-                        // Periodically clean up old fill records (older than 1 hour by default)
-                        // Only run cleanup ~10% of batches to reduce I/O overhead
-                        if (Math.random() < 0.1) {
-                            try {
-                                await this.accountOrders.cleanOldProcessedFills(this.config.botKey, 3600000);
-                            } catch (err) {
-                                this.manager?.logger?.log(`Warning: Failed to clean old processed fills: ${err.message}`, 'warn');
-                            }
-                        }
-                    });
-                } catch (err) {
-                    this.manager?.logger?.log(`Error processing fill: ${err.message}`, 'error');
-                }
+                // Trigger consumer (fire-and-forget: it will acquire lock if needed)
+                this._consumeFillQueue(chainOrders);
+                return;
             }
         };
+    }
+
+    /**
+     * Consume fills from the incoming queue in a loop.
+     * Protected by AsyncLock to ensure single consumer.
+     * Interruptible: checks queue between steps to merge new work.
+     */
+    async _consumeFillQueue(chainOrders) {
+        // Prevent stacking of consumer calls if lock is busy
+        if (this._isConsuming) return;
+        this._isConsuming = true;
+
+        try {
+            await this._fillProcessingLock.acquire(async () => {
+                while (this._incomingFillQueue.length > 0) {
+
+                    // 1. Take snapshot of current work
+                    const allFills = [...this._incomingFillQueue];
+                    this._incomingFillQueue = []; // Clear buffer
+
+                    const validFills = [];
+                    const processedFillKeys = new Set();
+
+                    // 2. Filter and Deduplicate (Standard Logic)
+                    for (const fill of allFills) {
+                        if (fill && fill.op && fill.op[0] === 4) {
+                            const fillOp = fill.op[1];
+                            if (fillOp.is_maker === false) {
+                                this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
+                                continue;
+                            }
+
+                            const fillKey = `${fillOp.order_id}:${fill.block_num}:${fill.id || ''}`;
+                            const now = Date.now();
+                            if (this._recentlyProcessedFills.has(fillKey)) {
+                                const lastProcessed = this._recentlyProcessedFills.get(fillKey);
+                                if (now - lastProcessed < this._fillDedupeWindowMs) {
+                                    this.manager.logger.log(`Skipping duplicate fill for ${fillOp.order_id} (processed ${now - lastProcessed}ms ago)`, 'debug');
+                                    continue;
+                                }
+                            }
+
+                            if (processedFillKeys.has(fillKey)) continue;
+
+                            processedFillKeys.add(fillKey);
+                            this._recentlyProcessedFills.set(fillKey, now);
+                            validFills.push(fill);
+
+                            // Log info
+                            const paysAmount = fillOp.pays ? fillOp.pays.amount : '?';
+                            const receivesAmount = fillOp.receives ? fillOp.receives.amount : '?';
+                            console.log(`\n===== FILL DETECTED =====`);
+                            console.log(`Order ID: ${fillOp.order_id}`);
+                            console.log(`Pays: ${paysAmount}, Receives: ${receivesAmount}`);
+                            console.log(`Block: ${fill.block_num} (History ID: ${fill.id || 'N/A'})`);
+                            console.log(`=========================\n`);
+                        }
+                    }
+
+                    // Clean up dedupe cache
+                    const now = Date.now();
+                    for (const [key, timestamp] of this._recentlyProcessedFills) {
+                        if (now - timestamp > this._fillDedupeWindowMs * 2) {
+                            this._recentlyProcessedFills.delete(key);
+                        }
+                    }
+
+                    if (validFills.length === 0) continue; // Loop back for more
+
+                    // 3. Sync and Collect Filled Orders
+                    let allFilledOrders = [];
+                    let ordersNeedingCorrection = [];
+                    const fillMode = chainOrders.getFillProcessingMode();
+
+                    const processValidFills = async (fillsToSync) => {
+                        let resolvedOrders = [];
+                        if (fillMode === 'history') {
+                            this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
+                            for (const fill of fillsToSync) {
+                                const fillOp = fill.op[1];
+                                const result = this.manager.syncFromFillHistory(fillOp);
+                                if (result.filledOrders) resolvedOrders.push(...result.filledOrders);
+                            }
+                        } else {
+                            this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
+                            const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
+                            const result = this.manager.syncFromOpenOrders(chainOpenOrders, fillsToSync[0].op[1]);
+                            if (result.filledOrders) resolvedOrders.push(...result.filledOrders);
+                            if (result.ordersNeedingCorrection) ordersNeedingCorrection.push(...result.ordersNeedingCorrection);
+                        }
+                        return resolvedOrders;
+                    };
+
+                    allFilledOrders = await processValidFills(validFills);
+
+                    // 4. Handle Price Corrections
+                    if (ordersNeedingCorrection.length > 0) {
+                        const correctionResult = await OrderUtils.correctAllPriceMismatches(
+                            this.manager, this.account, this.privateKey, chainOrders
+                        );
+                        if (correctionResult.failed > 0) this.manager.logger.log(`${correctionResult.failed} corrections failed`, 'error');
+                    }
+
+                    // 5. Sequential Rebalance Loop (Interruptible)
+                    if (allFilledOrders.length > 0) {
+                        this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders sequentially...`, 'info');
+
+                        let anyRotations = false;
+
+                        let i = 0;
+                        while (i < allFilledOrders.length) {
+                            const filledOrder = allFilledOrders[i];
+                            i++;
+
+                            this.manager.logger.log(`>>> Processing sequential fill for order ${filledOrder.id} (${i}/${allFilledOrders.length})`, 'info');
+
+                            const rebalanceResult = await this.manager.processFilledOrders([filledOrder]);
+                            const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
+
+                            if (batchResult.hadRotation) anyRotations = true;
+                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+
+                            // INTERRUPT CHECK: Did new fills arrive while we broadcasted?
+                            if (this._incomingFillQueue.length > 0) {
+                                this.manager.logger.log(`INTERRUPT: ${this._incomingFillQueue.length} new fills detected during sequential loop! Merging...`, 'info');
+
+                                const newRawFills = [...this._incomingFillQueue];
+                                this._incomingFillQueue = [];
+
+                                const validNewFills = [];
+                                for (const nf of newRawFills) {
+                                    // Minimal dedupe check
+                                    const nfOp = nf.op[1];
+                                    const nfKey = `${nfOp.order_id}:${nf.block_num}:${nf.id || ''}`;
+                                    if (this._recentlyProcessedFills.has(nfKey)) continue;
+
+                                    this._recentlyProcessedFills.set(nfKey, Date.now());
+                                    validNewFills.push(nf);
+                                }
+
+                                if (validNewFills.length > 0) {
+                                    const newResolved = await processValidFills(validNewFills);
+                                    if (newResolved.length > 0) {
+                                        allFilledOrders.push(...newResolved);
+                                        this.manager.logger.log(`Merged ${newResolved.length} new filled orders into current worklist. Total: ${allFilledOrders.length}`, 'info');
+                                    }
+                                }
+                            }
+                        }
+
+                        // Check spread condition after sequential rotations complete
+                        if (anyRotations || allFilledOrders.length > 0) {
+                            this.manager.recalculateFunds();
+                            const spreadResult = await this.manager.checkSpreadCondition(
+                                this.BitShares,
+                                this.updateOrdersOnChainBatch.bind(this)
+                            );
+                            if (spreadResult && spreadResult.ordersPlaced > 0) {
+                                this.manager.logger.log(`✓ Spread correction after sequential fills: ${spreadResult.ordersPlaced} order(s) placed, ` +
+                                    `${spreadResult.partialsMoved} partial(s) moved`, 'info');
+                                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                            }
+                        }
+
+                        // Only run divergence checks if rotation was completed
+                        if (anyRotations) {
+                            await this._divergenceLock.acquire(async () => {
+                                await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
+                                if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) {
+                                    const orderType = getOrderTypeFromUpdatedFlags(
+                                        this.manager._gridSidesUpdated.includes('buy'),
+                                        this.manager._gridSidesUpdated.includes('sell')
+                                    );
+                                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
+                                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                }
+                                await OrderUtils.applyGridDivergenceCorrections(
+                                    this.manager, this.accountOrders, this.config.botKey, this.updateOrdersOnChainBatch.bind(this)
+                                );
+                            });
+                        }
+                    }
+
+                    // Save processed fills
+                    await retryPersistenceIfNeeded(this.manager);
+                    if (validFills.length > 0 && this.accountOrders) {
+                        try {
+                            const fillsToSave = {};
+                            for (const fillKey of processedFillKeys) {
+                                fillsToSave[fillKey] = this._recentlyProcessedFills.get(fillKey) || Date.now();
+                            }
+                            await this.accountOrders.updateProcessedFillsBatch(this.config.botKey, fillsToSave);
+                            this.manager.logger.log(`Persisted ${processedFillKeys.size} fill records to prevent reprocessing`, 'debug');
+                        } catch (err) {
+                            this.manager?.logger?.log(`Warning: Failed to persist processed fills: ${err.message}`, 'warn');
+                        }
+                    }
+
+                    // Periodically clean up old fill records
+                    if (Math.random() < 0.1) {
+                        try {
+                            await this.accountOrders.cleanOldProcessedFills(this.config.botKey, 3600000);
+                        } catch (err) { /* warn */ }
+                    }
+
+                } // End while(_incomingFillQueue)
+
+            });
+        } catch (err) {
+            this._log(`Error processing fills: ${err.message}`);
+            if (this.manager && this.manager.logger) {
+                this.manager.logger.log(`Error processing fills: ${err.message}`, 'error');
+                if (err.stack) this.manager.logger.log(err.stack, 'error');
+            } else {
+                console.error('CRITICAL: Error processing fills (logger unavailable):', err);
+            }
+        } finally {
+            this._isConsuming = false;
+            // Double check race condition
+            if (this._incomingFillQueue.length > 0) {
+                this._consumeFillQueue(chainOrders);
+            }
+        }
     }
 
     async initialize(masterPassword = null) {
