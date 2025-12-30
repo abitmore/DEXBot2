@@ -1252,15 +1252,36 @@ class OrderManager {
                     parsedCount++;
                     this.logger.log(`DEBUG: Parsed chain order ${parsedOrder.orderId}: type=${parsedOrder.type}, price=${parsedOrder.price?.toFixed(6)}, size=${parsedOrder.size?.toFixed(8)}`, 'info');
 
-                    const gridOrder = findMatchingGridOrderByOpenOrder(parsedOrder, { orders: this.orders, ordersByState: this._ordersByState, assets: this.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, this.assets), logger: this.logger });
+                    const gridOrder = findMatchingGridOrderByOpenOrder(parsedOrder, { orders: this.orders, ordersByState: this._ordersByState, assets: this.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, this.assets), logger: this.logger, skipSizeMatch: true });
                     if (gridOrder) {
                         matchedChainOrders.add(parsedOrder.orderId);
 
                         // IMPORTANT: do NOT mutate the existing order object in-place.
                         // _updateOrder uses the previously stored object's state/type to update indices.
                         // If we mutate first, old indices won't be cleaned up.
-                        // Preserve PARTIAL state if already set (order with remaining amount being filled)
-                        const newState = gridOrder.state === ORDER_STATES.PARTIAL ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
+
+                        // Detect partial fills: if chain size is less than our current tracked size
+                        const currentSize = Number(gridOrder.size || 0);
+                        const chainSize = Number(parsedOrder.size || 0);
+                        const precision = (gridOrder.type === ORDER_TYPES.SELL)
+                            ? (this.assets?.assetA?.precision ?? 8)
+                            : (this.assets?.assetB?.precision ?? 8);
+
+                        // Use integer comparison to avoid floating point noise
+                        const currentSizeInt = floatToBlockchainInt(currentSize, precision);
+                        const chainSizeInt = floatToBlockchainInt(chainSize, precision);
+
+                        let newState = gridOrder.state;
+
+                        if (chainSizeInt < currentSizeInt && chainSizeInt > 0) {
+                            // Size reduced but not zero -> transition to PARTIAL
+                            newState = ORDER_STATES.PARTIAL;
+                            this.logger.log(`Grid ${gridOrder.id} detected partial fill offline: ${currentSize.toFixed(8)} -> ${chainSize.toFixed(8)}`, 'info');
+                        } else if (gridOrder.state !== ORDER_STATES.PARTIAL) {
+                            // Otherwise ensure it's ACTIVE if it was VIRTUAL or newly matched
+                            newState = ORDER_STATES.ACTIVE;
+                        }
+
                         const updatedOrder = {
                             ...gridOrder,
                             orderId: parsedOrder.orderId,
@@ -1606,6 +1627,15 @@ class OrderManager {
             }
         }
 
+        // SYNC FUND CYCLING: Calculate available BEFORE updating chainFree
+        // _adjustFunds() stores the pre-update available in this._preFillAvailable
+        // This prevents double-counting proceeds that are included in the available calculation
+        let currentAvailBuy = this._preFillAvailable?.buy || calculateAvailableFundsValue('buy', this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders);
+        let currentAvailSell = this._preFillAvailable?.sell || calculateAvailableFundsValue('sell', this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders);
+
+        // Clear the stored values after use (in case this is called multiple times)
+        this._preFillAvailable = null;
+
         // Apply proceeds directly to accountTotals so availability reflects fills immediately (no waiting for a chain refresh)
         if (!this.accountTotals) {
             this.accountTotals = { buy: 0, sell: 0, buyFree: 0, sellFree: 0 };
@@ -1621,15 +1651,6 @@ class OrderManager {
         bumpTotal('sellFree', deltaSellFree);
         bumpTotal('buy', deltaBuyTotal);
         bumpTotal('sell', deltaSellTotal);
-
-        // SYNC FUND CYCLING: Use available calculated BEFORE chainFree was updated
-        // _adjustFunds() stores the pre-update available in this._preFillAvailable
-        // This prevents double-counting proceeds that are included in the available calculation
-        let currentAvailBuy = this._preFillAvailable?.buy || calculateAvailableFundsValue('buy', this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders);
-        let currentAvailSell = this._preFillAvailable?.sell || calculateAvailableFundsValue('sell', this.accountTotals, this.funds, this.config.assetA, this.config.assetB, this.config.activeOrders);
-
-        // Clear the stored values after use (in case this is called multiple times)
-        this._preFillAvailable = null;
 
         // Hold proceeds + available in cacheFunds so availability reflects them through rotation
         const proceedsBefore = { buy: this.funds.cacheFunds.buy || 0, sell: this.funds.cacheFunds.sell || 0 };

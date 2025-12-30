@@ -427,7 +427,7 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
 
         const gridInt = floatToBlockchainInt(gridSize, precision);
         const chainInt = floatToBlockchainInt(chainSize, precision);
-        if (Math.abs(gridInt - chainInt) > 1) {
+        if (!opts?.skipSizeMatch && Math.abs(gridInt - chainInt) > 1) {
             logger?.log?.(
                 `Chain order size mismatch with grid ${gridOrder.id}: chain=${chainSize.toFixed(8)}, grid=${gridSize.toFixed(8)}, ` +
                 `chainInt=${chainInt}, gridInt=${gridInt}, precision=${precision}`,
