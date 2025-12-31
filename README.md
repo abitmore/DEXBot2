@@ -503,7 +503,7 @@ Below is a short summary of the modules in this repository and what they provide
 - `modules/chain_orders.js`: Account-level order operations: select account, create/update/cancel orders, listen for fills with deduplication, read open orders. Uses 'history' mode for fill processing which matches orders from blockchain events. Protected with AsyncLock for subscription management and account state.
 - `modules/bitshares_client.js`: Shared BitShares client wrapper and connection utilities (`BitShares`, `createAccountClient`, `waitForConnected`).
 - `modules/btsdex_event_patch.js`: Runtime patch for `btsdex` library to improve history and account event handling.
-- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-key>.json`). Manages bot-specific files with AsyncLock-protected atomic updates, reload-before-write TOCTOU prevention, and optional forceReload for fresh disk reads. **Note:** Legacy pendingProceeds data (pre-0.4.0) is migrated to cacheFunds via `scripts/migrate_pending_proceeds.js`.
+- `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-key>.json`). Manages bot-specific files with AsyncLock-protected atomic updates, reload-before-write TOCTOU prevention, and optional forceReload for fresh disk reads.
 - `modules/dexbot_class.js`: Core `DEXBot` class — handles bot initialization, account setup, order placement, fill processing, grid rebalancing, and divergence detection. Fill processing protected by AsyncLock to safely handle concurrent fills. Shared implementation used by both `bot.js` (single-bot) and `dexbot.js` (multi-bot orchestration).
 
 ### 📊 Order Subsystem (`modules/order/`)
