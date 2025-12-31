@@ -14,7 +14,7 @@ async function testPendingProceedsPreservedDuringGridLoad() {
     const testConfig = {
         assetA: 'BTS',
         assetB: 'USD',
-        marketPrice: 1.0,
+        startPrice: 1.0,
         minPrice: 0.5,
         maxPrice: 2.0,
         incrementPercent: 1,
@@ -64,7 +64,7 @@ async function testPendingProceedsPreservedDuringInitializeGrid() {
     const testConfig = {
         assetA: 'BTS',
         assetB: 'USD',
-        marketPrice: 1.0,
+        startPrice: 1.0,
         minPrice: 0.5,
         maxPrice: 2.0,
         incrementPercent: 1,

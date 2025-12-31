@@ -47,9 +47,9 @@ class Logger {
         }
     }
 
-    logOrderGrid(orders, marketPrice) {
+    logOrderGrid(orders, startPrice) {
         console.log('\n===== ORDER GRID (SAMPLE) =====');
-        if (this.marketName) console.log(`Market: ${this.marketName} @ ${marketPrice}`);
+        if (this.marketName) console.log(`Market: ${this.marketName} @ ${startPrice}`);
         console.log('Price\t\tType\t\tState\t\tSize');
         console.log('-----------------------------------------------');
 

@@ -18,7 +18,7 @@ async function testSellFillCreateBuy() {
     const mgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
-        marketPrice: 100,
+        startPrice: 100,
         minPrice: 50,
         maxPrice: 200,
         incrementPercent: 10,
@@ -76,7 +76,7 @@ async function testBuyFillCreateSell() {
     const mgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
-        marketPrice: 100,
+        startPrice: 100,
         minPrice: 50,
         maxPrice: 200,
         incrementPercent: 10,
@@ -134,7 +134,7 @@ async function testSellFillRotateBuy() {
     const mgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
-        marketPrice: 100,
+        startPrice: 100,
         minPrice: 50,
         maxPrice: 200,
         incrementPercent: 10,
@@ -185,7 +185,7 @@ async function testBuyFillRotateSell() {
     const mgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
-        marketPrice: 100,
+        startPrice: 100,
         minPrice: 50,
         maxPrice: 200,
         incrementPercent: 10,
@@ -236,7 +236,7 @@ async function testBothSidesFilledTogether() {
     const mgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
-        marketPrice: 100,
+        startPrice: 100,
         minPrice: 50,
         maxPrice: 200,
         incrementPercent: 10,

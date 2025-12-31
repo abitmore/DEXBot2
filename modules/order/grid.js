@@ -31,7 +31,7 @@ const { floatToBlockchainInt, blockchainToFloat, resolveRelativePrice, filterOrd
  * Grid - Static class for grid creation and sizing
  * 
  * Grid creation algorithm:
- * 1. Calculate price levels from marketPrice to maxPrice (sells) and minPrice (buys)
+ * 1. Calculate price levels from startPrice to maxPrice (sells) and minPrice (buys)
  * 2. Use incrementPercent for geometric spacing (1% -> 1.01x per level)
  * 3. Assign SPREAD type to orders closest to market price
  * 4. Calculate order sizes based on funds and weight distribution
@@ -45,7 +45,7 @@ class Grid {
      * Orders within targetSpreadPercent of market are marked as SPREAD.
      * 
      * @param {Object} config - Grid configuration
-     * @param {number} config.marketPrice - Center price for the grid
+     * @param {number} config.startPrice - Center price for the grid
      * @param {number} config.minPrice - Lower price bound
      * @param {number} config.maxPrice - Upper price bound
      * @param {number} config.incrementPercent - Price step (e.g., 1 for 1%)
@@ -54,7 +54,7 @@ class Grid {
      */
     static createOrderGrid(config) {
         // Compute helper arrays of buy/sell price levels relative to the market price.
-        const { marketPrice, minPrice, maxPrice, incrementPercent } = config;
+        const { startPrice, minPrice, maxPrice, incrementPercent } = config;
 
         // CRITICAL: Validate increment bounds before using in calculations
         // Prevents division by zero (line 75: Math.log(stepUp)) and invalid prices
@@ -85,7 +85,7 @@ class Grid {
         // Generate Sells detected OUTWARDS from market (Price increasing)
         // Start at a half-step up to center the market price in the first gap
         const sellLevels = [];
-        let currentSell = marketPrice * Math.sqrt(stepUp);
+        let currentSell = startPrice * Math.sqrt(stepUp);
         while (currentSell <= maxPrice) {
             sellLevels.push(currentSell);
             currentSell *= stepUp;
@@ -96,7 +96,7 @@ class Grid {
         // Generate Buys detected OUTWARDS from market (Price decreasing)
         // Start at a half-step down to center the market price
         const buyLevels = [];
-        let currentBuy = marketPrice * Math.sqrt(stepDown);
+        let currentBuy = startPrice * Math.sqrt(stepDown);
         while (currentBuy >= minPrice) {
             buyLevels.push(currentBuy);
             currentBuy *= stepDown;
@@ -197,7 +197,7 @@ class Grid {
     static async initializeGrid(manager) {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
         await manager._initializeAssets();
-        const mpRaw = manager.config.marketPrice;
+        const mpRaw = manager.config.startPrice;
         const mpIsPool = typeof mpRaw === 'string' && mpRaw.trim().toLowerCase() === 'pool';
         const mpIsMarket = typeof mpRaw === 'string' && mpRaw.trim().toLowerCase() === 'market';
 
@@ -210,27 +210,27 @@ class Grid {
                 if ((mpIsPool || manager.config.pool) && symA && symB) {
                     try {
                         const p = await derivePrice(BitShares, symA, symB, 'pool');
-                        if (p !== null) manager.config.marketPrice = p;
+                        if (p !== null) manager.config.startPrice = p;
                     } catch (e) { manager.logger?.log?.(`Pool price lookup failed: ${e?.message || e}`, 'warn'); }
                 } else if ((mpIsMarket || manager.config.market) && symA && symB) {
                     try {
                         const m = await derivePrice(BitShares, symA, symB, 'market');
-                        if (m !== null) manager.config.marketPrice = m;
+                        if (m !== null) manager.config.startPrice = m;
                     } catch (e) { manager.logger?.log?.(`Market price lookup failed: ${e?.message || e}`, 'warn'); }
                 }
 
                 try {
-                    if (!Number.isFinite(Number(manager.config.marketPrice))) {
+                    if (!Number.isFinite(Number(manager.config.startPrice))) {
                         const modePref = (manager.config && manager.config.priceMode) ? String(manager.config.priceMode).toLowerCase() : (process && process.env && process.env.PRICE_MODE ? String(process.env.PRICE_MODE).toLowerCase() : 'auto');
                         const tryP = await derivePrice(BitShares, symA, symB, modePref);
                         if (tryP !== null) {
-                            manager.config.marketPrice = tryP;
-                            console.log('Derived marketPrice from on-chain (derivePrice)', manager.config.assetA + '/' + manager.config.assetB, tryP);
+                            manager.config.startPrice = tryP;
+                            console.log('Derived startPrice from on-chain (derivePrice)', manager.config.assetA + '/' + manager.config.assetB, tryP);
                         }
                     }
-                } catch (e) { manager.logger?.log?.(`auto-derive marketPrice failed: ${e?.message || e}`, 'warn'); }
+                } catch (e) { manager.logger?.log?.(`auto-derive startPrice failed: ${e?.message || e}`, 'warn'); }
             } catch (err) {
-                manager.logger?.log?.(`auto-derive marketPrice failed: ${err?.message || err}`, 'warn');
+                manager.logger?.log?.(`auto-derive startPrice failed: ${err?.message || err}`, 'warn');
             }
         }
 
@@ -246,8 +246,8 @@ class Grid {
         //
         // 2. RELATIVE multipliers (with 'x' suffix): "15x" or "4x"
         //    - Dynamic bound based on current market price
-        //    - For minPrice: resolves as marketPrice / multiplier
-        //    - For maxPrice: resolves as marketPrice * multiplier
+        //    - For minPrice: resolves as startPrice / multiplier
+        //    - For maxPrice: resolves as startPrice * multiplier
         //    - Example: maxPrice = "15x" at market price 0.64 = 0.64 * 15 = 9.6
         //
         // MIXED FORMAT EXAMPLE:
@@ -263,7 +263,7 @@ class Grid {
         // 2. If that fails, try to parse as numeric absolute price
         // 3. If that fails, use fallback from DEFAULT_CONFIG
         //
-        const mp = Number(manager.config.marketPrice);
+        const mp = Number(manager.config.startPrice);
         const fallbackMin = Number(DEFAULT_CONFIG.minPrice);
         const fallbackMax = Number(DEFAULT_CONFIG.maxPrice);
         const rawMin = manager.config.minPrice !== undefined ? manager.config.minPrice : DEFAULT_CONFIG.minPrice;
@@ -272,8 +272,8 @@ class Grid {
         const maxP = resolveConfiguredPriceBound(rawMax, fallbackMax, mp, 'max');
         manager.config.minPrice = minP;
         manager.config.maxPrice = maxP;
-        if (!Number.isFinite(mp)) { throw new Error('Cannot initialize order grid: marketPrice is not a valid number'); }
-        if (mp < minP || mp > maxP) { throw new Error(`Refusing to initialize order grid because marketPrice ${mp} is outside configured bounds [${minP}, ${maxP}]`); }
+        if (!Number.isFinite(mp)) { throw new Error('Cannot initialize order grid: startPrice is not a valid number'); }
+        if (mp < minP || mp > maxP) { throw new Error(`Refusing to initialize order grid because startPrice ${mp} is outside configured bounds [${minP}, ${maxP}]`); }
 
         try {
             const botFunds = manager.config && manager.config.botFunds ? manager.config.botFunds : {};
@@ -419,7 +419,7 @@ class Grid {
 
         manager.logger.log(`Initialized order grid with ${orders.length} orders`, 'info'); manager.logger.log(`Configured activeOrders: buy=${manager.config.activeOrders.buy}, sell=${manager.config.activeOrders.sell}`, 'info');
         manager.logger?.logFundsStatus?.(manager);
-        manager.logger?.logOrderGrid?.(Array.from(manager.orders.values()), manager.config.marketPrice);
+        manager.logger?.logOrderGrid?.(Array.from(manager.orders.values()), manager.config.startPrice);
     }
 
     /**
@@ -507,7 +507,7 @@ class Grid {
 
         manager.logger.log('Full grid resynchronization complete.', 'info');
         manager.logger?.logFundsStatus?.(manager);
-        manager.logger.logOrderGrid(Array.from(manager.orders.values()), manager.config.marketPrice);
+        manager.logger.logOrderGrid(Array.from(manager.orders.values()), manager.config.startPrice);
     }
 
     /**
@@ -892,7 +892,7 @@ class Grid {
 
         manager.logger?.log('Grid order sizes updated', 'info');
         manager.logger?.logFundsStatus && manager.logger.logFundsStatus(manager);
-        manager.logger?.logOrderGrid && manager.logger.logOrderGrid(Array.from(manager.orders.values()), config.marketPrice);
+        manager.logger?.logOrderGrid && manager.logger.logOrderGrid(Array.from(manager.orders.values()), config.startPrice);
     }
 
     /**
@@ -1255,12 +1255,12 @@ class Grid {
         const virtualBuys = Array.from(manager.orders.values()).filter(o =>
             (o.type === ORDER_TYPES.BUY || o.type === ORDER_TYPES.SPREAD) &&
             o.state === ORDER_STATES.VIRTUAL &&
-            o.price < (manager.config.marketPrice || Infinity)
+            o.price < (manager.config.startPrice || Infinity)
         );
         const virtualSells = Array.from(manager.orders.values()).filter(o =>
             (o.type === ORDER_TYPES.SELL || o.type === ORDER_TYPES.SPREAD) &&
             o.state === ORDER_STATES.VIRTUAL &&
-            o.price > (manager.config.marketPrice || 0)
+            o.price > (manager.config.startPrice || 0)
         );
 
         return calculateSpreadFromOrders(onChainBuys, onChainSells, virtualBuys, virtualSells);
@@ -1299,7 +1299,7 @@ class Grid {
         );
 
         // Fetch current market price for fair fund comparison (market may have moved since startup)
-        let currentMarketPrice = manager.config.marketPrice;  // Fallback to startup price
+        let currentMarketPrice = manager.config.startPrice;  // Fallback to startup price
         if (BitShares) {
             try {
                 const { derivePrice } = require('./utils');
@@ -1324,7 +1324,7 @@ class Grid {
                 if (derivedPrice && derivedPrice > 0) {
                     currentMarketPrice = derivedPrice;
                     manager.logger.log(
-                        `Fetched current market price: ${currentMarketPrice.toFixed(8)} (was ${manager.config.marketPrice.toFixed(8)} at startup)`,
+                        `Fetched current market price: ${currentMarketPrice.toFixed(8)} (was ${manager.config.startPrice.toFixed(8)} at startup)`,
                         'debug'
                     );
                 }

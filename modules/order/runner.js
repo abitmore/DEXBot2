@@ -24,7 +24,7 @@ const Grid = require('./grid');
 /**
  * Run a standalone order grid calculation for testing.
  * Loads bot config, derives market price, creates grid, and simulates cycles.
- * @throws {Error} If config invalid or marketPrice outside bounds
+ * @throws {Error} If config invalid or startPrice outside bounds
  */
 async function runOrderManagerCalculation() {
     const cfgFile = path.join(__dirname, '..', 'profiles', 'bots.json');
@@ -50,7 +50,7 @@ async function runOrderManagerCalculation() {
         runtimeConfig = { ...chosenBot };
     }
 
-    const rawMarketPrice = runtimeConfig.marketPrice;
+    const rawMarketPrice = runtimeConfig.startPrice;
     const mpIsPool = typeof rawMarketPrice === 'string' && rawMarketPrice.trim().toLowerCase() === 'pool';
     const mpIsMarket = typeof rawMarketPrice === 'string' && rawMarketPrice.trim().toLowerCase() === 'market';
 
@@ -64,16 +64,16 @@ async function runOrderManagerCalculation() {
                 const { BitShares } = require('../bitshares_client');
                 const symA = runtimeConfig.assetA; const symB = runtimeConfig.assetB;
                 const p = await derivePoolPrice(BitShares, symA, symB);
-                if (p !== null) runtimeConfig.marketPrice = p;
+                if (p !== null) runtimeConfig.startPrice = p;
             } catch (err) { console.warn('Pool-based price lookup failed:', err.message); }
         } else if (tryMarket && (runtimeConfig.assetA && runtimeConfig.assetB)) {
             try {
                 const { BitShares } = require('../bitshares_client');
                 const symA = runtimeConfig.assetA; const symB = runtimeConfig.assetB;
                 const m = await deriveMarketPrice(BitShares, symA, symB);
-                if (m !== null) runtimeConfig.marketPrice = m;
+                if (m !== null) runtimeConfig.startPrice = m;
             } catch (err) { console.warn('Market-based price lookup failed:', err.message); }
-    } else { throw new Error('No marketPrice provided and neither "pool" nor "market" were set in bots.json \u2014 define at least one to derive price.'); }
+    } else { throw new Error('No startPrice provided and neither "pool" nor "market" were set in bots.json \u2014 define at least one to derive price.'); }
 
         try {
             const { BitShares } = require('../bitshares_client');
@@ -82,16 +82,16 @@ async function runOrderManagerCalculation() {
             // Pass an explicit runtime preference (runtimeConfig.priceMode or env PRICE_MODE) if present
             const runtimeMode = (runtimeConfig && runtimeConfig.priceMode) ? String(runtimeConfig.priceMode).toLowerCase() : (process && process.env && process.env.PRICE_MODE ? String(process.env.PRICE_MODE).toLowerCase() : 'auto');
             const m = await derivePrice(BitShares, symA, symB, runtimeMode);
-            if (m !== null) { runtimeConfig.marketPrice = m; console.log('Derived marketPrice from on-chain (derivePrice)', runtimeConfig.assetA + '/' + runtimeConfig.assetB, m); }
-        } catch (err) { console.warn('Failed to auto-derive marketPrice from chain (derivePrice):', err && err.message ? err.message : err); }
+            if (m !== null) { runtimeConfig.startPrice = m; console.log('Derived startPrice from on-chain (derivePrice)', runtimeConfig.assetA + '/' + runtimeConfig.assetB, m); }
+        } catch (err) { console.warn('Failed to auto-derive startPrice from chain (derivePrice):', err && err.message ? err.message : err); }
     }
 
     try {
         const cfgMin = Number(runtimeConfig.minPrice || 80000);
         const cfgMax = Number(runtimeConfig.maxPrice || 160000);
-        const mp = Number(runtimeConfig.marketPrice);
-        if (!Number.isFinite(mp)) throw new Error('Invalid marketPrice (not a number)');
-        if (mp < cfgMin || mp > cfgMax) { throw new Error(`Derived marketPrice ${mp} is outside configured range [${cfgMin}, ${cfgMax}] \u2014 refusing to create orders.`); }
+        const mp = Number(runtimeConfig.startPrice);
+        if (!Number.isFinite(mp)) throw new Error('Invalid startPrice (not a number)');
+        if (mp < cfgMin || mp > cfgMax) { throw new Error(`Derived startPrice ${mp} is outside configured range [${cfgMin}, ${cfgMax}] \u2014 refusing to create orders.`); }
     } catch (err) { throw err; }
 
     const manager = new OrderManager(runtimeConfig);

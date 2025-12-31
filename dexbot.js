@@ -352,9 +352,9 @@ async function runBotInstances(botEntries, { forceDryRun = false, sourceName = '
                 process.exit(1);
             }
             if (err && err.message && String(err.message).toLowerCase().includes('marketprice')) {
-                console.info('Hint: marketPrice could not be derived.');
+                console.info('Hint: startPrice could not be derived.');
                 console.info(' - If using profiles/bots.json with "pool" or "market" signals, ensure the chain contains a matching liquidity pool or orderbook for the configured pair.');
-                console.info(' - Alternatively, set a numeric `marketPrice` directly in profiles/bots.json for this bot to avoid auto-derive.');
+                console.info(' - Alternatively, set a numeric `startPrice` directly in profiles/bots.json for this bot to avoid auto-derive.');
                 console.info(' - You can also set LIVE_BOT_NAME or BOT_NAME to select a different bot from the profiles settings.');
             }
         }

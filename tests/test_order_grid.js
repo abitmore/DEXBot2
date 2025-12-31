@@ -5,7 +5,7 @@ const Grid = require('../modules/order/index.js').grid;
 const { calculateOrderSizes } = require('../modules/order/utils');
 
 const cfg = {
-    marketPrice: 100,
+    startPrice: 100,
     minPrice: 50,
     maxPrice: 200,
     incrementPercent: 10,

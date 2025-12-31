@@ -3,7 +3,7 @@ const Grid = require('../modules/order/grid');
 
 // Mock config
 const config = {
-    marketPrice: 100,
+    startPrice: 100,
     minPrice: 90,
     maxPrice: 110,
     incrementPercent: 2,
@@ -14,8 +14,8 @@ const config = {
 console.log('--- Verifying Grid Centering ---');
 const { orders } = Grid.createOrderGrid(config);
 
-const sellOrders = orders.filter(o => o.type === 'sell' || (o.type === 'spread' && o.price > config.marketPrice));
-const buyOrders = orders.filter(o => o.type === 'buy' || (o.type === 'spread' && o.price < config.marketPrice));
+const sellOrders = orders.filter(o => o.type === 'sell' || (o.type === 'spread' && o.price > config.startPrice));
+const buyOrders = orders.filter(o => o.type === 'buy' || (o.type === 'spread' && o.price < config.startPrice));
 
 // Sort by price
 sellOrders.sort((a, b) => a.price - b.price);
@@ -24,7 +24,7 @@ buyOrders.sort((a, b) => b.price - a.price);
 const lowestSell = sellOrders[0]?.price;
 const highestBuy = buyOrders[0]?.price;
 
-console.log(`Market Price: ${config.marketPrice}`);
+console.log(`Market Price: ${config.startPrice}`);
 console.log(`Lowest Sell:  ${lowestSell}`);
 console.log(`Highest Buy:  ${highestBuy}`);
 
@@ -39,13 +39,13 @@ console.log(`Geometric Mean (First Levels): ${geomCenter}`);
 
 // Relax tolerance for (1+x)(1-x) discrepancy
 const tolerance = 0.05;
-const diff = Math.abs(geomCenter - config.marketPrice);
+const diff = Math.abs(geomCenter - config.startPrice);
 
 console.log(`Difference from Market Price: ${diff}`);
 
 // Check symmetry of first step
-const sellStep = lowestSell / config.marketPrice;
-const buyStep = highestBuy / config.marketPrice;
+const sellStep = lowestSell / config.startPrice;
+const buyStep = highestBuy / config.startPrice;
 console.log(`Sell Step Ratio: ${sellStep.toFixed(5)} (+${((sellStep - 1) * 100).toFixed(3)}%)`);
 console.log(`Buy Step Ratio:  ${buyStep.toFixed(5)} (${((buyStep - 1) * 100).toFixed(3)}%)`);
 

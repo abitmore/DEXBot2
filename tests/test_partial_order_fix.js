@@ -7,7 +7,7 @@ async function testPartialOrderFix() {
     const config = {
         assetA: 'BASE',
         assetB: 'QUOTE',
-        marketPrice: 100,
+        startPrice: 100,
         minPrice: 50,
         maxPrice: 200,
         incrementPercent: 1,

@@ -12,7 +12,7 @@ async function testStartupAfterDivergenceWithPartial() {
     console.log('TEST 1: Startup After Divergence with Partial Orders');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 3, sell: 3 }
     });
 
@@ -70,7 +70,7 @@ async function testFundCyclingWithPartialFills() {
     console.log('TEST 2: Fund Cycling with Partial Fills');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 }
     });
 
@@ -130,7 +130,7 @@ async function testRebalancingWithExistingPartial() {
     console.log('TEST 3: Rebalancing After Full Fill with Existing Partial');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 3, sell: 3 }
     });
 
@@ -216,7 +216,7 @@ async function testGridNavigationWithPartials() {
     console.log('TEST 4: Grid Navigation Across Namespace with Partials');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 }
     });
 
@@ -275,7 +275,7 @@ async function testEdgeBoundGridWithPartial() {
     console.log('TEST 5: Edge-Bound Grid with Partial Orders');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 }
     });
 

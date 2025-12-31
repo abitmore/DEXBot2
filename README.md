@@ -123,7 +123,7 @@ Define each bot in `profiles/bots.json`. A minimal structure looks like this:
       "preferredAccount": "example-account",
       "assetA": "IOB.XRP",
       "assetB": "BTS",
-      "marketPrice": "pool",
+      "startPrice": "pool",
       "minPrice": "3x",
       "maxPrice": "3x",
       "incrementPercent": 0.5,
@@ -146,9 +146,9 @@ Below is a concise description of each configuration option you may set per-bot 
 - **`preferredAccount`**: string — the account name to use for on-chain operations; dexbot will prompt once for the master password and reuse it for all bots needing this value.
 - **`assetA`**: string — human-friendly name or symbol of the base asset (the asset you are selling on a sell order). Example: `"BTC"`, `"BTS"`.
 - **`assetB`**: string — human-friendly name or symbol of the quote asset (the asset you receive on a sell order). Example: `"USD"`, `"IOB.XRP"`.
-- **`marketPrice`**: number | string — preferred market price. You may provide a numeric value (e.g. `42000`) or let the bot derive it by setting `"pool"` (use liquidity pool) or `"market"` (use order book/ticker). If omitted the runtime will attempt to derive it from `assetA`/`assetB`.
-- **`minPrice`**: number | string — lower bound for allowed order prices. You may provide a concrete numeric value (e.g. `525`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `marketPrice` (e.g. `"5x"` -> `marketPrice / 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
-- **`maxPrice`**: number | string — upper bound for allowed order prices. You may provide a concrete numeric value (e.g. `8400`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `marketPrice` (e.g. `"5x"` -> `marketPrice * 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
+- **`startPrice`**: number | string — preferred market price. You may provide a numeric value (e.g. `42000`) or let the bot derive it by setting `"pool"` (use liquidity pool) or `"market"` (use order book/ticker). If omitted the runtime will attempt to derive it from `assetA`/`assetB`.
+- **`minPrice`**: number | string — lower bound for allowed order prices. You may provide a concrete numeric value (e.g. `525`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `startPrice` (e.g. `"5x"` -> `startPrice / 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
+- **`maxPrice`**: number | string — upper bound for allowed order prices. You may provide a concrete numeric value (e.g. `8400`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `startPrice` (e.g. `"5x"` -> `startPrice * 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
 - **`incrementPercent`**: number — percent step between adjacent order price levels (e.g. `0.5` means 0.5% steps). Smaller values produce denser grids.
 - **`targetSpreadPercent`**: number — target spread (in percent) around the market price that the grid should cover. The manager uses this to place buy/sell layers around the market.
 - **`weightDistribution`**: object — `{ "sell": <number>, "buy": <number> }`. Controls order sizing shape. Values are the distribution coefficient (examples below):

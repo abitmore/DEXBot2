@@ -5,7 +5,7 @@ const { floatToBlockchainInt } = require('../modules/order/utils');
 console.log('Running precision edge-case partial-fill tests');
 
 async function runCase({ precision, initialSize, partialFilled, expectUpdated }) {
-    const cfg = { assetA: 'ASSTA', assetB: 'ASSTB', marketPrice: 2, botFunds: { buy: 1000, sell: 1000 } };
+    const cfg = { assetA: 'ASSTA', assetB: 'ASSTB', startPrice: 2, botFunds: { buy: 1000, sell: 1000 } };
     const mgr = new OrderManager(cfg);
     mgr.assets = {
         assetA: { id: '1.3.100', precision },

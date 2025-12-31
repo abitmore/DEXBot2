@@ -14,7 +14,7 @@ const tmpIndexPath = path.join(tmpDir, 'orders.partial.json');
 if (fs.existsSync(tmpIndexPath)) fs.unlinkSync(tmpIndexPath);
 
 // Create manager with a minimal config and mocked assets
-const cfg = { assetA: 'ASSTA', assetB: 'ASSTB', marketPrice: 2, botFunds: { buy: 1000, sell: 1000 } };
+const cfg = { assetA: 'ASSTA', assetB: 'ASSTB', startPrice: 2, botFunds: { buy: 1000, sell: 1000 } };
 const mgr = new OrderManager(cfg);
 
 // Mock asset metadata (ids and precisions) so conversions work

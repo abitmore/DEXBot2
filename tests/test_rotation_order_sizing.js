@@ -13,12 +13,12 @@ const config = {
     incrementPercent: 1,
     weightDistribution: { buy: 0.5, sell: 0.5 },
     activeOrders: { buy: 5, sell: 5 },
-    marketPrice: 0.50,
+    startPrice: 0.50,
     assetA: 'BTS',
     assetB: 'USDT'
 };
 
-console.log(`Market Price: ${config.marketPrice} USDT/BTS`);
+console.log(`Market Price: ${config.startPrice} USDT/BTS`);
 console.log(`Active Orders: ${JSON.stringify(config.activeOrders)}`);
 console.log(`Weight Distribution: ${JSON.stringify(config.weightDistribution)}`);
 console.log(`Increment Percent: ${config.incrementPercent}%\n`);

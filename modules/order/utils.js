@@ -84,11 +84,11 @@ function parseRelativeMultiplierString(value) {
     return Number.isNaN(numeric) ? null : numeric;
 }
 
-function resolveRelativePrice(value, marketPrice, mode = 'min') {
+function resolveRelativePrice(value, startPrice, mode = 'min') {
     const multiplier = parseRelativeMultiplierString(value);
-    if (multiplier === null || !Number.isFinite(marketPrice) || multiplier === 0) return null;
-    if (mode === 'min') return marketPrice / multiplier;
-    if (mode === 'max') return marketPrice * multiplier;
+    if (multiplier === null || !Number.isFinite(startPrice) || multiplier === 0) return null;
+    if (mode === 'min') return startPrice / multiplier;
+    if (mode === 'max') return startPrice * multiplier;
     return null;
 }
 
@@ -2000,12 +2000,12 @@ function getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
  *
  * @param {*} value - Raw config value (string, number, or expression)
  * @param {number} fallback - Fallback value if resolution fails
- * @param {number} marketPrice - Market price for relative calculations
+ * @param {number} startPrice - Market price for relative calculations
  * @param {string} mode - Relative resolution mode ('absolute', 'percentage', 'multiplier')
  * @returns {number} Resolved price bound
  */
-function resolveConfiguredPriceBound(value, fallback, marketPrice, mode) {
-    const relative = resolveRelativePrice(value, marketPrice, mode);
+function resolveConfiguredPriceBound(value, fallback, startPrice, mode) {
+    const relative = resolveRelativePrice(value, startPrice, mode);
     if (Number.isFinite(relative)) return relative;
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;

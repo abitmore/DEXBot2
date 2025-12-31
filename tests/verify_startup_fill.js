@@ -16,7 +16,7 @@ async function runTest() {
     console.log('--- Starting Startup Fill Verification ---');
 
     const config = {
-        assetA: 'A', assetB: 'B', marketPrice: 100,
+        assetA: 'A', assetB: 'B', startPrice: 100,
         activeOrders: { buy: 2, sell: 2 },
         botFunds: { buy: 1000, sell: 1000 },
         targetSpreadPercent: 1, incrementPercent: 1

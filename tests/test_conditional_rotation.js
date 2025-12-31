@@ -25,7 +25,7 @@ async function testConditionalRotation() {
     const mgr1 = new OrderManager({
         assetA: 'IOB.XRP',
         assetB: 'BTS',
-        marketPrice: 1800,
+        startPrice: 1800,
         minPrice: 1750,  // Set min price close to market
         maxPrice: 1850,
         botFunds: { buy: 10000, sell: 10000 },
@@ -104,7 +104,7 @@ async function testConditionalRotation() {
     const mgr2 = new OrderManager({
         assetA: 'IOB.XRP',
         assetB: 'BTS',
-        marketPrice: 1800,
+        startPrice: 1800,
         minPrice: 1750,
         maxPrice: 1850,  // Set max price close to market
         botFunds: { buy: 10000, sell: 10000 },
@@ -182,7 +182,7 @@ async function testConditionalRotation() {
     const mgr3 = new OrderManager({
         assetA: 'IOB.XRP',
         assetB: 'BTS',
-        marketPrice: 1800,
+        startPrice: 1800,
         minPrice: 1700,
         maxPrice: 1900,
         botFunds: { buy: 10000, sell: 10000 },
@@ -280,7 +280,7 @@ async function testConditionalRotation() {
     const mgr4 = new OrderManager({
         assetA: 'IOB.XRP',
         assetB: 'BTS',
-        marketPrice: 1800,
+        startPrice: 1800,
         minPrice: 1750,
         maxPrice: 1850,
         botFunds: { buy: 50000, sell: 50000 },

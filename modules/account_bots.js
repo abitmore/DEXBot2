@@ -262,7 +262,7 @@ function askIntegerInRange(promptText, defaultValue, minVal, maxVal) {
         return askIntegerInRange(promptText, defaultValue, minVal, maxVal);
     }
     // Validate bounds
-    if (parsed < minVal || parsed > maxVal) {
+    if (parsed < minVal || Math.floor(parsed) > maxVal) {
         console.log(`Invalid ${promptText}: ${parsed}. Must be between ${minVal} and ${maxVal}`);
         return askIntegerInRange(promptText, defaultValue, minVal, maxVal);
     }
@@ -357,7 +357,7 @@ function askBoolean(promptText, defaultValue) {
     return raw.startsWith('y');
 }
 
-function askMarketPrice(promptText, defaultValue) {
+function askStartPrice(promptText, defaultValue) {
     while (true) {
         const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
         const raw = readlineSync.question(`${promptText}${suffix}: `).trim();
@@ -386,104 +386,105 @@ function askMarketPrice(promptText, defaultValue) {
 }
 
 async function promptBotData(base = {}) {
-    // === Bot Configuration ===
-    const name = askRequiredString('Bot name', base.name);
-    const active = askBoolean('Active', base.active !== undefined ? base.active : DEFAULT_CONFIG.active);
-    const dryRun = askBoolean('Dry run', base.dryRun !== undefined ? base.dryRun : DEFAULT_CONFIG.dryRun);
-    const preferredAccount = askRequiredString('Preferred account', base.preferredAccount);
+    // Create a working copy of the data
+    const data = JSON.parse(JSON.stringify(base));
+    
+    // Ensure nested objects exist
+    if (!data.weightDistribution) data.weightDistribution = { ...DEFAULT_CONFIG.weightDistribution };
+    if (!data.botFunds) data.botFunds = { ...DEFAULT_CONFIG.botFunds };
+    if (!data.activeOrders) data.activeOrders = { ...DEFAULT_CONFIG.activeOrders };
+    
+    // Set other defaults if missing
+    if (data.active === undefined) data.active = DEFAULT_CONFIG.active;
+    if (data.dryRun === undefined) data.dryRun = DEFAULT_CONFIG.dryRun;
+    if (data.minPrice === undefined) data.minPrice = DEFAULT_CONFIG.minPrice;
+    if (data.maxPrice === undefined) data.maxPrice = DEFAULT_CONFIG.maxPrice;
+    if (data.incrementPercent === undefined) data.incrementPercent = DEFAULT_CONFIG.incrementPercent;
+    if (data.targetSpreadPercent === undefined) data.targetSpreadPercent = DEFAULT_CONFIG.targetSpreadPercent;
+    if (data.startPrice === undefined) data.startPrice = data.startPrice || DEFAULT_CONFIG.startPrice || 'pool';
 
-    console.log('');
-    // === Trading Pair ===
-    const assetA = await askAsset('Asset A for selling', base.assetA);
-    const assetB = await askAssetB('Asset B for buying', base.assetB, assetA);
+    let finished = false;
+    let cancelled = false;
 
-    console.log('');
-    // === Price Range ===
-    const marketPrice = askMarketPrice('marketPrice (pool, market or A/B)', base.marketPrice || 'pool');
-    const minPrice = askNumberOrMultiplier('minPrice', base.minPrice !== undefined ? base.minPrice : DEFAULT_CONFIG.minPrice);
-    // maxPrice must be > minPrice
-    const maxPrice = askMaxPrice('maxPrice', base.maxPrice !== undefined ? base.maxPrice : DEFAULT_CONFIG.maxPrice, minPrice);
+    while (!finished) {
+        console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
+        console.log(`\x1b[36m1) Pair:\x1b[0m       \x1b[32m${data.assetA || '?'}/${data.assetB || '?'}\x1b[0m`);
+        console.log(`\x1b[36m2) Identity:\x1b[0m   \x1b[33mName:\x1b[0m ${data.name || '?'}, \x1b[33mAccount:\x1b[0m ${data.preferredAccount || '?'}, \x1b[33mActive:\x1b[0m ${data.active}, \x1b[33mDryRun:\x1b[0m ${data.dryRun}`);
+        console.log(`\x1b[36m3) Price:\x1b[0m      \x1b[33mRange:\x1b[0m [${data.minPrice} - ${data.maxPrice}], \x1b[33mStart:\x1b[0m ${data.startPrice}`);
+        console.log(`\x1b[36m4) Grid:\x1b[0m       \x1b[33mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[33mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[33mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
+        console.log(`\x1b[36m5) Funding:\x1b[0m    \x1b[33mSell:\x1b[0m ${data.botFunds.sell}, \x1b[33mBuy:\x1b[0m ${data.botFunds.buy} | \x1b[33mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
+        console.log('--------------------------------------------------');
+        console.log('\x1b[32mS) Save & Exit\x1b[0m');
+        console.log('\x1b[31mC) Cancel (Discard changes)\x1b[0m');
 
-    console.log('');
-    // === Grid Configuration ===
-    // incrementPercent must be between 0.01 and 10 (prevents grid calculation errors)
-    const incrementPercent = askNumberWithBounds('incrementPercent', base.incrementPercent !== undefined ? base.incrementPercent : DEFAULT_CONFIG.incrementPercent, 0.01, 10);
-    // targetSpreadPercent must be >= 2x incrementPercent (default is 4x)
-    const defaultSpread = base.targetSpreadPercent !== undefined ? base.targetSpreadPercent : incrementPercent * 4;
-    const targetSpreadPercent = askTargetSpreadPercent('targetSpread %', defaultSpread, incrementPercent);
-    const weightSell = askWeightDistribution('Weight distribution (sell)', base.weightDistribution && base.weightDistribution.sell !== undefined ? base.weightDistribution.sell : DEFAULT_CONFIG.weightDistribution.sell);
-    const weightBuy = askWeightDistributionNoLegend('Weight distribution (buy)', base.weightDistribution && base.weightDistribution.buy !== undefined ? base.weightDistribution.buy : DEFAULT_CONFIG.weightDistribution.buy);
+        const choice = readlineSync.question('\nSelect section to edit or action: ').trim().toLowerCase();
 
-    console.log('');
-    // === Funding & Orders ===
-    // Prompt sell first, then buy to make the config output match the desired ordering
-    const fundsSell = askNumberOrPercentage('botFunds sell amount', base.botFunds && base.botFunds.sell !== undefined ? base.botFunds.sell : DEFAULT_CONFIG.botFunds.sell);
-    const fundsBuy = askNumberOrPercentage('botFunds buy amount', base.botFunds && base.botFunds.buy !== undefined ? base.botFunds.buy : DEFAULT_CONFIG.botFunds.buy);
-    // activeOrders must be integers 1-100
-    const ordersSell = askIntegerInRange('activeOrders sell count', base.activeOrders && base.activeOrders.sell !== undefined ? base.activeOrders.sell : DEFAULT_CONFIG.activeOrders.sell, 1, 100);
-    const ordersBuy = askIntegerInRange('activeOrders buy count', base.activeOrders && base.activeOrders.buy !== undefined ? base.activeOrders.buy : DEFAULT_CONFIG.activeOrders.buy, 1, 100);
-
-    // ===== COMPREHENSIVE INPUT VALIDATION =====
-
-    // 1. Validate marketPrice (must be > 0)
-    if (typeof marketPrice === 'number') {
-        if (marketPrice <= 0) {
-            throw new Error(`Invalid marketPrice: ${marketPrice}. Must be > 0 (positive number, not 'pool' or 'market')`);
+        switch (choice) {
+            case '1':
+                data.assetA = await askAsset('Asset A for selling', data.assetA);
+                data.assetB = await askAssetB('Asset B for buying', data.assetB, data.assetA);
+                break;
+            case '2':
+                data.name = askRequiredString('Bot name', data.name);
+                data.preferredAccount = askRequiredString('Preferred account', data.preferredAccount);
+                data.active = askBoolean('Active', data.active);
+                data.dryRun = askBoolean('Dry run', data.dryRun);
+                break;
+            case '3':
+                data.minPrice = askNumberOrMultiplier('minPrice', data.minPrice);
+                data.maxPrice = askMaxPrice('maxPrice', data.maxPrice, data.minPrice);
+                data.startPrice = askStartPrice('startPrice (pool, market or A/B)', data.startPrice);
+                break;
+            case '4':
+                data.weightDistribution.sell = askWeightDistribution('Weight distribution (sell)', data.weightDistribution.sell);
+                data.weightDistribution.buy = askWeightDistributionNoLegend('Weight distribution (buy)', data.weightDistribution.buy);
+                data.incrementPercent = askNumberWithBounds('incrementPercent', data.incrementPercent, 0.01, 10);
+                const defaultSpread = data.targetSpreadPercent || data.incrementPercent * 4;
+                data.targetSpreadPercent = askTargetSpreadPercent('targetSpread %', defaultSpread, data.incrementPercent);
+                break;
+            case '5':
+                data.botFunds.sell = askNumberOrPercentage('botFunds sell amount', data.botFunds.sell);
+                data.botFunds.buy = askNumberOrPercentage('botFunds buy amount', data.botFunds.buy);
+                data.activeOrders.sell = askIntegerInRange('activeOrders sell count', data.activeOrders.sell, 1, 100);
+                data.activeOrders.buy = askIntegerInRange('activeOrders buy count', data.activeOrders.buy, 1, 100);
+                break;
+            case 's':
+                // Final basic validation before saving
+                if (!data.name || !data.assetA || !data.assetB || !data.preferredAccount) {
+                    console.log('\x1b[31mError: Name, Pair, and Account are required before saving.\x1b[0m');
+                    break;
+                }
+                finished = true;
+                break;
+            case 'c':
+                if (askBoolean('Discard all changes?', false)) {
+                    finished = true;
+                    cancelled = true;
+                }
+                break;
+            default:
+                console.log('Invalid choice.');
         }
     }
 
-    // 2. Validate minPrice and maxPrice
-    // (Already validated in askNumberOrMultiplier() - no need to re-validate)
-    if (typeof minPrice !== 'string' && typeof minPrice !== 'number') {
-        throw new Error(`Invalid minPrice: ${minPrice}. Must be a number or "Nx" multiplier (e.g., "4x")`);
-    }
-    if (typeof maxPrice !== 'string' && typeof maxPrice !== 'number') {
-        throw new Error(`Invalid maxPrice: ${maxPrice}. Must be a number or "Nx" multiplier (e.g., "4x")`);
-    }
+    if (cancelled) return null;
 
-    // 3. Validate botFunds (must be > 0, <= 100%, any number format accepted)
-    const validateBotFunds = (funds, side) => {
-        let numValue;
-        if (typeof funds === 'string') {
-            // Percentage format "N%"
-            if (funds.includes('%')) {
-                numValue = parseFloat(funds);
-                if (!Number.isFinite(numValue) || numValue <= 0 || numValue > 100) {
-                    throw new Error(`Invalid botFunds ${side}: "${funds}". Percentage must be > 0% and <= 100%`);
-                }
-            } else {
-                // Should not happen with askNumberOrPercentage, but defensive
-                numValue = parseFloat(funds);
-                if (!Number.isFinite(numValue) || numValue <= 0) {
-                    throw new Error(`Invalid botFunds ${side}: ${funds}. Must be > 0 (number or percentage)`);
-                }
-            }
-        } else if (typeof funds === 'number') {
-            if (!Number.isFinite(funds) || funds <= 0) {
-                throw new Error(`Invalid botFunds ${side}: ${funds}. Must be > 0 (positive number)`);
-            }
-        }
-    };
-    validateBotFunds(fundsSell, 'sell');
-    validateBotFunds(fundsBuy, 'buy');
-
+    // Return the final data structure
     return {
-        name,
-        active,
-        dryRun,
-        preferredAccount: preferredAccount || undefined,
-        assetA,
-        assetB,
-        marketPrice: marketPrice || undefined,
-        minPrice,
-        maxPrice,
-        incrementPercent,
-        targetSpreadPercent,
-        weightDistribution: { sell: weightSell, buy: weightBuy },
-        // Output sell first then buy for both botFunds and activeOrders
-        botFunds: { sell: fundsSell, buy: fundsBuy },
-        activeOrders: { sell: ordersSell, buy: ordersBuy },
-        
+        name: data.name,
+        active: data.active,
+        dryRun: data.dryRun,
+        preferredAccount: data.preferredAccount,
+        assetA: data.assetA,
+        assetB: data.assetB,
+        startPrice: data.startPrice,
+        minPrice: data.minPrice,
+        maxPrice: data.maxPrice,
+        incrementPercent: data.incrementPercent,
+        targetSpreadPercent: data.targetSpreadPercent,
+        weightDistribution: data.weightDistribution,
+        botFunds: data.botFunds,
+        activeOrders: data.activeOrders
     };
 }
 
@@ -506,9 +507,11 @@ async function main() {
             case '1': {
                 try {
                     const entry = await promptBotData();
-                    config.bots.push(entry);
-                    saveBotsConfig(config, filePath);
-                    console.log(`\nAdded bot '${entry.name}' to ${path.basename(filePath)}.`);
+                    if (entry) {
+                        config.bots.push(entry);
+                        saveBotsConfig(config, filePath);
+                        console.log(`\nAdded bot '${entry.name}' to ${path.basename(filePath)}.`);
+                    }
                 } catch (err) {
                     console.log(`\n❌ Invalid input: ${err.message}\n`);
                 }
@@ -519,9 +522,11 @@ async function main() {
                 if (idx === null) break;
                 try {
                     const entry = await promptBotData(config.bots[idx]);
-                    config.bots[idx] = entry;
-                    saveBotsConfig(config, filePath);
-                    console.log(`\nUpdated bot '${entry.name}' in ${path.basename(filePath)}.`);
+                    if (entry) {
+                        config.bots[idx] = entry;
+                        saveBotsConfig(config, filePath);
+                        console.log(`\nUpdated bot '${entry.name}' in ${path.basename(filePath)}.`);
+                    }
                 } catch (err) {
                     console.log(`\n❌ Invalid input: ${err.message}\n`);
                 }
@@ -546,9 +551,11 @@ async function main() {
                 if (idx === null) break;
                 try {
                     const entry = await promptBotData(config.bots[idx]);
-                    config.bots.splice(idx + 1, 0, entry);
-                    saveBotsConfig(config, filePath);
-                    console.log(`\nCopied bot '${entry.name}' into ${path.basename(filePath)}.`);
+                    if (entry) {
+                        config.bots.splice(idx + 1, 0, entry);
+                        saveBotsConfig(config, filePath);
+                        console.log(`\nCopied bot '${entry.name}' into ${path.basename(filePath)}.`);
+                    }
                 } catch (err) {
                     console.log(`\n❌ Invalid input: ${err.message}\n`);
                 }

@@ -5,7 +5,7 @@ const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 console.log('Running full-fill fund logic verification test...');
 
 const cfg = {
-    assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1920,
+    assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1920,
     activeOrders: { buy: 1, sell: 1 },
     botFunds: { buy: 1000, sell: 1000 }
 };

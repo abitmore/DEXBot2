@@ -17,7 +17,7 @@ async function testFees() {
     const { ORDER_TYPES, ORDER_STATES } = constants;
 
     const mgr = new OrderManager({
-        assetA: 'BTS', assetB: 'QUOTE', marketPrice: 1,
+        assetA: 'BTS', assetB: 'QUOTE', startPrice: 1,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 5, sell: 5 }
     });
 

@@ -7,7 +7,7 @@ const { OrderManager, grid: Grid } = require('../modules/order/index.js');
 const cfg = {
     assetA: 'BASE',
     assetB: 'QUOTE',
-    marketPrice: 100,
+    startPrice: 100,
     minPrice: 50,
     maxPrice: 200,
     incrementPercent: 10,
@@ -120,7 +120,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     const rotateMgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
-        marketPrice: 100,
+        startPrice: 100,
         minPrice: 50,
         maxPrice: 200,
         incrementPercent: 10,

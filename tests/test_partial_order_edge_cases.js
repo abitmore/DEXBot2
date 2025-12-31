@@ -13,7 +13,7 @@ async function testPartialAtGridBoundary() {
     console.log('TEST 1: Partial Order at Grid Boundary');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 }
     });
 
@@ -107,7 +107,7 @@ async function testPartialOrdersCounting() {
     console.log('TEST 2: Partial Orders Counted in Target');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 3, sell: 3 }
     });
 
@@ -166,7 +166,7 @@ async function testMultiplePartialsOnSameSide() {
     console.log('TEST 3: Multiple Partials on Same Side');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 5, sell: 5 }
     });
 
@@ -234,7 +234,7 @@ async function testPartialStateTransitions() {
     console.log('TEST 4: Partial Order State Transitions');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 }
     });
 
@@ -299,7 +299,7 @@ async function testPartialInSpreadCalculation() {
     console.log('TEST 5: Partial Orders in Spread Calculation');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 }
     });
 
@@ -368,7 +368,7 @@ async function testSpreadConditionWithPartials() {
     console.log('TEST 6: Spread Condition Check with Partials');
 
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 },
         activeOrders: { buy: 2, sell: 2 },
         targetSpreadPercent: 1,

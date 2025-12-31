@@ -20,7 +20,7 @@ const config = {
     assetB: 'BTS',
     activeOrders: { buy: 3, sell: 3 },
     botFunds: { buy: 1000, sell: 30 },
-    marketPrice: 1900,
+    startPrice: 1900,
     spreadPercent: 2,
     increment: 5,
     botKey: 'test-bot',

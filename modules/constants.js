@@ -29,7 +29,7 @@ const ORDER_STATES = Object.freeze({
 
 // Defaults applied when instantiating an OrderManager with minimal configuration.
 const DEFAULT_CONFIG = {
-    marketPrice: "pool",
+    startPrice: "pool",
     minPrice: "3x",
     maxPrice: "3x",
     incrementPercent: 0.5,

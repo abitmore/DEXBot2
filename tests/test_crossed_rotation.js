@@ -18,7 +18,7 @@ async function testCrossedRotation() {
     // Set activeOrders.buy to 2 so we're at target (1 ACTIVE + 1 PARTIAL = 2)
     // This ensures rotation happens instead of creating new orders
     const mgr = new OrderManager({
-        assetA: 'IOB.XRP', assetB: 'BTS', marketPrice: 1800,
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
         botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 5 }
     });
 

@@ -101,7 +101,7 @@ class OrderManager {
     /**
      * Create a new OrderManager instance
      * @param {Object} config - Bot configuration
-     * @param {string|number} config.marketPrice - Center price or 'pool'/'market' for auto-derive
+     * @param {string|number} config.startPrice - Center price or 'pool'/'market' for auto-derive
      * @param {string|number} config.minPrice - Lower bound (number or '5x' relative)
      * @param {string|number} config.maxPrice - Upper bound (number or '5x' relative)
      * @param {number} config.incrementPercent - Price step between orders (e.g., 1 for 1%)
@@ -1413,7 +1413,7 @@ class OrderManager {
     }
 
     // Simulate fills by identifying the closest active order (will be converted to VIRTUAL/SPREAD by processFilledOrders).
-    async calculateOrderUpdates() { const marketPrice = this.config.marketPrice; const spreadRange = marketPrice * (this.config.targetSpreadPercent / 100); const activeOrders = this.getOrdersByTypeAndState(null, ORDER_STATES.ACTIVE); const activeSells = activeOrders.filter(o => o.type === ORDER_TYPES.SELL).sort((a, b) => Math.abs(a.price - this.config.marketPrice) - Math.abs(b.price - this.config.marketPrice)); const activeBuys = activeOrders.filter(o => o.type === ORDER_TYPES.BUY).sort((a, b) => Math.abs(a.price - this.config.marketPrice) - Math.abs(b.price - this.config.marketPrice)); const filledOrders = []; if (activeSells.length > 0) filledOrders.push({ ...activeSells[0] }); else if (activeBuys.length > 0) filledOrders.push({ ...activeBuys[0] }); const remaining = activeOrders.filter(o => !filledOrders.some(f => f.id === o.id)); return { remaining, filled: filledOrders }; }
+    async calculateOrderUpdates() { const startPrice = this.config.startPrice; const spreadRange = startPrice * (this.config.targetSpreadPercent / 100); const activeOrders = this.getOrdersByTypeAndState(null, ORDER_STATES.ACTIVE); const activeSells = activeOrders.filter(o => o.type === ORDER_TYPES.SELL).sort((a, b) => Math.abs(a.price - this.config.startPrice) - Math.abs(b.price - this.config.startPrice)); const activeBuys = activeOrders.filter(o => o.type === ORDER_TYPES.BUY).sort((a, b) => Math.abs(a.price - this.config.startPrice) - Math.abs(b.price - this.config.startPrice)); const filledOrders = []; if (activeSells.length > 0) filledOrders.push({ ...activeSells[0] }); else if (activeBuys.length > 0) filledOrders.push({ ...activeBuys[0] }); const remaining = activeOrders.filter(o => !filledOrders.some(f => f.id === o.id)); return { remaining, filled: filledOrders }; }
 
     // Flag whether the spread has widened beyond configured limits so we can rebalance.
     // Fetches current market price for fair fund comparison if BitShares API provided.
@@ -2523,7 +2523,7 @@ class OrderManager {
         if (count <= 0) return [];
         const allSpreadOrders = this.getOrdersByTypeAndState(ORDER_TYPES.SPREAD, ORDER_STATES.VIRTUAL);
         const spreadOrders = allSpreadOrders
-            .filter(o => (targetType === ORDER_TYPES.BUY && o.price < this.config.marketPrice) || (targetType === ORDER_TYPES.SELL && o.price > this.config.marketPrice))
+            .filter(o => (targetType === ORDER_TYPES.BUY && o.price < this.config.startPrice) || (targetType === ORDER_TYPES.SELL && o.price > this.config.startPrice))
             // Selection rule:
             // - For BUY activation: choose the SPREAD entries with the lowest prices first (furthest from market below price)
             // - For SELL activation: choose the SPREAD entries with the highest prices first (furthest from market above price)
@@ -2533,7 +2533,7 @@ class OrderManager {
         if (availableFunds <= 0) { this.logger.log(`No available funds to create ${targetType} orders`, 'warn'); return []; }
         let desiredCount = Math.min(count, spreadOrders.length);
         if (desiredCount <= 0) {
-            this.logger.log(`No SPREAD orders available for ${targetType} (total spreads: ${allSpreadOrders.length}, eligible at ${targetType === ORDER_TYPES.BUY ? 'below' : 'above'} market price ${this.config.marketPrice}: ${spreadOrders.length})`, 'warn');
+            this.logger.log(`No SPREAD orders available for ${targetType} (total spreads: ${allSpreadOrders.length}, eligible at ${targetType === ORDER_TYPES.BUY ? 'below' : 'above'} market price ${this.config.startPrice}: ${spreadOrders.length})`, 'warn');
             return [];
         }
         const minSize = getMinOrderSize(targetType, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);

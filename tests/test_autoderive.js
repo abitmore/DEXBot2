@@ -5,7 +5,7 @@
  *
  * The test does not suppress logs or errors. It mocks the shared BitShares
  * client to return deterministic on-chain data and verifies the derived
- * `marketPrice` is numeric and falls in a reasonable range (500 - 8000).
+ * `startPrice` is numeric and falls in a reasonable range (500 - 8000).
  */
 
 const assert = require('assert');
@@ -52,7 +52,7 @@ async function runAutoderiveForBot(botCfg) {
     // Create and initialize the OrderManager which triggers auto-derive.
     const { OrderManager, grid: Grid } = require('../modules/order');
     const cfg = Object.assign({}, botCfg, {
-        marketPrice: botCfg.marketPrice || 'market',
+        startPrice: botCfg.startPrice || 'market',
         minPrice: Number(botCfg.minPrice) || 1e-12,
         maxPrice: Number(botCfg.maxPrice) || 1e12
     });
@@ -61,9 +61,9 @@ async function runAutoderiveForBot(botCfg) {
     await Grid.initializeGrid(manager);
 
     try {
-        const derived = Number(manager.config.marketPrice);
-        console.log('Derived marketPrice =', derived);
-    assert(Number.isFinite(derived), 'Derived marketPrice must be a number');
+        const derived = Number(manager.config.startPrice);
+        console.log('Derived startPrice =', derived);
+    assert(Number.isFinite(derived), 'Derived startPrice must be a number');
         console.log('Autoderive assertion passed for bot', botCfg.name || '(unnamed)');
     } finally {
         // Restore shared BitShares client to original

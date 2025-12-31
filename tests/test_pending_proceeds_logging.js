@@ -42,7 +42,7 @@ async function testCacheFundsLogging() {
         name: 'test-bot',
         assetA: 'BTS',
         assetB: 'USD',
-        marketPrice: 1.0,
+        startPrice: 1.0,
         botKey: createBotKey({ name: 'test-bot' }, 0),
         botFunds: { buy: 1000, sell: 1000 },
         activeOrders: { buy: 1, sell: 1 },

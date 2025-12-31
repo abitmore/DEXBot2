@@ -3,7 +3,7 @@ const { DEFAULT_CONFIG } = require('../modules/constants');
 
 function printGridSample() {
   const config = {
-    marketPrice: 2000,
+    startPrice: 2000,
     minPrice: 1500,
     maxPrice: 2600,
     incrementPercent: 2,
