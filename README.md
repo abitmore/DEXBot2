@@ -19,21 +19,21 @@ Get DEXBot2 running in 5 minutes:
 # 1. Clone and install
 git clone https://github.com/froooze/DEXBot2.git && cd DEXBot2 && npm install
 
-# 2. Set up your master password and add bots
+# 2. Set up your master password, keys and add bots
 node dexbot keys
 node dexbot bots
 
-# 3. Start with PM2 (production) or directly
-node pm2.js              # Production with auto-restart
-node dexbot.js start     # Start all active bots
+# 3. Start with PM2 or directly
+node pm2           # For production
+node dexbot start  # For testing
 ```
 
 For detailed setup, see [Installation](#-installation) or [Updating](#updating-dexbot2) sections below.
 
-## ⚠️ Disclaimer — Use At Your Own Risk
+### ⚠️ Disclaimer — Use At Your Own Risk
 
 - This software is in beta stage and provided "as‑is" without warranty.
-- Secure your keys and secrets. Do not commit private keys or passwords to anyone — use `profiles/` for live configuration and keep it out of source control.
+- Secure your keys and secrets. Do not commit private keys or passwords to anyone.
 - The authors and maintainers are not responsible for losses.
 
 ## 📥 Installation
@@ -106,115 +106,65 @@ The update script automatically:
 - Installs any new dependencies
 - Reloads PM2 processes if running
 - Ensures your `profiles/` directory is protected and unchanged
-- **Preserves your local settings** stored in `profiles/general.settings.json`
 - Logs all operations to `update.log`
 
 ## 🔧 Configuration
 
-Define each bot in `profiles/bots.json`. A minimal structure looks like this:
+### 🤖 Bot Options
 
-```json
-{
-  "bots": [
-    {
-      "name": "your-name",
-      "active": true,
-      "dryRun": false,
-      "preferredAccount": "example-account",
-      "assetA": "IOB.XRP",
-      "assetB": "BTS",
-      "startPrice": "pool",
-      "minPrice": "3x",
-      "maxPrice": "3x",
-      "incrementPercent": 0.5,
-      "targetSpreadPercent": 2,
-      "weightDistribution": { "sell": 0.5, "buy": 0.5 },
-      "botFunds": { "sell": "100%", "buy": "100%" },
-      "activeOrders": { "sell": 20, "buy": 20 }
-    }
-  ]
-}
-```
+Below is a reference guide for each configuration option from `node dexbot bots` stored in `profiles/bots.json`.
 
-## ⚙️ Configuration Options
+#### 1. Trading Pair
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`assetA`** | string | Base asset |
+| **`assetB`** | string | Quote asset |
 
-Below is a concise description of each configuration option you may set per-bot (use these keys inside each `bots` entry in `examples/bots.json` / `profiles/bots.json`):
+#### 2. Identity & Status
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`name`** | string | Friendly name for logging and CLI selection. |
+| **`active`** | boolean | Set to `false` to keep the config without running it. |
+| **`dryRun`** | boolean | If `true`, simulates orders without broadcasting to the blockchain. |
+| **`preferredAccount`** | string | The BitShares account name to use for trading. |
 
-- **`name`**: string — optional friendly name for the bot. Used for logging and selection when calling CLI commands (e.g. `dexbot start my-bot`).
-- **`active`**: boolean — if `false`, the bot is kept in the config but not started. Use this to keep templates in your file without running them.
-- **`dryRun`**: boolean — when `true` the bot simulates orders and does not broadcast transactions on-chain. Use `false` only after you have verified your settings and secured keys.
-- **`preferredAccount`**: string — the account name to use for on-chain operations; dexbot will prompt once for the master password and reuse it for all bots needing this value.
-- **`assetA`**: string — human-friendly name or symbol of the base asset (the asset you are selling on a sell order). Example: `"BTC"`, `"BTS"`.
-- **`assetB`**: string — human-friendly name or symbol of the quote asset (the asset you receive on a sell order). Example: `"USD"`, `"IOB.XRP"`.
-- **`startPrice`**: number | string — preferred market price. You may provide a numeric value (e.g. `42000`) or let the bot derive it by setting `"pool"` (use liquidity pool) or `"market"` (use order book/ticker). If omitted the runtime will attempt to derive it from `assetA`/`assetB`.
-- **`minPrice`**: number | string — lower bound for allowed order prices. You may provide a concrete numeric value (e.g. `525`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `startPrice` (e.g. `"5x"` -> `startPrice / 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
-- **`maxPrice`**: number | string — upper bound for allowed order prices. You may provide a concrete numeric value (e.g. `8400`) or a multiplier string like `"5x"`. When given as a multiplier the runtime resolves it relative to `startPrice` (e.g. `"5x"` -> `startPrice * 5`). Choose values that meaningfully bracket your expected market range to avoid accidental order placement far from the current price.
-- **`incrementPercent`**: number — percent step between adjacent order price levels (e.g. `0.5` means 0.5% steps). Smaller values produce denser grids.
-- **`targetSpreadPercent`**: number — target spread (in percent) around the market price that the grid should cover. The manager uses this to place buy/sell layers around the market.
-- **`weightDistribution`**: object — `{ "sell": <number>, "buy": <number> }`. Controls order sizing shape. Values are the distribution coefficient (examples below):
-  - Typical values: `-1` = Super Valley (more weight far from market), `0` = Valley, `0.5` = Neutral, `1` = Mountain (more weight near market), `2` = Super Mountain.
-- **`botFunds`**: object — `{ "sell": <number|string>, "buy": <number|string> }`.
-  - `sell`: amount of base asset allocated for selling (absolute like `0.1` or percentage string like `"100%"`).
-  - `buy`: amount of quote asset allocated for buying (can be an absolute number like `10000` or a percentage string like `"50%"`).
-  - `buy` refers to the quote-side (what you spend to buy base); `sell` refers to the base-side (what you sell). Provide human-readable units (not blockchain integer units).
-  - If you supply percentages (e.g. `"50%"`) the manager needs `accountTotals` to resolve them to absolute amounts before placing orders; otherwise provide absolute numbers.
-- **`activeOrders`**: object — `{ "sell": <integer>, "buy": <integer> }` number of sell/buy orders to keep active in the grid for each side.
+#### 3. Price Range
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`startPrice`** | num \| str | Default start price from liquidiy pool (`"pool"`), `"market"` (order book) or a number `A/B` is also possible. |
+| **`minPrice`** | number \| string | Lower bound. Use a number (e.g., `0.5`) or multiplier (e.g., `"2x"` = `startPrice / 2`). |
+| **`maxPrice`** | number \| string | Upper bound. Use a number (e.g., `1.5`) or multiplier (e.g., `"2x"` = `startPrice * 2`). |
 
-## 💻 CLI & Running
+#### 4. Grid Strategy
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`incrementPercent`** | number | Geometric step between layers (e.g., `0.5` for 0.5% increments). |
+| **`targetSpreadPercent`** | number | Buffer zone around the center price where no orders are placed. |
+| **`weightDistribution`**| object | Sizing logic: `{ "sell": 1.0, "buy": 1.0 }`. Range: `-1` to `2`. <br>• `-1`: **Super Valley** (heavy edge) <br>• `0.5`: **Neutral** <br>• `2`: **Super Mountain** (heavy center) |
 
-### Choosing Your Setup
+#### 5. Funding & Scaling
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| **`botFunds`** | object | Capital allocation: `{ "sell": "100%", "buy": 1000 }`. Supports numbers or percentage strings (e.g., `"50%"`). |
+| **`activeOrders`** | object | Maximum concurrent orders per side: `{ "sell": 5, "buy": 5 }`. |
 
-**For Testing & Development (Direct CLI)**
-- Run bots directly with `dexbot` or `node dexbot.js`
-- Quick testing with `drystart` (simulates orders without broadcasting)
-- Manual start/stop control
-- Use this while configuring and testing your bots
-
-**For Production (PM2 Process Manager)** — *Recommended*
-- Runs bots 24/7 with automatic restart on crashes
-- Professional monitoring and logging
-- Recommended once you've tested and secured your setup
-- See [PM2 Process Management](#-pm2-process-management-recommended-for-production) section below
-
-### Direct CLI Commands
-
-You can run bots directly via `node dexbot.js` or the `dexbot` CLI wrapper (installed via `npm link` or run with `npx dexbot`):
-
-#### Bot Management (Start/Reset/Disable)
-
-- `node dexbot.js` or `dexbot` — starts all active bots defined in `profiles/bots.json` (use `examples/bots.json` as a template).
-- `dexbot start [bot_name]` — start a specific bot (or all active bots if omitted). Respects each bot's `dryRun` setting.
-- `dexbot drystart [bot_name]` — same as `start` but forces `dryRun=true` for safe simulation.
-- `dexbot disable {all|[bot_name]}` — mark a bot (or all bots) inactive in config.
-- `dexbot reset {all|[bot_name]}` — trigger a **hard reset** from the blockchain. The bot will discard local state and rebuild the grid entirely from on-chain truth.
-
-#### Configuration Management
-
-- `dexbot keys` — manage master password and keyring via `modules/chain_keys.js`.
-- `dexbot bots` — open the **Interactive Bot Editor**. Use this to manage bot instances or adjust **General settings** (global parameters) via a menu-driven interface.
-- `dexbot --cli-examples` — print curated CLI snippets for common tasks.
-
-`dexbot` is a thin wrapper around `./dexbot.js`. You can link it for system-wide use via `npm link` or run it with `npx dexbot`.
-
-If any active bot requires `preferredAccount`, dexbot will prompt once for the master password and reuse it for subsequent bots.
-
-## ⚙️ General Settings (Global)
+### ⚙️ General Options (Global)
 
 DEXBot2 now supports global parameter management via the interactive editor (`dexbot bots`). These settings are stored in `profiles/general.settings.json` and persist across repository updates.
 
-Available Global Parameters:
+**Available Global Parameters:**
 - **Grid Cache Regeneration %**: Threshold for resizing the grid when proceeds accumulate (Default: `3%`).
 - **RMS Divergence Threshold %**: Maximum allowed deviation between in-memory and persisted grid state (Default: `14.3%`).
 - **Partial Dust Threshold %**: Threshold for identifying small "dust" orders for geometric refilling (Default: `5%`).
 - **Blockchain Fetch Interval**: Frequency of full account balance refreshes (Default: `240 min`).
 - **Sync Delay**: Polling delay for blockchain synchronization (Default: `500ms`).
-- **Log lvl**: Global verbosity control (`debug`, `info`, `warn`, `error`).
+- **Log Level**: Global verbosity control (`debug`, `info`, `warn`, `error`).
 
-### 🎯 PM2 Process Management (Recommended for Production)
+## 🎯 PM2 Process Management (Recommended for Production)
 
 For production use with automatic restart and process monitoring, use PM2:
 
-#### Starting Bots via PM2
+### Starting Bots via PM2
 
 Use `node pm2.js` to start bots with PM2 process management. This unified launcher handles everything automatically:
 1. **BitShares Connection**: Waits for network connection
@@ -225,62 +175,62 @@ Use `node pm2.js` to start bots with PM2 process management. This unified launch
 
 ```bash
 # Start all active bots with PM2
-node pm2.js
+node pm2
 
 # Or via CLI
-node dexbot.js pm2
+node dexbot pm2
 
 # Start a specific bot via PM2
-node pm2.js <bot-name>
+node pm2 <bot-name>
 ```
 
-#### Managing PM2 Processes
+### Managing PM2 Processes
 
-After startup via `node pm2.js`, use these commands to manage and monitor running processes:
+After startup via `node pm2.js`, use these commands to manage and monitor every pm2 process:
 
 ```bash
-# View bot status and resource usage
+# View status and resource usage
 pm2 status
 
-# View real-time logs from all bots (or specific bot)
+# View real-time logs
 pm2 logs [<bot-name>]
 
-# Restart process (without reset)
+# Restart processes
 pm2 restart {all|<bot-name>}
 
-# Stop all bots (or specific bot)
+# Stop processes
 pm2 stop {all|<bot-name>}
 
-# Delete all bots from PM2 (or specific bot)
+# Delete processes
 pm2 delete {all|<bot-name>}
 ```
 
-#### Managing Bot Processes via pm2.js
+### Managing Bot Processes via pm2.js
 
-Use `node pm2.js` wrapper commands for safe bot process management (only affects dexbot processes):
+Use `node pm2.js` wrapper commands to select only dexbot processes:
 
 ```bash
-# Stop dexbot processes (safely filters to only dexbot)
-node pm2.js stop {all|<bot-name>}
+# Stop only dexbot processes
+node pm2 stop {all|<bot-name>}
 
-# Delete dexbot processes from PM2 (configs remain in profiles/bots.json)
-node pm2.js delete {all|<bot-name>}
+# Delete only dexbot processes
+node pm2 delete {all|<bot-name>}
 
 # Show pm2.js usage information
 node pm2.js help
 ```
 
-#### Grid Management & Bot Config
+### Grid Management & Bot Config
 
 ```bash
-# Reset Grid (Regenerate orders)
-dexbot reset {all|[<bot-name>]}
+# Reset Grid by using  (Regenerate orders)
+node dexbot reset {all|[<bot-name>]}
 
 # Disable a bot in config (marks as inactive)
-dexbot disable {all|[<bot-name>]}
+node dexbot disable {all|[<bot-name>]}
 ```
 
-#### Configuration & Logs
+### Configuration & Logs
 
 Bot configurations are defined in `profiles/bots.json`. The PM2 launcher automatically:
 - Filters only bots with `active !== false`
@@ -289,7 +239,7 @@ Bot configurations are defined in `profiles/bots.json`. The PM2 launcher automat
 - Logs bot errors to `profiles/logs/<bot-name>-error.log`
 - Applies restart policies (max 13 restarts, 1 day min uptime, 3 second restart delay)
 
-#### Security
+### Security
 
 - Master password is prompted interactively in your terminal
 - Password passed via environment variable to bot processes (RAM only)
@@ -299,7 +249,7 @@ Bot configurations are defined in `profiles/bots.json`. The PM2 launcher automat
 ## 🔍 Advanced Features
 
 ### ⚛️ Atomic Updates & Partial Order State Management
-DEXBot handles filled orders and partial fills with atomic transactions across all operations:
+DEXBot2 handles filled orders and partial fills with atomic transactions across all operations:
 - **Partial Fills**: Remaining portion tracked in `PARTIAL` state instead of cancellation
 - **Atomic Moves**: Partial orders moved to new price levels in single transaction
 - **Fill Detection**: Automatically detects filled orders via blockchain history or open orders snapshot
@@ -308,7 +258,7 @@ DEXBot handles filled orders and partial fills with atomic transactions across a
 - **Consistency Guarantee**: Either all operations succeed or all fail - no partial blockchain states
 - **No Manual Intervention**: Fully automatic fill processing, state updates, and rebalancing
 
-This comprehensive fill handling ensures capital efficiency, eliminates orphaned orders or stuck funds, and guarantees consistency across all order state changes.
+This comprehensive fill handling ensures capital efficiency, eliminates orphaned orders and stuck funds, and guarantees consistency across all order state changes.
 
 ### 🔢 Price Tolerance & Integer Rounding
 The bot calculates price tolerances to account for blockchain integer rounding discrepancies. This ensures reliable matching of on-chain orders with grid orders despite minor precision differences.
@@ -441,23 +391,23 @@ For users interested in understanding the math and mechanics behind DEXBot's ord
 
 ### 📐 Order Calculation
 
-The order sizing follows a compact formula:
+The order sizing follows a geometric progression formula:
 
 ```
-y = (1-c)^(x*n) = order size
+size = (1 - c)^(x * n)
 ```
 
-Definitions:
-- `c` = increment (price step)
-- `x` = order number (layer index; 0 is closest to market)
-- `n` = weight distribution (controls how sizes scale across grid)
+Where:
+- `c` = increment percentage (price step between orders)
+- `x` = order position/layer index (0 is closest to market price)
+- `n` = weight distribution exponent (controls how order sizes scale across grid)
 
-Weight distribution examples (set `n` via `weightDistribution`):
-- `-1` = Super Valley (aggressive concentration towards the edge)
-- `0` = Valley (orders increase linearly towards edge)
-- `0.5` = Neutral (balanced distribution)
-- `1` = Mountain (order increase linearly towards center)
-- `2` = Super Mountain (aggressive concentration towards center)
+Weight distribution examples (set via `weightDistribution` config):
+- `-1` = Super Valley (aggressive concentration at grid edges)
+- `0` = Valley (order sizes increase linearly toward edges)
+- `0.5` = Neutral (balanced, moderate distribution)
+- `1` = Mountain (order sizes increase linearly toward center)
+- `2` = Super Mountain (aggressive concentration at grid center)
 
 ### Output Example
 
@@ -492,7 +442,7 @@ Below is a short summary of the modules in this repository and what they provide
 
 ### 📍 Entry Points
 
-- `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, stop, reset, drystart) and management commands (keys, bots, --cli-examples). Includes full DEXBot class with grid management, fill processing, and account operations.
+- `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, stop, reset, drystart) and management commands (keys, bots, --cli-examples). Includes full DEXBot2 class with grid management, fill processing, and account operations.
 - `pm2.js`: Unified PM2 launcher. Orchestrates BitShares connection, PM2 check/install, ecosystem config generation from `profiles/bots.json`, master password authentication, and bot startup with automatic restart policies.
 - `bot.js`: PM2-friendly per-bot entry point. Loads bot config by name from `profiles/bots.json`, authenticates via master password (from environment or interactive prompt), initializes DEXBot instance, and runs the trading loop.
 
@@ -504,7 +454,7 @@ Below is a short summary of the modules in this repository and what they provide
 - `modules/bitshares_client.js`: Shared BitShares client wrapper and connection utilities (`BitShares`, `createAccountClient`, `waitForConnected`).
 - `modules/btsdex_event_patch.js`: Runtime patch for `btsdex` library to improve history and account event handling.
 - `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-key>.json`). Manages bot-specific files with AsyncLock-protected atomic updates, reload-before-write TOCTOU prevention, and optional forceReload for fresh disk reads.
-- `modules/dexbot_class.js`: Core `DEXBot` class — handles bot initialization, account setup, order placement, fill processing, grid rebalancing, and divergence detection. Fill processing protected by AsyncLock to safely handle concurrent fills. Shared implementation used by both `bot.js` (single-bot) and `dexbot.js` (multi-bot orchestration).
+- `modules/dexbot_class.js`: Core `DEXBot2` class — handles bot initialization, account setup, order placement, fill processing, grid rebalancing, and divergence detection. Fill processing protected by AsyncLock to safely handle concurrent fills. Shared implementation used by both `bot.js` (single-bot) and `dexbot.js` (multi-bot orchestration).
 
 ### 📊 Order Subsystem (`modules/order/`)
 
