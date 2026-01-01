@@ -287,7 +287,7 @@ class DEXBot {
                         // Check spread and health after sequential rotations complete
                         if (anyRotations || allFilledOrders.length > 0) {
                             this.manager.recalculateFunds();
-                            
+
                             const spreadResult = await this.manager.checkSpreadCondition(
                                 this.BitShares,
                                 this.updateOrdersOnChainBatch.bind(this)
@@ -298,12 +298,22 @@ class DEXBot {
                                 persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
                             }
 
-                            // ALWAYS check grid health after fill handling
-                            const healthResult = await this.manager.checkGridHealth(
-                                this.updateOrdersOnChainBatch.bind(this)
-                            );
-                            if (healthResult.buyDust && healthResult.sellDust) {
-                                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                            // Check grid health only if pipeline is empty (no pending fills, no pending operations)
+                            if (this._incomingFillQueue.length === 0 &&
+                                this.manager.ordersNeedingPriceCorrection.length === 0 &&
+                                (!this.manager._gridSidesUpdated || this.manager._gridSidesUpdated.length === 0)) {
+                                const healthResult = await this.manager.checkGridHealth(
+                                    this.updateOrdersOnChainBatch.bind(this)
+                                );
+                                if (healthResult.buyDust && healthResult.sellDust) {
+                                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                }
+                            } else {
+                                const pendingReasons = [];
+                                if (this._incomingFillQueue.length > 0) pendingReasons.push(`${this._incomingFillQueue.length} fills queued`);
+                                if (this.manager.ordersNeedingPriceCorrection.length > 0) pendingReasons.push(`${this.manager.ordersNeedingPriceCorrection.length} corrections pending`);
+                                if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) pendingReasons.push('grid divergence corrections pending');
+                                this.manager.logger.log(`Deferring grid health check: ${pendingReasons.join(', ')}`, 'debug');
                             }
                         }
 
@@ -1094,12 +1104,18 @@ class DEXBot {
                     persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
                 }
 
-                // check grid health immediately after spread check
-                const healthResult = await this.manager.checkGridHealth(
-                    this.updateOrdersOnChainBatch.bind(this)
-                );
-                if (healthResult.buyDust && healthResult.sellDust) {
-                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                // Check grid health at startup only if pipeline is empty
+                if (this._incomingFillQueue.length === 0 &&
+                    this.manager.ordersNeedingPriceCorrection.length === 0 &&
+                    (!this.manager._gridSidesUpdated || this.manager._gridSidesUpdated.length === 0)) {
+                    const healthResult = await this.manager.checkGridHealth(
+                        this.updateOrdersOnChainBatch.bind(this)
+                    );
+                    if (healthResult.buyDust && healthResult.sellDust) {
+                        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                    }
+                } else {
+                    this._log('Startup grid health check deferred: pipeline not empty', 'debug');
                 }
             });
         } catch (err) {
@@ -1298,12 +1314,22 @@ class DEXBot {
                             persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
                         }
 
-                        // check grid health after periodic blockchain fetch
-                        const healthResult = await this.manager.checkGridHealth(
-                            this.updateOrdersOnChainBatch.bind(this)
-                        );
-                        if (healthResult.buyDust && healthResult.sellDust) {
-                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                        // Check grid health after periodic blockchain fetch only if pipeline is empty
+                        if (this._incomingFillQueue.length === 0 &&
+                            this.manager.ordersNeedingPriceCorrection.length === 0 &&
+                            (!this.manager._gridSidesUpdated || this.manager._gridSidesUpdated.length === 0)) {
+                            const healthResult = await this.manager.checkGridHealth(
+                                this.updateOrdersOnChainBatch.bind(this)
+                            );
+                            if (healthResult.buyDust && healthResult.sellDust) {
+                                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                            }
+                        } else {
+                            const pendingReasons = [];
+                            if (this._incomingFillQueue.length > 0) pendingReasons.push(`${this._incomingFillQueue.length} fills queued`);
+                            if (this.manager.ordersNeedingPriceCorrection.length > 0) pendingReasons.push(`${this.manager.ordersNeedingPriceCorrection.length} corrections pending`);
+                            if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) pendingReasons.push('grid divergence corrections pending');
+                            this._log(`Deferring periodic grid health check: ${pendingReasons.join(', ')}`, 'debug');
                         }
                     }
                 });
