@@ -63,9 +63,10 @@ class Accountant {
      *    - Also called "reserved" in old code (backwards compat alias)
      *
      * 4. AVAILABLE FUNDS (what we can spend right now)
-     *    - Calculated as: chainFree - funds needed for grid allocation
-     *    - respects botFunds allocation limits
-     *    - gates new orders from being placed if insufficient
+     *    - Calculated as: max(0, chainFree - virtuel - btsFeesOwed - btsFeesReservation)
+     *    - Excludes: VIRTUAL order reserves, pending BTS fees, fee buffers
+     *    - Excludes: cacheFunds (kept separate, added back for rebalancing decisions)
+     *    - Gates new orders from being placed if insufficient
      *
      * CALCULATION FLOW:
      * 1. Walk all orders, sum sizes by (state, orderId presence)

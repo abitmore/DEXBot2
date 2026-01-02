@@ -62,8 +62,9 @@ All notable changes to this project will be documented in this file.
   - Improves fund accuracy for BTS-denominated pairs
 
 - **Fund Formula Consistency**: Simplified available funds calculation
-  - Removed conflicting fund calculation formulas
-  - Single source of truth: `manager.funds.available[side]` includes all deployable capital
+  - Single source of truth: `calculateAvailableFundsValue()` in utils.js
+  - Formula: `available = max(0, chainFree - virtuel - btsFeesOwed - btsFeesReservation)`
+  - cacheFunds intentionally kept separate (fill proceeds added back during rebalancing)
   - Removed dead functions: getTotalGridFundsAvailable, getAvailableFundsForPlacement
 
 - **SPREAD Order State Validation** (manager.js)

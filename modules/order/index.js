@@ -11,7 +11,8 @@
  * - logger: Color-coded console output for debugging
  * 
  * Fund tracking model (see manager.js for details):
- * - available = max(0, chainFree - virtuel - cacheFunds - applicableBtsFeesOwed - btsFeesReservation)
+ * - available = max(0, chainFree - virtuel - applicableBtsFeesOwed - btsFeesReservation)
+ * - cacheFunds = fill proceeds and rotation surplus (kept separate, added to available for rebalancing)
  * - total.chain = chainFree + committed.chain
  * - total.grid = committed.grid + virtuel
  */
