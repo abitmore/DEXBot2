@@ -25,4 +25,6 @@ Thumbs.db
 
 .claude/
 
+.gemini/
+
 /scripts/repo-stats.html
