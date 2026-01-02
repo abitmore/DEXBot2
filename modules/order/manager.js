@@ -477,6 +477,25 @@ class OrderManager {
     }
 
     /**
+     * Validate that all order indices are consistent with the orders Map.
+     * Use this for debugging if index corruption is suspected.
+     * @returns {boolean} true if all indices are valid, false if corruption detected
+     */
+    validateIndices() {
+        for (const [id, order] of this.orders) {
+            if (!this._ordersByState[order.state]?.has(id)) {
+                this.logger.log(`Index mismatch: ${id} not in _ordersByState[${order.state}]`, 'error');
+                return false;
+            }
+            if (!this._ordersByType[order.type]?.has(id)) {
+                this.logger.log(`Index mismatch: ${id} not in _ordersByType[${order.type}]`, 'error');
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Get all PARTIAL orders of a given type that are NOT locked.
      *
      * PARTIAL orders are those that have partially filled on-chain and are waiting for
