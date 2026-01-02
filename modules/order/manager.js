@@ -1384,6 +1384,10 @@ class OrderManager {
                     updatedOrder.filledSinceRefill = 0; // Reset accumulation
                     // Note: mergedDustSize is kept for divergence calculations
                 } else {
+                    // Still clearing the dust portion: keep state as ACTIVE
+                    // This ensures the order appears green/full until it drops below 100%
+                    updatedOrder.state = ORDER_STATES.ACTIVE;
+
                     this.logger.log(
                         `[DELAYED ROTATION PENDING] Order ${updatedOrder.id}: totalFilled=${formatOrderSize(totalFilled)} < mergedDustSize=${formatOrderSize(mergedDustSize)}. ` +
                         `Rotation still pending. ${formatOrderSize(mergedDustSize - totalFilled)} more needed.`,
@@ -3015,15 +3019,19 @@ class OrderManager {
             }
         }
 
-        // New slot becomes PARTIAL with the moved order (still partial filled)
+        // New slot becomes PARTIAL or ACTIVE with the moved order
         // Also set the type to match the partial order's type (it may be moving into a spread slot)
         const targetGridOrder = this.orders.get(newGridId);
         if (targetGridOrder) {
+            // State Logic: If the new size meets or exceeds the grid slot's target size, it is ACTIVE.
+            // This applies to full anchors and oversized DoubleOrders.
+            const newState = partialOrder.size >= (targetGridOrder.size || 0) ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
+
             const updatedNew = {
                 ...targetGridOrder,
                 ...partialOrder,          // Spread the partialOrder to bring in strategy flags and new size
                 type: partialOrder.type,  // Ensure type is preserved
-                state: ORDER_STATES.PARTIAL,
+                state: newState,
                 orderId: partialOrder.orderId,
                 size: partialOrder.size,
                 price: newPrice
