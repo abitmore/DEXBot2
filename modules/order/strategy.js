@@ -817,32 +817,31 @@ class StrategyEngine {
         }
 
         const minSize = getMinOrderSize(targetType, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
-        const maxByFunds = minSize > 0 ? Math.floor(availableFunds / minSize) : desiredCount;
-        const ordersToCreate = Math.max(0, Math.min(desiredCount, maxByFunds || desiredCount));
-
-        if (ordersToCreate === 0) {
-            mgr.logger.log(`Insufficient funds to create any ${targetType} orders (available=${availableFunds}, minOrderSize=${minSize})`, 'warn');
-            return [];
-        }
-
-        const actualOrders = spreadOrders.slice(0, ordersToCreate);
-        const fundsPerOrder = availableFunds / actualOrders.length;
-
-        if (fundsPerOrder < minSize) {
-            mgr.logger.log(`Available funds insufficient for requested orders: fundsPerOrder=${fundsPerOrder} < minOrderSize=${minSize}`, 'warn');
-            return [];
-        }
+        const ordersToCreate = desiredCount;
 
         const activatedOrders = [];
-        actualOrders.forEach(order => {
-            if (fundsPerOrder <= 0) return;
+        const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+
+        // Sequential placement with per-iteration fund recalculation
+        for (let i = 0; i < ordersToCreate && i < spreadOrders.length; i++) {
+            // Recalculate available funds at each iteration
+            const currentAvailable = calculateAvailableFundsValue(side, mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
+            const remainingOrders = ordersToCreate - i;
+            const fundsPerOrder = remainingOrders > 0 ? currentAvailable / remainingOrders : 0;
+
+            if (fundsPerOrder < minSize) {
+                mgr.logger.log(`Stopped at order ${i + 1}/${ordersToCreate}: insufficient funds (available=${currentAvailable.toFixed(8)}, minSize=${minSize.toFixed(8)})`, 'info');
+                break;
+            }
+
+            const order = spreadOrders[i];
             const activatedOrder = { ...order, type: targetType, size: fundsPerOrder, state: ORDER_STATES.ACTIVE };
             mgr.accountant.updateOptimisticFreeBalance(order, activatedOrder, 'spread-activation');
             mgr._updateOrder(activatedOrder);
             activatedOrders.push(activatedOrder);
             mgr.currentSpreadCount--;
-            mgr.logger.log(`Prepared ${targetType} order at ${order.price.toFixed(2)} (Amount: ${fundsPerOrder.toFixed(8)})`, 'info');
-        });
+            mgr.logger.log(`Prepared ${targetType} order ${i + 1}/${ordersToCreate} at ${order.price.toFixed(2)} (Amount: ${fundsPerOrder.toFixed(8)})`, 'info');
+        }
 
         return activatedOrders;
     }
