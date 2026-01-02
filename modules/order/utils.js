@@ -152,36 +152,34 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
 
     const chainFree = side === 'buy' ? (accountTotals?.buyFree || 0) : (accountTotals?.sellFree || 0);
     const virtuel = side === 'buy' ? (funds.virtuel?.buy || 0) : (funds.virtuel?.sell || 0);
-    const cacheFunds = side === 'buy' ? (funds.cacheFunds?.buy || 0) : (funds.cacheFunds?.sell || 0);
+    const btsFeesOwed = funds.btsFeesOwed || 0;
 
     // Determine which side actually has BTS as the asset
     const btsSide = (assetA === 'BTS') ? 'sell' :
         (assetB === 'BTS') ? 'buy' : null;
 
     // Reserve BTS fees for updating target open orders (needed when regenerating grid)
-    // This ensures fees are available when applyGridDivergenceCorrections updates orders on-chain
-    // Use 4x multiplier for buffer to ensure sufficient funds for multiple rotation cycles
     let btsFeesReservation = 0;
     if (btsSide === side && activeOrders) {
         try {
             const targetBuy = Math.max(0, Number.isFinite(Number(activeOrders?.buy)) ? Number(activeOrders.buy) : 1);
             const targetSell = Math.max(0, Number.isFinite(Number(activeOrders?.sell)) ? Number(activeOrders.sell) : 1);
             const totalTargetOrders = targetBuy + targetSell;
-            const FEE_MULTIPLIER = 5; // 5x multiplier: 1x for creation + 4x for rotation buffer
+            const FEE_MULTIPLIER = 5;
 
             if (totalTargetOrders > 0) {
                 const btsFeeData = getAssetFees('BTS', 1);
                 btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_MULTIPLIER;
             }
         } catch (err) {
-            // Fall back to simple 100 BTS if fee calculation fails
             btsFeesReservation = 100;
         }
     }
 
-    // CRITICAL: btsFeesOwed is NOT subtracted here because spent fees are already gone from chainFree balance.
-    // Subtracting them again would cause a double-deduction.
-    return Math.max(0, chainFree - virtuel - cacheFunds - btsFeesReservation);
+    // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
+    const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
+
+    return Math.max(0, chainFree - virtuel - currentFeesOwed - btsFeesReservation);
 }
 
 /**
@@ -2116,34 +2114,6 @@ function getGridTotalValue(funds, side) {
  * @param {string} side - 'buy' or 'sell'
  * @returns {number} Total grid funds for sizing calculations
  */
-function getTotalGridFundsAvailable(funds, side) {
-    return (funds?.available?.[side] || 0) +
-        (funds?.committed?.grid?.[side] || 0) +
-        (funds?.virtuel?.[side] || 0) +
-        (funds?.cacheFunds?.[side] || 0);
-}
-
-/**
- * Get funds available for immediate order placement.
- *
- * Formula: available (unallocated) + cacheFunds (proceeds)
- *
- * This represents funds truly available for placing new orders NOW:
- * - available: Unallocated blockchain free balance
- * - cacheFunds: Proceeds from filled orders (can be used immediately)
- *
- * Does NOT include virtuel because those funds are already reserved for VIRTUAL orders.
- * Used for comparing against required sizes and deciding which side can support a new order.
- *
- * @param {Object} funds - Funds object with available, cacheFunds
- * @param {string} side - 'buy' or 'sell'
- * @returns {number} Available funds for immediate placement
- */
-function getAvailableFundsForPlacement(funds, side) {
-    return (funds?.available?.[side] || 0) +
-        (funds?.cacheFunds?.[side] || 0);
-}
-
 /**
  * Check if account totals have valid buy and sell free amounts.
  * Used for validation before using accountTotals in calculations.
@@ -2166,13 +2136,6 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
             Number.isFinite(Number(accountTotals[sellKey])));
 }
 
-/**
- * Get the chainFree key name for a given order type.
- * Maps BUY orders to 'buyFree' and SELL orders to 'sellFree'.
- *
- * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
- * @returns {string} 'buyFree' or 'sellFree'
- */
 function getChainFreeKey(orderType) {
     return orderType === ORDER_TYPES.BUY ? 'buyFree' : 'sellFree';
 }
@@ -2297,8 +2260,6 @@ module.exports = {
     // Safe getters
     getCacheFundsValue,
     getGridTotalValue,
-    getTotalGridFundsAvailable,
-    getAvailableFundsForPlacement,
 
     // Validation helpers
     hasValidAccountTotals,

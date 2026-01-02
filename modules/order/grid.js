@@ -1606,17 +1606,16 @@ class Grid {
      * @returns {Object} { side: 'buy'|'sell'|null, buyFunds, sellFunds, requiredBuy, requiredSell, buyRatio, sellRatio, reason }
      */
     static determineOrderSideByFunds(manager, currentMarketPrice) {
-        const { getAvailableFundsForPlacement } = require('./utils');
+        const { getPrecisionForSide, calculateOrderSizes } = require('./utils');
 
-        // Use available + cacheFunds (same as what's truly available for new order placement)
-        // cacheFunds are proceeds waiting for rotation and can be used immediately
-        const totalBuyAvailable = getAvailableFundsForPlacement(manager.funds, 'buy');
-        const totalSellAvailable = getAvailableFundsForPlacement(manager.funds, 'sell');
+        // Use available funds directly (now inclusive of cacheFunds/proceeds)
+        const totalBuyAvailable = manager.funds.available?.buy || 0;
+        const totalSellAvailable = manager.funds.available?.sell || 0;
 
         // DEBUG: Log the fund values being used
         manager.logger.log(
-            `DEBUG Fund Analysis - BUY: available=${(manager.funds.available?.buy || 0).toFixed(8)} + cache=${(manager.funds.cacheFunds?.buy || 0).toFixed(8)} = ${totalBuyAvailable.toFixed(8)}, ` +
-            `SELL: available=${(manager.funds.available?.sell || 0).toFixed(8)} + cache=${(manager.funds.cacheFunds?.sell || 0).toFixed(8)} = ${totalSellAvailable.toFixed(8)}`,
+            `DEBUG Fund Analysis - BUY: available=${totalBuyAvailable.toFixed(8)}, ` +
+            `SELL: available=${totalSellAvailable.toFixed(8)}`,
             'debug'
         );
 
@@ -1705,7 +1704,7 @@ class Grid {
      * @returns {number|null} Calculated geometric size, or null if unable to calculate
      */
     static calculateGeometricSizeForSpreadCorrection(manager, targetType) {
-        const { getTotalGridFundsAvailable, getAvailableFundsForPlacement, getPrecisionForSide, calculateOrderSizes } = require('./utils');
+        const { getPrecisionForSide, calculateOrderSizes } = require('./utils');
 
         // Use same logic as normal geometric sizing during rotations (manager.js line 2099)
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
@@ -1725,9 +1724,15 @@ class Grid {
             return null; // Can't calculate without grid reference
         }
 
-        // Calculate total funds = available (unallocated) + virtuel (reserved) + cacheFunds (proceeds)
-        // This represents ALL funds available to the grid: unallocated blockchain balance + reserved + proceeds
-        const totalFunds = getTotalGridFundsAvailable(manager.funds, side);
+        // Calculate total funds = available (unallocated) + virtuel (reserved) + btsFeesOwed
+        // This represents ALL funds available to the grid. 
+        // We include feesOwed because they are still physically in the account until settlement.
+        const available = manager.funds.available?.[side] || 0;
+        const virtuel = manager.funds.virtuel?.[side] || 0;
+        const feesOwed = (manager.config.assetA === 'BTS' && side === 'sell') || (manager.config.assetB === 'BTS' && side === 'buy')
+            ? (manager.funds.btsFeesOwed || 0) : 0;
+        
+        const totalFunds = available + virtuel + feesOwed;
 
         if (totalFunds <= 0) {
             return null;
@@ -1785,7 +1790,6 @@ class Grid {
      * @returns {Object} { ordersToPlace: [], partialMoves: [] }
      */
     static async prepareSpreadCorrectionOrders(manager, preferredSide) {
-        const { getAvailableFundsForPlacement } = require('./utils');
         const ordersToPlace = [];
         const partialMoves = [];
 
@@ -1853,40 +1857,42 @@ class Grid {
                 }
 
                 // Check if available funds can support the calculated geometric size
-                // Use available + cacheFunds (same as fund analysis comparison)
-                const availableFunds = getAvailableFundsForPlacement(manager.funds, side);
-                const baseAvailable = manager.funds.available?.[side] || 0;
+                const availableFunds = manager.funds.available?.[side] || 0;
 
                 if (geometricSize > availableFunds) {
                     manager.logger.log(
-                        `Insufficient available funds for spread correction order: need ${geometricSize.toFixed(8)}, have ${availableFunds.toFixed(8)} (available: ${baseAvailable.toFixed(8)}, cache: ${(manager.funds.cacheFunds?.[side] || 0).toFixed(8)})`,
+                        `Insufficient available funds for spread correction order: need ${geometricSize.toFixed(8)}, have ${availableFunds.toFixed(8)}`,
                         'warn'
                     );
                     return { ordersToPlace, partialMoves };
                 }
 
                 // Create order at vacated slot with calculated geometric size
-                // Set state to ACTIVE as this order will be placed on-chain immediately
+                // Set state to VIRTUAL initially; synchronizeWithChain will transition to ACTIVE
                 const newOrder = {
                     ...gridOrder,
                     type: oppositeType,
                     size: geometricSize,
                     price: slot.price,
-                    state: ORDER_STATES.ACTIVE  // Will be confirmed ACTIVE after broadcast
+                    state: ORDER_STATES.VIRTUAL
                 };
-                ordersToPlace.push(newOrder);
 
-                // Update fund variables immediately
-                const fundsBefore = availableFunds;
-                manager.funds.available[side] = Math.max(0, baseAvailable - geometricSize);
-                manager.funds.committed.grid[side] = (manager.funds.committed.grid[side] || 0) + geometricSize;
+                // Deduct from chainFree immediately (atomic check-and-deduct)
+                if (manager.accountant.tryDeductFromChainFree(oppositeType, geometricSize, 'spread-correction')) {
+                    ordersToPlace.push(newOrder);
 
-                manager.logger.log(
-                    `Prepared spread correction order at vacated slot ${slot.id}: ` +
-                    `${oppositeType} at ${slot.price.toFixed(4)}, geometric size ${geometricSize.toFixed(8)} ` +
-                    `(available: ${fundsBefore.toFixed(8)} -> ${(baseAvailable - geometricSize).toFixed(8)}, committed: +${geometricSize.toFixed(8)})`,
-                    'info'
-                );
+                    // Update the order in manager.orders
+                    manager._updateOrder(newOrder);
+
+                    manager.logger.log(
+                        `Prepared spread correction order at vacated slot ${slot.id}: ` +
+                        `${oppositeType} at ${slot.price.toFixed(4)}, geometric size ${geometricSize.toFixed(8)}`,
+                        'info'
+                    );
+                } else {
+                    manager.logger.log(`Spread correction aborted: insufficient chainFree funds for ${oppositeType}`, 'warn');
+                    return { ordersToPlace, partialMoves };
+                }
             }
         } else {
             // No partials to move (or no vacated slots) - activate a pool of candidate slots (VIRTUAL or SPREAD)
@@ -1957,12 +1963,11 @@ class Grid {
                 }
 
                 // Check if available funds can support the calculated geometric size
-                const availableFunds = getAvailableFundsForPlacement(manager.funds, side);
-                const baseAvailable = manager.funds.available?.[side] || 0;
+                const availableFunds = manager.funds.available?.[side] || 0;
 
                 if (geometricSize > availableFunds) {
                     manager.logger.log(
-                        `Insufficient available funds for spread correction order: need ${geometricSize.toFixed(8)}, have ${availableFunds.toFixed(8)} (available: ${baseAvailable.toFixed(8)}, cache: ${(manager.funds.cacheFunds?.[side] || 0).toFixed(8)})`,
+                        `Insufficient available funds for spread correction order: need ${geometricSize.toFixed(8)}, have ${availableFunds.toFixed(8)}`,
                         'warn'
                     );
                     return { ordersToPlace, partialMoves };
@@ -1973,29 +1978,25 @@ class Grid {
                     ...selectedSlot,
                     type: oppositeType,
                     size: geometricSize,
-                    state: ORDER_STATES.ACTIVE  // Will be confirmed ACTIVE after broadcast
+                    state: ORDER_STATES.VIRTUAL
                 };
-                ordersToPlace.push(convertedOrder);
 
-                // Update the order in manager.orders to reflect the type change (especially if it was SPREAD)
-                manager.orders.set(selectedSlot.id, convertedOrder);
+                // Deduct from chainFree immediately (atomic check-and-deduct)
+                if (manager.accountant.tryDeductFromChainFree(oppositeType, geometricSize, 'spread-correction')) {
+                    ordersToPlace.push(convertedOrder);
 
-                // Update fund variables immediately
-                const fundsBefore = availableFunds;
-                manager.funds.available[side] = Math.max(0, baseAvailable - geometricSize);
-                manager.funds.committed.grid[side] = (manager.funds.committed.grid[side] || 0) + geometricSize;
+                    // Update the order in manager.orders
+                    manager._updateOrder(convertedOrder);
 
-                manager.logger.log(
-                    `Selected candidate slot for spread correction: ${selectedSlot.id} (${selectedSlot.type}) at ${selectedSlot.price.toFixed(4)}, ` +
-                    `new size ${geometricSize.toFixed(8)} (boundary was ${boundaryPrice ? boundaryPrice.toFixed(4) : 'N/A'})`,
-                    'info'
-                );
-
-                manager.logger.log(
-                    `Activated slot for spread correction: ${selectedSlot.id} -> ${oppositeType} at ${selectedSlot.price.toFixed(4)}, size ${geometricSize.toFixed(8)} ` +
-                    `(available: ${fundsBefore.toFixed(8)} -> ${(baseAvailable - geometricSize).toFixed(8)}, committed: +${geometricSize.toFixed(8)})`,
-                    'info'
-                );
+                    manager.logger.log(
+                        `Selected candidate slot for spread correction: ${selectedSlot.id} (${selectedSlot.type}) at ${selectedSlot.price.toFixed(4)}, ` +
+                        `new size ${geometricSize.toFixed(8)} (boundary was ${boundaryPrice ? boundaryPrice.toFixed(4) : 'N/A'})`,
+                        'info'
+                    );
+                } else {
+                    manager.logger.log(`Spread correction aborted: insufficient chainFree funds for ${oppositeType}`, 'warn');
+                    return { ordersToPlace, partialMoves };
+                }
             } else {
                 manager.logger.log(`No SPREAD or VIRTUAL candidate slots available for spread correction`, 'warn');
             }

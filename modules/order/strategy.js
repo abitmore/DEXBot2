@@ -207,10 +207,26 @@ class StrategyEngine {
         const count = filledCount + extraOrderCount;
         const partialMoveSlots = filledCount;
         const side = oppositeType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+        const filledSide = filledType === ORDER_TYPES.BUY ? 'buy' : 'sell';
 
-        const activatedOrders = await this.activateClosestVirtualOrdersForPlacement(filledType, count, excludeOrderIds);
-        ordersToPlace.push(...activatedOrders);
-        mgr.logger.log(`Prepared ${activatedOrders.length} virtual ${filledType} orders for on-chain placement`, 'debug');
+        // Check if we already have enough active orders on the filled side
+        // (e.g. if spread correction already placed an order)
+        const currentFilledSideActive = countOrdersByType(filledType, mgr.orders);
+        let filledTargetCount = 1;
+        if (mgr.config.activeOrders && mgr.config.activeOrders[filledSide]) {
+            filledTargetCount = Math.max(1, mgr.config.activeOrders[filledSide]);
+        }
+
+        const shortageOnFilledSide = Math.max(0, filledTargetCount - currentFilledSideActive);
+        const toActivate = Math.min(count, shortageOnFilledSide);
+
+        if (toActivate > 0) {
+            const activatedOrders = await this.activateClosestVirtualOrdersForPlacement(filledType, toActivate, excludeOrderIds);
+            ordersToPlace.push(...activatedOrders);
+            mgr.logger.log(`Prepared ${activatedOrders.length} virtual ${filledType} orders for on-chain placement (target: ${filledTargetCount}, active: ${currentFilledSideActive})`, 'debug');
+        } else {
+            mgr.logger.log(`Skipping ${filledType} activation: already at or above target count (${currentFilledSideActive} >= ${filledTargetCount})`, 'debug');
+        }
 
         let partialOrders = mgr.getPartialOrdersOnSide(oppositeType);
         

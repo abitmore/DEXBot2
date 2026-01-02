@@ -82,6 +82,10 @@ let GRID_LIMITS = {
     // If (partial.size / nearestActive.size) * 100 < PARTIAL_DUST_THRESHOLD_PERCENTAGE, it is marked for refill.
     // Default: 5 (5%)
     PARTIAL_DUST_THRESHOLD_PERCENTAGE: 5,
+    // Tolerance for fund invariant checks (percentage).
+    // Discrepancies below this threshold will not trigger a warning.
+    // Default: 0.1 (0.1%)
+    FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
     // Grid comparison metrics
     // Detects significant divergence between calculated (in-memory) and persisted grid state
     // after order fills and rotations

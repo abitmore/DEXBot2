@@ -6,7 +6,7 @@
  * and managing BTS blockchain fees.
  */
 
-const { ORDER_TYPES, ORDER_STATES } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const { 
     computeChainFundTotals, 
     calculateAvailableFundsValue, 
@@ -177,45 +177,51 @@ class Accountant {
      * each have minor rounding differences.
      */
     _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
-        // Dynamic tolerance based on asset precision
-        // For assetB (quote, used for BUY side): tolerance = 2 * 10^(-precision)
-        // For assetA (base, used for SELL side): tolerance = 2 * 10^(-precision)
+        // 1. Dynamic tolerance based on asset precision (slack for rounding)
         const buyPrecision = mgr.assets?.assetB?.precision || 5;
         const sellPrecision = mgr.assets?.assetA?.precision || 5;
+        const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
+        const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
 
-        const buyTolerance = 2 * Math.pow(10, -buyPrecision);
-        const sellTolerance = 2 * Math.pow(10, -sellPrecision);
+        // 2. Percentage-based tolerance to handle market fees and timing offsets
+        const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
-        // INVARIANT 1: For BUY side
+        // INVARIANT 1: chainTotal = chainFree + chainCommitted (BUY side)
         const chainTotalBuy = mgr.funds.total.chain.buy;
         const expectedBuy = chainFreeBuy + chainBuy;
-        if (Math.abs(chainTotalBuy - expectedBuy) > buyTolerance) {
+        const diffBuy = Math.abs(chainTotalBuy - expectedBuy);
+        const allowedBuyTolerance = Math.max(precisionSlackBuy, chainTotalBuy * PERCENT_TOLERANCE);
+
+        if (diffBuy > allowedBuyTolerance) {
             mgr._metrics.invariantViolations.buy++;
             mgr.logger.log(
-                `WARNING: Fund invariant violation (BUY): chainTotal (${chainTotalBuy.toFixed(8)}) != chainFree (${chainFreeBuy.toFixed(8)}) + chainCommitted (${chainBuy.toFixed(8)}) = ${expectedBuy.toFixed(8)}`,
+                `WARNING: Fund invariant violation (BUY): chainTotal (${chainTotalBuy.toFixed(8)}) != chainFree (${chainFreeBuy.toFixed(8)}) + chainCommitted (${chainBuy.toFixed(8)}) = ${expectedBuy.toFixed(8)} (diff: ${diffBuy.toFixed(8)}, allowed: ${allowedBuyTolerance.toFixed(8)})`,
                 'warn'
             );
         }
 
-        // INVARIANT 1: For SELL side
+        // INVARIANT 1: chainTotal = chainFree + chainCommitted (SELL side)
         const chainTotalSell = mgr.funds.total.chain.sell;
         const expectedSell = chainFreeSell + chainSell;
-        if (Math.abs(chainTotalSell - expectedSell) > sellTolerance) {
+        const diffSell = Math.abs(chainTotalSell - expectedSell);
+        const allowedSellTolerance = Math.max(precisionSlackSell, chainTotalSell * PERCENT_TOLERANCE);
+
+        if (diffSell > allowedSellTolerance) {
             mgr._metrics.invariantViolations.sell++;
             mgr.logger.log(
-                `WARNING: Fund invariant violation (SELL): chainTotal (${chainTotalSell.toFixed(8)}) != chainFree (${chainFreeSell.toFixed(8)}) + chainCommitted (${chainSell.toFixed(8)}) = ${expectedSell.toFixed(8)}`,
+                `WARNING: Fund invariant violation (SELL): chainTotal (${chainTotalSell.toFixed(8)}) != chainFree (${chainFreeSell.toFixed(8)}) + chainCommitted (${chainSell.toFixed(8)}) = ${expectedSell.toFixed(8)} (diff: ${diffSell.toFixed(8)}, allowed: ${allowedSellTolerance.toFixed(8)})`,
                 'warn'
             );
         }
 
         // INVARIANT 2: Available should not exceed chainFree
-        if (mgr.funds.available.buy > chainFreeBuy + buyTolerance) {
+        if (mgr.funds.available.buy > chainFreeBuy + allowedBuyTolerance) {
             mgr.logger.log(
                 `WARNING: Fund invariant violation (BUY available): available (${mgr.funds.available.buy.toFixed(8)}) > chainFree (${chainFreeBuy.toFixed(8)})`,
                 'warn'
             );
         }
-        if (mgr.funds.available.sell > chainFreeSell + sellTolerance) {
+        if (mgr.funds.available.sell > chainFreeSell + allowedSellTolerance) {
             mgr.logger.log(
                 `WARNING: Fund invariant violation (SELL available): available (${mgr.funds.available.sell.toFixed(8)}) > chainFree (${chainFreeSell.toFixed(8)})`,
                 'warn'
@@ -225,13 +231,13 @@ class Accountant {
         // INVARIANT 3: Grid committed should not exceed chain total
         const gridCommittedBuy = mgr.funds.committed.grid.buy;
         const gridCommittedSell = mgr.funds.committed.grid.sell;
-        if (gridCommittedBuy > chainTotalBuy + buyTolerance) {
+        if (gridCommittedBuy > chainTotalBuy + allowedBuyTolerance) {
             mgr.logger.log(
                 `WARNING: Fund invariant violation (BUY grid): gridCommitted (${gridCommittedBuy.toFixed(8)}) > chainTotal (${chainTotalBuy.toFixed(8)})`,
                 'warn'
             );
         }
-        if (gridCommittedSell > chainTotalSell + sellTolerance) {
+        if (gridCommittedSell > chainTotalSell + allowedSellTolerance) {
             mgr.logger.log(
                 `WARNING: Fund invariant violation (SELL grid): gridCommitted (${gridCommittedSell.toFixed(8)}) > chainTotal (${chainTotalSell.toFixed(8)})`,
                 'warn'
@@ -416,13 +422,20 @@ class Accountant {
             const cache = mgr.funds.cacheFunds?.[side] || 0;
             const feesOwedThisSide = Math.min(mgr.funds.btsFeesOwed, cache);
 
-            mgr.logger.log(`Deducting ${feesOwedThisSide.toFixed(8)} BTS fees from cacheFunds.${side}. Remaining fees: ${(mgr.funds.btsFeesOwed - feesOwedThisSide).toFixed(8)} BTS`, 'info');
+            if (feesOwedThisSide > 0) {
+                mgr.logger.log(`Deducting ${feesOwedThisSide.toFixed(8)} BTS fees from cacheFunds.${side} and chainFree.${side}. Remaining fees: ${(mgr.funds.btsFeesOwed - feesOwedThisSide).toFixed(8)} BTS`, 'info');
 
-            mgr.funds.cacheFunds[side] -= feesOwedThisSide;
-            mgr.funds.btsFeesOwed -= feesOwedThisSide;
+                // Deduct from logical trackers
+                mgr.funds.cacheFunds[side] -= feesOwedThisSide;
+                mgr.funds.btsFeesOwed -= feesOwedThisSide;
 
-            await mgr._persistCacheFunds();
-            await mgr._persistBtsFeesOwed();
+                // CRITICAL: Physically deduct from optimistic chainFree balance so recalculateFunds stays correct
+                const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+                this.deductFromChainFree(orderType, feesOwedThisSide, 'bts-fee-settlement');
+
+                await mgr._persistCacheFunds();
+                await mgr._persistBtsFeesOwed();
+            }
         }
     }
 
