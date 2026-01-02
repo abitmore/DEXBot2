@@ -180,7 +180,7 @@ class Logger {
 
         // Only show formula and notes in debug mode
         if (isDebugMode) {
-            console.log(`\n${debug}=== FORMULA: available = max(0, chainFree - virtuel - applicableBtsFeesOwed - btsFeesReservation) ===${reset}`);
+            console.log(`\n${debug}=== FORMULA: available = max(0, chainFree - virtuel - applicableBtsFeesOwed) ===${reset}`);
             console.log(`${debug}Note: cacheFunds is kept separate and added to available for rebalancing decisions${reset}`);
         }
     }
@@ -232,6 +232,83 @@ class Logger {
         const spread = typeof manager.calculateCurrentSpread === 'function' ? manager.calculateCurrentSpread() : 0;
         console.log(`Current Spread: ${Number(spread).toFixed(2)}%`);
         console.log(`Spread Condition: ${manager.outOfSpread ? 'TOO WIDE' : 'Normal'}`);
+    }
+
+    /**
+     * Log detailed grid diagnostic: ACTIVE, SPREAD, PARTIAL orders and first VIRTUAL on boundary
+     * Used to trace grid mutations during fill/rotation/spread-correction cycles
+     */
+    logGridDiagnostics(manager, context = '') {
+        if (!manager) return;
+
+        const { ORDER_TYPES, ORDER_STATES } = require('../constants');
+        const c = this.colors;
+        const reset = c.reset;
+        const buy = c.buy;
+        const sell = c.sell;
+        const active = c.active;
+        const spread = c.spread;
+        const partial = c.partial;
+        const virtual = c.virtual;
+
+        // Get all orders sorted by price (descending)
+        const allOrders = Array.from(manager.orders.values()).sort((a, b) => b.price - a.price);
+
+        // Separate by type and state
+        const activeOrders = allOrders.filter(o => o.state === ORDER_STATES.ACTIVE);
+        const activeBuys = activeOrders.filter(o => o.type === ORDER_TYPES.BUY);
+        const activeSells = activeOrders.filter(o => o.type === ORDER_TYPES.SELL);
+
+        const spreadOrders = allOrders.filter(o => o.type === ORDER_TYPES.SPREAD && o.state === ORDER_STATES.VIRTUAL);
+        const partialOrders = allOrders.filter(o => o.state === ORDER_STATES.PARTIAL);
+
+        // Find first VIRTUAL order on each boundary
+        const virtualOrders = allOrders.filter(o => o.state === ORDER_STATES.VIRTUAL && o.type !== ORDER_TYPES.SPREAD);
+        const firstVirtualSell = virtualOrders.find(o => o.type === ORDER_TYPES.SELL);
+        const firstVirtualBuy = virtualOrders.find(o => o.type === ORDER_TYPES.BUY);
+
+        const ctxStr = context ? ` [${context}]` : '';
+        console.log(`\n${spread}═══ GRID DIAGNOSTICS${ctxStr} ═══${reset}`);
+
+        // Active orders summary
+        console.log(`\n${active}ACTIVE ORDERS${reset}: ${buy}Buy=${activeBuys.length}${reset}, ${sell}Sell=${activeSells.length}${reset}`);
+        if (activeBuys.length > 0) {
+            console.log(`  ${buy}BUY:${reset}  ${activeBuys.map(o => `${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
+        }
+        if (activeSells.length > 0) {
+            console.log(`  ${sell}SELL:${reset} ${activeSells.map(o => `${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
+        }
+
+        // SPREAD orders
+        console.log(`\n${spread}SPREAD PLACEHOLDERS${reset}: ${spreadOrders.length}`);
+        if (spreadOrders.length > 0) {
+            for (const order of spreadOrders) {
+                const isBoundary = (order === firstVirtualBuy || order === firstVirtualSell);
+                const boundaryMarker = isBoundary ? ' ← BOUNDARY' : '';
+                console.log(`  ${spread}${order.id}@${order.price.toFixed(4)}${boundaryMarker}${reset}`);
+            }
+        }
+
+        // PARTIAL orders
+        console.log(`\n${partial}PARTIAL ORDERS${reset}: ${partialOrders.length}`);
+        if (partialOrders.length > 0) {
+            for (const order of partialOrders) {
+                console.log(`  ${partial}${order.id}@${order.price.toFixed(4)} size=${order.size.toFixed(8)}${reset}`);
+            }
+        }
+
+        // First VIRTUAL on boundary
+        console.log(`\n${virtual}FIRST VIRTUAL ON BOUNDARY${reset}:`);
+        if (firstVirtualSell) {
+            console.log(`  ${virtual}SELL: ${firstVirtualSell.id}@${firstVirtualSell.price.toFixed(4)}${reset}`);
+        } else {
+            console.log(`  ${virtual}SELL: (none)${reset}`);
+        }
+        if (firstVirtualBuy) {
+            console.log(`  ${virtual}BUY:  ${firstVirtualBuy.id}@${firstVirtualBuy.price.toFixed(4)}${reset}`);
+        } else {
+            console.log(`  ${virtual}BUY:  (none)${reset}`);
+        }
     }
 }
 

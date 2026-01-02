@@ -216,7 +216,7 @@ function computeChainFundTotals(accountTotals, committedChain) {
 /**
  * Calculates available funds for a specific side (buy/sell).
  *
- * FORMULA: available = max(0, chainFree - virtuel - btsFeesOwed - btsFeesReservation)
+ * FORMULA: available = max(0, chainFree - virtuel - btsFeesOwed)
  *
  * NOTE ON CACHEFUNDS:
  * cacheFunds (unspent fill proceeds and rotation surpluses) is intentionally NOT subtracted
@@ -225,11 +225,15 @@ function computeChainFundTotals(accountTotals, committedChain) {
  * will be rotated back into the grid in future cycles. cacheFunds is added to grid sizing
  * calculations separately during rebalancing.
  *
+ * NOTE ON FEE RESERVATION:
+ * Previously subtracted btsFeesReservation (buffer for future order creation fees) from available,
+ * but this was too conservative and prevented order placement. Since we already account for
+ * actual btsFeesOwed (incurred fees), we don't need speculative future fee reservations.
+ *
  * FUND COMPONENTS:
  * - chainFree: Unallocated funds on blockchain (free to use immediately)
  * - virtuel: Funds reserved for VIRTUAL grid orders (not yet on-chain)
- * - btsFeesOwed: Accumulated BTS fees waiting to be settled from cacheFunds
- * - btsFeesReservation: Buffer reserved for future order creation fees
+ * - btsFeesOwed: Accumulated BTS fees waiting to be settled (actual liability)
  * - cacheFunds: Fill proceeds and rotation surplus (added to grid sizing separately)
  *
  * @param {string} side - 'buy' or 'sell'
@@ -237,7 +241,7 @@ function computeChainFundTotals(accountTotals, committedChain) {
  * @param {Object} funds - Fund tracking object
  * @param {string} assetA - Asset A symbol (to determine BTS side)
  * @param {string} assetB - Asset B symbol (to determine BTS side)
- * @param {Object} activeOrders - Target order counts (for BTS fee reservation)
+ * @param {Object} activeOrders - (unused, kept for compatibility)
  * @returns {number} Available funds for the side (chainFree minus reserved/owed), always >= 0
  */
 function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null) {
@@ -251,27 +255,11 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     const btsSide = (assetA === 'BTS') ? 'sell' :
         (assetB === 'BTS') ? 'buy' : null;
 
-    // Reserve BTS fees for updating target open orders (needed when regenerating grid)
-    let btsFeesReservation = 0;
-    if (btsSide === side && activeOrders) {
-        try {
-            const targetBuy = Math.max(0, Number.isFinite(Number(activeOrders?.buy)) ? Number(activeOrders.buy) : 1);
-            const targetSell = Math.max(0, Number.isFinite(Number(activeOrders?.sell)) ? Number(activeOrders.sell) : 1);
-            const totalTargetOrders = targetBuy + targetSell;
-
-            if (totalTargetOrders > 0) {
-                const btsFeeData = getAssetFees('BTS', 1);
-                btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
-            }
-        } catch (err) {
-            btsFeesReservation = FEE_PARAMETERS.BTS_FALLBACK_FEE;
-        }
-    }
-
     // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
+    // Only deduct actual fees owed, not speculative reservations
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
 
-    return Math.max(0, chainFree - virtuel - currentFeesOwed - btsFeesReservation);
+    return Math.max(0, chainFree - virtuel - currentFeesOwed);
 }
 
 /**

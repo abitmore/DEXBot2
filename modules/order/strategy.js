@@ -674,48 +674,44 @@ class StrategyEngine {
 
         for (const order of toRotate) {
             const allSpreadOrders = mgr.getOrdersByTypeAndState(ORDER_TYPES.SPREAD, ORDER_STATES.VIRTUAL);
-            
-            // Filter spread slots to ensure they are on the correct side of the marketAction
-            // For BUY rotation (moving outermost buy to spread): target must be < startPrice
-            // For SELL rotation (moving outermost sell to spread): target must be > startPrice
-            const spreadOrders = allSpreadOrders.filter(o => 
-                targetType === ORDER_TYPES.BUY 
-                    ? o.price < mgr.config.startPrice 
-                    : o.price > mgr.config.startPrice
-            );
 
-            if (spreadOrders.length === 0) {
-                mgr.logger.log(`No eligible SPREAD slots available for ${targetType} rotation`, 'warn');
+            if (allSpreadOrders.length === 0) {
+                mgr.logger.log(`No SPREAD slots available for ${targetType} rotation`, 'warn');
                 break;
             }
 
-            // Create a copy before sorting
-            const sortedSpreads = [...spreadOrders];
+            // ====================================================================
+            // SPREAD ZONE BOUNDARY: Valid SPREADs must be between active orders
+            // ====================================================================
+            // The spread zone is defined by:
+            // - Lower boundary: Highest active BUY order price
+            // - Upper boundary: Lowest active SELL order price
+            // Valid SPREADs must be: highestActiveBuy < spreadPrice < lowestActiveSell
+            //
+            // Selection priority:
+            // - BUY rotation: Use LOWEST SPREAD (closest to BUY orders from above)
+            // - SELL rotation: Use HIGHEST SPREAD (closest to SELL orders from below)
+            //
+            const activeBuys = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
+            const activeSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE);
 
-            // ====================================================================
-            // ROTATION SORTING: Price-based closeness to market action
-            // ====================================================================
-            // Sort spread slots by geometric closeness to the market action point.
-            //
-            // For BUY orders: Higher price slots are closer to startPrice (mid-market),
-            //                 so we prioritize them for rotation. This keeps buy orders
-            //                 tightly distributed near the center.
-            //
-            // For SELL orders: Lower price slots are closer to startPrice, so we
-            //                  prioritize them. This keeps sell orders tightly distributed.
-            //
-            // WHY THIS MATTERS: Alternative approaches (like using spread size or type)
-            // created traffic jams because they didn't respect the grid's geometric
-            // spacing. The price-based approach ensures rotations always move toward
-            // the optimal market zones and avoid congestion.
-            //
-            sortedSpreads.sort((a, b) =>
-                targetType === ORDER_TYPES.BUY
-                    ? b.price - a.price // Highest first (closest to market)
-                    : a.price - b.price // Lowest first (closest to market)
+            const highestActiveBuy = activeBuys.length > 0 ? Math.max(...activeBuys.map(o => o.price)) : -Infinity;
+            const lowestActiveSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : Infinity;
+
+            // Filter SPREADs to those within the spread zone
+            const validSpreads = allSpreadOrders.filter(o =>
+                o.price > highestActiveBuy && o.price < lowestActiveSell
             );
 
-            const targetSpreadSlot = sortedSpreads[0];
+            if (validSpreads.length === 0) {
+                mgr.logger.log(`No valid SPREAD slots in spread zone (${highestActiveBuy.toFixed(4)} < price < ${lowestActiveSell.toFixed(4)}) for ${targetType} rotation`, 'warn');
+                break;
+            }
+
+            // Select the target SPREAD slot based on rotation type
+            const targetSpreadSlot = targetType === ORDER_TYPES.BUY
+                ? validSpreads.reduce((min, o) => o.price < min.price ? o : min)  // Lowest SPREAD
+                : validSpreads.reduce((max, o) => o.price > max.price ? o : max); // Highest SPREAD
 
             const rotatedOrder = { 
                 oldOrder: { ...order }, 
@@ -740,13 +736,37 @@ class StrategyEngine {
 
     /**
      * Complete an order rotation after blockchain confirmation.
+     * Returns the old order to VIRTUAL state with its original type and size.
+     * CRITICAL: Updates accountTotals to reflect released funds from cancelled order.
+     * Do NOT convert to SPREAD here - that only happens on full fill.
      */
     completeOrderRotation(oldOrderInfo) {
         const mgr = this.manager;
         const oldGridOrder = mgr.orders.get(oldOrderInfo.id);
         if (oldGridOrder && oldGridOrder.orderId === oldOrderInfo.orderId) {
-            const updatedOld = { ...oldGridOrder, state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SPREAD, size: 0, orderId: null };
+            const size = oldGridOrder.size || 0;
+
+            // CRITICAL: Update accountTotals to reflect released funds
+            // The order was locked on blockchain (ACTIVE with orderId), now it's cancelled.
+            // When cancelled on-chain, the blockchain releases these funds to chainFree.
+            // We must update our accountTotals copy to stay in sync, so:
+            // - chainFree increases by size (funds released from lock)
+            // - virtuel increases by size (funds now reserved as virtual)
+            // - available stays constant (both increase equally)
+            if (oldGridOrder.type === ORDER_TYPES.BUY) {
+                mgr.accountTotals.buyFree = (mgr.accountTotals.buyFree || 0) + size;
+            } else if (oldGridOrder.type === ORDER_TYPES.SELL) {
+                mgr.accountTotals.sellFree = (mgr.accountTotals.sellFree || 0) + size;
+            }
+
+            // Restore to VIRTUAL with original type and size (not SPREAD)
+            // This preserves the slot's grid position for potential re-activation
+            const updatedOld = { ...oldGridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
             mgr._updateOrder(updatedOld);
+            mgr.logger.log(
+                `Rotated order ${oldOrderInfo.id} (${oldOrderInfo.type}) at price ${oldOrderInfo.price.toFixed(4)} -> VIRTUAL (size preserved: ${oldGridOrder.size?.toFixed(8) || 0})`,
+                'info'
+            );
         }
     }
 
@@ -846,8 +866,28 @@ class StrategyEngine {
         if (count <= 0) return [];
 
         const allSpreadOrders = mgr.getOrdersByTypeAndState(ORDER_TYPES.SPREAD, ORDER_STATES.VIRTUAL);
+
+        // ====================================================================
+        // SPREAD ZONE BOUNDARY: Valid SPREADs must be between active orders
+        // ====================================================================
+        // The spread zone is defined by:
+        // - Lower boundary: Highest active BUY order price
+        // - Upper boundary: Lowest active SELL order price
+        // Valid SPREADs must be: highestActiveBuy < spreadPrice < lowestActiveSell
+        //
+        // Selection priority:
+        // - BUY activation: Use LOWEST SPREADs (closest to BUY orders from above)
+        // - SELL activation: Use HIGHEST SPREADs (closest to SELL orders from below)
+        //
+        const activeBuys = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
+        const activeSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE);
+
+        const highestActiveBuy = activeBuys.length > 0 ? Math.max(...activeBuys.map(o => o.price)) : -Infinity;
+        const lowestActiveSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : Infinity;
+
+        // Filter SPREADs to those within the spread zone, then sort by proximity
         const spreadOrders = allSpreadOrders
-            .filter(o => (targetType === ORDER_TYPES.BUY && o.price < mgr.config.startPrice) || (targetType === ORDER_TYPES.SELL && o.price > mgr.config.startPrice))
+            .filter(o => o.price > highestActiveBuy && o.price < lowestActiveSell)
             .sort((a, b) => targetType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
 
         const availableFunds = calculateAvailableFundsValue(targetType === ORDER_TYPES.BUY ? 'buy' : 'sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
