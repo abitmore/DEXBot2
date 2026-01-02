@@ -43,6 +43,48 @@ class Accountant {
 
     /**
      * Recalculate all fund values based on current order states.
+     * This is THE MASTER FUND CALCULATION and must be called after any state change.
+     * Called automatically by _updateOrder(), but can be manually triggered to verify consistency.
+     *
+     * FUND CATEGORIES:
+     * ========================================================================
+     * 1. CHAIN FUNDS (blockchain source of truth)
+     *    - chainTotal: Total balance in account (on-chain)
+     *    - chainFree: Unallocated balance (on-chain, not locked in orders)
+     *    - chainCommitted: Locked in on-chain orders (orderId exists)
+     *    Formula: chainTotal = chainFree + chainCommitted
+     *
+     * 2. GRID FUNDS (orders we placed, might be on-chain or not yet)
+     *    - gridBuy/gridSell: ACTIVE + PARTIAL orders (including those not on-chain yet)
+     *    - Includes both on-chain orders and pending placements
+     *
+     * 3. VIRTUAL FUNDS (in grid but not on-chain)
+     *    - virtuelBuy/virtuelSell: VIRTUAL orders (pure grid state, no blockchain)
+     *    - Also called "reserved" in old code (backwards compat alias)
+     *
+     * 4. AVAILABLE FUNDS (what we can spend right now)
+     *    - Calculated as: chainFree - funds needed for grid allocation
+     *    - respects botFunds allocation limits
+     *    - gates new orders from being placed if insufficient
+     *
+     * CALCULATION FLOW:
+     * 1. Walk all orders, sum sizes by (state, orderId presence)
+     * 2. Calculate committed amounts from sums
+     * 3. Infer total from free + committed
+     * 4. Compare inferred total vs. blockchain's reported total
+     *    - Use max of inferred vs reported (prevents undercounting)
+     * 5. Calculate available funds based on totals and committed
+     *
+     * WHY THIS MATTERS:
+     * If recalculateFunds() is not called after order state changes:
+     * - Phantom funds appear (orders deducted but still counted as available)
+     * - Available funds go negative (impossible to place new orders)
+     * - Inconsistent state between blockchain and grid (causes sync errors)
+     *
+     * FUND CONSISTENCY CHECK (use to detect leaks):
+     *   gridBuy_committed + gridSell_committed + available.buy <= chainTotal.buy
+     *   gridBuy_committed + gridSell_committed + available.sell <= chainTotal.sell
+     * If this fails, funds are leaking somewhere.
      */
     recalculateFunds() {
         const mgr = this.manager;
@@ -73,31 +115,31 @@ class Accountant {
             }
         }
 
-        // Get chain free balances
+        // Get chain free balances (unallocated funds per blockchain)
         const chainFreeBuy = mgr.accountTotals?.buyFree || 0;
         const chainFreeSell = mgr.accountTotals?.sellFree || 0;
 
-        // Set committed
+        // Set committed (funds locked in orders)
         mgr.funds.committed.grid = { buy: gridBuy, sell: gridSell };
         mgr.funds.committed.chain = { buy: chainBuy, sell: chainSell };
 
-        // Set virtuel
+        // Set virtuel/virtual (grid orders not on-chain yet)
         mgr.funds.virtuel = { buy: virtuelBuy, sell: virtuelSell };
         mgr.funds.reserved = mgr.funds.virtuel; // backwards compat alias
 
-        // Set totals
+        // Set totals (infer from free + committed, or use reported if available)
         const inferredChainTotalBuy = chainFreeBuy + chainBuy;
         const inferredChainTotalSell = chainFreeSell + chainSell;
         const onChainTotalBuy = Number.isFinite(Number(mgr.accountTotals?.buy)) ? Number(mgr.accountTotals.buy) : null;
         const onChainTotalSell = Number.isFinite(Number(mgr.accountTotals?.sell)) ? Number(mgr.accountTotals.sell) : null;
-        
+
         mgr.funds.total.chain = {
             buy: onChainTotalBuy !== null ? Math.max(onChainTotalBuy, inferredChainTotalBuy) : inferredChainTotalBuy,
             sell: onChainTotalSell !== null ? Math.max(onChainTotalSell, inferredChainTotalSell) : inferredChainTotalSell
         };
         mgr.funds.total.grid = { buy: gridBuy + virtuelBuy, sell: gridSell + virtuelSell };
 
-        // Set available
+        // Set available (what we can spend right now)
         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
     }
@@ -142,6 +184,36 @@ class Accountant {
 
     /**
      * Update optimistic free balance during order state transitions.
+     * This is CRITICAL for preventing "fund leaks" where locked capital is never released.
+     *
+     * STATE TRANSITION RULES (chainFree impact):
+     * =========================================================================
+     * VIRTUAL → ACTIVE/PARTIAL: Funds transition from "free" to "locked"
+     *   Action: DEDUCT from chainFree (funds become committed/on-chain)
+     *   Why: New on-chain orders lock available capital
+     *
+     * ACTIVE/PARTIAL → VIRTUAL: Funds transition from "locked" to "free"
+     *   Action: ADD to chainFree (funds become available again)
+     *   Why: Cancelled orders release their capital back to available pool
+     *
+     * ACTIVE/PARTIAL → ACTIVE/PARTIAL (RESIZE): Size changes within active state
+     *   Action: DEDUCT if growing, ADD if shrinking
+     *   Why: Consolidations and rotations may resize orders, affecting committed capital
+     *
+     * SIZE CONSISTENCY CHECK:
+     * After any state transition, the formula below should hold:
+     *   chainTotal = chainFree + chainCommitted
+     * Where chainCommitted = sum of all (ACTIVE or PARTIAL orders with orderId)
+     * If this breaks, we have a fund leak somewhere.
+     *
+     * BTS FEE HANDLING:
+     * When an order is placed on a BTS-containing pair, we deduct the transaction fee
+     * from chainFree immediately. This prevents over-committing capital for fees.
+     *
+     * CONTEXT PARAMETER:
+     * Always log the context (e.g., 'rotation', 'consolidation', 'fill') to aid debugging
+     * fund discrepancies. The full context trail makes it easier to trace which operation
+     * caused a fund leak if one occurs.
      */
     updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
         const mgr = this.manager;

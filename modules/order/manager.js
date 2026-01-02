@@ -118,6 +118,47 @@ class OrderManager {
         return { ...totals, allocatedBuy, allocatedSell };
     }
 
+    /**
+     * Lock orders to prevent concurrent modifications during async operations.
+     * Locking is a critical race condition prevention mechanism.
+     *
+     * WHY LOCKING IS NEEDED:
+     * ========================================================================
+     * The bot processes orders asynchronously from multiple sources:
+     * 1. Blockchain syncs (detectingfills, price changes)
+     * 2. Strategy engine (rebalancing, rotations)
+     * 3. User actions (manual adjustments)
+     *
+     * Without locking, this sequence can occur (BAD):
+     *   - Strategy: "Partial P1 looks good for rotation" → calculates rotation
+     *   - Blockchain: "P1 just filled completely" → converts P1 to SPREAD
+     *   - Strategy: Tries to rotate P1 (now SPREAD) → data corruption
+     *
+     * With locking (GOOD):
+     *   - Blockchain locks P1: isOrderLocked(P1) = true
+     *   - Strategy: Checks if P1 locked → skips it
+     *   - Blockchain finishes P1 fill → unlocks P1
+     *   - Strategy: Now can safely process P1 in next cycle
+     *
+     * LOCK LIFETIME:
+     * Locks are temporary (default 5-10 seconds) to prevent stale locks from
+     * permanently blocking orders if a process crashes. This self-healing
+     * mechanism prevents deadlocks while still protecting against races.
+     *
+     * USAGE:
+     * - Lock orders: mgr.lockOrders([orderId1, orderId2])
+     * - Check if locked: mgr.isOrderLocked(orderId)
+     * - Unlock: mgr.unlockOrders([orderId1, orderId2])
+     *
+     * BEST PRACTICE:
+     * Always use try/finally to ensure unlocking happens even if error occurs:
+     *   mgr.lockOrders([id]);
+     *   try {
+     *     // expensive operation on order
+     *   } finally {
+     *     mgr.unlockOrders([id]);
+     *   }
+     */
     lockOrders(orderIds) {
         if (!orderIds) return;
         const now = Date.now();
@@ -125,12 +166,26 @@ class OrderManager {
         this._cleanExpiredLocks();
     }
 
+    /**
+     * Explicitly unlock orders. Locks are also automatically released after
+     * LOCK_TIMEOUT_MS milliseconds (self-healing mechanism).
+     */
     unlockOrders(orderIds) {
         if (!orderIds) return;
         for (const id of orderIds) if (id) this.shadowOrderIds.delete(id);
         this._cleanExpiredLocks();
     }
 
+    /**
+     * Clean up expired locks. Called after lock/unlock to remove stale locks
+     * that exceeded LOCK_TIMEOUT_MS. This prevents stale locks from permanently
+     * blocking orders if a process crashed while holding the lock.
+     *
+     * SELF-HEALING MECHANISM:
+     * Even if unlockOrders() is never called (e.g., process crash), the lock
+     * will automatically expire after LOCK_TIMEOUT_MS. This ensures orders
+     * are never permanently blocked and trading can resume.
+     */
     _cleanExpiredLocks() {
         const now = Date.now();
         for (const [id, timestamp] of this.shadowOrderIds) {
@@ -138,6 +193,13 @@ class OrderManager {
         }
     }
 
+    /**
+     * Check if an order is currently locked.
+     * Also auto-expires locks that have exceeded the timeout.
+     *
+     * @param {string} id - Order ID to check
+     * @returns {boolean} true if order is locked and within timeout window
+     */
     isOrderLocked(id) {
         if (!id || !this.shadowOrderIds.has(id)) return false;
         if (Date.now() - this.shadowOrderIds.get(id) > TIMING.LOCK_TIMEOUT_MS) {
@@ -147,6 +209,34 @@ class OrderManager {
         return true;
     }
 
+    /**
+     * Apply bot funds allocation limits based on configuration.
+     * Controls how much of total account funds the bot is allowed to use.
+     *
+     * ALLOCATION STRATEGY:
+     * ========================================================================
+     * The bot can be configured with fund limits in several ways:
+     *
+     * 1. ABSOLUTE amounts: botFunds.buy = 1000 (always use max 1000 units)
+     * 2. PERCENTAGES: botFunds.buy = "50%" (use max 50% of account balance)
+     * 3. NOT SET: No limit, use all available funds
+     *
+     * WHY ALLOCATION MATTERS:
+     * - Prevents bot from using 100% of account, leaving room for manual trading
+     * - Allows multiple bots to trade from same account with separate budgets
+     * - Provides risk control: Limit losses to allocated portion if bot fails
+     *
+     * FUND FORMULA AFTER ALLOCATION:
+     * If config.botFunds.buy = "30%" and account has 10000 total:
+     *   - allocatedBuy = 3000 (30% of 10000)
+     *   - funds.available.buy = min(calculated_available, 3000)
+     *   - Bot can never spend more than 3000 in buy orders
+     *
+     * PERCENTAGE RESOLUTION:
+     * Uses _resolveConfigValue() to convert percentages to absolute amounts.
+     * For percentages, uses current chainTotal (account balance on blockchain)
+     * as the base for calculation.
+     */
     applyBotFundsAllocation() {
         if (!this.config.botFunds || !this.accountTotals) return;
         const { chainTotalBuy, chainTotalSell } = computeChainFundTotals(this.accountTotals, this.funds?.committed?.chain);
@@ -178,6 +268,49 @@ class OrderManager {
         await this._fetchAccountBalancesAndSetTotals();
     }
 
+    /**
+     * Update or insert an order into the manager's state, maintaining all indices.
+     * This is the CENTRAL STATE TRANSITION mechanism for the order system.
+     *
+     * STATE TRANSITIONS (the valid flows):
+     * =========================================================================
+     * VIRTUAL: The initial state for all orders. No on-chain existence.
+     *   → ACTIVE: Order is activated for on-chain placement. Funds become locked.
+     *   → SPREAD: After a fill, order becomes a placeholder for future rebalancing.
+     *
+     * ACTIVE: Order is on-chain with an orderId. Funds are locked/committed.
+     *   → PARTIAL: Order fills partially. Remaining size is tracked for rebalancing.
+     *   → VIRTUAL: Order is cancelled/rotated. Becomes eligible for re-use.
+     *   → SPREAD: Order is cancelled/rotated after being filled. Becomes placeholder.
+     *
+     * PARTIAL: Order has partially filled and is waiting for consolidation or rotation.
+     *   → ACTIVE: Upgraded by multi-partial consolidation (if size >= 100% of ideal).
+     *   → VIRTUAL: Consolidated and moved. Returns to virtual pool.
+     *   → SPREAD: Order absorbed or consolidated, converted to placeholder.
+     *
+     * CRITICAL RULE - Size determines ACTIVE vs PARTIAL:
+     * When an order size < 100% of its slot's ideal size (determined by grid geometry),
+     * it MUST be in PARTIAL state, not ACTIVE. This prevents orders from being stuck
+     * in the wrong state after partial fills.
+     *
+     * FUND DEDUCTION RULES (fund tracking via state change):
+     * - VIRTUAL → ACTIVE: Funds are deducted from chainFree (become locked)
+     * - ACTIVE → VIRTUAL: Funds are added back to chainFree (become free)
+     * - ACTIVE → PARTIAL: Partial fills reduce chainFree based on filled amount
+     * - PARTIAL → ACTIVE: Consolidation may lock additional funds if upgrading
+     *
+     * INDEX MAINTENANCE:
+     * This method maintains three critical indices for O(1) lookups:
+     * 1. _ordersByState: Groups orders by state (VIRTUAL, ACTIVE, PARTIAL)
+     * 2. _ordersByType: Groups orders by type (BUY, SELL, SPREAD)
+     * 3. orders: Central Map storing the order object data
+     *
+     * IMPORTANT: Always call this method instead of directly modifying this.orders
+     * to ensure indices remain consistent. Inconsistent indices can cause:
+     * - Missed orders during rebalancing
+     * - Incorrect fund calculations
+     * - Stuck orders in wrong states
+     */
     _updateOrder(order) {
         if (order.id === undefined || order.id === null) return;
         const existing = this.orders.get(order.id);
@@ -225,6 +358,19 @@ class OrderManager {
         return Array.from(this.orders.values());
     }
 
+    /**
+     * Get all PARTIAL orders of a given type that are NOT locked.
+     *
+     * PARTIAL orders are those that have partially filled on-chain and are waiting for
+     * consolidation or rotation. They are critical to the multi-partial consolidation
+     * logic which:
+     * - Restores outer partials to their ideal grid sizes
+     * - Absorbs residual capital into the innermost partial
+     * - Prevents "traffic jams" where multiple partials block each other
+     *
+     * We exclude locked orders because they are being processed in parallel by
+     * other operations (fills, rotations, etc.) and should not be moved while locked.
+     */
     getPartialOrdersOnSide(type) {
         return this.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL).filter(o => !this.isOrderLocked(o.id) && !this.isOrderLocked(o.orderId));
     }

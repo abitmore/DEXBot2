@@ -221,12 +221,36 @@ class StrategyEngine {
         }
 
         if (partialOrders.length >= 1) {
-            partialOrders.sort((a, b) => 
+            partialOrders.sort((a, b) =>
                 oppositeType === ORDER_TYPES.SELL ? b.price - a.price : a.price - b.price
             );
 
-            // CRITICAL: Temporarily mark all partials as VIRTUAL so they don't block each other's moves
-            // AND capture their original state/data for accurate target calculations
+            // ============================================================================
+            // GHOST VIRTUALIZATION MECHANISM
+            // ============================================================================
+            // This is a critical technique for safely moving multiple partial orders while
+            // preventing traffic jams and ensuring accurate target sizing.
+            //
+            // PROBLEM: Multiple partials in the same slot occupy physical space. If we try
+            // to move them sequentially without virtualization, the first partial leaves
+            // behind residual capital/size that blocks the next partial's move.
+            //
+            // SOLUTION: Temporarily mark all partials as VIRTUAL (not ACTIVE/PARTIAL) so
+            // they don't block each other's geometric calculations. This creates a "ghost"
+            // state where we can accurately compute what each partial's target slot would
+            // receive if it were on that grid position.
+            //
+            // DATA CAPTURE: Before virtualizing, we capture originalPartialData (a snapshot
+            // of each partial's current state including size, price, orderId). This is
+            // CRITICAL because:
+            // 1. evaluatePartialOrderAnchor() needs the original size to calculate residuals
+            // 2. During anchoring (moveDist=0), we ensure targetGridOrder reflects the
+            //    original data, not the ghost-virtualized state
+            // 3. This prevents "target size drift" where ideal sizes get miscalculated
+            //
+            // FINALIZATION: After processing all partials, we restore their original states
+            // in the finally block. This ensures the manager's order indices remain accurate.
+            //
             const originalPartialData = new Map();
             for (const p of partialOrders) {
                 originalPartialData.set(p.id, { ...p });
@@ -240,19 +264,38 @@ class StrategyEngine {
                 for (let i = 0; i < partialOrders.length; i++) {
                     const p = partialOrders[i];
                     const isInnermost = (i === partialOrders.length - 1);
-                    
-                    // ANCHOR STRATEGY: We never shift partial orders to new slots (moveDist = 0)
-                    // We only update their sizes in their current positions.
+
+                    // ========================================================================
+                    // ANCHOR STRATEGY: Keep partials in their current grid positions
+                    // ========================================================================
+                    // We use moveDist=0 to indicate that partials should NOT move to new
+                    // slots. Instead, they stay anchored in place and we update their sizes.
+                    //
+                    // Why anchoring matters:
+                    // - Each grid slot has a geometric ideal size (larger spreads → larger sizes)
+                    // - If a partial is "dust" (< 5% of ideal), it gets absorbed by innermost
+                    // - If substantial, outer partials restore to ideal, innermost absorbs residuals
+                    // - Keeping partials anchored prevents "spread rebalancing" which could
+                    //   violate the grid's price spacing rules
+                    //
                     const moveInfo = this.preparePartialOrderMove(p, 0, reservedGridIds);
-                    
+
                     if (!moveInfo) {
                         mgr.logger.log(`Could not prepare anchor for partial ${p.id}`, 'warn');
                         continue;
                     }
 
-                    // ENSURE moveInfo.targetGridOrder reflects the original data (with original size)
-                    // if it happened to be one of our ghost-virtualized orders.
-                    // This is critical both for moves and for anchoring (moveDist=0).
+                    // ========================================================================
+                    // TARGET GRID ORDER RESOLUTION
+                    // ========================================================================
+                    // Since partials are ghost-virtualized, we need to restore their original
+                    // state data when calculating target slots. This prevents "size drift" where
+                    // the ghost state's virtual sizes would distort ideal size calculations.
+                    //
+                    // Two cases:
+                    // 1. Partial is one of our ghost-virtualized orders: use originalPartialData
+                    // 2. Target slot is a truly VIRTUAL slot (not a partial): fetch from manager
+                    //
                     if (originalPartialData.has(moveInfo.newGridId)) {
                         moveInfo.targetGridOrder = originalPartialData.get(moveInfo.newGridId);
                     } else {
@@ -262,10 +305,21 @@ class StrategyEngine {
                     }
 
                     // CRITICAL: Evaluate anchor while states are still VIRTUAL
+                    // This ensures all partials are evaluated against the same virtual state,
+                    // not against partially-updated manager state
                     const isAnchorDecision = this.evaluatePartialOrderAnchor(p, moveInfo);
                     const idealSize = isAnchorDecision.idealSize;
 
                     if (!isInnermost) {
+                        // ====================================================================
+                        // OUTER PARTIAL CLEANUP
+                        // ====================================================================
+                        // Outer partials (not the innermost) are always restored to their
+                        // geometric ideal size. Any excess residual capital from this partial
+                        // is accumulated for the innermost partial to absorb.
+                        //
+                        // Example: Outer partial size=15, ideal=10 → restore to 10, residual=5*price
+                        //
                         mgr.logger.log(`[MULTI-PARTIAL CLEANUP] Outer Partial ${oppositeType} ${p.id}: size=${p.size.toFixed(8)} -> restoring to ideal=${idealSize.toFixed(8)}.`, 'info');
                         const cleanMoveInfo = {
                             ...moveInfo,
@@ -277,6 +331,20 @@ class StrategyEngine {
                             accumulatedResidualCapital += isAnchorDecision.residualCapital;
                         }
                     } else {
+                        // ====================================================================
+                        // INNERMOST PARTIAL: MERGE vs SPLIT DECISION
+                        // ====================================================================
+                        // The innermost (last) partial handles all accumulated residual capital
+                        // from the outer partials. It makes a critical decision:
+                        //
+                        // MERGE: If the residual would fit comfortably with the ideal size
+                        //        (merged <= ideal * 1.05), merge everything into one order.
+                        //        This becomes a "DoubleOrder" (marked for potential future rotation).
+                        //
+                        // SPLIT: If merged size would be too large, keep innermost at ideal and
+                        //        create a separate residual order at the market spread price.
+                        //        This prevents orders from growing too large relative to the grid.
+                        //
                         const totalResidualCapital = accumulatedResidualCapital + (isAnchorDecision.residualCapital || 0);
                         const residualSize = totalResidualCapital / p.price;
                         const mergedSize = idealSize + residualSize;
@@ -521,13 +589,27 @@ class StrategyEngine {
             // Create a copy before sorting
             const sortedSpreads = [...spreadOrders];
 
-            // Sort spread slots by closeness to market action
-            // For BUY: higher price is closer
-            // For SELL: lower price is closer
+            // ====================================================================
+            // ROTATION SORTING: Price-based closeness to market action
+            // ====================================================================
+            // Sort spread slots by geometric closeness to the market action point.
+            //
+            // For BUY orders: Higher price slots are closer to startPrice (mid-market),
+            //                 so we prioritize them for rotation. This keeps buy orders
+            //                 tightly distributed near the center.
+            //
+            // For SELL orders: Lower price slots are closer to startPrice, so we
+            //                  prioritize them. This keeps sell orders tightly distributed.
+            //
+            // WHY THIS MATTERS: Alternative approaches (like using spread size or type)
+            // created traffic jams because they didn't respect the grid's geometric
+            // spacing. The price-based approach ensures rotations always move toward
+            // the optimal market zones and avoid congestion.
+            //
             sortedSpreads.sort((a, b) =>
                 targetType === ORDER_TYPES.BUY
-                    ? b.price - a.price // Highest first
-                    : a.price - b.price // Lowest first
+                    ? b.price - a.price // Highest first (closest to market)
+                    : a.price - b.price // Lowest first (closest to market)
             );
 
             const targetSpreadSlot = sortedSpreads[0];
