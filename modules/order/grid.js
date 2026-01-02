@@ -21,7 +21,7 @@
  * - Grid loading (loadGrid): ACTIVE orders increment funds.committed
  * - Order activation: funds.virtuel decreases, funds.committed increases
  */
-const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, TIMING, INCREMENT_BOUNDS } = require('../constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
 const { floatToBlockchainInt, blockchainToFloat, resolveRelativePrice, filterOrdersByType, filterOrdersByTypeAndState, sumOrderSizes, mapOrderSizes, getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager, checkSizesBeforeMinimum, checkSizesNearMinimum, calculateOrderCreationFees, deductOrderFeesFromFunds, allocateFundsByWeights, calculateOrderSizes, calculateRotationOrderSizes, calculateGridSideDivergenceMetric, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, derivePoolPrice, deriveMarketPrice, derivePrice, getMinOrderSize, calculateAvailableFundsValue, calculateSpreadFromOrders, countOrdersByType, shouldFlagOutOfSpread } = require('./utils');
 
@@ -59,7 +59,7 @@ class Grid {
         // CRITICAL: Validate increment bounds before using in calculations
         // Prevents division by zero (line 75: Math.log(stepUp)) and invalid prices
         if (incrementPercent <= 0 || incrementPercent >= 100) {
-            throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be between 0.01 and 10 (exclusive of 0 and 100).`);
+            throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be between ${INCREMENT_BOUNDS.MIN_PERCENT} and ${INCREMENT_BOUNDS.MAX_PERCENT} (exclusive of 0 and 100).`);
         }
 
         // Use explicit step multipliers for clarity:
@@ -77,10 +77,10 @@ class Grid {
         }
 
         // Calculate number of spread orders based on target spread vs increment
-        // Ensure at least 2 spread orders (1 buy, 1 sell) to maintain a proper spread zone
+        // Ensure at least GRID_LIMITS.MIN_SPREAD_ORDERS spread orders (1 buy, 1 sell) to maintain a proper spread zone
         // Number of increments needed to cover the target spread using stepUp^n >= (1 + targetSpread)
         const calculatedNOrders = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
-        const nOrders = Math.max(2, calculatedNOrders); // Minimum 2 spread orders
+        const nOrders = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS, calculatedNOrders); // Minimum spread orders
 
         // Generate Sells detected OUTWARDS from market (Price increasing)
         // Start at a half-step up to center the market price in the first gap
@@ -284,7 +284,7 @@ class Grid {
                 if (haveBuy && haveSell) {
                     manager.logger?.log?.('Account totals already available; skipping blocking fetch.', 'debug');
                 } else {
-                    const timeoutMs = Number.isFinite(Number(manager.config.waitForAccountTotalsMs)) ? Number(manager.config.waitForAccountTotalsMs) : 10000;
+                    const timeoutMs = Number.isFinite(Number(manager.config.waitForAccountTotalsMs)) ? Number(manager.config.waitForAccountTotalsMs) : TIMING.ACCOUNT_TOTALS_TIMEOUT_MS;
                     manager.logger?.log?.(`Waiting up to ${timeoutMs}ms for on-chain account totals to resolve percentage-based botFunds...`, 'info');
                     try {
                         if (!manager._isFetchingTotals) { manager._isFetchingTotals = true; manager._fetchAccountBalancesAndSetTotals().finally(() => { manager._isFetchingTotals = false; }); }
@@ -1278,8 +1278,8 @@ class Grid {
     static async checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch = null) {
         const currentSpread = Grid.calculateCurrentSpread(manager);
         // Threshold accounts for grid geometry: with N SPREAD orders, ACTIVE orders are N+1 steps apart
-        // Using 1.5x multiplier provides buffer for natural grid spacing while catching true widening
-        const targetSpread = manager.config.targetSpreadPercent + (manager.config.incrementPercent * 1.5);
+        // Using SPREAD_WIDENING_MULTIPLIER provides buffer for natural grid spacing while catching true widening
+        const targetSpread = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
 
         // Only trigger spread warning if we have at least one order on BOTH sides
         const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);

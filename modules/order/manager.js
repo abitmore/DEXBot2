@@ -9,7 +9,7 @@
  *   - SyncEngine (sync_engine.js): Blockchain reconciliation
  */
 
-const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, PRECISION_DEFAULTS } = require('../constants');
 const {
     calculatePriceTolerance,
     findMatchingGridOrderByOpenOrder,
@@ -459,8 +459,8 @@ class OrderManager {
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 
         // Use integer arithmetic for size comparisons to match blockchain behavior
-        const sellPrecision = this.assets?.assetA?.precision || 5;
-        const buyPrecision = this.assets?.assetB?.precision || 5;
+        const sellPrecision = this.assets?.assetA?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
+        const buyPrecision = this.assets?.assetB?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
         const minSellSizeInt = floatToBlockchainInt(minSellSize, sellPrecision);
         const minBuySizeInt = floatToBlockchainInt(minBuySize, buyPrecision);
 
@@ -592,8 +592,8 @@ class OrderManager {
                     this._persistenceWarning = { dataType, error: e.message, timestamp: Date.now() };
                     return false;
                 } else {
-                    // Retry with exponential backoff
-                    const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                    // Retry with exponential backoff (capped at TIMING.ACCOUNT_TOTALS_TIMEOUT_MS)
+                    const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), TIMING.ACCOUNT_TOTALS_TIMEOUT_MS);
                     this.logger.log(`Attempt ${attempt}/${maxAttempts} to persist ${dataType} failed: ${e.message}. Retrying in ${delayMs}ms...`, 'warn');
                     await new Promise(resolve => setTimeout(resolve, delayMs));
                 }

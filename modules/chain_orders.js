@@ -13,6 +13,7 @@
  */
 const { BitShares, createAccountClient, waitForConnected } = require('./bitshares_client');
 const { floatToBlockchainInt, blockchainToFloat, validateOrderAmountsWithinLimits } = require('./order/utils');
+const { FILL_PROCESSING } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -24,11 +25,11 @@ const chainKeys = require('./chain_keys');
 // (authenticate(), getPrivateKey(), MasterPasswordError)
 
 /**
- * Fill processing mode:
+ * Fill processing mode from FILL_PROCESSING.MODE constant:
  * - 'history': Use fill event data directly to match order_id with account_orders (preferred, faster)
  * - 'open': Fetch open orders from blockchain and sync (backup method, more API calls)
  */
-const FILL_PROCESSING_MODE = 'history';
+const FILL_PROCESSING_MODE = FILL_PROCESSING.MODE;
 
 // AsyncLock instances for preventing race conditions
 // _subscriptionLock: Serializes access to accountSubscriptions map
@@ -184,7 +185,7 @@ async function _ensureAccountSubscriber(accountName) {
             // Filter for fill-related operations
             const fills = updates.filter(update => {
                 const op = update.op;
-                return op && op[0] === 4; // operation type 4 is fill_order
+                return op && op[0] === FILL_PROCESSING.OPERATION_TYPE; // operation type for fill_order
             });
 
             if (fills.length > 0) {

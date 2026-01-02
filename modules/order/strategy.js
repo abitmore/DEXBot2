@@ -5,7 +5,7 @@
  * Implements Anchor & Refill, Multi-Partial Consolidation, and Geometric Rotations.
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS, PRECISION_DEFAULTS } = require('../constants');
 const {
     countOrdersByType,
     getPrecisionForSide,
@@ -113,7 +113,7 @@ class StrategyEngine {
                 mgr.funds.btsFeesOwed += fullFillCount * btsFeeData.total;
             } catch (err) {
                 mgr.logger?.log?.(`Warning: Could not calculate BTS fees: ${err.message}`, 'warn');
-                mgr.funds.btsFeesOwed += 100;
+                mgr.funds.btsFeesOwed += FEE_PARAMETERS.BTS_FALLBACK_FEE;
             }
         }
 
@@ -155,7 +155,7 @@ class StrategyEngine {
                 const btsFeeData = getAssetFees('BTS', 0);
                 mgr.funds.btsFeesOwed += btsFeeData.updateFee * newOrders.partialMoves.length;
             } catch (err) {
-                mgr.funds.btsFeesOwed += 100;
+                mgr.funds.btsFeesOwed += FEE_PARAMETERS.BTS_FALLBACK_FEE;
             }
         }
 
@@ -533,12 +533,12 @@ class StrategyEngine {
         // Use integer arithmetic for precision consistency with blockchain
         const precision = (partialOrder.type === ORDER_TYPES.SELL)
             ? mgr.assets?.assetA?.precision || (() => {
-                mgr.logger?.log?.(`WARNING: Asset precision not found for assetA, using fallback precision=5`, 'warn');
-                return 5;
+                mgr.logger?.log?.(`WARNING: Asset precision not found for assetA, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+                return PRECISION_DEFAULTS.ASSET_FALLBACK;
             })()
             : mgr.assets?.assetB?.precision || (() => {
-                mgr.logger?.log?.(`WARNING: Asset precision not found for assetB, using fallback precision=5`, 'warn');
-                return 5;
+                mgr.logger?.log?.(`WARNING: Asset precision not found for assetB, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+                return PRECISION_DEFAULTS.ASSET_FALLBACK;
             })();
 
         const partialInt = floatToBlockchainInt(partialSize, precision);
@@ -547,7 +547,7 @@ class StrategyEngine {
         // Calculate percent using integer arithmetic to match blockchain behavior
         const percentOfIdeal = idealInt > 0 ? partialInt / idealInt : 0;
 
-        if (percentOfIdeal < (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5) / 100) {
+        if (percentOfIdeal < (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || PRECISION_DEFAULTS.ASSET_FALLBACK) / 100) {
             return { isDust: true, idealSize, percentOfIdeal, mergedDustSize: partialSize };
         } else {
             let residualCapital = 0;
@@ -771,12 +771,12 @@ class StrategyEngine {
             // Use blockchain integer precision for state determination (consistent with rest of system)
             const precision = (partialOrder.type === ORDER_TYPES.SELL)
                 ? mgr.assets?.assetA?.precision || (() => {
-                    mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in completePartialOrderMove, using fallback precision=5`, 'warn');
-                    return 5;
+                    mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in completePartialOrderMove, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+                    return PRECISION_DEFAULTS.ASSET_FALLBACK;
                 })()
                 : mgr.assets?.assetB?.precision || (() => {
-                    mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in completePartialOrderMove, using fallback precision=5`, 'warn');
-                    return 5;
+                    mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in completePartialOrderMove, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+                    return PRECISION_DEFAULTS.ASSET_FALLBACK;
                 })();
             const partialInt = floatToBlockchainInt(partialOrder.size, precision);
             const idealInt = floatToBlockchainInt(targetGridOrder.size || 0, precision);

@@ -527,8 +527,9 @@ async function promptGeneralSettings() {
     while (!finished) {
         console.log('\n\x1b[1m--- General Settings (Global) ---\x1b[0m');
         console.log(`\x1b[36m1) Grid:\x1b[0m          \x1b[33mCache:\x1b[0m ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, \x1b[33mRMS:\x1b[0m ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, \x1b[33mDust:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
-        console.log(`\x1b[36m2) Timing:\x1b[0m        \x1b[33mFetchInterval:\x1b[0m ${settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN}min, \x1b[33mSyncDelay:\x1b[0m ${settings.TIMING.SYNC_DELAY_MS}ms`);
-        console.log(`\x1b[36m3) Log lvl:\x1b[0m       \x1b[33m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
+        console.log(`\x1b[36m2) Timing (Core):\x1b[0m  \x1b[33mFetchInterval:\x1b[0m ${settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN}min, \x1b[33mSyncDelay:\x1b[0m ${settings.TIMING.SYNC_DELAY_MS}ms, \x1b[33mLockTimeout:\x1b[0m ${settings.TIMING.LOCK_TIMEOUT_MS}ms`);
+        console.log(`\x1b[36m3) Timing (Fill):\x1b[0m  \x1b[33mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS}ms, \x1b[33mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS}ms, \x1b[33mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS}ms`);
+        console.log(`\x1b[36m4) Log lvl:\x1b[0m       \x1b[33m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
         console.log('--------------------------------------------------');
         console.log('\x1b[32mS) Save & Exit\x1b[0m');
         console.log('\x1b[31mC) Cancel (Discard changes)\x1b[0m');
@@ -544,8 +545,14 @@ async function promptGeneralSettings() {
             case '2':
                 settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN = askNumberWithBounds('Blockchain Fetch Interval (min)', settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN, 1, 1440);
                 settings.TIMING.SYNC_DELAY_MS = askNumberWithBounds('Sync Delay (ms)', settings.TIMING.SYNC_DELAY_MS, 100, 10000);
+                settings.TIMING.LOCK_TIMEOUT_MS = askNumberWithBounds('Lock Timeout (ms)', settings.TIMING.LOCK_TIMEOUT_MS, 1000, 60000);
                 break;
             case '3':
+                settings.TIMING.FILL_DEDUPE_WINDOW_MS = askNumberWithBounds('Fill Dedup Window (ms)', settings.TIMING.FILL_DEDUPE_WINDOW_MS, 100, 30000);
+                settings.TIMING.FILL_CLEANUP_INTERVAL_MS = askNumberWithBounds('Fill Cleanup Interval (ms)', settings.TIMING.FILL_CLEANUP_INTERVAL_MS, 1000, 60000);
+                settings.TIMING.FILL_RECORD_RETENTION_MS = askNumberWithBounds('Fill Record Retention (ms)', settings.TIMING.FILL_RECORD_RETENTION_MS, 600000, 86400000);
+                break;
+            case '4':
                 const levels = ['debug', 'info', 'warn', 'error'];
                 console.log(`Available levels: ${levels.join(', ')}`);
                 const newLevel = askString('Enter log level', settings.LOG_LEVEL).toLowerCase();

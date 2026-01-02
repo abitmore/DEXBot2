@@ -86,6 +86,14 @@ let GRID_LIMITS = {
     // Discrepancies below this threshold will not trigger a warning.
     // Default: 0.1 (0.1%)
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
+    // Minimum number of spread orders (1 buy, 1 sell) to maintain proper spread zone
+    // Default: 2
+    MIN_SPREAD_ORDERS: 2,
+    // Buffer multiplier for spread widening condition threshold
+    // Accounts for grid geometry: with N SPREAD orders, ACTIVE orders are N+1 steps apart
+    // Using 1.5x multiplier provides buffer for natural grid spacing while catching true widening
+    // Default: 1.5
+    SPREAD_WIDENING_MULTIPLIER: 1.5,
     // Grid comparison metrics
     // Detects significant divergence between calculated (in-memory) and persisted grid state
     // after order fills and rotations
@@ -113,6 +121,66 @@ let GRID_LIMITS = {
     }
 };
 
+// Precision defaults and fallbacks for asset precision calculations
+let PRECISION_DEFAULTS = {
+    // Fallback when asset metadata is unavailable
+    ASSET_FALLBACK: 5,
+    // Stricter precision for price tolerance and minimum order size calculations
+    STRICT_CALCULATION: 8,
+    // Default price tolerance ratio (0.1%)
+    PRICE_TOLERANCE: 0.001
+};
+
+// Increment percentage bounds for grid configuration
+let INCREMENT_BOUNDS = {
+    // Minimum increment percentage allowed (0.01%)
+    MIN_PERCENT: 0.01,
+    // Maximum increment percentage allowed (10%)
+    MAX_PERCENT: 10,
+    // Minimum increment as decimal factor (0.01% = 0.0001)
+    MIN_FACTOR: 0.0001,
+    // Maximum increment as decimal factor (10% = 0.10)
+    MAX_FACTOR: 0.10
+};
+
+// Fee-related parameters for order operations
+let FEE_PARAMETERS = {
+    // Multiplier for BTS fee reservation (multiplied by totalTargetOrders)
+    BTS_RESERVATION_MULTIPLIER: 5,
+    // Fallback BTS fee when fee data calculation fails
+    BTS_FALLBACK_FEE: 100,
+    // Ratio of creation fee refunded for maker orders (10% = 0.1)
+    MAKER_REFUND_RATIO: 0.1
+};
+
+// API request limits and batch sizes for blockchain operations
+let API_LIMITS = {
+    // Maximum number of liquidity pools per batch request
+    POOL_BATCH_SIZE: 100,
+    // Maximum number of batch iterations for pool scanning (~10k total pools)
+    MAX_POOL_SCAN_BATCHES: 100,
+    // Depth of order book to fetch for market price derivation
+    ORDERBOOK_DEPTH: 5,
+    // Maximum number of limit orders per batch request
+    LIMIT_ORDERS_BATCH: 100
+};
+
+// Fill processing configuration
+let FILL_PROCESSING = {
+    // Mode for fill processing: 'history' reads from historical fills
+    MODE: 'history',
+    // Operation type for fill_order blockchain operations
+    OPERATION_TYPE: 4,
+    // Indicator for taker (non-maker) fills
+    TAKER_INDICATOR: 0
+};
+
+// Cleanup and maintenance parameters
+let MAINTENANCE = {
+    // Probability of running cleanup operation on any cycle (0.1 = 10%)
+    CLEANUP_PROBABILITY: 0.1
+};
+
 // Logging Level Configuration
 // Options:
 // - 'debug': Verbose output including calculation details, API calls, and flow tracing.
@@ -132,18 +200,42 @@ if (fs.existsSync(SETTINGS_FILE)) {
         const settings = JSON.parse(raw);
 
         if (settings.LOG_LEVEL) LOG_LEVEL = settings.LOG_LEVEL;
-        
+
         if (settings.TIMING) {
-            TIMING = { ...TIMING, ...settings.TIMING };
+            // Filter out comment fields (keys starting with _) before merging
+            const timingSettings = Object.fromEntries(
+                Object.entries(settings.TIMING).filter(([key]) => !key.startsWith('_'))
+            );
+            TIMING = { ...TIMING, ...timingSettings };
         }
-        
+
         if (settings.GRID_LIMITS) {
             const gridSettings = settings.GRID_LIMITS;
-            GRID_LIMITS = { 
-                ...GRID_LIMITS, 
-                ...gridSettings,
-                GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON, ...(gridSettings.GRID_COMPARISON || {}) }
+            // Filter out comment fields before merging
+            const cleanGridSettings = Object.fromEntries(
+                Object.entries(gridSettings).filter(([key]) => !key.startsWith('_'))
+            );
+            GRID_LIMITS = {
+                ...GRID_LIMITS,
+                ...cleanGridSettings,
+                GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON, ...(cleanGridSettings.GRID_COMPARISON || {}) }
             };
+        }
+
+        // Load expert settings (for advanced troubleshooting)
+        if (settings.EXPERT) {
+            if (settings.EXPERT.GRID_LIMITS) {
+                const expertGridSettings = Object.fromEntries(
+                    Object.entries(settings.EXPERT.GRID_LIMITS).filter(([key]) => !key.startsWith('_'))
+                );
+                GRID_LIMITS = { ...GRID_LIMITS, ...expertGridSettings };
+            }
+            if (settings.EXPERT.TIMING) {
+                const expertTimingSettings = Object.fromEntries(
+                    Object.entries(settings.EXPERT.TIMING).filter(([key]) => !key.startsWith('_'))
+                );
+                TIMING = { ...TIMING, ...expertTimingSettings };
+            }
         }
 
         if (settings.DEFAULT_CONFIG) {
@@ -160,5 +252,11 @@ Object.freeze(ORDER_STATES);
 Object.freeze(TIMING);
 Object.freeze(GRID_LIMITS);
 Object.freeze(GRID_LIMITS.GRID_COMPARISON);
+Object.freeze(PRECISION_DEFAULTS);
+Object.freeze(INCREMENT_BOUNDS);
+Object.freeze(FEE_PARAMETERS);
+Object.freeze(API_LIMITS);
+Object.freeze(FILL_PROCESSING);
+Object.freeze(MAINTENANCE);
 
-module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL };
+module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, PRECISION_DEFAULTS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE };

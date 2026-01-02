@@ -14,7 +14,7 @@
  * to keep the funds structure consistent with order state changes.
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS, PRECISION_DEFAULTS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS } = require('../constants');
 
 // ---------------------------------------------------------------------------
 // Parsing helpers
@@ -181,14 +181,13 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
             const targetBuy = Math.max(0, Number.isFinite(Number(activeOrders?.buy)) ? Number(activeOrders.buy) : 1);
             const targetSell = Math.max(0, Number.isFinite(Number(activeOrders?.sell)) ? Number(activeOrders.sell) : 1);
             const totalTargetOrders = targetBuy + targetSell;
-            const FEE_MULTIPLIER = 5;
 
             if (totalTargetOrders > 0) {
                 const btsFeeData = getAssetFees('BTS', 1);
-                btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_MULTIPLIER;
+                btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
             }
         } catch (err) {
-            btsFeesReservation = 100;
+            btsFeesReservation = FEE_PARAMETERS.BTS_FALLBACK_FEE;
         }
     }
 
@@ -275,7 +274,7 @@ function floatToBlockchainInt(floatValue, precision) {
 // ---------------------------------------------------------------------------
 function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
     if (!assets || !gridPrice || !orderSize) {
-        return gridPrice ? gridPrice * 0.001 : 0;
+        return gridPrice ? gridPrice * PRECISION_DEFAULTS.PRICE_TOLERANCE : 0;
     }
 
     const precisionA = assets.assetA?.precision ?? 8;
@@ -643,7 +642,7 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
         let mid = null;
         try {
             if (BitShares.db && typeof BitShares.db.get_order_book === 'function') {
-                const ob = await BitShares.db.get_order_book(baseId, quoteId, 5);
+                const ob = await BitShares.db.get_order_book(baseId, quoteId, API_LIMITS.ORDERBOOK_DEPTH);
                 const bestBid = ob.bids && ob.bids.length ? Number(ob.bids[0].price) : null;
                 const bestAsk = ob.asks && ob.asks.length ? Number(ob.asks[0].price) : null;
                 if (bestBid !== null && bestAsk !== null) mid = (bestBid + bestAsk) / 2;
@@ -686,9 +685,9 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
             // Attempt to find pool by scanning list_liquidity_pools
             // Method signature: list_liquidity_pools(lower_bound, limit)
             let startId = '1.19.0';
-            const limit = 100; // API max is 101
+            const limit = API_LIMITS.POOL_BATCH_SIZE; // API max is 101
             let batchCount = 0;
-            const maxBatches = 100; // Scan up to 10000 pools to find the pair
+            const maxBatches = API_LIMITS.MAX_POOL_SCAN_BATCHES; // Scan up to 10000 pools to find the pair
 
             let allMatches = [];
 
@@ -876,9 +875,9 @@ const derivePrice = async (BitShares, symA, symB, mode) => {
         if (!aMeta || !bMeta) return null;
         const aId = aMeta.id; const bId = bMeta.id;
 
-        let orders = await (BitShares.db && typeof BitShares.db.get_limit_orders === 'function' ? BitShares.db.get_limit_orders(aId, bId, 100) : null).catch(() => null);
+        let orders = await (BitShares.db && typeof BitShares.db.get_limit_orders === 'function' ? BitShares.db.get_limit_orders(aId, bId, API_LIMITS.LIMIT_ORDERS_BATCH) : null).catch(() => null);
         if (!orders || !orders.length) {
-            const rev = await (BitShares.db && typeof BitShares.db.get_limit_orders === 'function' ? BitShares.db.get_limit_orders(bId, aId, 100) : null).catch(() => null);
+            const rev = await (BitShares.db && typeof BitShares.db.get_limit_orders === 'function' ? BitShares.db.get_limit_orders(bId, aId, API_LIMITS.LIMIT_ORDERS_BATCH) : null).catch(() => null);
             orders = rev || [];
         }
         if (!orders || !orders.length) return null;
@@ -1692,15 +1691,15 @@ function checkSizesNearMinimum(sizes, warningSize, precision) {
 }
 
 /**
- * Calculate BTS fees needed for creating target orders (with 5x buffer for rotations).
- * Returns 0 if pair doesn't include BTS, or 100 as fallback if calculation fails.
+ * Calculate BTS fees needed for creating target orders (with FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER buffer for rotations).
+ * Returns 0 if pair doesn't include BTS, or FEE_PARAMETERS.BTS_FALLBACK_FEE as fallback if calculation fails.
  * @param {string} assetA - First asset symbol
  * @param {string} assetB - Second asset symbol
  * @param {number} totalOrders - Total number of orders to create
- * @param {number} feeMultiplier - Multiplier for fees (default: 5 for creation + rotation buffer)
+ * @param {number} feeMultiplier - Multiplier for fees (default: FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER for creation + rotation buffer)
  * @returns {number} Total BTS fees to reserve
  */
-function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier = 5) {
+function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier = FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) {
     if (assetA !== 'BTS' && assetB !== 'BTS') return 0;
 
     try {
@@ -1710,7 +1709,7 @@ function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier =
         }
     } catch (err) {
         // Return fallback
-        return 100;
+        return FEE_PARAMETERS.BTS_FALLBACK_FEE;
     }
 
     return 0;
@@ -1784,7 +1783,7 @@ function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse 
     // If incrementFactor is 0, base = 1, and all orders get equal weight (loses position weighting)
     // If incrementFactor >= 1, base <= 0, causing invalid exponential calculation
     if (incrementFactor <= 0 || incrementFactor >= 1) {
-        throw new Error(`Invalid incrementFactor: ${incrementFactor}. Must be between 0.0001 (0.01%) and 0.10 (10%).`);
+        throw new Error(`Invalid incrementFactor: ${incrementFactor}. Must be between ${INCREMENT_BOUNDS.MIN_FACTOR} (${INCREMENT_BOUNDS.MIN_PERCENT}%) and ${INCREMENT_BOUNDS.MAX_FACTOR} (${INCREMENT_BOUNDS.MAX_PERCENT}%).`);
     }
 
     // Step 1: Calculate base factor from increment

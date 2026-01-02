@@ -6,7 +6,7 @@
  * and managing BTS blockchain fees.
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, PRECISION_DEFAULTS } = require('../constants');
 const { 
     computeChainFundTotals, 
     calculateAvailableFundsValue, 
@@ -179,8 +179,8 @@ class Accountant {
      */
     _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
         // 1. Dynamic tolerance based on asset precision (slack for rounding)
-        const buyPrecision = mgr.assets?.assetB?.precision || 5;
-        const sellPrecision = mgr.assets?.assetA?.precision || 5;
+        const buyPrecision = mgr.assets?.assetB?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
+        const sellPrecision = mgr.assets?.assetA?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
         const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
         const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
 

@@ -17,7 +17,7 @@ const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
 const { persistGridSnapshot, retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags } = OrderUtils;
-const { ORDER_STATES, ORDER_TYPES, TIMING } = require('./constants');
+const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders } = require('./account_orders');
 const AsyncLock = require('./order/async_lock');
@@ -351,8 +351,8 @@ class DEXBot {
                         }
                     }
 
-                    // Periodically clean up old fill records (10% chance per batch)
-                    if (Math.random() < 0.1) {
+                    // Periodically clean up old fill records (cleanup probability from MAINTENANCE constant)
+                    if (Math.random() < MAINTENANCE.CLEANUP_PROBABILITY) {
                         try {
                             await this.accountOrders.cleanOldProcessedFills(this.config.botKey, TIMING.FILL_RECORD_RETENTION_MS);
                         } catch (err) { /* warn */ }

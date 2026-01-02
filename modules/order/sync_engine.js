@@ -5,7 +5,7 @@
  * Responsible for matching chain orders to the grid and processing fill history.
  */
 
-const { ORDER_TYPES, ORDER_STATES } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING, PRECISION_DEFAULTS } = require('../constants');
 const { 
     blockchainToFloat, 
     floatToBlockchainInt, 
@@ -98,12 +98,12 @@ class SyncEngine {
         }
 
         const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromOpenOrders, using fallback precision=5`, 'warn');
-            return 5;
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromOpenOrders, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+            return PRECISION_DEFAULTS.ASSET_FALLBACK;
         })();
         const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromOpenOrders, using fallback precision=5`, 'warn');
-            return 5;
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromOpenOrders, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+            return PRECISION_DEFAULTS.ASSET_FALLBACK;
         })();
 
         const parsedChainOrders = new Map();
@@ -144,14 +144,20 @@ class SyncEngine {
         mgr.lockOrders([...orderIdsToLock]);
 
         // Set up lock refresh mechanism to prevent timeout during long reconciliation
-        // Refreshes every 5 seconds to keep locks alive (LOCK_TIMEOUT_MS is 10s)
+        // Refreshes every LOCK_TIMEOUT_MS/2 to keep locks alive
+        //
+        // DESIGN NOTE: The refresh mechanism ensures that long-running reconciliations
+        // don't lose their locks mid-operation. If reconciliation completes normally,
+        // clearInterval() in the finally block stops the refresh. If the process crashes
+        // before finally executes, the locks will eventually expire after LOCK_TIMEOUT_MS,
+        // allowing orders to be unlocked and traded again in the next bot instance.
         const lockRefreshInterval = setInterval(() => {
             const now = Date.now();
             for (const id of orderIdsToLock) {
                 mgr.shadowOrderIds.set(id, now);
             }
             mgr.logger?.log?.(`Refreshed locks for ${orderIdsToLock.size} orders to prevent timeout expiry`, 'debug');
-        }, 5000);
+        }, TIMING.LOCK_TIMEOUT_MS / 2);
 
         try {
             // Reconciliation logic moved below in the try block
@@ -298,12 +304,12 @@ class SyncEngine {
         const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
 
         const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromFillHistory, using fallback precision=5`, 'warn');
-            return 5;
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromFillHistory, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+            return PRECISION_DEFAULTS.ASSET_FALLBACK;
         })();
         const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromFillHistory, using fallback precision=5`, 'warn');
-            return 5;
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromFillHistory, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
+            return PRECISION_DEFAULTS.ASSET_FALLBACK;
         })();
 
         let matchedGridOrder = null;
