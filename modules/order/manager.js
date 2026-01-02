@@ -981,16 +981,12 @@ class OrderManager {
                         this.logger.log(`Order ${gridOrder.id}: transitioned to PARTIAL with remaining size ${newSize.toFixed(8)}`, 'debug');
                     } else {
                         // Fully filled (newSize = 0) - convert to SPREAD placeholder
-                        updatedOrder.type = ORDER_TYPES.SPREAD;
-                        updatedOrder.state = ORDER_STATES.VIRTUAL;
-                        updatedOrder.size = 0;
-                        updatedOrder.orderId = null;
+                        const updatedOrder = convertToSpreadPlaceholder(gridOrder);
                         this.logger.log(`Order ${gridOrder.id}: fully filled, converted to SPREAD placeholder`, 'debug');
                         filledOrders.push({ ...gridOrder });
+                        this._updateOrder(updatedOrder);
+                        updatedOrders.push(updatedOrder);
                     }
-
-                    this._updateOrder(updatedOrder);
-                    updatedOrders.push(updatedOrder);
                 } else {
                     this._updateOrder(gridOrder);
                 }
@@ -1079,12 +1075,10 @@ class OrderManager {
                         }
                     } else {
                         // Fully filled - convert to SPREAD placeholder
-                        bestMatch.type = ORDER_TYPES.SPREAD;
-                        bestMatch.state = ORDER_STATES.VIRTUAL;
-                        bestMatch.size = 0;
-                        bestMatch.orderId = null;
+                        const updatedOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
                         this.logger.log(`Order ${bestMatch.id}: fully filled during sync, converted to SPREAD placeholder`, 'debug');
+                        bestMatch = updatedOrder; // Ensure the updated object is what gets saved next
                     }
                 }
                 this._updateOrder(bestMatch);
@@ -1380,6 +1374,9 @@ class OrderManager {
 
                     // Signal to processFilledOrders that we should trigger a rotation now
                     filledPortion.isDelayedRotationTrigger = true;
+                    
+                    // Recover to ACTIVE state: the dust debt is paid and size is now exactly Ideal
+                    updatedOrder.state = ORDER_STATES.ACTIVE;
 
                     // Strip the double order marker to allow future rotations to proceed normally
                     updatedOrder.isDoubleOrder = false;
@@ -1425,8 +1422,8 @@ class OrderManager {
                 if (gridOrder) {
                     // Create a new object with updated state to avoid mutation bugs in _updateOrder
                     // (if we mutate in place, _updateOrder can't find the old state index to remove from)
-                    // Determine state: PARTIAL if rotation placed with proceeds (size < grid slot), otherwise ACTIVE
-                    const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : (gridOrder.state === ORDER_STATES.PARTIAL ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE);
+                    // Transition to ACTIVE unless explicitly placed as a partial (isPartialPlacement)
+                    const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
                     const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
 
                     // Centralized fund tracking: Deduct order size (and optional fee) from chainFree 
