@@ -94,24 +94,40 @@ class Accountant {
         let chainBuy = 0, chainSell = 0;
         let virtuelBuy = 0, virtuelSell = 0;
 
-        for (const order of mgr.orders.values()) {
+        // Use indices for faster iteration - only walk active/partial/virtual states
+        const activePartialIds = [
+            ...(mgr._ordersByState[ORDER_STATES.ACTIVE] || new Set()),
+            ...(mgr._ordersByState[ORDER_STATES.PARTIAL] || new Set())
+        ];
+        const virtualIds = [...(mgr._ordersByState[ORDER_STATES.VIRTUAL] || new Set())];
+
+        // Calculate grid and chain committed funds from active/partial orders
+        for (const orderId of activePartialIds) {
+            const order = mgr.orders.get(orderId);
+            if (!order) continue;
             const size = Number(order.size) || 0;
             if (size <= 0) continue;
 
             if (order.type === ORDER_TYPES.BUY) {
-                if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                    gridBuy += size;
-                    if (order.orderId) chainBuy += size;
-                } else if (order.state === ORDER_STATES.VIRTUAL) {
-                    virtuelBuy += size;
-                }
+                gridBuy += size;
+                if (order.orderId) chainBuy += size;
             } else if (order.type === ORDER_TYPES.SELL) {
-                if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                    gridSell += size;
-                    if (order.orderId) chainSell += size;
-                } else if (order.state === ORDER_STATES.VIRTUAL) {
-                    virtuelSell += size;
-                }
+                gridSell += size;
+                if (order.orderId) chainSell += size;
+            }
+        }
+
+        // Calculate virtual funds from virtual orders
+        for (const orderId of virtualIds) {
+            const order = mgr.orders.get(orderId);
+            if (!order) continue;
+            const size = Number(order.size) || 0;
+            if (size <= 0) continue;
+
+            if (order.type === ORDER_TYPES.BUY) {
+                virtuelBuy += size;
+            } else if (order.type === ORDER_TYPES.SELL) {
+                virtuelSell += size;
             }
         }
 

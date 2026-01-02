@@ -66,6 +66,7 @@ class OrderManager {
         this._correctionsLock = new AsyncLock();
         this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = [];
+        this._pauseFundRecalc = false;  // Batch recalculation optimization
     }
 
     // --- Accounting Delegation ---
@@ -312,7 +313,17 @@ class OrderManager {
      * - Stuck orders in wrong states
      */
     _updateOrder(order) {
+        // Input validation
         if (order.id === undefined || order.id === null) return;
+        if (typeof order.size === 'number' && order.size < 0) {
+            this.logger.log(`Warning: Order ${order.id} has negative size ${order.size}`, 'warn');
+            return;
+        }
+        if (!Object.values(ORDER_STATES).includes(order.state)) {
+            this.logger.log(`Error: Invalid order state ${order.state} for order ${order.id}`, 'error');
+            return;
+        }
+
         const existing = this.orders.get(order.id);
         if (existing) {
             this._ordersByState[existing.state]?.delete(order.id);
@@ -321,13 +332,34 @@ class OrderManager {
         this._ordersByState[order.state]?.add(order.id);
         this._ordersByType[order.type]?.add(order.id);
         this.orders.set(order.id, order);
-        this.recalculateFunds();
+
+        // Only recalculate funds if not in batch mode
+        if (!this._pauseFundRecalc) {
+            this.recalculateFunds();
+        }
     }
 
     _logAvailable(label = '') {
         const avail = this.funds?.available || { buy: 0, sell: 0 };
         const cache = this.funds?.cacheFunds || { buy: 0, sell: 0 };
         this.logger.log(`Available [\${label}]: buy=\${(avail.buy || 0).toFixed(8)}, sell=\${(avail.sell || 0).toFixed(8)}, cacheFunds buy=\${(cache.buy || 0).toFixed(8)}, sell=\${(cache.sell || 0).toFixed(8)}`, 'info');
+    }
+
+    /**
+     * Pause fund recalculation during batch order updates.
+     * Use with resumeFundRecalc() to optimize multi-order operations.
+     */
+    pauseFundRecalc() {
+        this._pauseFundRecalc = true;
+    }
+
+    /**
+     * Resume fund recalculation after batch updates and recalculate once.
+     * All orders updated during pause are now reflected in fund calculations.
+     */
+    resumeFundRecalc() {
+        this._pauseFundRecalc = false;
+        this.recalculateFunds();
     }
 
     getInitialOrdersToActivate() {
