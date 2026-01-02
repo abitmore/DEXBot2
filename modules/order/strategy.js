@@ -25,6 +25,144 @@ class StrategyEngine {
     }
 
     /**
+     * Process filled orders and trigger rebalancing.
+     */
+    async processFilledOrders(filledOrders, excludeOrderIds = new Set()) {
+        const mgr = this.manager;
+        mgr.logger.log(`>>> processFilledOrders() called with ${filledOrders.length} filled orders`, 'info');
+
+        const filledCounts = { [ORDER_TYPES.BUY]: 0, [ORDER_TYPES.SELL]: 0 };
+        const partialFillCount = { [ORDER_TYPES.BUY]: 0, [ORDER_TYPES.SELL]: 0 };
+
+        let proceedsBuy = 0;
+        let proceedsSell = 0;
+        let deltaBuyFree = 0;
+        let deltaSellFree = 0;
+        let deltaBuyTotal = 0;
+        let deltaSellTotal = 0;
+
+        const hasBtsPair = mgr.config.assetA === 'BTS' || mgr.config.assetB === 'BTS';
+        const { getAssetFees } = require('./utils');
+
+        for (const filledOrder of filledOrders) {
+            const isPartial = filledOrder.isPartial === true;
+            if (isPartial) {
+                partialFillCount[filledOrder.type]++;
+                if (filledOrder.isDelayedRotationTrigger) {
+                    filledCounts[filledOrder.type]++;
+                    mgr.logger.log(`Delayed rotation trigger detected for ${filledOrder.type} order ${filledOrder.id}`, 'debug');
+                }
+            } else {
+                filledCounts[filledOrder.type]++;
+            }
+
+            if (filledOrder.type === ORDER_TYPES.SELL) {
+                const rawProceeds = filledOrder.size * filledOrder.price;
+                let netProceeds = rawProceeds;
+                let feeInfo = '';
+                if (mgr.config.assetB !== 'BTS') {
+                    try {
+                        const feeResult = getAssetFees(mgr.config.assetB, rawProceeds);
+                        netProceeds = typeof feeResult === 'number' ? feeResult : rawProceeds;
+                        if (netProceeds !== rawProceeds) feeInfo = ` (net after market fee: ${netProceeds.toFixed(8)})`;
+                    } catch (e) {
+                        mgr.logger.log(`WARNING: Could not get fees for ${mgr.config.assetB}: ${e.message}`, 'warn');
+                    }
+                }
+                proceedsBuy += netProceeds;
+                deltaBuyFree += netProceeds;
+                deltaBuyTotal += netProceeds;
+                deltaSellTotal -= filledOrder.size;
+                mgr.logger.log(`Sell filled: +${rawProceeds.toFixed(8)} ${mgr.config.assetB || 'quote'}${feeInfo}, -${filledOrder.size.toFixed(8)} ${mgr.config.assetA || 'base'} committed`, 'info');
+            } else {
+                const rawProceeds = filledOrder.size / filledOrder.price;
+                let netProceeds = rawProceeds;
+                let feeInfo = '';
+                if (mgr.config.assetA !== 'BTS') {
+                    try {
+                        const feeResult = getAssetFees(mgr.config.assetA, rawProceeds);
+                        netProceeds = typeof feeResult === 'number' ? feeResult : rawProceeds;
+                        if (netProceeds !== rawProceeds) feeInfo = ` (net after market fee: ${netProceeds.toFixed(8)})`;
+                    } catch (e) {
+                        mgr.logger.log(`WARNING: Could not get fees for ${mgr.config.assetA}: ${e.message}`, 'warn');
+                    }
+                }
+                proceedsSell += netProceeds;
+                deltaSellFree += netProceeds;
+                deltaSellTotal += netProceeds;
+                deltaBuyTotal -= filledOrder.size;
+                mgr.logger.log(`Buy filled: +${rawProceeds.toFixed(8)} ${mgr.config.assetA || 'base'}${feeInfo}, -${filledOrder.size.toFixed(8)} ${mgr.config.assetB || 'quote'} committed`, 'info');
+            }
+
+            if (!isPartial) {
+                const updatedOrder = convertToSpreadPlaceholder(filledOrder);
+                mgr._updateOrder(updatedOrder);
+                mgr.currentSpreadCount++;
+                mgr.logger.log(`Converted order ${filledOrder.id} to SPREAD`, 'debug');
+            } else {
+                mgr.logger.log(`Partial fill processed: order ${filledOrder.id} remains active with ${formatOrderSize(filledOrder.size)} filled`, 'debug');
+            }
+        }
+
+        if (hasBtsPair && filledOrders.length > 0) {
+            try {
+                const btsFeeData = getAssetFees('BTS', 0);
+                const fullFillCount = filledCounts[ORDER_TYPES.BUY] + filledCounts[ORDER_TYPES.SELL];
+                mgr.funds.btsFeesOwed += fullFillCount * btsFeeData.total;
+            } catch (err) {
+                mgr.logger?.log?.(`Warning: Could not calculate BTS fees: ${err.message}`, 'warn');
+                mgr.funds.btsFeesOwed += 100;
+            }
+        }
+
+        if (!mgr.accountTotals) mgr.accountTotals = { buy: 0, sell: 0, buyFree: 0, sellFree: 0 };
+        const bumpTotal = (key, delta) => {
+            const next = (Number(mgr.accountTotals[key]) || 0) + delta;
+            mgr.accountTotals[key] = next < 0 ? 0 : next;
+        };
+        bumpTotal('buyFree', deltaBuyFree);
+        bumpTotal('sellFree', deltaSellFree);
+        bumpTotal('buy', deltaBuyTotal);
+        bumpTotal('sell', deltaSellTotal);
+
+        mgr.funds.cacheFunds.buy = (mgr.funds.cacheFunds.buy || 0) + proceedsBuy;
+        mgr.funds.cacheFunds.sell = (mgr.funds.cacheFunds.sell || 0) + proceedsSell;
+
+        if (hasBtsPair && mgr.funds.btsFeesOwed > 0) await mgr.accountant.deductBtsFees();
+
+        mgr.recalculateFunds();
+        await mgr._persistCacheFunds();
+        if (mgr.funds.btsFeesOwed > 0) await mgr._persistBtsFeesOwed();
+
+        const hasFullFills = filledCounts[ORDER_TYPES.BUY] > 0 || filledCounts[ORDER_TYPES.SELL] > 0;
+        if (!hasFullFills && (partialFillCount[ORDER_TYPES.BUY] > 0 || partialFillCount[ORDER_TYPES.SELL] > 0)) {
+            mgr.logger.log(`Only partial fills detected (no rotations needed).`, 'info');
+            return { ordersToPlace: [], ordersToRotate: [], partialMoves: [] };
+        }
+
+        if (!excludeOrderIds) excludeOrderIds = new Set();
+        for (const f of filledOrders) {
+            if (f.orderId) excludeOrderIds.add(f.orderId);
+            if (f.id) excludeOrderIds.add(f.id);
+        }
+
+        const newOrders = await this.rebalanceOrders(filledCounts, 0, excludeOrderIds);
+
+        if (hasBtsPair && newOrders.partialMoves && newOrders.partialMoves.length > 0) {
+            try {
+                const btsFeeData = getAssetFees('BTS', 0);
+                mgr.funds.btsFeesOwed += btsFeeData.updateFee * newOrders.partialMoves.length;
+            } catch (err) {
+                mgr.funds.btsFeesOwed += 100;
+            }
+        }
+
+        mgr.recalculateFunds();
+        await mgr._persistCacheFunds();
+        return newOrders;
+    }
+
+    /**
      * Rebalance orders after fills using count-based creation vs rotation strategy.
      */
     async rebalanceOrders(filledCounts, extraOrderCount = 0, excludeOrderIds = new Set()) {
