@@ -13,9 +13,19 @@ const {
     getAssetFees 
 } = require('./utils');
 
+/**
+ * Accountant engine - Specialized handler for fund tracking and calculations
+ * @typedef {Object} Accountant
+ */
 class Accountant {
     /**
+     * Create a new Accountant instance
+     *
      * @param {Object} manager - OrderManager instance
+     * @param {Map<string, Object>} manager.orders - Orders map
+     * @param {Object} manager.accountTotals - Blockchain account balances
+     * @param {Object} manager.funds - Fund tracking structure
+     * @param {Logger} manager.logger - Logger instance
      */
     constructor(manager) {
         this.manager = manager;
@@ -23,6 +33,8 @@ class Accountant {
 
     /**
      * Initialize the funds structure with zeroed values.
+     *
+     * @returns {void}
      */
     resetFunds() {
         const mgr = this.manager;
@@ -45,6 +57,8 @@ class Accountant {
      * Recalculate all fund values based on current order states.
      * This is THE MASTER FUND CALCULATION and must be called after any state change.
      * Called automatically by _updateOrder(), but can be manually triggered to verify consistency.
+     *
+     * @returns {void}
      *
      * FUND CATEGORIES:
      * ========================================================================
@@ -261,6 +275,11 @@ class Accountant {
      * 4. Op B deducts: buyFree=-600 ← PROBLEM!
      *
      * With atomic check-and-deduct, either both checks succeed or one fails.
+     *
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {number} size - Amount to deduct
+     * @param {string} [operation='move'] - Operation name for logging
+     * @returns {boolean} true if deduction succeeded, false if insufficient funds
      */
     tryDeductFromChainFree(orderType, size, operation = 'move') {
         const mgr = this.manager;

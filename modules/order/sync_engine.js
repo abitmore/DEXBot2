@@ -78,8 +78,22 @@ class SyncEngine {
      * - Precision mismatches (blockchain integer precision vs float grid)
      * - Double spending prevention (each chain order matched to at most one grid order)
      */
+    /**
+     * Synchronize grid orders with blockchain open orders snapshot.
+     * @param {Array|null} chainOrders - Array of blockchain order objects
+     * @param {Object|null} fillInfo - Optional fill information metadata
+     * @returns {Promise<Object>} Result with filledOrders, updatedOrders, ordersNeedingCorrection
+     */
     async syncFromOpenOrders(chainOrders, fillInfo = null) {
         const mgr = this.manager;
+
+        if (!mgr) {
+            throw new Error('manager required for syncFromOpenOrders');
+        }
+        if (!mgr._syncLock) {
+            mgr.logger?.log?.('Error: syncLock not initialized', 'error');
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
+        }
 
         // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
         return await mgr._syncLock.acquire(async () => {
@@ -90,10 +104,27 @@ class SyncEngine {
     /**
      * Internal method that performs the actual sync logic.
      * Called within _syncLock to guarantee exclusive execution.
+     * @param {Array|null} chainOrders - Array of blockchain order objects
+     * @param {Object|null} fillInfo - Optional metadata
+     * @returns {Promise<Object>} Sync result
+     * @private
      */
     async _doSyncFromOpenOrders(chainOrders, fillInfo = null) {
         const mgr = this.manager;
+
+        // Validate inputs
+        if (!mgr) {
+            throw new Error('manager required');
+        }
         if (!chainOrders || !Array.isArray(chainOrders)) {
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
+        }
+        if (!mgr.orders || !(mgr.orders instanceof Map)) {
+            mgr.logger?.log?.('Error: manager.orders is not initialized as a Map', 'error');
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
+        }
+        if (!mgr.assets || !mgr.assets.assetA || !mgr.assets.assetB) {
+            mgr.logger?.log?.('Error: manager.assets not initialized properly', 'error');
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
 
@@ -108,15 +139,32 @@ class SyncEngine {
 
         const parsedChainOrders = new Map();
         for (const order of chainOrders) {
-            const sellAssetId = order.sell_price.base.asset_id;
-            const receiveAssetId = order.sell_price.quote.asset_id;
-            const type = (sellAssetId === mgr.assets.assetA.id) ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
-            const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-            const size = blockchainToFloat(order.for_sale, precision);
-            const price = (type === ORDER_TYPES.SELL)
-                ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetBPrecision - assetAPrecision)
-                : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetBPrecision - assetAPrecision);
-            parsedChainOrders.set(order.id, { id: order.id, type, size, price, raw: order });
+            // Validate order structure before processing
+            if (!order || !order.id || !order.sell_price || !order.for_sale) {
+                mgr.logger?.log?.(`Warning: Skipping malformed chain order missing required fields`, 'warn');
+                continue;
+            }
+
+            try {
+                const sellAssetId = order.sell_price.base?.asset_id;
+                const receiveAssetId = order.sell_price.quote?.asset_id;
+
+                if (!sellAssetId || !receiveAssetId) {
+                    mgr.logger?.log?.(`Warning: Chain order ${order.id} missing asset IDs`, 'warn');
+                    continue;
+                }
+
+                const type = (sellAssetId === mgr.assets.assetA.id) ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
+                const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                const size = blockchainToFloat(order.for_sale, precision);
+                const price = (type === ORDER_TYPES.SELL)
+                    ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetBPrecision - assetAPrecision)
+                    : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetBPrecision - assetAPrecision);
+                parsedChainOrders.set(order.id, { id: order.id, type, size, price, raw: order });
+            } catch (e) {
+                mgr.logger?.log?.(`Warning: Error parsing chain order ${order.id}: ${e.message}`, 'warn');
+                continue;
+            }
         }
 
         // Collect all order IDs that might be modified during reconciliation

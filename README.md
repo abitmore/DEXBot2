@@ -479,11 +479,14 @@ Core order generation, management, and grid algorithms:
 - `modules/order/index.js`: Public entry point: exports `OrderManager` and `runOrderManagerCalculation()` (dry-run helper).
 - `modules/order/logger.js`: Colored console logger and `logOrderGrid()` helper for formatted output.
 - `modules/order/async_lock.js`: Queue-based AsyncLock utility for race condition prevention. Provides FIFO mutual exclusion for protecting critical sections across the codebase. Used by all modules that require atomic operations.
-- `modules/order/manager.js`: `OrderManager` class — derives market price, resolves bounds, builds and manages the grid, handles fills and rebalancing. Persistence methods are async with AsyncLock protection. Includes optional `forceReload` for fresh data reads.
+- `modules/order/manager.js`: `OrderManager` class — Core coordinator and state machine. Maintains virtual order grid state (Map + indices), manages fund tracking, and delegates specialized operations to three engines. Persistence methods are async with AsyncLock protection. Lock system prevents concurrent modifications during async operations.
+- `modules/order/accounting.js`: `Accountant` engine — Fund tracking, available balance calculation, fee deduction, and committed fund management. Handles deductions/refunds as orders transition between states.
+- `modules/order/strategy.js`: `StrategyEngine` — Grid rebalancing, order activation, partial order consolidation, rotation, and spread order management. Coordinates order state transitions and size adjustments.
+- `modules/order/sync_engine.js`: `SyncEngine` — Blockchain synchronization and reconciliation. Detects filled orders, processes history events, fetches account balances, and keeps grid state in sync with chain.
 - `modules/order/grid.js`: Grid generation algorithms, order sizing, weight distribution, and minimum size validation. Persistence operations are async with proper await handling.
-- `modules/order/runner.js`: Runner for calculation passes and dry-runs without blockchain interaction.
-- `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers). Includes grid utility functions (filter, sum, precision handling, fee calculation).
-- `modules/order/startup_reconcile.js`: Startup grid reconciliation and synchronization. Compares persisted grid state with on-chain open orders to detect offline fills and decide grid recovery strategy.
+- `modules/order/runner.js`: Standalone calculator runner for multi-pass grid calculations and dry-runs without blockchain interaction. Useful for testing grid logic and debugging price/size calculations. Runs via environment variables `BOT_NAME`, `CALC_CYCLES`, `CALC_DELAY_MS`.
+- `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers). Includes grid utility functions (filter, sum, precision handling, fee calculation), price correction utilities, and fill deduplication.
+- `modules/order/startup_reconcile.js`: Startup grid reconciliation and synchronization. Compares persisted grid state with on-chain open orders to detect offline fills, process pending state changes, and decide recovery strategy (reload vs. continue). Ensures grid state matches blockchain reality on startup before trading resumes.
 
 ## 🔐 Environment Variables
 

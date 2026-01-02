@@ -29,9 +29,23 @@ class StrategyEngine {
 
     /**
      * Process filled orders and trigger rebalancing.
+     * @param {Array} filledOrders - Array of filled order objects
+     * @param {Set} excludeOrderIds - Order IDs to skip during processing
      */
     async processFilledOrders(filledOrders, excludeOrderIds = new Set()) {
         const mgr = this.manager;
+
+        // Validate inputs
+        if (!mgr) throw new Error('manager required for processFilledOrders');
+        if (!Array.isArray(filledOrders)) {
+            mgr.logger.log(`Error: filledOrders must be an array, got ${typeof filledOrders}`, 'error');
+            return;
+        }
+        if (!mgr.config) {
+            mgr.logger.log('Error: manager.config is undefined', 'error');
+            return;
+        }
+
         mgr.logger.log(`>>> processFilledOrders() called with ${filledOrders.length} filled orders`, 'info');
 
         mgr.pauseFundRecalc();
@@ -46,9 +60,22 @@ class StrategyEngine {
             let deltaBuyTotal = 0;
             let deltaSellTotal = 0;
 
-            const hasBtsPair = mgr.config.assetA === 'BTS' || mgr.config.assetB === 'BTS';
+            const hasBtsPair = (mgr.config?.assetA === 'BTS' || mgr.config?.assetB === 'BTS');
 
             for (const filledOrder of filledOrders) {
+                // Validate order object
+                if (!filledOrder || typeof filledOrder !== 'object') {
+                    mgr.logger.log(`Warning: Skipping invalid filled order`, 'warn');
+                    continue;
+                }
+                if (excludeOrderIds?.has?.(filledOrder.id)) {
+                    mgr.logger.log(`Skipping excluded order ${filledOrder.id}`, 'debug');
+                    continue;
+                }
+                if (!filledOrder.type || !filledOrder.size) {
+                    mgr.logger.log(`Warning: Skipping order ${filledOrder.id} - missing type or size`, 'warn');
+                    continue;
+                }
                 const isPartial = filledOrder.isPartial === true;
                 if (isPartial) {
                     partialFillCount[filledOrder.type]++;

@@ -30,6 +30,22 @@ const SyncEngine = require('./sync_engine');
 class OrderManager {
     /**
      * Create a new OrderManager instance
+     *
+     * @param {Object} [config={}] - Configuration object
+     * @param {string} [config.market] - Market identifier (e.g., "BTS/USDT")
+     * @param {string} [config.assetA] - Base asset symbol
+     * @param {string} [config.assetB] - Quote asset symbol
+     * @param {number} [config.startPrice] - Initial market price
+     * @param {number} [config.minPrice] - Minimum price for grid
+     * @param {number} [config.maxPrice] - Maximum price for grid
+     * @param {number} [config.incrementPercent] - Price step percentage between orders
+     * @param {number} [config.targetSpreadPercent] - Spread zone width around market
+     * @param {Object} [config.botFunds] - Fund allocation limits
+     * @param {string|number} [config.botFunds.buy] - Buy fund limit (number or "50%")
+     * @param {string|number} [config.botFunds.sell] - Sell fund limit
+     * @param {Object} [config.activeOrders] - Active order count targets
+     * @param {number} [config.activeOrders.buy] - Target active buy orders
+     * @param {number} [config.activeOrders.sell] - Target active sell orders
      */
     constructor(config = {}) {
         this.config = { ...DEFAULT_CONFIG, ...config };
@@ -350,6 +366,15 @@ class OrderManager {
      * - Missed orders during rebalancing
      * - Incorrect fund calculations
      * - Stuck orders in wrong states
+     *
+     * @param {Object} order - Order object to update/insert
+     * @param {string} order.id - Unique grid order identifier
+     * @param {string} order.state - State: VIRTUAL, ACTIVE, or PARTIAL
+     * @param {string} order.type - Type: BUY, SELL, or SPREAD
+     * @param {number} order.size - Order size in base asset units
+     * @param {number} order.price - Order price
+     * @param {string} [order.orderId] - Blockchain order ID (if on-chain)
+     * @returns {void}
      */
     _updateOrder(order) {
         // Input validation
@@ -420,7 +445,7 @@ class OrderManager {
     _logAvailable(label = '') {
         const avail = this.funds?.available || { buy: 0, sell: 0 };
         const cache = this.funds?.cacheFunds || { buy: 0, sell: 0 };
-        this.logger.log(`Available [\${label}]: buy=\${(avail.buy || 0).toFixed(8)}, sell=\${(avail.sell || 0).toFixed(8)}, cacheFunds buy=\${(cache.buy || 0).toFixed(8)}, sell=\${(cache.sell || 0).toFixed(8)}`, 'info');
+        this.logger.log(`Available [${label}]: buy=${(avail.buy || 0).toFixed(8)}, sell=${(avail.sell || 0).toFixed(8)}, cacheFunds buy=${(cache.buy || 0).toFixed(8)}, sell=${(cache.sell || 0).toFixed(8)}`, 'info');
     }
 
     /**
@@ -493,6 +518,18 @@ class OrderManager {
      */
     validateIndices() {
         for (const [id, order] of this.orders) {
+            if (!order) {
+                this.logger.log(`Index corruption: ${id} exists in orders Map but is null/undefined`, 'error');
+                return false;
+            }
+            if (!order.state) {
+                this.logger.log(`Index corruption: ${id} has no state`, 'error');
+                return false;
+            }
+            if (!order.type) {
+                this.logger.log(`Index corruption: ${id} has no type`, 'error');
+                return false;
+            }
             if (!this._ordersByState[order.state]?.has(id)) {
                 this.logger.log(`Index mismatch: ${id} not in _ordersByState[${order.state}]`, 'error');
                 return false;
@@ -502,7 +539,76 @@ class OrderManager {
                 return false;
             }
         }
+
+        // Also check that indices don't reference orders that don't exist
+        for (const [state, orderIds] of Object.entries(this._ordersByState)) {
+            for (const id of orderIds) {
+                if (!id || !this.orders.has(id)) {
+                    this.logger.log(`Index orphan: ${id} in _ordersByState[${state}] but not in orders Map`, 'error');
+                    return false;
+                }
+            }
+        }
+
+        for (const [type, orderIds] of Object.entries(this._ordersByType)) {
+            for (const id of orderIds) {
+                if (!id || !this.orders.has(id)) {
+                    this.logger.log(`Index orphan: ${id} in _ordersByType[${type}] but not in orders Map`, 'error');
+                    return false;
+                }
+            }
+        }
+
         return true;
+    }
+
+    /**
+     * Perform a defensive index consistency check and repair if possible.
+     * Call this after critical operations or periodically as a safety measure.
+     * THREAD-SAFE: Does not modify orders, only validates/logs
+     * @returns {boolean} true if indices are valid, false if corruption found
+     */
+    assertIndexConsistency() {
+        if (!this.validateIndices()) {
+            this.logger.log('CRITICAL: Index corruption detected! Attempting repair...', 'error');
+            return this._repairIndices();
+        }
+        return true;
+    }
+
+    /**
+     * Repair indices by rebuilding them from the orders Map.
+     * ONLY call this if corruption is detected - rebuilds both index sets.
+     * @returns {boolean} true if repair succeeded, false if structure is damaged
+     */
+    _repairIndices() {
+        try {
+            // Clear and rebuild all indices
+            for (const set of Object.values(this._ordersByState)) set.clear();
+            for (const set of Object.values(this._ordersByType)) set.clear();
+
+            // Rebuild from orders Map
+            for (const [id, order] of this.orders) {
+                if (order && order.state && order.type) {
+                    this._ordersByState[order.state]?.add(id);
+                    this._ordersByType[order.type]?.add(id);
+                } else {
+                    this.logger.log(`Skipping corrupted order ${id} during index repair`, 'warn');
+                }
+            }
+
+            // Verify repair worked
+            if (this.validateIndices()) {
+                this.logger.log('✓ Index repair successful', 'info');
+                return true;
+            } else {
+                this.logger.log('✗ Index repair failed - structure is damaged', 'error');
+                return false;
+            }
+        } catch (e) {
+            this.logger.log(`Index repair failed with exception: ${e.message}`, 'error');
+            return false;
+        }
     }
 
     /**
@@ -533,7 +639,7 @@ class OrderManager {
             }
             return { remaining: activeOrders, filled: [] };
         } catch (e) {
-            this.logger.log(`Error fetching order updates: \${e.message}`, 'error');
+            this.logger.log(`Error fetching order updates: ${e.message}`, 'error');
             return { remaining: [], filled: [] };
         }
     }
