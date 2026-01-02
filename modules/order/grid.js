@@ -1,21 +1,53 @@
 /**
- * Grid - Generates the virtual order grid structure
- * 
- * This module creates the foundational grid of virtual orders based on:
- * - Market price (center of the grid)
- * - Min/max price bounds
- * - Increment percentage (spacing between orders)
- * - Target spread percentage (zone around market price)
- * 
- * The grid consists of:
- * - SELL orders above market price (size in base asset / assetA)
- * - BUY orders below market price (size in quote asset / assetB)
- * - SPREAD orders in the zone closest to market price (placeholders)
- * 
- * Orders are sized based on available funds and weight distribution.
- * Initial grid orders are created in VIRTUAL state - their sizes contribute
- * to the manager's funds.virtuel (reserved) until placed on-chain.
- * 
+ * Grid - Order grid creation, synchronization, and health management
+ *
+ * This module manages the complete lifecycle of the order grid:
+ * - Creates geometric price grids with configurable spacing
+ * - Synchronizes grid state with blockchain and fund changes
+ * - Compares calculated vs persisted grids for consistency
+ * - Monitors grid health and handles spread corrections
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * TABLE OF CONTENTS
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ * SECTION 1: GRID CREATION & INITIALIZATION (lines 82-454)
+ *   - createOrderGrid()           Create initial order grid from config
+ *   - loadGrid()                  Load persisted grid from state
+ *   - initializeGrid()            Initialize grid with blockchain prices
+ *
+ * SECTION 2: GRID SYNCHRONIZATION (lines 466-824)
+ *   - recalculateGrid()                           Full grid recalculation after fills
+ *   - checkAndUpdateGridIfNeeded()                Check if grid needs updating
+ *   - _recalculateGridOrderSizesFromBlockchain()  Get current on-chain sizes
+ *   - updateGridFromBlockchainSnapshot()          Update from blockchain state
+ *   - updateGridOrderSizes()                      Update sizes from funds
+ *
+ * SECTION 3: GRID COMPARISON & PERSISTENCE (lines 962-1134)
+ *   - compareGrids()              Compare calculated vs persisted grids
+ *   - _clearAndPersistCacheFunds() Persist cache funds to disk
+ *   - _persistCacheFunds()        Persist individual cache side
+ *
+ * SECTION 4: INTERNAL UTILITIES (lines 1159-1305)
+ *   - _updateOrdersForSide()      Update orders for one side
+ *   - _getFundSnapshot()          Get current fund snapshot
+ *   - _logSizingInput()           Log sizing inputs
+ *   - calculateCurrentSpread()    Calculate current spread %
+ *   - checkSpreadCondition()      Check if spread is valid
+ *
+ * SECTION 5: GRID HEALTH & CORRECTIONS (lines 1438-1819)
+ *   - checkGridHealth()           Check grid health status
+ *   - determineOrderSideByFunds() Determine which side has funds
+ *   - calculateGeometricSizeForSpreadCorrection() Calculate correction sizes
+ *   - prepareSpreadCorrectionOrders()             Prepare correction orders
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ * Grid structure:
+ * - SELL orders: above market price (size in base asset / assetA)
+ * - BUY orders: below market price (size in quote asset / assetB)
+ * - SPREAD orders: zone closest to market price (placeholders)
+ *
  * Fund interaction:
  * - Grid creation: All orders start as VIRTUAL, sizes added to funds.virtuel
  * - Grid loading (loadGrid): ACTIVE orders increment funds.committed
@@ -29,16 +61,20 @@ const { floatToBlockchainInt, blockchainToFloat, resolveRelativePrice, filterOrd
 
 /**
  * Grid - Static class for grid creation and sizing
- * 
+ *
  * Grid creation algorithm:
  * 1. Calculate price levels from startPrice to maxPrice (sells) and minPrice (buys)
  * 2. Use incrementPercent for geometric spacing (1% -> 1.01x per level)
  * 3. Assign SPREAD type to orders closest to market price
  * 4. Calculate order sizes based on funds and weight distribution
- * 
+ *
  * @class
  */
 class Grid {
+    // ════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1: GRID CREATION & INITIALIZATION
+    // ════════════════════════════════════════════════════════════════════════════════
+    // Build initial order grid structure from configuration and blockchain prices
     /**
      * Create the order grid structure.
      * Generates sell orders from market to max, buy orders from market to min.
@@ -421,6 +457,11 @@ class Grid {
         manager.logger?.logFundsStatus?.(manager);
         manager.logger?.logOrderGrid?.(Array.from(manager.orders.values()), manager.config.startPrice);
     }
+
+    // ════════════════════════════════════════════════════════════════════════════════
+    // SECTION 2: GRID SYNCHRONIZATION
+    // ════════════════════════════════════════════════════════════════════════════════
+    // Keep grid in sync with blockchain state and fund changes
 
     /**
      * Perform a full grid resynchronization from blockchain state (moved from manager)
@@ -895,6 +936,11 @@ class Grid {
         manager.logger?.logOrderGrid && manager.logger.logOrderGrid(Array.from(manager.orders.values()), config.startPrice);
     }
 
+    // ════════════════════════════════════════════════════════════════════════════════
+    // SECTION 3: GRID COMPARISON & PERSISTENCE
+    // ════════════════════════════════════════════════════════════════════════════════
+    // Compare calculated vs persisted grids and persist state to disk
+
     /**
      * Compare calculated grid with persisted grid (separately by side) and return metrics.
      * Independently compares buy and sell orders, calculates relative squared differences,
@@ -1120,6 +1166,11 @@ class Grid {
             manager.logger?.log?.(`Failed to persist cacheFunds after ${side} regeneration: ${e.message}`, 'warn');
         }
     }
+
+    // ════════════════════════════════════════════════════════════════════════════════
+    // SECTION 4: INTERNAL UTILITIES
+    // ════════════════════════════════════════════════════════════════════════════════
+    // Utility methods for internal grid operations and diagnostics
 
     /**
      * Update a collection of orders for a specific side using provided sizes.
@@ -1399,9 +1450,14 @@ class Grid {
         }
     }
 
+    // ════════════════════════════════════════════════════════════════════════════════
+    // SECTION 5: GRID HEALTH & CORRECTIONS
+    // ════════════════════════════════════════════════════════════════════════════════
+    // Health checks and automatic correction of grid issues
+
     /**
      * Check grid structural health and handle dual-side dust recovery.
-     * 
+     *
      * Structural Check: Logs violations of the [Edge] Virtual -> Active -> Partial -> Spread [Center] flow.
      * Dust Recovery: If BOTH sides have a 'dust' partial order, attempts to refill them to full ACTIVE orders.
      *
