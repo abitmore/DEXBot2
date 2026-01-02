@@ -535,6 +535,44 @@ class OrderManager {
         return Grid.calculateCurrentSpread(this);
     }
 
+    /**
+     * Generic retry wrapper for persistence operations.
+     * Handles transient failures gracefully without crashing.
+     */
+    async _persistWithRetry(persistFn, dataType, dataValue, maxAttempts = 3) {
+        if (!this.config || !this.config.botKey || !this.accountOrders) {
+            return true;  // Can't persist, but that's ok (e.g., dry run)
+        }
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                await persistFn();  // Execute the persistence function
+                this.logger.log(`✓ Persisted ${dataType}`, 'debug');
+
+                // Clear any previous persistence warning flag
+                if (this._persistenceWarning) {
+                    delete this._persistenceWarning;
+                }
+                return true;  // Success
+            } catch (e) {
+                if (attempt === maxAttempts) {
+                    // All retries failed - don't throw, just flag the issue
+                    this.logger.log(`CRITICAL: Failed to persist ${dataType} after ${attempt} attempts: ${e.message}. Data held in memory. Will retry on next cycle.`, 'error');
+
+                    // Flag this issue so caller can know persistence is degraded
+                    this._persistenceWarning = { dataType, error: e.message, timestamp: Date.now() };
+                    return false;
+                } else {
+                    // Retry with exponential backoff
+                    const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                    this.logger.log(`Attempt ${attempt}/${maxAttempts} to persist ${dataType} failed: ${e.message}. Retrying in ${delayMs}ms...`, 'warn');
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                }
+            }
+        }
+        return false;
+    }
+
     async _persistCacheFunds() {
         return await this._persistWithRetry(() => this.accountOrders.updateCacheFunds(this.config.botKey, this.funds.cacheFunds), `cacheFunds`, { ...this.funds.cacheFunds });
     }
