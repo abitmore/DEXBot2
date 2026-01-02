@@ -6,14 +6,17 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
-const { 
-    countOrdersByType, 
-    getPrecisionForSide, 
+const {
+    countOrdersByType,
+    getPrecisionForSide,
     getCacheFundsValue,
     formatOrderSize,
     convertToSpreadPlaceholder,
     calculateAvailableFundsValue,
-    getMinOrderSize
+    getMinOrderSize,
+    getAssetFees,
+    floatToBlockchainInt,
+    blockchainToFloat
 } = require('./utils');
 
 class StrategyEngine {
@@ -42,7 +45,6 @@ class StrategyEngine {
         let deltaSellTotal = 0;
 
         const hasBtsPair = mgr.config.assetA === 'BTS' || mgr.config.assetB === 'BTS';
-        const { getAssetFees } = require('./utils');
 
         for (const filledOrder of filledOrders) {
             const isPartial = filledOrder.isPartial === true;
@@ -248,13 +250,30 @@ class StrategyEngine {
             //    original data, not the ghost-virtualized state
             // 3. This prevents "target size drift" where ideal sizes get miscalculated
             //
+            // ERROR SAFETY: The virtualization is wrapped in try/catch to ensure that if
+            // an exception occurs, we don't leave orders in a partially-virtualized state.
+            //
             // FINALIZATION: After processing all partials, we restore their original states
             // in the finally block. This ensures the manager's order indices remain accurate.
             //
             const originalPartialData = new Map();
-            for (const p of partialOrders) {
-                originalPartialData.set(p.id, { ...p });
-                p.state = ORDER_STATES.VIRTUAL;
+            try {
+                for (const p of partialOrders) {
+                    originalPartialData.set(p.id, { ...p });
+                    p.state = ORDER_STATES.VIRTUAL;
+                }
+            } catch (virtualizationError) {
+                // If virtualization fails, restore any partially-virtualized orders
+                mgr.logger.log(`Error during ghost virtualization setup: ${virtualizationError.message}. Rolling back partial orders.`, 'error');
+                for (const p of partialOrders) {
+                    if (originalPartialData.has(p.id)) {
+                        const originalData = originalPartialData.get(p.id);
+                        if (originalData.state) {
+                            p.state = originalData.state;
+                        }
+                    }
+                }
+                throw virtualizationError;
             }
 
             try {
@@ -379,7 +398,6 @@ class StrategyEngine {
                                 : moveInfo.newPrice;
 
                             const precision = getPrecisionForSide(mgr.assets, side);
-                            const { floatToBlockchainInt, blockchainToFloat } = require('./utils');
                             let residualOrderSize = 0;
                             if (totalResidualCapital > 0) {
                                 residualOrderSize = blockchainToFloat(floatToBlockchainInt(totalResidualCapital / spreadPrice, precision), precision);
@@ -449,7 +467,6 @@ class StrategyEngine {
                 if (sizePerOrder <= 0) continue;
 
                 const precision = getPrecisionForSide(mgr.assets, side);
-                const { floatToBlockchainInt, blockchainToFloat } = require('./utils');
                 const quantizedSize = blockchainToFloat(floatToBlockchainInt(sizePerOrder, precision), precision);
 
                 const newOrder = { ...gridOrder, type: oppositeType, size: quantizedSize, price: slot.price };
@@ -480,6 +497,7 @@ class StrategyEngine {
 
     /**
      * Evaluate whether a partial order should be treated as "Dust" or "Substantial".
+     * Uses blockchain integer arithmetic for precision consistency.
      */
     evaluatePartialOrderAnchor(partialOrder, moveInfo) {
         const mgr = this.manager;
@@ -496,7 +514,22 @@ class StrategyEngine {
             return { isDust: true, idealSize, percentOfIdeal: 0 };
         }
 
-        const percentOfIdeal = partialSize / idealSize;
+        // Use integer arithmetic for precision consistency with blockchain
+        const precision = (partialOrder.type === ORDER_TYPES.SELL)
+            ? mgr.assets?.assetA?.precision || (() => {
+                mgr.logger?.log?.(`WARNING: Asset precision not found for assetA, using fallback precision=5`, 'warn');
+                return 5;
+            })()
+            : mgr.assets?.assetB?.precision || (() => {
+                mgr.logger?.log?.(`WARNING: Asset precision not found for assetB, using fallback precision=5`, 'warn');
+                return 5;
+            })();
+
+        const partialInt = floatToBlockchainInt(partialSize, precision);
+        const idealInt = floatToBlockchainInt(idealSize, precision);
+
+        // Calculate percent using integer arithmetic to match blockchain behavior
+        const percentOfIdeal = idealInt > 0 ? partialInt / idealInt : 0;
 
         if (percentOfIdeal < (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5) / 100) {
             return { isDust: true, idealSize, percentOfIdeal, mergedDustSize: partialSize };
@@ -720,10 +753,15 @@ class StrategyEngine {
         const targetGridOrder = mgr.orders.get(newGridId);
         if (targetGridOrder) {
             // Use blockchain integer precision for state determination (consistent with rest of system)
-            const { floatToBlockchainInt } = require('./utils');
             const precision = (partialOrder.type === ORDER_TYPES.SELL)
-                ? mgr.assets?.assetA?.precision || 5
-                : mgr.assets?.assetB?.precision || 5;
+                ? mgr.assets?.assetA?.precision || (() => {
+                    mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in completePartialOrderMove, using fallback precision=5`, 'warn');
+                    return 5;
+                })()
+                : mgr.assets?.assetB?.precision || (() => {
+                    mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in completePartialOrderMove, using fallback precision=5`, 'warn');
+                    return 5;
+                })();
             const partialInt = floatToBlockchainInt(partialOrder.size, precision);
             const idealInt = floatToBlockchainInt(targetGridOrder.size || 0, precision);
             const newState = partialInt >= idealInt ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;

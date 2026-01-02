@@ -30,6 +30,9 @@ class SyncEngine {
      * This is the MAIN SYNCHRONIZATION MECHANISM that corrects the grid state when
      * the blockchain state diverges from our local expectations.
      *
+     * CRITICAL: This method locks all orders that might be modified during reconciliation
+     * to prevent concurrent races with createOrder/cancelOrder operations.
+     *
      * RECONCILIATION FLOW:
      * ========================================================================
      * This method performs a two-pass reconciliation:
@@ -75,8 +78,14 @@ class SyncEngine {
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
 
-        const assetAPrecision = mgr.assets?.assetA?.precision || 5;
-        const assetBPrecision = mgr.assets?.assetB?.precision || 5;
+        const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromOpenOrders, using fallback precision=5`, 'warn');
+            return 5;
+        })();
+        const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromOpenOrders, using fallback precision=5`, 'warn');
+            return 5;
+        })();
 
         const parsedChainOrders = new Map();
         for (const order of chainOrders) {
@@ -85,10 +94,25 @@ class SyncEngine {
             const type = (sellAssetId === mgr.assets.assetA.id) ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
             const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
             const size = blockchainToFloat(order.for_sale, precision);
-            const price = (type === ORDER_TYPES.SELL) 
+            const price = (type === ORDER_TYPES.SELL)
                 ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetBPrecision - assetAPrecision)
                 : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetBPrecision - assetAPrecision);
             parsedChainOrders.set(order.id, { id: order.id, type, size, price, raw: order });
+        }
+
+        // Collect all order IDs that might be modified during reconciliation
+        // Lock them to prevent concurrent modifications from createOrder/cancelOrder
+        const orderIdsToLock = new Set();
+        for (const gridOrder of mgr.orders.values()) {
+            // Lock any order with a chain orderId (already on-chain)
+            if (gridOrder.orderId) {
+                orderIdsToLock.add(gridOrder.id);
+                orderIdsToLock.add(gridOrder.orderId);
+            }
+            // Also lock ACTIVE/PARTIAL orders that might transition to/from SPREAD
+            if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
+                orderIdsToLock.add(gridOrder.id);
+            }
         }
 
         const chainOrderIdsOnGrid = new Set();
@@ -96,6 +120,27 @@ class SyncEngine {
         const filledOrders = [];
         const updatedOrders = [];
         const ordersNeedingCorrection = [];
+
+        // Lock orders before reconciliation
+        mgr.lockOrders([...orderIdsToLock]);
+        try {
+            // Reconciliation logic moved below in the try block
+            this._performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders,
+                                            chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection);
+        } finally {
+            // Unlock after reconciliation completes
+            mgr.unlockOrders([...orderIdsToLock]);
+        }
+
+        return { filledOrders, updatedOrders, ordersNeedingCorrection };
+    }
+
+    /**
+     * Internal helper that performs the actual reconciliation logic.
+     * Called with locks held to prevent concurrent modifications.
+     */
+    _performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders,
+                               chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection) {
 
         for (const gridOrder of mgr.orders.values()) {
             if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) {
@@ -167,7 +212,6 @@ class SyncEngine {
                 chainOrderIdsOnGrid.add(chainOrderId);
             }
         }
-        return { filledOrders, updatedOrders, ordersNeedingCorrection };
     }
 
     /**
@@ -221,8 +265,14 @@ class SyncEngine {
         const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
         const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
 
-        const assetAPrecision = mgr.assets?.assetA?.precision || 5;
-        const assetBPrecision = mgr.assets?.assetB?.precision || 5;
+        const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromFillHistory, using fallback precision=5`, 'warn');
+            return 5;
+        })();
+        const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
+            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromFillHistory, using fallback precision=5`, 'warn');
+            return 5;
+        })();
 
         let matchedGridOrder = null;
         for (const gridOrder of mgr.orders.values()) {

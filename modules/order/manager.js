@@ -66,7 +66,7 @@ class OrderManager {
         this._correctionsLock = new AsyncLock();
         this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = [];
-        this._pauseFundRecalc = false;  // Batch recalculation optimization
+        this._pauseFundRecalcDepth = 0;  // Counter for safe nested pausing (not boolean)
     }
 
     // --- Accounting Delegation ---
@@ -331,6 +331,25 @@ class OrderManager {
         }
 
         const existing = this.orders.get(order.id);
+
+        // Validate state transition if order exists
+        if (existing && existing.state && order.state && existing.state !== order.state) {
+            const validTransitions = {
+                [ORDER_STATES.VIRTUAL]: [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL],
+                [ORDER_STATES.ACTIVE]: [ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL],
+                [ORDER_STATES.PARTIAL]: [ORDER_STATES.ACTIVE, ORDER_STATES.VIRTUAL]
+            };
+
+            const allowedNextStates = validTransitions[existing.state] || [];
+            if (!allowedNextStates.includes(order.state)) {
+                this.logger.log(
+                    `Error: Invalid state transition for order ${order.id}: ${existing.state} → ${order.state}. ` +
+                    `Valid next states: ${allowedNextStates.join(', ')}`,
+                    'error'
+                );
+                return;
+            }
+        }
         if (existing) {
             this._ordersByState[existing.state]?.delete(order.id);
             this._ordersByType[existing.type]?.delete(order.id);
@@ -339,8 +358,8 @@ class OrderManager {
         this._ordersByType[order.type]?.add(order.id);
         this.orders.set(order.id, order);
 
-        // Only recalculate funds if not in batch mode
-        if (!this._pauseFundRecalc) {
+        // Only recalculate funds if not in batch mode (depth == 0 means all pauses resolved)
+        if (this._pauseFundRecalcDepth === 0) {
             this.recalculateFunds();
         }
     }
@@ -353,19 +372,31 @@ class OrderManager {
 
     /**
      * Pause fund recalculation during batch order updates.
+     * Uses a depth counter to safely support nested pauses.
      * Use with resumeFundRecalc() to optimize multi-order operations.
+     *
+     * NESTING EXAMPLE:
+     *   pauseFundRecalc();      // depth = 1
+     *   pauseFundRecalc();      // depth = 2
+     *   resumeFundRecalc();     // depth = 1 (recalc NOT called)
+     *   resumeFundRecalc();     // depth = 0 (recalc IS called)
      */
     pauseFundRecalc() {
-        this._pauseFundRecalc = true;
+        this._pauseFundRecalcDepth++;
     }
 
     /**
-     * Resume fund recalculation after batch updates and recalculate once.
+     * Resume fund recalculation after batch updates.
+     * Recalculation only happens when depth reaches 0 (all pauses resolved).
      * All orders updated during pause are now reflected in fund calculations.
      */
     resumeFundRecalc() {
-        this._pauseFundRecalc = false;
-        this.recalculateFunds();
+        if (this._pauseFundRecalcDepth > 0) {
+            this._pauseFundRecalcDepth--;
+        }
+        if (this._pauseFundRecalcDepth === 0) {
+            this.recalculateFunds();
+        }
     }
 
     getInitialOrdersToActivate() {

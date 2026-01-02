@@ -158,6 +158,71 @@ class Accountant {
         // Set available (what we can spend right now)
         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
+
+        // Verify fund invariants to catch leaks early
+        this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
+    }
+
+    /**
+     * Verify critical fund tracking invariants.
+     * These checks catch fund leaks and inconsistencies early.
+     *
+     * INVARIANT 1: chainTotal = chainFree + chainCommitted
+     * INVARIANT 2: available <= chainFree
+     * INVARIANT 3: gridCommitted <= chainTotal
+     */
+    _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
+        const tolerance = 0.00001; // Allow small floating-point rounding errors
+
+        // INVARIANT 1: For BUY side
+        const chainTotalBuy = mgr.funds.total.chain.buy;
+        const expectedBuy = chainFreeBuy + chainBuy;
+        if (Math.abs(chainTotalBuy - expectedBuy) > tolerance) {
+            mgr.logger.log(
+                `WARNING: Fund invariant violation (BUY): chainTotal (${chainTotalBuy.toFixed(8)}) != chainFree (${chainFreeBuy.toFixed(8)}) + chainCommitted (${chainBuy.toFixed(8)}) = ${expectedBuy.toFixed(8)}`,
+                'warn'
+            );
+        }
+
+        // INVARIANT 1: For SELL side
+        const chainTotalSell = mgr.funds.total.chain.sell;
+        const expectedSell = chainFreeSell + chainSell;
+        if (Math.abs(chainTotalSell - expectedSell) > tolerance) {
+            mgr.logger.log(
+                `WARNING: Fund invariant violation (SELL): chainTotal (${chainTotalSell.toFixed(8)}) != chainFree (${chainFreeSell.toFixed(8)}) + chainCommitted (${chainSell.toFixed(8)}) = ${expectedSell.toFixed(8)}`,
+                'warn'
+            );
+        }
+
+        // INVARIANT 2: Available should not exceed chainFree
+        if (mgr.funds.available.buy > chainFreeBuy + tolerance) {
+            mgr.logger.log(
+                `WARNING: Fund invariant violation (BUY available): available (${mgr.funds.available.buy.toFixed(8)}) > chainFree (${chainFreeBuy.toFixed(8)})`,
+                'warn'
+            );
+        }
+        if (mgr.funds.available.sell > chainFreeSell + tolerance) {
+            mgr.logger.log(
+                `WARNING: Fund invariant violation (SELL available): available (${mgr.funds.available.sell.toFixed(8)}) > chainFree (${chainFreeSell.toFixed(8)})`,
+                'warn'
+            );
+        }
+
+        // INVARIANT 3: Grid committed should not exceed chain total
+        const gridCommittedBuy = mgr.funds.committed.grid.buy;
+        const gridCommittedSell = mgr.funds.committed.grid.sell;
+        if (gridCommittedBuy > chainTotalBuy + tolerance) {
+            mgr.logger.log(
+                `WARNING: Fund invariant violation (BUY grid): gridCommitted (${gridCommittedBuy.toFixed(8)}) > chainTotal (${chainTotalBuy.toFixed(8)})`,
+                'warn'
+            );
+        }
+        if (gridCommittedSell > chainTotalSell + tolerance) {
+            mgr.logger.log(
+                `WARNING: Fund invariant violation (SELL grid): gridCommitted (${gridCommittedSell.toFixed(8)}) > chainTotal (${chainTotalSell.toFixed(8)})`,
+                'warn'
+            );
+        }
     }
 
     /**

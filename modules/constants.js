@@ -60,7 +60,11 @@ let TIMING = {
     FILL_RECORD_RETENTION_MS: 3600000, // 1 hour - how long to keep persisted fill records
 
     // Order locking timing
-    LOCK_TIMEOUT_MS: 30000  // 30 seconds - allows for blockchain transaction latency
+    // Reduced from 30s to 10s to prevent lock-based starvation under high fill rates.
+    // Locks that exceed this timeout are auto-expired by _cleanExpiredLocks() to ensure
+    // orders are never permanently blocked if a process crashes while holding the lock.
+    // This self-healing mechanism prevents deadlocks while still protecting against races.
+    LOCK_TIMEOUT_MS: 10000  // 10 seconds - balances transaction latency with lock starvation prevention
 };
 
 // Grid limits and scaling constants
