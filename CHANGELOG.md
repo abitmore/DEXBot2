@@ -66,6 +66,26 @@ All notable changes to this project will be documented in this file.
   - Single source of truth: `manager.funds.available[side]` includes all deployable capital
   - Removed dead functions: getTotalGridFundsAvailable, getAvailableFundsForPlacement
 
+- **SPREAD Order State Validation** (manager.js)
+  - Added explicit validation to ensure SPREAD type orders remain in VIRTUAL state
+  - Prevents invalid state transitions to ACTIVE/PARTIAL for placeholder orders
+  - Catches corrupted order states early
+
+- **Noop Method Removal** (accounting.js, utils.js)
+  - Removed empty `adjustFunds()` method that was intentionally disabled
+  - Removed call site in applyChainSizeToGridOrder()
+  - Eliminated source of confusion around fund adjustment logic
+
+- **Null Safety Hardening** (accounting.js, grid.js)
+  - Added optional chaining (`?.`) to all manager.logger.log() calls
+  - Protected manager._metrics access to prevent crashes if metrics uninitialized
+  - Prevents runtime errors in edge cases where logger or metrics are null
+
+- **Lock Atomicity Improvement** (grid.js)
+  - Refactored spread correction to acquire order locks BEFORE fund deduction
+  - Ensures lock is released via finally block even if fund deduction or update fails
+  - Prevents fund leaks in edge cases where _updateOrder throws after deduction
+
 ### Changed
 - **Architecture**: Refactored OrderManager to delegate to specialized engines
   - Manager now coordinates three engines instead of implementing all logic
@@ -127,10 +147,11 @@ All notable changes to this project will be documented in this file.
 - `modules/order/sync_engine.js` (598 lines): SyncEngine for blockchain sync
 
 **Modified Files**:
-- `modules/order/manager.js`: Refactored to coordinate engines, added validateIndices()
-- `modules/order/grid.js`: Updated spread correction to use atomic fund deduction
+- `modules/order/manager.js`: Refactored to coordinate engines, added validateIndices(), added SPREAD order state validation
+- `modules/order/grid.js`: Updated spread correction to use atomic fund deduction, added order locking for atomicity, added null-safe logger calls
 - `modules/constants.js`: Added FUND_INVARIANT_PERCENT_TOLERANCE
-- `modules/order/utils.js`: Simplified fund calculation, removed dead functions
+- `modules/order/utils.js`: Simplified fund calculation, removed dead functions, removed noop _adjustFunds call
+- `modules/order/accounting.js`: Added null-safe fund invariant logging, removed empty adjustFunds() method
 
 ### Code Statistics
 - Lines added: ~1,914 (accounting.js + strategy.js + sync_engine.js)
