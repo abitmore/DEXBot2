@@ -72,8 +72,8 @@ async function testMultiPartialConsolidation() {
         'sell-0': 10, 'sell-v1': 10, 'sell-1': 10, 'sell-v2': 10, 'sell-2': 10, 'sell-v3': 10
     };
 
-    // Mock _evaluatePartialOrderAnchor to return correct ideal size from our map
-    mgr._evaluatePartialOrderAnchor = (p, moveInfo) => {
+    // Mock evaluatePartialOrderAnchor to return correct ideal size from our map
+    mgr.strategy.evaluatePartialOrderAnchor = (p, moveInfo) => {
         const idealSize = slotIdealSizes[moveInfo.newGridId] || 10;
         const residualCapital = Math.max(0, (p.size - idealSize) * p.price);
         return {

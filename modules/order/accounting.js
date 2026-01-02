@@ -111,7 +111,7 @@ class Accountant {
         const key = isBuy ? 'buyFree' : 'sellFree';
 
         if (mgr.accountTotals && mgr.accountTotals[key] !== undefined) {
-            const oldFree = mgr.accountTotals[key];
+            const oldFree = Number(mgr.accountTotals[key]) || 0;
             mgr.accountTotals[key] = Math.max(0, oldFree - size);
             const asset = isBuy ? (mgr.config?.assetB || 'quote') : (mgr.config?.assetA || 'base');
             mgr.logger.log(
@@ -130,8 +130,8 @@ class Accountant {
         const key = isBuy ? 'buyFree' : 'sellFree';
 
         if (mgr.accountTotals && mgr.accountTotals[key] !== undefined) {
-            const oldFree = mgr.accountTotals[key];
-            mgr.accountTotals[key] = (Number(oldFree) || 0) + size;
+            const oldFree = Number(mgr.accountTotals[key]) || 0;
+            mgr.accountTotals[key] = oldFree + size;
             const asset = isBuy ? (mgr.config?.assetB || 'quote') : (mgr.config?.assetA || 'base');
             mgr.logger.log(
                 `[chainFree update] ${orderType} order ${operation}: ${oldFree.toFixed(8)} + ${size.toFixed(8)} = ${mgr.accountTotals[key].toFixed(8)} ${asset}`,
