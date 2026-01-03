@@ -70,7 +70,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Synchronized Rotation Accounting**: Fixed a critical synchronization issue where `accountTotals` (buyFree/sellFree and virtuel) were not updated when on-chain orders were cancelled during rotation, ensuring accurate fund tracking.
-- **Reduced Allocation Friction**: Removed the conservative `btsFeesReservation` buffer from available fund calculations, preventing false-positive "insufficient funds" errors that previously blocked legitimate order placements.
 - **Atomic Spread Correction**: Simplified spread correction by moving fund deductions to the batch broadcast level, ensuring atomicity and preventing "phantom fund" leaks.
 - **Null Safety Hardening**: Improved null-safety in `DEXBot` batch operations and added strategic diagnostic hooks throughout the fill processing cycle.
 - **Syntax Fix in Logger**: Resolved a `SyntaxError` in `logFundsStatus` where the identifier `c` was declared multiple times.
@@ -94,7 +93,7 @@ All notable changes to this project will be documented in this file.
 
 - **Fund Formula Consistency**: Simplified available funds calculation
   - Single source of truth: `calculateAvailableFundsValue()` in utils.js
-  - Formula: `available = max(0, chainFree - virtuel - btsFeesOwed)`
+  - Formula: `available = max(0, chainFree - virtuel - btsFeesOwed - btsFeesReservation)`
   - cacheFunds intentionally kept separate (fill proceeds added back during rebalancing)
   - Removed dead functions: getTotalGridFundsAvailable, getAvailableFundsForPlacement
 

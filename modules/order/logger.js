@@ -186,7 +186,7 @@ class Logger {
 
         // Only show formula and notes in debug mode
         if (isDebugMode) {
-            console.log(`\n${debug}=== FORMULA: available = max(0, chainFree - virtuel - applicableBtsFeesOwed) ===${reset}`);
+            console.log(`\n${debug}=== FORMULA: available = max(0, chainFree - virtuel - applicableBtsFeesOwed - btsFeesReservation) ===${reset}`);
             console.log(`${debug}Note: cacheFunds is kept separate and added to available for rebalancing decisions${reset}`);
         }
     }
