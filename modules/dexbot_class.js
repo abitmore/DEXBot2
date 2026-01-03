@@ -778,6 +778,18 @@ class DEXBot {
                     const ctx = opContexts[i];
                     const res = results[i];
 
+                    if (ctx.kind === 'size-update') {
+                        const { updateInfo } = ctx;
+                        // Just update the grid order size in memory - it's already ACTIVE on-chain
+                        const ord = this.manager.orders.get(updateInfo.partialOrder.id);
+                        if (ord) {
+                            this.manager._updateOrder({ ...ord, size: updateInfo.newSize });
+                        }
+                        this.manager.logger.log(`Size update complete: ${updateInfo.partialOrder.orderId} size updated to ${updateInfo.newSize.toFixed(8)}`, 'info');
+                        updateOperationCount++;
+                        continue;
+                    }
+
                     if (ctx.kind === 'create') {
                         const { order } = ctx;
                         const chainOrderId = res && res[1];
@@ -815,7 +827,6 @@ class DEXBot {
 
                     if (ctx.kind === 'rotation') {
                         // Skip rotation if we're running divergence corrections (prevents feedback loops)
-                        // Check if divergence lock is currently processing (locked or queued)
                         if (this._divergenceLock?.isLocked() || this._divergenceLock?.getQueueLength() > 0) {
                             this.manager.logger.log(`Skipping rotation during divergence correction phase: ${ctx.rotation?.oldOrder?.orderId}`, 'debug');
                             continue;
@@ -826,24 +837,19 @@ class DEXBot {
                         const { oldOrder, newPrice, newGridId, newSize } = rotation;
 
                         // SIZE-CORRECTION rotations (divergence/threshold triggered) don't have newGridId
-                        // They just resize existing on-chain orders - grid slots already have correct prices/sizes
-                        // Don't create synthetic slots with undefined id which corrupts the grid
                         if (!newGridId) {
-                            // Just mark the rotation complete and count the update
-                            this.manager.completeOrderRotation(oldOrder);
-                            const sizeStr = (newSize !== undefined && newSize !== null && Number.isFinite(newSize))
-                                ? newSize.toFixed(8) : 'N/A';
-                            const priceStr = (newPrice !== undefined && newPrice !== null && Number.isFinite(newPrice))
-                                ? newPrice.toFixed(4) : 'N/A';
-                            this.manager.logger.log(`Size correction applied: ${oldOrder.orderId} resized to ${sizeStr} @ ${priceStr}`, 'info');
+                            // DO NOT call completeOrderRotation here - it's an in-place resize!
+                            const ord = this.manager.orders.get(oldOrder.id || rotation.id);
+                            if (ord) {
+                                this.manager._updateOrder({ ...ord, size: newSize });
+                            }
+                            this.manager.logger.log(`Size correction applied: ${oldOrder.orderId} resized to ${newSize.toFixed(8)} @ ${newPrice.toFixed(4)}`, 'info');
 
-                            // Optimistically deduct the update fee if BTS is the pair asset
                             if (this.manager.config.assetA === 'BTS' || this.manager.config.assetB === 'BTS') {
                                 const btsSide = (this.manager.config.assetA === 'BTS') ? 'sell' : 'buy';
                                 const orderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
                                 this.manager._deductFromChainFree(orderType, btsFeeData.updateFee, 'resize-fee');
                             }
-
                             updateOperationCount++;
                             continue;
                         }
