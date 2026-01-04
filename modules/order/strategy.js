@@ -96,29 +96,42 @@ class StrategyEngine {
 
         const stateUpdates = [];
 
+        // Determine target number of active orders for this side (capped at available slots)
         const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : 1;
+
+        // Reserve BTS fees if this pair involves BTS to prevent over-committing capital
         let btsFeesReservation = 0;
         if ((mgr.config.assetA === "BTS" && side === "sell") || (mgr.config.assetB === "BTS" && side === "buy")) {
             btsFeesReservation = calculateOrderCreationFees(mgr.config.assetA, mgr.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
         }
-        const availableBudget = (sideBudget > btsFeesReservation * 10) 
+        const availableBudget = (sideBudget > btsFeesReservation * 10)
             ? Math.max(0, sideBudget - btsFeesReservation)
             : sideBudget;
 
+        // Calculate ideal order sizes for each grid slot based on available budget
         const precision = getPrecisionForSide(mgr.assets, side);
         const weight = mgr.config.weightDistribution[side];
         const idealSizes = allocateFundsByWeights(availableBudget, slots.length, weight, mgr.config.incrementPercent / 100, false, 0, precision);
 
+        // Find currently active on-chain orders for this side
         let activeOnChain = slots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !excludeIds.has(s.id));
         let activeIndices = activeOnChain.map(o => slots.findIndex(s => s.id === o.id)).sort((a, b) => a - b);
 
+        // SLIDING WINDOW LOGIC: Determine where the active orders window should be positioned
+        // The window is a contiguous range of targetCount slots. Its position depends on:
+        // 1. Where existing active orders are (activeIndices)
+        // 2. Whether this side just had a fill (wasFilledSide) - expand outward
+        // 3. Whether opposite side had a fill (anyFillOccurred) - rotate inward toward spread
         let nextIndices = [...activeIndices];
         if (activeIndices.length === 0) {
+            // No existing active orders: initialize window starting from first non-SPREAD slot
             const start = Math.max(0, slots.findIndex(s => s.type !== ORDER_TYPES.SPREAD));
             const fallbackStart = Math.max(0, Math.floor(slots.length / 2) - Math.floor(targetCount / 2));
             nextIndices = Array.from({length: targetCount}, (_, i) => (start !== -1 ? start : fallbackStart) + i);
         } else {
+            // Window exists: adjust based on fill activity
             if (wasFilledSide) {
+                // This side had a fill: expand window outward (away from spread) to place new order at edge
                 if (nextIndices.length < targetCount && nextIndices.length > 0) {
                     const maxIdx = Math.max(...nextIndices);
                     const minIdx = Math.min(...nextIndices);
@@ -129,6 +142,8 @@ class StrategyEngine {
                     }
                 }
             } else if (anyFillOccurred) {
+                // Opposite side filled: rotate window inward (toward spread) to maintain coverage
+                // This prevents one side from drifting too far while the other fills
                 if (nextIndices.length > 0) {
                     const innerEdge = Math.min(...nextIndices);
                     if (innerEdge > 0) {
@@ -138,12 +153,14 @@ class StrategyEngine {
             }
         }
 
+        // Ensure window is contiguous (no gaps) by resetting from minimum index
         if (nextIndices.length > 0) {
             const min = Math.min(...nextIndices);
             nextIndices = Array.from({length: targetCount}, (_, i) => min + i)
                 .filter(idx => idx >= 0 && idx < slots.length);
         }
 
+        // Validate and trim window if it exceeds grid boundaries
         if (nextIndices.length > 0) {
             const max = Math.max(...nextIndices);
             if (max >= slots.length) {
@@ -156,6 +173,7 @@ class StrategyEngine {
         }
 
         // ROLE ASSIGNMENT: Ensure spread zone roles are assigned transactionally
+        // All slots before the active window are SPREAD, all others are this side's type (BUY/SELL)
         if (nextIndices.length > 0) {
             const minActiveIdx = Math.min(...nextIndices);
             for (let i = 0; i < slots.length; i++) {
@@ -167,18 +185,24 @@ class StrategyEngine {
             }
         }
 
+        // Identify grid shortages and surpluses to guide rotation and placement decisions
         const targetIndexSet = new Set(nextIndices);
         const ordersToPlace = [];
         const ordersToRotate = [];
         const ordersToUpdate = [];
         const ordersToCancel = [];
 
+        // SHORTAGES: Slots in the window that need orders (either empty or excluded)
         const shortages = nextIndices.filter(idx => slots[idx] && (!slots[idx].orderId || excludeIds.has(slots[idx].id)));
+        // SURPLUSES: Active orders currently outside the target window (need to be moved)
         const surpluses = slots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !targetIndexSet.has(slots.findIndex(o => o.id === s.id)));
 
+        // Sort for deterministic pairing: sort surpluses by price (furthest first) to move outliers first
         surpluses.sort((a, b) => b.price - a.price);
         shortages.sort((a, b) => a - b);
 
+        // ROTATIONS: Pair surpluses with shortages to move orders within the grid
+        // This preserves capital while repositioning orders to maintain contiguity
         const pairCount = Math.min(surpluses.length, shortages.length);
         for (let i = 0; i < pairCount; i++) {
             const surplus = surpluses[i];
@@ -199,6 +223,7 @@ class StrategyEngine {
             mgr.logger.log(`[UNIFIED] Rotation: Shifting furthest ${type} ${surplus.id} -> contiguous slot ${shortageSlot.id}.`, "info");
         }
 
+        // NEW PLACEMENTS: Create new orders for remaining shortages (after rotations exhausted)
         for (let i = pairCount; i < shortages.length; i++) {
             const idx = shortages[i];
             const slot = slots[idx];
@@ -209,6 +234,7 @@ class StrategyEngine {
             mgr.logger.log(`[UNIFIED] Expansion: Placing ${type} at fixed edge slot ${slot.id}.`, "info");
         }
 
+        // CANCELLATIONS: Remove orders that remain outside window after rotations
         for (let i = pairCount; i < surpluses.length; i++) {
             const surplus = surpluses[i];
             ordersToCancel.push({ ...surplus });
@@ -216,42 +242,52 @@ class StrategyEngine {
             mgr.logger.log(`[UNIFIED] Surplus: Cancelling out-of-window ${type} order ${surplus.id}.`, "info");
         }
 
+        // MAINTENANCE & PARTIAL HANDLING: Process all on-chain orders for health and consistency
+        // This section handles:
+        // - Partial orders: Dust consolidation, anchoring, and residual placement
+        // - Active orders: Resizing to match ideal grid distribution
         const allOnChain = slots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL));
-        
+
         for (const slot of allOnChain) {
+            // Skip orders already being rotated (to avoid duplicate updates)
             const wasRotationSource = ordersToRotate.some(r => r.oldOrder.id === slot.id);
             if (wasRotationSource) continue;
 
             const slotIdx = slots.findIndex(s => s.id === slot.id);
             const idealSize = idealSizes[slotIdx];
 
+            // Skip double orders (already consolidated/marked for rotation)
             if (slot.isDoubleOrder) continue;
 
             if (slot.state === ORDER_STATES.PARTIAL) {
+                // PARTIAL ORDER HANDLING: Decide whether to consolidate (dust) or anchor & split
                 const dustThreshold = idealSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
                 const availableFunds = mgr.funds.available[side];
 
+                // DUST CONSOLIDATION: If partial is small (< 5% of ideal), absorb it into this order
+                // This prevents tiny residual orders from accumulating and clogging the grid
                 if (slot.size < dustThreshold) {
                     if (availableFunds > 0) {
                         const fundableIdealSize = Math.min(idealSize, availableFunds);
                         const mergedSize = slot.size + fundableIdealSize;
-                        
+
+                        // Only consolidate if final size is reasonable (within 5% of ideal)
                         if (mergedSize <= idealSize * 1.05) {
                             const rotIdx = ordersToRotate.findIndex(r => r.oldOrder.orderId === slot.orderId);
                             if (rotIdx !== -1) {
                                 ordersToRotate[rotIdx].newSize = mergedSize;
                             } else {
-                                ordersToUpdate.push({ 
-                                    partialOrder: { ...slot }, 
-                                    newSize: mergedSize, 
-                                    isSplitUpdate: true, 
-                                    newState: ORDER_STATES.ACTIVE 
+                                ordersToUpdate.push({
+                                    partialOrder: { ...slot },
+                                    newSize: mergedSize,
+                                    isSplitUpdate: true,
+                                    newState: ORDER_STATES.ACTIVE
                                 });
                             }
 
-                            stateUpdates.push({ 
-                                ...slot, 
-                                size: mergedSize, 
+                            stateUpdates.push({
+                                ...slot,
+                                size: mergedSize,
                                 state: ORDER_STATES.ACTIVE,
                                 isDoubleOrder: true,
                                 mergedDustSize: slot.size,
@@ -263,48 +299,52 @@ class StrategyEngine {
                         }
                     }
                 }
-                
+
+                // ANCHOR & SPLIT: Resize partial to ideal size, create residual order for leftover capital
+                // This recovers capital from partial fills while maintaining grid coverage
                 const rotIdx = ordersToRotate.findIndex(r => r.oldOrder.orderId === slot.orderId);
                 if (rotIdx !== -1) {
                     ordersToRotate[rotIdx].newSize = idealSize;
                 } else {
-                    ordersToUpdate.push({ 
-                        partialOrder: { ...slot }, 
-                        newSize: idealSize, 
-                        isSplitUpdate: true, 
-                        newState: ORDER_STATES.ACTIVE 
+                    ordersToUpdate.push({
+                        partialOrder: { ...slot },
+                        newSize: idealSize,
+                        isSplitUpdate: true,
+                        newState: ORDER_STATES.ACTIVE
                     });
                 }
                 stateUpdates.push({ ...slot, size: idealSize, state: ORDER_STATES.ACTIVE });
                 mgr.logger.log(`[UNIFIED] SPLIT: Anchoring partial ${slot.id} to ideal size ${idealSize.toFixed(precision)}.`, "info");
-                
+
+                // If partial size >= dust threshold, place residual order at edge to deploy extra capital
                 if (slot.size >= dustThreshold) {
                     const minIdx = nextIndices.length > 0 ? Math.min(...nextIndices) : -1;
                     const maxIdx = nextIndices.length > 0 ? Math.max(...nextIndices) : -1;
-                    
+
+                    // Find edge slot to place residual: prefer spread side edge, fallback to opposite edge
                     let targetIdx = -1;
                     if (minIdx > 0 && !slots[minIdx - 1].orderId) {
-                        targetIdx = minIdx - 1;
+                        targetIdx = minIdx - 1;  // Empty spread slot
                     } else if (maxIdx !== -1 && maxIdx + 1 < slots.length && !slots[maxIdx + 1].orderId) {
-                        targetIdx = maxIdx + 1;
+                        targetIdx = maxIdx + 1;  // Empty slot past window
                     }
 
                     if (targetIdx !== -1) {
                         const targetSlot = slots[targetIdx];
                         if (!excludeIds.has(targetSlot.id)) {
-                            ordersToPlace.push({ 
-                                ...targetSlot, 
-                                type: type, 
-                                size: slot.size, 
+                            ordersToPlace.push({
+                                ...targetSlot,
+                                type: type,
+                                size: slot.size,
                                 state: ORDER_STATES.ACTIVE,
                                 isResidualFromAnchor: true,
                                 anchoredFromPartialId: slot.id
                             });
-                            stateUpdates.push({ 
-                                ...targetSlot, 
-                                type: type, 
-                                size: slot.size, 
-                                state: ORDER_STATES.ACTIVE 
+                            stateUpdates.push({
+                                ...targetSlot,
+                                type: type,
+                                size: slot.size,
+                                state: ORDER_STATES.ACTIVE
                             });
                             mgr.logger.log(`[UNIFIED] SPLIT: Created residual order ${slot.size.toFixed(precision)} for ${slot.id} at slot ${targetSlot.id}.`, "info");
                         }
@@ -312,6 +352,8 @@ class StrategyEngine {
                 }
                 continue;
             } else if (Math.abs(slot.size - idealSize) > 1e-8) {
+                // ACTIVE ORDER RESIZING: Adjust active orders to match ideal grid distribution
+                // This maintains consistent fund allocation across the active window
                 const rotIdx = ordersToRotate.findIndex(r => r.oldOrder.orderId === slot.orderId);
                 if (rotIdx !== -1) {
                     ordersToRotate[rotIdx].newSize = idealSize;

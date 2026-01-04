@@ -49,34 +49,49 @@ class Grid {
             throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be between ${INCREMENT_BOUNDS.MIN_PERCENT} and ${INCREMENT_BOUNDS.MAX_PERCENT}.`);
         }
 
+        // Geometric price steps: each order is multiplied by stepUp (sell) or stepDown (buy)
+        // This creates exponential spacing: useful for covering wide price ranges
         const stepUp = 1 + (incrementPercent / 100);
         const stepDown = 1 - (incrementPercent / 100);
 
+        // Spread zone width calculation: determine how many orders should be in the spread zone
+        // between market price. Spread width determines order density near market.
         const minSpreadPercent = incrementPercent * Number(GRID_LIMITS.MIN_SPREAD_FACTOR);
         const targetSpreadPercent = Math.max(config.targetSpreadPercent, minSpreadPercent);
 
+        // Calculate number of spread orders needed to achieve target spread width
+        // Formula: nOrders = ceil(log(1 + spread%) / log(stepUp))
+        // This ensures the outer-most spread order is approximately at the target spread distance
         const calculatedNOrders = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
         const nOrders = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS, calculatedNOrders);
 
+        // SELL LEVEL GENERATION: Generate prices above market, growing exponentially upward
+        // Starting from startPrice * sqrt(stepUp) ensures symmetric levels around market price
         const sellLevels = [];
         let currentSell = startPrice * Math.sqrt(stepUp);
         while (currentSell <= maxPrice) {
             sellLevels.push(currentSell);
             currentSell *= stepUp;
         }
-        sellLevels.reverse();
+        sellLevels.reverse(); // Reverse to sort from lowest to highest sell price
 
+        // BUY LEVEL GENERATION: Generate prices below market, growing exponentially downward
+        // Starting from startPrice * sqrt(stepDown) for symmetric positioning
         const buyLevels = [];
         let currentBuy = startPrice * Math.sqrt(stepDown);
         while (currentBuy >= minPrice) {
             buyLevels.push(currentBuy);
             currentBuy *= stepDown;
         }
+        // Note: buyLevels are naturally in descending order (highest prices first)
 
+        // SPREAD ZONE ASSIGNMENT: Designate outermost orders as SPREAD placeholders
+        // These sit in the spread zone and are only activated when price moves
         const buySpread = Math.floor(nOrders / 2);
         const sellSpread = nOrders - buySpread;
         const initialSpreadCount = { buy: 0, sell: 0 };
 
+        // Map sell levels to order objects: highest indices (furthest prices) are SPREAD orders
         const sellOrders = sellLevels.map((price, i) => ({
             price,
             type: i >= sellLevels.length - sellSpread ? (initialSpreadCount.sell++, ORDER_TYPES.SPREAD) : ORDER_TYPES.SELL,
@@ -85,6 +100,7 @@ class Grid {
             size: 0
         }));
 
+        // Map buy levels to order objects: lowest indices (furthest prices) are SPREAD orders
         const buyOrders = buyLevels.map((price, i) => ({
             price,
             type: i < buySpread ? (initialSpreadCount.buy++, ORDER_TYPES.SPREAD) : ORDER_TYPES.BUY,
@@ -299,22 +315,46 @@ class Grid {
 
     /**
      * Compare ideal grid vs persisted grid to detect divergence.
+     *
+     * PURPOSE: Detect if the calculated in-memory grid has diverged significantly from the
+     * persisted grid state. High divergence indicates that order fills/rotations have caused
+     * size distributions to deviate, potentially requiring a full grid regeneration.
+     *
+     * METRIC: RMS (Root Mean Square) percentage of relative size differences
+     * Formula: RMS% = sqrt(mean((calculated - persisted) / persisted)²) × 100
+     * This measures the typical relative error across all orders.
+     *
+     * @returns {Object} { buy: {metric, updated}, sell: {metric, updated}, totalMetric }
+     *   - metric: RMS% divergence (higher = more divergent)
+     *   - updated: true if metric exceeds GRID_COMPARISON.RMS_PERCENTAGE threshold
      */
     static compareGrids(calculatedGrid, persistedGrid, manager = null, cacheFunds = null) {
-        if (!Array.isArray(calculatedGrid) || !Array.isArray(persistedGrid)) return { buy: { metric: 0, updated: false }, sell: { metric: 0, updated: false }, totalMetric: 0 };
+        if (!Array.isArray(calculatedGrid) || !Array.isArray(persistedGrid)) {
+            return { buy: { metric: 0, updated: false }, sell: { metric: 0, updated: false }, totalMetric: 0 };
+        }
 
+        // Filter to PARTIAL orders only (excludes ACTIVE/SPREAD which have exact sizes)
+        // PARTIAL orders are where divergence matters most (they indicate partial fills)
         const filterForRms = (orders, type) => filterOrdersByTypeAndState(orders, type, ORDER_STATES.PARTIAL).filter(o => !o.isDoubleOrder);
         const calculatedBuys = filterForRms(calculatedGrid, ORDER_TYPES.BUY);
         const calculatedSells = filterForRms(calculatedGrid, ORDER_TYPES.SELL);
         const persistedBuys = filterForRms(persistedGrid, ORDER_TYPES.BUY);
         const persistedSells = filterForRms(persistedGrid, ORDER_TYPES.SELL);
 
+        // Calculate ideal sizes for each order based on current available budget
+        // This gives us what sizes SHOULD be, allowing comparison with actual persisted sizes
         const getIdeals = (orders, type) => {
             if (!manager || orders.length === 0 || !manager.assets) return orders;
             const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
+
+            // Total budget = cache + grid committed + available funds
             const total = (cacheFunds?.[side] || 0) + (manager.funds?.total?.grid?.[side] || 0) + (manager.funds?.available?.[side] || 0);
+
+            // Subtract existing partial sizes to get residual budget for ideal sizing
             const partials = sumOrderSizes(calculatedGrid.filter(o => o && o.type === type && o.state === ORDER_STATES.PARTIAL));
             const budget = Math.max(0, total - partials);
+
+            // Calculate geometric ideal sizes based on remaining budget
             const precision = getPrecisionByOrderType(manager.assets, type);
             try {
                 const idealSizes = calculateRotationOrderSizes(budget, 0, orders.length, type, manager.config, 0, precision);
@@ -322,12 +362,15 @@ class Grid {
             } catch (e) { return orders; }
         };
 
+        // Calculate RMS divergence metric for each side
         const buyMetric = calculateGridSideDivergenceMetric(getIdeals(calculatedBuys, ORDER_TYPES.BUY), persistedBuys, 'buy');
         const sellMetric = calculateGridSideDivergenceMetric(getIdeals(calculatedSells, ORDER_TYPES.SELL), persistedSells, 'sell');
 
+        // Check if metrics exceed threshold and flag sides for regeneration
         let buyUpdated = false, sellUpdated = false;
         if (manager) {
-            const limit = GRID_COMPARISON.RMS_PERCENTAGE / 100;
+            const limit = GRID_COMPARISON.RMS_PERCENTAGE / 100;  // Convert percentage threshold to decimal
+
             if (buyMetric > limit) {
                 if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
                 manager._gridSidesUpdated.push(ORDER_TYPES.BUY);
@@ -339,7 +382,12 @@ class Grid {
                 sellUpdated = true;
             }
         }
-        return { buy: { metric: buyMetric, updated: buyUpdated }, sell: { metric: sellMetric, updated: sellUpdated }, totalMetric: (buyMetric + sellMetric) / 2 };
+
+        return {
+            buy: { metric: buyMetric, updated: buyUpdated },
+            sell: { metric: sellMetric, updated: sellUpdated },
+            totalMetric: (buyMetric + sellMetric) / 2
+        };
     }
 
     /**
