@@ -402,10 +402,7 @@ class Grid {
         const onChainBuys = [...activeBuys, ...partialBuys];
         const onChainSells = [...activeSells, ...partialSells];
 
-        const virtualBuys = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.VIRTUAL);
-        const virtualSells = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.VIRTUAL);
-
-        return calculateSpreadFromOrders(onChainBuys, onChainSells, virtualBuys, virtualSells);
+        return calculateSpreadFromOrders(onChainBuys, onChainSells);
     }
 
     /**
