@@ -123,8 +123,6 @@ let GRID_LIMITS = {
 
 // Precision defaults and fallbacks for asset precision calculations
 let PRECISION_DEFAULTS = {
-    // Fallback when asset metadata is unavailable
-    ASSET_FALLBACK: 5,
     // Stricter precision for price tolerance and minimum order size calculations
     STRICT_CALCULATION: 8,
     // Default price tolerance ratio (0.1%)

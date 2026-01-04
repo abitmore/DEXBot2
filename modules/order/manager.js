@@ -137,16 +137,10 @@ class OrderManager {
     async deductBtsFees(side) { return await this.accountant.deductBtsFees(side); }
 
     // --- Strategy Delegation ---
-    async rebalanceOrders(fCounts, extra, excl) { return await this.strategy.rebalanceOrders(fCounts, extra, excl); }
-    async _rebalanceSideAfterFill(fType, oType, fCount, extra, excl) { return await this.strategy.rebalanceSideAfterFill(fType, oType, fCount, extra, excl); }
     async processFilledOrders(orders, excl) { return await this.strategy.processFilledOrders(orders, excl); }
-    async activateClosestVirtualOrdersForPlacement(type, count, excl) { return await this.strategy.activateClosestVirtualOrdersForPlacement(type, count, excl); }
-    async prepareFurthestOrdersForRotation(type, count, excl, fCount, opt) { return await this.strategy.prepareFurthestOrdersForRotation(type, count, excl, fCount, opt); }
     completeOrderRotation(oldInfo) { return this.strategy.completeOrderRotation(oldInfo); }
-    _evaluatePartialOrderAnchor(p, move) { return this.strategy.evaluatePartialOrderAnchor(p, move); }
     preparePartialOrderMove(p, dist, excl) { return this.strategy.preparePartialOrderMove(p, dist, excl); }
     completePartialOrderMove(move) { return this.strategy.completePartialOrderMove(move); }
-    async activateSpreadOrders(type, count) { return await this.strategy.activateSpreadOrders(type, count); }
 
     // --- Sync Delegation ---
     syncFromOpenOrders(orders, info) { return this.sync.syncFromOpenOrders(orders, info); }
@@ -513,8 +507,8 @@ class OrderManager {
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 
         // Use integer arithmetic for size comparisons to match blockchain behavior
-        const sellPrecision = this.assets?.assetA?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
-        const buyPrecision = this.assets?.assetB?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
+        const sellPrecision = this.assets?.assetA?.precision;
+        const buyPrecision = this.assets?.assetB?.precision;
         const minSellSizeInt = floatToBlockchainInt(minSellSize, sellPrecision);
         const minBuySizeInt = floatToBlockchainInt(minBuySize, buyPrecision);
 
@@ -737,12 +731,13 @@ class OrderManager {
         return false;
     }
 
-    async _persistCacheFunds() {
-        return await this._persistWithRetry(() => this.accountOrders.updateCacheFunds(this.config.botKey, this.funds.cacheFunds), `cacheFunds`, { ...this.funds.cacheFunds });
-    }
-
-    async _persistBtsFeesOwed() {
-        return await this._persistWithRetry(() => this.accountOrders.updateBtsFeesOwed(this.config.botKey, this.funds.btsFeesOwed), `BTS fees owed`, this.funds.btsFeesOwed);
+    /**
+     * Unified persistence for grid state and fund metadata.
+     * Delegates to OrderUtils.persistGridSnapshot for centralized handling.
+     */
+    async persistGrid() {
+        const { persistGridSnapshot } = require('./utils');
+        return await persistGridSnapshot(this, this.accountOrders, this.config.botKey);
     }
 }
 

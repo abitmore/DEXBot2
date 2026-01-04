@@ -8,6 +8,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { rebalanceOrders } = require('../modules/order/legacy-testing');
 
 console.log('\n========== REBALANCE ORDERS TESTS ==========\n');
 
@@ -52,7 +53,7 @@ async function testSellFillCreateBuy() {
     // 1. Activate 1 virtual SELL
     // 2. Check BUY count (2) < target (3)
     // 3. Create 1 new BUY order
-    const result = await mgr.rebalanceOrders({ [ORDER_TYPES.SELL]: 1, [ORDER_TYPES.BUY]: 0 }, 0);
+    const result = await rebalanceOrders(mgr, { [ORDER_TYPES.SELL]: 1, [ORDER_TYPES.BUY]: 0 }, 0);
 
     assert(Array.isArray(result.ordersToPlace), 'ordersToPlace should be array');
     // Should have: 1 activated SELL + 1 created BUY
@@ -110,7 +111,7 @@ async function testBuyFillCreateSell() {
     // 1. Activate 1 virtual BUY (not SELL - this was the bug!)
     // 2. Check SELL count (2) < target (3) (not BUY - this was the bug!)
     // 3. Create 1 new SELL order (not BUY - this was the bug!)
-    const result = await mgr.rebalanceOrders({ [ORDER_TYPES.SELL]: 0, [ORDER_TYPES.BUY]: 1 }, 0);
+    const result = await rebalanceOrders(mgr, { [ORDER_TYPES.SELL]: 0, [ORDER_TYPES.BUY]: 1 }, 0);
 
     assert(Array.isArray(result.ordersToPlace), 'ordersToPlace should be array');
     // Should have: 1 activated BUY + 1 created SELL
@@ -166,7 +167,7 @@ async function testSellFillRotateBuy() {
     mgr.funds.cacheFunds = { buy: 100, sell: 0.5 };
 
     // When SELL fills and BUY >= target, should rotate BUY orders
-    const result = await mgr.rebalanceOrders({ [ORDER_TYPES.SELL]: 1, [ORDER_TYPES.BUY]: 0 }, 0);
+    const result = await rebalanceOrders(mgr, { [ORDER_TYPES.SELL]: 1, [ORDER_TYPES.BUY]: 0 }, 0);
 
     assert(Array.isArray(result.ordersToRotate), 'ordersToRotate should be array');
     // Should have BUY rotation since BUY count >= target
@@ -217,7 +218,7 @@ async function testBuyFillRotateSell() {
     mgr.funds.cacheFunds = { buy: 100, sell: 0.5 };
 
     // When BUY fills and SELL >= target, should rotate SELL orders
-    const result = await mgr.rebalanceOrders({ [ORDER_TYPES.SELL]: 0, [ORDER_TYPES.BUY]: 1 }, 0);
+    const result = await rebalanceOrders(mgr, { [ORDER_TYPES.SELL]: 0, [ORDER_TYPES.BUY]: 1 }, 0);
 
     assert(Array.isArray(result.ordersToRotate), 'ordersToRotate should be array');
     // Should have SELL rotation since SELL count >= target
@@ -268,7 +269,7 @@ async function testBothSidesFilledTogether() {
     mgr.funds.cacheFunds = { buy: 100, sell: 0.5 };
 
     // When both sides fill
-    const result = await mgr.rebalanceOrders({ [ORDER_TYPES.SELL]: 1, [ORDER_TYPES.BUY]: 1 }, 0);
+    const result = await rebalanceOrders(mgr, { [ORDER_TYPES.SELL]: 1, [ORDER_TYPES.BUY]: 1 }, 0);
 
     assert(Array.isArray(result.ordersToPlace), 'ordersToPlace should be array');
     assert(Array.isArray(result.ordersToRotate), 'ordersToRotate should be array');

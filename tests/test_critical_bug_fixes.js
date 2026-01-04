@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor } = require('../modules/order/legacy-testing');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
@@ -70,13 +71,7 @@ async function testSpreadSortingForRotation() {
     mgr._updateOrder(activeOrder);
 
     // Prepare rotation - should pick s-closest (1.01) because it's lowest SELL price (closest to market)
-    const result = await mgr.strategy.prepareFurthestOrdersForRotation(
-        ORDER_TYPES.SELL,
-        1, // rotate 1 order
-        new Set(),
-        1,
-        {}
-    );
+    const result = await prepareFurthestOrdersForRotation(mgr, ORDER_TYPES.SELL, 1, new Set(), 1, {});
 
     assert(result.length > 0, 'Should have rotated at least 1 order');
     const rotation = result[0];
@@ -179,7 +174,7 @@ async function testGhostVirtualTargetSizingAccuracy() {
     assert(mgr.orders.get('s-1.15').size === 4.5, 'Partial 2 should start at size 4.5');
 
     // Execute rebalance with ghost virtualization
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // After ghost virtualization, the orders should be restored to their original state
     // (state transitions should have happened but internal ghost state should be cleaned up)
@@ -232,13 +227,7 @@ async function testSpreadSortingForBuyRotation() {
     mgr._updateOrder(activeOrder);
 
     // Prepare rotation - should pick b-closest (0.99) because it's highest BUY price (closest to market)
-    const result = await mgr.strategy.prepareFurthestOrdersForRotation(
-        ORDER_TYPES.BUY,
-        1, // rotate 1 order
-        new Set(),
-        1,
-        {}
-    );
+    const result = await prepareFurthestOrdersForRotation(mgr, ORDER_TYPES.BUY, 1, new Set(), 1, {});
 
     assert(result.length > 0, 'Should have rotated at least 1 order');
     const rotation = result[0];
@@ -327,7 +316,7 @@ async function testGhostVirtualizationRestoresStates() {
     assert(mgr.orders.get('s-1').state === ORDER_STATES.PARTIAL, 'P2 should start PARTIAL');
 
     // Execute rebalance (which uses ghost virtualization internally)
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // After rebalance, states should be properly restored
     // (not stuck in VIRTUAL state)

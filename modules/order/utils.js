@@ -94,9 +94,433 @@ const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS, PRECISION_DEFAULTS, INCR
 // ════════════════════════════════════════════════════════════════════════════════
 // Parse and validate configuration strings and values
 
+/**
+ * Safely convert a value to a finite number with fallback.
+ * @param {*} value - Value to convert
+ * @param {number} defaultValue - Fallback if not finite (default: 0)
+ * @returns {number} Finite number or default
+ */
+function toFiniteNumber(value, defaultValue = 0) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : defaultValue;
+}
+
+/**
+ * Check if a value is defined and represents a finite number.
+ * @param {*} value - Value to check
+ * @returns {boolean} True if value is defined and finite
+ */
+function isValidNumber(value) {
+    return value !== null && value !== undefined && Number.isFinite(Number(value));
+}
+
 function isPercentageString(v) {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
+
+function parsePercentageString(v) {
+    if (!isPercentageString(v)) return null;
+    const num = parseFloat(v.trim().slice(0, -1));
+    return Number.isNaN(num) ? null : num / 100.0;
+}
+
+function isRelativeMultiplierString(value) {
+    return typeof value === 'string' && /^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value);
+}
+
+function parseRelativeMultiplierString(value) {
+    if (!isRelativeMultiplierString(value)) return null;
+    const numeric = parseFloat(value.trim().toLowerCase().slice(0, -1));
+    return Number.isNaN(numeric) ? null : numeric;
+}
+
+function resolveRelativePrice(value, startPrice, mode = 'min') {
+    const multiplier = parseRelativeMultiplierString(value);
+    if (multiplier === null || !Number.isFinite(startPrice) || multiplier === 0) return null;
+    if (mode === 'min') return startPrice / multiplier;
+    if (mode === 'max') return startPrice * multiplier;
+    return null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECTION 3: FUND CALCULATIONS
+// ════════════════════════════════════════════════════════════════════════════════
+// Calculate fund-related values from account state
+
+/**
+ * Computes chain fund totals by combining free balances with committed amounts.
+ *
+ * @param {Object} accountTotals - Account totals object with buyFree, sellFree, buy, sell
+ * @param {Object} committedChain - Committed chain funds with buy and sell properties
+ * @returns {Object} Object containing:
+ *   - chainFreeBuy/chainFreeSell: Free balances from account
+ *   - committedChainBuy/committedChainSell: Committed amounts
+ *   - freePlusLockedBuy/freePlusLockedSell: Sum of free + committed
+ *   - chainTotalBuy/chainTotalSell: Account totals or free+locked, whichever is greater
+ */
+function computeChainFundTotals(accountTotals, committedChain) {
+    const chainFreeBuy = toFiniteNumber(accountTotals?.buyFree);
+    const chainFreeSell = toFiniteNumber(accountTotals?.sellFree);
+    const committedChainBuy = toFiniteNumber(committedChain?.buy);
+    const committedChainSell = toFiniteNumber(committedChain?.sell);
+
+    const freePlusLockedBuy = chainFreeBuy + committedChainBuy;
+    const freePlusLockedSell = chainFreeSell + committedChainSell;
+
+    // Prefer accountTotals.buy/sell (free + locked in open orders) when available, but ensure
+    // we don't regress to free-only by treating totals as at least (free + locked).
+    const chainTotalBuy = isValidNumber(accountTotals?.buy)
+        ? Math.max(Number(accountTotals.buy), freePlusLockedBuy)
+        : freePlusLockedBuy;
+    const chainTotalSell = isValidNumber(accountTotals?.sell)
+        ? Math.max(Number(accountTotals.sell), freePlusLockedSell)
+        : freePlusLockedSell;
+
+    return {
+        chainFreeBuy,
+        chainFreeSell,
+        committedChainBuy,
+        committedChainSell,
+        freePlusLockedBuy,
+        freePlusLockedSell,
+        chainTotalBuy,
+        chainTotalSell
+    };
+}
+
+/**
+ * Calculates available funds for a specific side (buy/sell).
+ *
+ * FORMULA: available = max(0, chainFree - virtual - btsFeesOwed - btsFeesReservation)
+ *
+ * NOTE ON CACHEFUNDS:
+ * cacheFunds (unspent fill proceeds and rotation surpluses) is intentionally NOT subtracted
+ * from available. This is because cacheFunds represents capital that is still available for
+ * grid sizing and order creation. It's kept separate from chainFree to track proceeds that
+ * will be rotated back into the grid in future cycles. cacheFunds is added to grid sizing
+ * calculations separately during rebalancing.
+ *
+ * FUND COMPONENTS:
+ * - chainFree: Unallocated funds on blockchain (free to use immediately)
+ * - virtual: Funds reserved for VIRTUAL grid orders (not yet on-chain)
+ * - btsFeesOwed: Accumulated BTS fees waiting to be settled from cacheFunds
+ * - btsFeesReservation: Buffer reserved for future order creation fees
+ * - cacheFunds: Fill proceeds and rotation surplus (added to grid sizing separately)
+ *
+ * @param {string} side - 'buy' or 'sell'
+ * @param {Object} accountTotals - Account totals with buyFree/sellFree
+ * @param {Object} funds - Fund tracking object
+ * @param {string} assetA - Asset A symbol (to determine BTS side)
+ * @param {string} assetB - Asset B symbol (to determine BTS side)
+ * @param {Object} activeOrders - Target order counts (for BTS fee reservation)
+ * @returns {number} Available funds for the side (chainFree minus reserved/owed), always >= 0
+ */
+function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null) {
+    if (side !== 'buy' && side !== 'sell') return 0;
+
+    const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
+    const virtual = toFiniteNumber(side === 'buy' ? funds.virtual?.buy : funds.virtual?.sell);
+    const btsFeesOwed = toFiniteNumber(funds.btsFeesOwed);
+
+    // Determine which side actually has BTS as the asset
+    const btsSide = (assetA === 'BTS') ? 'sell' : (assetB === 'BTS') ? 'buy' : null;
+
+    // Reserve BTS fees for updating target open orders (needed when regenerating grid)
+    let btsFeesReservation = 0;
+    if (btsSide === side && activeOrders) {
+        try {
+            const targetBuy = Math.max(0, toFiniteNumber(activeOrders?.buy, 1));
+            const targetSell = Math.max(0, toFiniteNumber(activeOrders?.sell, 1));
+            const totalTargetOrders = targetBuy + targetSell;
+
+            if (totalTargetOrders > 0) {
+                const btsFeeData = getAssetFees('BTS', 1);
+                btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
+            }
+        } catch (err) {
+            btsFeesReservation = FEE_PARAMETERS.BTS_FALLBACK_FEE;
+        }
+    }
+
+    // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
+    const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
+
+    return Math.max(0, chainFree - virtual - currentFeesOwed - btsFeesReservation);
+}
+
+/**
+ * Calculates the current spread percentage between best buy and sell orders.
+ * Only uses active orders - virtual orders haven't been placed yet.
+ *
+ * @param {Array} activeBuys - Active buy orders
+ * @param {Array} activeSells - Active sell orders
+ * @returns {number} Spread percentage (e.g., 2.5 for 2.5%), or 0 if no valid spread
+ */
+function calculateSpreadFromOrders(activeBuys, activeSells) {
+    // Only calculate spread from on-chain orders (ACTIVE + PARTIAL)
+    // Virtual orders haven't been placed yet and don't affect the actual market spread
+    const bestBuy = activeBuys.length > 0 ? Math.max(...activeBuys.map(o => o.price)) : null;
+    const bestSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : null;
+
+    // If no on-chain orders on either side, spread is undefined (return 0)
+    if (bestBuy === null || bestSell === null || bestBuy === 0) return 0;
+
+    return ((bestSell / bestBuy) - 1) * 100;
+}
+
+/**
+ * Resolves a config value to a numeric amount.
+ * Supports: direct numbers, percentage strings (e.g., "50%"), or numeric strings.
+ * Returns 0 if value cannot be parsed or if total is needed but not provided.
+ *
+ * @param {*} value - The config value to resolve
+ * @param {number} total - The total amount (required for percentage calculations)
+ * @returns {number} Resolved numeric value
+ */
+function resolveConfigValue(value, total) {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+        const p = parsePercentageString(value);
+        if (p !== null) {
+            if (total === null || total === undefined) {
+                return 0; // Cannot resolve without total
+            }
+            return total * p;
+        }
+        const n = parseFloat(value);
+        return Number.isNaN(n) ? 0 : n;
+    }
+    return 0;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECTION 2: BLOCKCHAIN CONVERSIONS & PRECISION
+// ════════════════════════════════════════════════════════════════════════════════
+// Handle blockchain integer/float conversions and precision calculations
+
+function blockchainToFloat(intValue, precision) {
+    if (!isValidNumber(precision)) {
+        throw new Error(`Invalid precision for blockchainToFloat: ${precision}`);
+    }
+    return toFiniteNumber(intValue) / Math.pow(10, Number(precision));
+}
+
+function floatToBlockchainInt(floatValue, precision) {
+    if (!isValidNumber(precision)) {
+        throw new Error(`Invalid precision for floatToBlockchainInt: ${precision}`);
+    }
+    const p = Number(precision);
+    const scaled = Math.round(toFiniteNumber(floatValue) * Math.pow(10, p));
+
+    // 64-bit signed integer limits: -(2^63) to (2^63 - 1)
+    const MAX_INT64 = 9223372036854775807;
+    const MIN_INT64 = -9223372036854775808;
+
+    if (scaled > MAX_INT64 || scaled < MIN_INT64) {
+        console.warn(`[floatToBlockchainInt] Overflow detected: ${floatValue} with precision ${p} resulted in ${scaled}. Clamping to safe limits.`);
+        return scaled > 0 ? MAX_INT64 : MIN_INT64;
+    }
+
+    return scaled;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECTION 4: PRICE OPERATIONS (PART 1 - Tolerance)
+// ════════════════════════════════════════════════════════════════════════════════
+// Price tolerance calculation and checking (also see Section 4 Part 2: Price derivation)
+
+function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
+    if (!assets || !gridPrice || !orderSize) {
+        return gridPrice ? gridPrice * PRECISION_DEFAULTS.PRICE_TOLERANCE : 0;
+    }
+
+    const precisionA = assets.assetA?.precision;
+    const precisionB = assets.assetB?.precision;
+
+    if (!isValidNumber(precisionA) || !isValidNumber(precisionB)) {
+        throw new Error(`Missing or invalid asset precision in calculatePriceTolerance: A=${precisionA}, B=${precisionB}`);
+    }
+
+    let orderSizeA, orderSizeB;
+    if (orderType === 'sell' || orderType === 'SELL' || orderType === 'Sell') {
+        orderSizeA = orderSize;
+        orderSizeB = orderSize * gridPrice;
+    } else {
+        orderSizeB = orderSize;
+        orderSizeA = orderSize / gridPrice;
+    }
+
+    const termA = 1 / (orderSizeA * Math.pow(10, precisionA));
+    const termB = 1 / (orderSizeB * Math.pow(10, precisionB));
+    const tolerance = (termA + termB) * gridPrice;
+    return tolerance;
+}
+
+function checkPriceWithinTolerance(gridOrder, chainOrder, assets = null) {
+    const gridPrice = toFiniteNumber(gridOrder?.price);
+    const chainPrice = toFiniteNumber(chainOrder?.price);
+    const orderSize = toFiniteNumber(chainOrder?.size ?? gridOrder?.size);
+
+    const priceDiff = Math.abs(gridPrice - chainPrice);
+    const tolerance = calculatePriceTolerance(gridPrice, orderSize, gridOrder?.type, assets);
+
+    return {
+        isWithinTolerance: priceDiff <= tolerance,
+        priceDiff,
+        tolerance,
+        gridPrice,
+        chainPrice,
+        orderSize
+    };
+}
+
+/**
+ * Validate that calculated order amounts won't exceed 64-bit integer limits.
+ * Returns true if amounts are safe, false if they would overflow.
+ * @param {number} amountToSell - Amount to sell (in float)
+ * @param {number} minToReceive - Minimum to receive (in float)
+ * @param {number} sellPrecision - Precision of sell asset
+ * @param {number} receivePrecision - Precision of receive asset
+ * @returns {boolean} true if amounts are within safe limits
+ */
+function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecision, receivePrecision) {
+    const MAX_INT64 = 9223372036854775807;
+
+    const sellPrecFloat = Math.pow(10, toFiniteNumber(sellPrecision));
+    const receivePrecFloat = Math.pow(10, toFiniteNumber(receivePrecision));
+
+    const sellInt = Math.round(toFiniteNumber(amountToSell) * sellPrecFloat);
+    const receiveInt = Math.round(toFiniteNumber(minToReceive) * receivePrecFloat);
+
+    const withinLimits = sellInt <= MAX_INT64 && receiveInt <= MAX_INT64 && sellInt > 0 && receiveInt > 0;
+
+    if (!withinLimits) {
+        console.warn(
+            `[validateOrderAmountsWithinLimits] Order amounts exceed safe limits or are invalid. ` +
+            `Sell: ${amountToSell} (precision ${sellPrecision}) = ${sellInt}, ` +
+            `Receive: ${minToReceive} (precision ${receivePrecision}) = ${receiveInt}. ` +
+            `Max allowed: ${MAX_INT64}`
+        );
+    }
+
+    return withinLimits;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (PART 1 - Parsing & Matching)
+// ════════════════════════════════════════════════════════════════════════════════
+// Parse blockchain orders and match them to grid orders
+
+function parseChainOrder(chainOrder, assets) {
+    if (!chainOrder || !chainOrder.sell_price || !assets) return null;
+    const { base, quote } = chainOrder.sell_price;
+    if (!base || !quote || !base.asset_id || !quote.asset_id || base.amount === 0) return null;
+    let price; let type;
+    if (base.asset_id === assets.assetA.id && quote.asset_id === assets.assetB.id) {
+        price = (quote.amount / base.amount) * Math.pow(10, assets.assetA.precision - assets.assetB.precision);
+        type = ORDER_TYPES.SELL;
+    } else if (base.asset_id === assets.assetB.id && quote.asset_id === assets.assetA.id) {
+        price = (base.amount / quote.amount) * Math.pow(10, assets.assetA.precision - assets.assetB.precision);
+        type = ORDER_TYPES.BUY;
+    } else return null;
+
+    let size = null;
+    try {
+        if (chainOrder.for_sale !== undefined && chainOrder.for_sale !== null) {
+            if (type === ORDER_TYPES.SELL) {
+                // For SELL: for_sale is in assetA (base asset)
+                const prec = assets?.assetA?.precision ?? 0;
+                size = blockchainToFloat(Number(chainOrder.for_sale), prec);
+            } else {
+                // For BUY: for_sale is in assetB (quote asset we're selling)
+                // IMPORTANT: grid BUY sizes are tracked in assetB units (see ORDER_STATES docs).
+                // So we keep size in assetB units here.
+                const bPrec = assets?.assetB?.precision ?? 0;
+                size = blockchainToFloat(Number(chainOrder.for_sale), bPrec);
+            }
+        }
+    } catch (e) { size = null; }
+
+    return { orderId: chainOrder.id, price, type, size };
+}
+
+function findBestMatchByPrice(chainOrder, candidateIds, ordersMap, calcToleranceFn) {
+    let bestMatch = null; let smallestDiff = Infinity;
+    for (const gridOrderId of candidateIds) {
+        const gridOrder = ordersMap.get(gridOrderId);
+        if (!gridOrder || gridOrder.type !== chainOrder.type) continue;
+        const priceDiff = Math.abs(gridOrder.price - chainOrder.price);
+        const orderSize = toFiniteNumber(gridOrder.size ?? chainOrder.size);
+        const tolerance = calcToleranceFn(gridOrder.price, orderSize, gridOrder.type);
+        if (priceDiff <= tolerance && priceDiff < smallestDiff) {
+            smallestDiff = priceDiff; bestMatch = gridOrder;
+        }
+    }
+    return { match: bestMatch, priceDiff: smallestDiff };
+}
+
+/**
+ * Match chain order to grid order by price + size tolerance.
+ * - Matches with ACTIVE or VIRTUAL grid orders
+ * - Both price AND size must be within tolerance
+ * - When matched: grid order becomes ACTIVE with chain orderID
+ * - Returns best match (closest price) or null
+ */
+function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
+    const { orders, assets, calcToleranceFn, logger } = opts || {};
+    if (!parsedChainOrder || !orders) return null;
+
+    // 1. Fast path: exact orderId match
+    if (parsedChainOrder.orderId) {
+        for (const gridOrder of orders.values()) {
+            if (gridOrder?.orderId === parsedChainOrder.orderId) return gridOrder;
+        }
+    }
+
+    const chainSize = toFiniteNumber(parsedChainOrder.size);
+    const chainPrice = toFiniteNumber(parsedChainOrder.price);
+    const isSell = parsedChainOrder.type === ORDER_TYPES.SELL;
+    const precision = isSell ? (assets?.assetA?.precision ?? 0) : (assets?.assetB?.precision ?? 0);
+    const chainInt = floatToBlockchainInt(chainSize, precision);
+
+    let bestMatch = null;
+    let bestPriceDiff = Infinity;
+
+    // 2. Match with ACTIVE/PARTIAL/VIRTUAL grid orders
+    for (const gridOrder of orders.values()) {
+        if (!gridOrder || gridOrder.type !== parsedChainOrder.type) continue;
+        if (![ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL].includes(gridOrder.state)) continue;
+
+        // Price tolerance check
+        const priceDiff = Math.abs(gridOrder.price - chainPrice);
+        const priceTolerance = calcToleranceFn?.(gridOrder.price, gridOrder.size, gridOrder.type) || 0;
+        if (priceDiff > priceTolerance) continue;
+
+        // Size check: compare in blockchain integer units
+        if (!opts?.skipSizeMatch && Math.abs(floatToBlockchainInt(gridOrder.size, precision) - chainInt) > 1) {
+            logger?.log?.(`Chain size mismatch grid ${gridOrder.id}: chain=${chainSize.toFixed(8)}, grid=${toFiniteNumber(gridOrder.size).toFixed(8)}`, 'debug');
+            continue;
+        }
+
+        if (priceDiff < bestPriceDiff) {
+            bestPriceDiff = priceDiff;
+            bestMatch = gridOrder;
+        }
+    }
+
+    if (bestMatch) {
+        logger?.log?.(`Matched chain ${parsedChainOrder.orderId} (price=${chainPrice.toFixed(6)}) to grid ${bestMatch.id} (price=${bestMatch.price.toFixed(6)}, state=${bestMatch.state})`, 'info');
+        return bestMatch;
+    }
+
+    logger?.log?.(`No grid match for chain ${parsedChainOrder.orderId} (price=${chainPrice.toFixed(6)})`, 'warn');
+    return null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (PART 2 - Reconciliation)
+// ════════════════════════════════════════════════════════════════════════════════
+// Apply blockchain order data to grid orders and correct price mismatches
 
 /**
  * Correct all orders that have been flagged for price mismatches on-chain.
@@ -141,418 +565,6 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
     });
 }
 
-function parsePercentageString(v) {
-    if (!isPercentageString(v)) return null;
-    const num = parseFloat(v.trim().slice(0, -1));
-    if (Number.isNaN(num)) return null;
-    return num / 100.0;
-}
-
-function isRelativeMultiplierString(value) {
-    return typeof value === 'string' && /^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value);
-}
-
-function parseRelativeMultiplierString(value) {
-    if (!isRelativeMultiplierString(value)) return null;
-    const cleaned = value.trim().toLowerCase();
-    const numeric = parseFloat(cleaned.slice(0, -1));
-    return Number.isNaN(numeric) ? null : numeric;
-}
-
-function resolveRelativePrice(value, startPrice, mode = 'min') {
-    const multiplier = parseRelativeMultiplierString(value);
-    if (multiplier === null || !Number.isFinite(startPrice) || multiplier === 0) return null;
-    if (mode === 'min') return startPrice / multiplier;
-    if (mode === 'max') return startPrice * multiplier;
-    return null;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// SECTION 3: FUND CALCULATIONS
-// ════════════════════════════════════════════════════════════════════════════════
-// Calculate fund-related values from account state
-
-/**
- * Computes chain fund totals by combining free balances with committed amounts.
- *
- * @param {Object} accountTotals - Account totals object with buyFree, sellFree, buy, sell
- * @param {Object} committedChain - Committed chain funds with buy and sell properties
- * @returns {Object} Object containing:
- *   - chainFreeBuy/chainFreeSell: Free balances from account
- *   - committedChainBuy/committedChainSell: Committed amounts
- *   - freePlusLockedBuy/freePlusLockedSell: Sum of free + committed
- *   - chainTotalBuy/chainTotalSell: Account totals or free+locked, whichever is greater
- */
-function computeChainFundTotals(accountTotals, committedChain) {
-    const chainFreeBuy = Number.isFinite(Number(accountTotals?.buyFree)) ? Number(accountTotals.buyFree) : 0;
-    const chainFreeSell = Number.isFinite(Number(accountTotals?.sellFree)) ? Number(accountTotals.sellFree) : 0;
-    const committedChainBuy = Number(committedChain?.buy) || 0;
-    const committedChainSell = Number(committedChain?.sell) || 0;
-
-    const freePlusLockedBuy = chainFreeBuy + committedChainBuy;
-    const freePlusLockedSell = chainFreeSell + committedChainSell;
-
-    // Prefer accountTotals.buy/sell (free + locked in open orders) when available, but ensure
-    // we don't regress to free-only by treating totals as at least (free + locked).
-    const chainTotalBuy = Number.isFinite(Number(accountTotals?.buy))
-        ? Math.max(Number(accountTotals.buy), freePlusLockedBuy)
-        : freePlusLockedBuy;
-    const chainTotalSell = Number.isFinite(Number(accountTotals?.sell))
-        ? Math.max(Number(accountTotals.sell), freePlusLockedSell)
-        : freePlusLockedSell;
-
-    return {
-        chainFreeBuy,
-        chainFreeSell,
-        committedChainBuy,
-        committedChainSell,
-        freePlusLockedBuy,
-        freePlusLockedSell,
-        chainTotalBuy,
-        chainTotalSell
-    };
-}
-
-/**
- * Calculates available funds for a specific side (buy/sell).
- *
- * FORMULA: available = max(0, chainFree - virtual - btsFeesOwed - btsFeesReservation)
- *
- * NOTE ON CACHEFUNDS:
- * cacheFunds (unspent fill proceeds and rotation surpluses) is intentionally NOT subtracted
- * from available. This is because cacheFunds represents capital that is still available for
- * grid sizing and order creation. It's kept separate from chainFree to track proceeds that
- * will be rotated back into the grid in future cycles. cacheFunds is added to grid sizing
- * calculations separately during rebalancing.
- *
- * FUND COMPONENTS:
- * - chainFree: Unallocated funds on blockchain (free to use immediately)
- * - virtual: Funds reserved for VIRTUAL grid orders (not yet on-chain)
- * - btsFeesOwed: Accumulated BTS fees waiting to be settled from cacheFunds
- * - btsFeesReservation: Buffer reserved for future order creation fees
- * - cacheFunds: Fill proceeds and rotation surplus (added to grid sizing separately)
- *
- * @param {string} side - 'buy' or 'sell'
- * @param {Object} accountTotals - Account totals with buyFree/sellFree
- * @param {Object} funds - Fund tracking object
- * @param {string} assetA - Asset A symbol (to determine BTS side)
- * @param {string} assetB - Asset B symbol (to determine BTS side)
- * @param {Object} activeOrders - Target order counts (for BTS fee reservation)
- * @returns {number} Available funds for the side (chainFree minus reserved/owed), always >= 0
- */
-function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null) {
-    if (!side || (side !== 'buy' && side !== 'sell')) return 0;
-
-    const chainFree = side === 'buy' ? (accountTotals?.buyFree || 0) : (accountTotals?.sellFree || 0);
-    const virtual = side === 'buy' ? (funds.virtual?.buy || 0) : (funds.virtual?.sell || 0);
-    const btsFeesOwed = funds.btsFeesOwed || 0;
-
-    // Determine which side actually has BTS as the asset
-    const btsSide = (assetA === 'BTS') ? 'sell' :
-        (assetB === 'BTS') ? 'buy' : null;
-
-    // Reserve BTS fees for updating target open orders (needed when regenerating grid)
-    let btsFeesReservation = 0;
-    if (btsSide === side && activeOrders) {
-        try {
-            const targetBuy = Math.max(0, Number.isFinite(Number(activeOrders?.buy)) ? Number(activeOrders.buy) : 1);
-            const targetSell = Math.max(0, Number.isFinite(Number(activeOrders?.sell)) ? Number(activeOrders.sell) : 1);
-            const totalTargetOrders = targetBuy + targetSell;
-
-            if (totalTargetOrders > 0) {
-                const btsFeeData = getAssetFees('BTS', 1);
-                btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
-            }
-        } catch (err) {
-            btsFeesReservation = FEE_PARAMETERS.BTS_FALLBACK_FEE;
-        }
-    }
-
-    // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
-    const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
-
-    return Math.max(0, chainFree - virtual - currentFeesOwed - btsFeesReservation);
-}
-
-/**
- * Calculates the current spread percentage between best buy and sell orders.
- * Checks active orders first, falls back to virtual orders if needed.
- *
- * @param {Array} activeBuys - Active buy orders
- * @param {Array} activeSells - Active sell orders
- * @param {Array} virtualBuys - Virtual buy orders
- * @param {Array} virtualSells - Virtual sell orders
- * @returns {number} Spread percentage (e.g., 2.5 for 2.5%), or 0 if no valid spread
- */
-function calculateSpreadFromOrders(activeBuys, activeSells, virtualBuys, virtualSells) {
-    // Only calculate spread from on-chain orders (ACTIVE + PARTIAL)
-    // Virtual orders haven't been placed yet and don't affect the actual market spread
-    const bestBuy = activeBuys.length > 0 ? Math.max(...activeBuys.map(o => o.price)) : null;
-    const bestSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : null;
-
-    // If no on-chain orders on either side, spread is undefined (return 0)
-    if (bestBuy === null || bestSell === null || bestBuy === 0) return 0;
-
-    return ((bestSell / bestBuy) - 1) * 100;
-}
-
-/**
- * Resolves a config value to a numeric amount.
- * Supports: direct numbers, percentage strings (e.g., "50%"), or numeric strings.
- * Returns 0 if value cannot be parsed or if total is needed but not provided.
- *
- * @param {*} value - The config value to resolve
- * @param {number} total - The total amount (required for percentage calculations)
- * @returns {number} Resolved numeric value
- */
-function resolveConfigValue(value, total) {
-    if (typeof value === 'number') return value;
-    if (typeof value === 'string') {
-        const p = parsePercentageString(value);
-        if (p !== null) {
-            if (total === null || total === undefined) {
-                return 0; // Cannot resolve without total
-            }
-            return total * p;
-        }
-        const n = parseFloat(value);
-        return Number.isNaN(n) ? 0 : n;
-    }
-    return 0;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// SECTION 2: BLOCKCHAIN CONVERSIONS & PRECISION
-// ════════════════════════════════════════════════════════════════════════════════
-// Handle blockchain integer/float conversions and precision calculations
-
-function blockchainToFloat(intValue, precision) {
-    if (intValue === null || intValue === undefined) return 0;
-    const p = Number(precision || 0);
-    return Number(intValue) / Math.pow(10, p);
-}
-
-function floatToBlockchainInt(floatValue, precision) {
-    const p = Number(precision || 0);
-    const scaled = Math.round(Number(floatValue) * Math.pow(10, p));
-
-    // 64-bit signed integer limits: -(2^63) to (2^63 - 1)
-    const MAX_INT64 = 9223372036854775807;
-    const MIN_INT64 = -9223372036854775808;
-
-    if (scaled > MAX_INT64 || scaled < MIN_INT64) {
-        console.warn(`[floatToBlockchainInt] Overflow detected: ${floatValue} with precision ${p} resulted in ${scaled}. Clamping to safe limits.`);
-        return scaled > 0 ? MAX_INT64 : MIN_INT64;
-    }
-
-    return scaled;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// SECTION 4: PRICE OPERATIONS (PART 1 - Tolerance)
-// ════════════════════════════════════════════════════════════════════════════════
-// Price tolerance calculation and checking (also see Section 4 Part 2: Price derivation)
-
-function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
-    if (!assets || !gridPrice || !orderSize) {
-        return gridPrice ? gridPrice * PRECISION_DEFAULTS.PRICE_TOLERANCE : 0;
-    }
-
-    const precisionA = assets.assetA?.precision ?? 8;
-    const precisionB = assets.assetB?.precision ?? 8;
-
-    let orderSizeA, orderSizeB;
-    if (orderType === 'sell' || orderType === 'SELL' || orderType === 'Sell') {
-        orderSizeA = orderSize;
-        orderSizeB = orderSize * gridPrice;
-    } else {
-        orderSizeB = orderSize;
-        orderSizeA = orderSize / gridPrice;
-    }
-
-    const termA = 1 / (orderSizeA * Math.pow(10, precisionA));
-    const termB = 1 / (orderSizeB * Math.pow(10, precisionB));
-    const tolerance = (termA + termB) * gridPrice;
-    return tolerance;
-}
-
-function checkPriceWithinTolerance(gridOrder, chainOrder, assets = null) {
-    const gridPrice = Number(gridOrder && gridOrder.price);
-    const chainPrice = Number(chainOrder && chainOrder.price);
-    const orderSize = Number((chainOrder && chainOrder.size) || (gridOrder && gridOrder.size) || 0);
-
-    const priceDiff = Math.abs(gridPrice - chainPrice);
-    const tolerance = calculatePriceTolerance(gridPrice, orderSize, gridOrder && gridOrder.type, assets);
-
-    return {
-        isWithinTolerance: priceDiff <= tolerance,
-        priceDiff,
-        tolerance,
-        gridPrice,
-        chainPrice,
-        orderSize
-    };
-}
-
-/**
- * Validate that calculated order amounts won't exceed 64-bit integer limits.
- * Returns true if amounts are safe, false if they would overflow.
- * @param {number} amountToSell - Amount to sell (in float)
- * @param {number} minToReceive - Minimum to receive (in float)
- * @param {number} sellPrecision - Precision of sell asset
- * @param {number} receivePrecision - Precision of receive asset
- * @returns {boolean} true if amounts are within safe limits
- */
-function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecision, receivePrecision) {
-    const MAX_INT64 = 9223372036854775807;
-
-    const sellPrecFloat = Math.pow(10, sellPrecision || 0);
-    const receivePrecFloat = Math.pow(10, receivePrecision || 0);
-
-    const sellInt = Math.round(Number(amountToSell) * sellPrecFloat);
-    const receiveInt = Math.round(Number(minToReceive) * receivePrecFloat);
-
-    const withinLimits = sellInt <= MAX_INT64 && receiveInt <= MAX_INT64 && sellInt > 0 && receiveInt > 0;
-
-    if (!withinLimits) {
-        console.warn(
-            `[validateOrderAmountsWithinLimits] Order amounts exceed safe limits or are invalid. ` +
-            `Sell: ${amountToSell} (precision ${sellPrecision}) = ${sellInt}, ` +
-            `Receive: ${minToReceive} (precision ${receivePrecision}) = ${receiveInt}. ` +
-            `Max allowed: ${MAX_INT64}`
-        );
-    }
-
-    return withinLimits;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (PART 1 - Parsing & Matching)
-// ════════════════════════════════════════════════════════════════════════════════
-// Parse blockchain orders and match them to grid orders
-
-function parseChainOrder(chainOrder, assets) {
-    if (!chainOrder || !chainOrder.sell_price || !assets) return null;
-    const { base, quote } = chainOrder.sell_price;
-    if (!base || !quote || !base.asset_id || !quote.asset_id || base.amount == 0) return null;
-    let price; let type;
-    if (base.asset_id === assets.assetA.id && quote.asset_id === assets.assetB.id) {
-        price = (quote.amount / base.amount) * Math.pow(10, assets.assetA.precision - assets.assetB.precision);
-        type = ORDER_TYPES.SELL;
-    } else if (base.asset_id === assets.assetB.id && quote.asset_id === assets.assetA.id) {
-        price = (base.amount / quote.amount) * Math.pow(10, assets.assetA.precision - assets.assetB.precision);
-        type = ORDER_TYPES.BUY;
-    } else return null;
-
-    let size = null;
-    try {
-        if (chainOrder.for_sale !== undefined && chainOrder.for_sale !== null) {
-            if (type === ORDER_TYPES.SELL) {
-                // For SELL: for_sale is in assetA (base asset)
-                const prec = assets.assetA && assets.assetA.precision !== undefined ? assets.assetA.precision : 0;
-                size = blockchainToFloat(Number(chainOrder.for_sale), prec);
-            } else {
-                // For BUY: for_sale is in assetB (quote asset we're selling)
-                // IMPORTANT: grid BUY sizes are tracked in assetB units (see ORDER_STATES docs).
-                // So we keep size in assetB units here.
-                const bPrec = assets.assetB && assets.assetB.precision !== undefined ? assets.assetB.precision : 0;
-                size = blockchainToFloat(Number(chainOrder.for_sale), bPrec);
-            }
-        }
-    } catch (e) { size = null; }
-
-    return { orderId: chainOrder.id, price, type, size };
-}
-
-function findBestMatchByPrice(chainOrder, candidateIds, ordersMap, calcToleranceFn) {
-    let bestMatch = null; let smallestDiff = Infinity;
-    for (const gridOrderId of candidateIds) {
-        const gridOrder = ordersMap.get(gridOrderId);
-        if (!gridOrder || gridOrder.type !== chainOrder.type) continue;
-        const priceDiff = Math.abs(gridOrder.price - chainOrder.price);
-        const orderSize = gridOrder.size || chainOrder.size || 0;
-        const tolerance = calcToleranceFn(gridOrder.price, orderSize, gridOrder.type);
-        if (priceDiff <= tolerance && priceDiff < smallestDiff) {
-            smallestDiff = priceDiff; bestMatch = gridOrder;
-        }
-    }
-    return { match: bestMatch, priceDiff: smallestDiff };
-}
-
-/**
- * Match chain order to grid order by price + size tolerance.
- * - Matches with ACTIVE or VIRTUAL grid orders
- * - Both price AND size must be within tolerance
- * - When matched: grid order becomes ACTIVE with chain orderID
- * - Returns best match (closest price) or null
- */
-function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
-    const { orders, ordersByState, assets, calcToleranceFn, logger } = opts || {};
-    if (!parsedChainOrder || !orders) return null;
-
-    // Fast path: exact orderId match (needed for cancel/sync flows)
-    if (parsedChainOrder.orderId) {
-        for (const gridOrder of orders.values()) {
-            if (gridOrder && gridOrder.orderId === parsedChainOrder.orderId) return gridOrder;
-        }
-    }
-
-    const chainSize = parsedChainOrder.size || 0;
-    const chainPrice = parsedChainOrder.price || 0;
-    let bestMatch = null;
-    let bestPriceDiff = Infinity;
-
-    // Match with ACTIVE/PARTIAL/VIRTUAL grid orders
-    for (const gridOrder of orders.values()) {
-        if (!gridOrder || gridOrder.type !== parsedChainOrder.type) continue;
-        if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL && gridOrder.state !== ORDER_STATES.VIRTUAL) continue;
-
-        // Price tolerance check
-        const priceDiff = Math.abs(gridOrder.price - chainPrice);
-        const priceTolerance = calcToleranceFn ? calcToleranceFn(gridOrder.price, gridOrder.size, gridOrder.type) : 0;
-
-        if (priceDiff > priceTolerance) continue;
-
-        // Size check: compare in blockchain integer units for the relevant asset.
-        // - SELL sizes are in assetA units
-        // - BUY sizes are in assetB units
-        const gridSize = Number(gridOrder.size) || 0;
-        const precision = (parsedChainOrder.type === ORDER_TYPES.SELL)
-            ? (assets?.assetA?.precision ?? 0)
-            : (assets?.assetB?.precision ?? 0);
-
-        const gridInt = floatToBlockchainInt(gridSize, precision);
-        const chainInt = floatToBlockchainInt(chainSize, precision);
-        if (!opts?.skipSizeMatch && Math.abs(gridInt - chainInt) > 1) {
-            logger?.log?.(
-                `Chain order size mismatch with grid ${gridOrder.id}: chain=${chainSize.toFixed(8)}, grid=${gridSize.toFixed(8)}, ` +
-                `chainInt=${chainInt}, gridInt=${gridInt}, precision=${precision}`,
-                'debug'
-            );
-            continue;
-        }
-
-        // Track best match by price difference
-        if (priceDiff < bestPriceDiff) {
-            bestPriceDiff = priceDiff;
-            bestMatch = gridOrder;
-        }
-    }
-
-    if (bestMatch) {
-        logger?.log?.(`Matched chain ${parsedChainOrder.orderId} (price=${chainPrice.toFixed(6)}, size=${chainSize.toFixed(8)}) to grid ${bestMatch.id} (price=${bestMatch.price.toFixed(6)}, size=${bestMatch.size.toFixed(8)}, state=${bestMatch.state})`, 'info');
-        return bestMatch;
-    }
-
-    logger?.log?.(`No grid match for chain ${parsedChainOrder.orderId} (type=${parsedChainOrder.type}, price=${chainPrice.toFixed(6)}, size=${chainSize.toFixed(8)})`, 'warn');
-    return null;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (PART 2 - Reconciliation)
-// ════════════════════════════════════════════════════════════════════════════════
-// Apply blockchain order data to grid orders and correct price mismatches
-
 function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     if (!manager || !gridOrder) return;
     // Allow updates for ACTIVE and PARTIAL orders
@@ -595,6 +607,20 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     }
 }
 
+/**
+ * Correct a single order's price on the blockchain.
+ * @param {Object} manager - Manager instance with correction list and logger
+ * @param {Object} correctionInfo - Correction details
+ * @param {Object} correctionInfo.gridOrder - Grid order object
+ * @param {string} correctionInfo.chainOrderId - Order ID on chain
+ * @param {number} correctionInfo.expectedPrice - Expected price (MUST be > 0 to avoid Infinity in calculations)
+ * @param {number} correctionInfo.size - Order size
+ * @param {string} correctionInfo.type - Order type (BUY/SELL)
+ * @param {string} accountName - Account name
+ * @param {string} privateKey - Private key for signing
+ * @param {Object} accountOrders - Account orders API instance
+ * @returns {Promise<{success: boolean, error?: string, skipped?: boolean, orderGone?: boolean}>}
+ */
 async function correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders) {
     const { gridOrder, chainOrderId, expectedPrice, size, type } = correctionInfo;
 
@@ -606,16 +632,20 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
     }
 
     manager.logger?.log?.(`Correcting order ${gridOrder.id} (${chainOrderId}): updating to price ${expectedPrice.toFixed(8)}`, 'info');
+
+    // Calculate amounts (outside try block as this calculation is unlikely to fail)
+    let amountToSell, minToReceive;
+    if (type === ORDER_TYPES.SELL) {
+        amountToSell = size;
+        minToReceive = size * expectedPrice;
+    } else {
+        amountToSell = size;
+        minToReceive = size / expectedPrice;
+    }
+    manager.logger?.log?.(`Updating order: amountToSell=${amountToSell.toFixed(8)}, minToReceive=${minToReceive.toFixed(8)}`, 'info');
+
+    // Execute the chain update
     try {
-        let amountToSell, minToReceive;
-        if (type === ORDER_TYPES.SELL) {
-            amountToSell = size;
-            minToReceive = size * expectedPrice;
-        } else {
-            amountToSell = size;
-            minToReceive = size / expectedPrice;
-        }
-        manager.logger?.log?.(`Updating order: amountToSell=${amountToSell.toFixed(8)}, minToReceive=${minToReceive.toFixed(8)}`, 'info');
         const updateResult = await accountOrders.updateOrder(accountName, privateKey, chainOrderId, { amountToSell, minToReceive });
         if (updateResult === null) {
             manager.logger?.log?.(`Order ${gridOrder.id} (${chainOrderId}) price correction skipped (no change to amount_to_sell)`, 'info');
@@ -658,56 +688,63 @@ function getMinOrderSize(orderType, assets, factor = 50) {
 // Derive market and pool prices from blockchain (moved from modules/order/price.js)
 
 const lookupAsset = async (BitShares, s) => {
-    let cached = null;
-    try {
-        cached = BitShares && BitShares.assets ? BitShares.assets[s.toLowerCase()] : null;
-    } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
+    if (!BitShares) return null;
+    const sym = s.toLowerCase();
+    let cached = BitShares.assets ? BitShares.assets[sym] : null;
 
     // Only trust cached assets when they include precision; otherwise enrich via db.
-    if (cached && cached.id && typeof cached.precision === 'number') return cached;
+    if (cached?.id && typeof cached.precision === 'number') return cached;
 
-    try {
-        const r = await BitShares.db.lookup_asset_symbols([s]);
-        if (r && r[0] && r[0].id) return { ...(cached || {}), ...r[0] };
-    } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
-    try {
-        const g = await BitShares.db.get_assets([s]);
-        if (g && g[0] && g[0].id) return { ...(cached || {}), ...g[0] };
-    } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
+    const methods = [
+        () => BitShares.db.lookup_asset_symbols([s]),
+        () => BitShares.db.get_assets([s])
+    ];
 
-    if (cached && cached.id) return cached;
-    return null;
+    for (const method of methods) {
+        try {
+            if (typeof method !== 'function') continue;
+            const r = await method();
+            if (r?.[0]?.id) return { ...(cached || {}), ...r[0] };
+        } catch (e) {
+            console.warn(`[utils.js] lookupAsset ${sym} failure:`, e.message);
+        }
+    }
+
+    return cached?.id ? cached : null;
 };
 
 const deriveMarketPrice = async (BitShares, symA, symB) => {
     try {
-        const aMeta = await lookupAsset(BitShares, symA);
-        const bMeta = await lookupAsset(BitShares, symB);
-        if (!aMeta || !bMeta) throw new Error('Could not discover assets for market lookup');
+        const [aMeta, bMeta] = await Promise.all([
+            lookupAsset(BitShares, symA),
+            lookupAsset(BitShares, symB)
+        ]);
+        if (!aMeta?.id || !bMeta?.id) return null;
 
-        const baseId = aMeta.id; const quoteId = bMeta.id;
+        const baseId = aMeta.id;
+        const quoteId = bMeta.id;
         let mid = null;
-        try {
-            if (BitShares.db && typeof BitShares.db.get_order_book === 'function') {
-                const ob = await BitShares.db.get_order_book(baseId, quoteId, API_LIMITS.ORDERBOOK_DEPTH);
-                const bestBid = ob.bids && ob.bids.length ? Number(ob.bids[0].price) : null;
-                const bestAsk = ob.asks && ob.asks.length ? Number(ob.asks[0].price) : null;
-                if (bestBid !== null && bestAsk !== null) mid = (bestBid + bestAsk) / 2;
-            }
-        } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
 
-        if (mid === null) {
+        // Try order book first
+        if (typeof BitShares.db?.get_order_book === 'function') {
             try {
-                if (BitShares.db && typeof BitShares.db.get_ticker === 'function') {
-                    const t = await BitShares.db.get_ticker(baseId, quoteId);
-                    if (t && (t.latest || t.latest === 0)) mid = Number(t.latest);
-                    if (!mid && t && t.latest_price) mid = Number(t.latest_price);
-                }
-            } catch (err) { console.warn("[utils.js] silent catch:", err.message); }
+                const ob = await BitShares.db.get_order_book(baseId, quoteId, API_LIMITS.ORDERBOOK_DEPTH);
+                const bestBid = isValidNumber(ob.bids?.[0]?.price) ? ob.bids[0].price : null;
+                const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? ob.asks[0].price : null;
+                if (bestBid !== null && bestAsk !== null) mid = (bestBid + bestAsk) / 2;
+            } catch (e) { console.warn(`[utils.js] deriveMarketPrice orderbook failed for ${symA}/${symB}:`, e.message); }
         }
 
-        if (mid !== null && Number.isFinite(mid) && mid !== 0) return 1 / mid;
-        return null;
+        // Fallback to ticker
+        if (mid === null && typeof BitShares.db?.get_ticker === 'function') {
+            try {
+                const t = await BitShares.db.get_ticker(baseId, quoteId);
+                // Handle 0 correctly by ensuring we only accept mid > 0 for final result
+                mid = isValidNumber(t?.latest) ? Number(t.latest) : (isValidNumber(t?.latest_price) ? Number(t.latest_price) : null);
+            } catch (err) { console.warn(`[utils.js] deriveMarketPrice ticker failed for ${symA}/${symB}:`, err.message); }
+        }
+
+        return (mid !== null && mid !== 0) ? 1 / mid : null;
     } catch (err) {
         return null;
     }
@@ -715,255 +752,159 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
 
 const derivePoolPrice = async (BitShares, symA, symB) => {
     try {
-        const aMeta = await lookupAsset(BitShares, symA);
-        const bMeta = await lookupAsset(BitShares, symB);
-        if (!aMeta || !bMeta) throw new Error('Could not discover assets for pool lookup');
+        const [aMeta, bMeta] = await Promise.all([
+            lookupAsset(BitShares, symA),
+            lookupAsset(BitShares, symB)
+        ]);
+        if (!aMeta?.id || !bMeta?.id) return null;
 
         let chosen = null;
 
-        // Prefer direct lookup if available
-        try {
-            if (BitShares.db && typeof BitShares.db.get_liquidity_pool_by_asset_ids === 'function') {
-                chosen = await BitShares.db.get_liquidity_pool_by_asset_ids(aMeta.id, bMeta.id);
-            }
-        } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
-
-        try {
-            // Attempt to find pool by scanning list_liquidity_pools
-            // Method signature: list_liquidity_pools(lower_bound, limit)
-            let startId = '1.19.0';
-            const limit = API_LIMITS.POOL_BATCH_SIZE; // API max is 101
-            let batchCount = 0;
-            const maxBatches = API_LIMITS.MAX_POOL_SCAN_BATCHES; // Scan up to 10000 pools to find the pair
-
-            let allMatches = [];
-
-            while (batchCount < maxBatches) {
-                if (!BitShares.db || typeof BitShares.db.list_liquidity_pools !== 'function') break;
-
-                // JS Wrapper seems to use (limit, start_id) based on "bad cast to array" for string first arg
-                // and successful call with (100).
-                const pools = await BitShares.db.list_liquidity_pools(limit, startId);
-                if (!pools || pools.length === 0) break;
-
-                const matches = pools.filter(p => {
-                    const ids = (p.asset_ids || []).map(String);
-                    // Also check direct fields if present
-                    if (p.asset_a && p.asset_b) {
-                        return (p.asset_a === aMeta.id && p.asset_b === bMeta.id) ||
-                            (p.asset_a === bMeta.id && p.asset_b === aMeta.id);
-                    }
-                    return ids.includes(aMeta.id) && ids.includes(bMeta.id);
-                });
-
-                if (matches.length > 0) {
-                    allMatches = allMatches.concat(matches);
-                }
-
-                // Prepare for next batch
-                const last = pools[pools.length - 1];
-                if (last && last.id) {
-                    if (startId === last.id) break; // End of list
-                    startId = last.id;
-
-                    // Optimization: if we retrieved less than limit, we are done
-                    if (pools.length < limit) break;
-                } else {
-                    break;
-                }
-                batchCount++;
-            }
-
-            if (allMatches.length > 0) {
-                // Select the pool with the highest liquidity (compare balance_a)
-                // Note: balance_a is a string, so we must parse it.
-                // We assume all pools for the same pair have compariable balance_a (same asset or swapped).
-                // If assets are swapped, we need to normalize, but usually duplicate pools have same A/B.
-                // Just in case, we check asset_a.
-
-                chosen = allMatches.sort((a, b) => {
-                    let balA_a = 0;
-                    if (a.asset_a === aMeta.id) balA_a = Number(a.balance_a);
-                    else if (a.asset_b === aMeta.id) balA_a = Number(a.balance_b);
-
-                    let balA_b = 0;
-                    if (b.asset_a === aMeta.id) balA_b = Number(b.balance_a);
-                    else if (b.asset_b === aMeta.id) balA_b = Number(b.balance_b);
-
-                    return balA_b - balA_a; // Descending
-                })[0];
-            }
-        } catch (e) {
-            // console.log('[DEBUG] derivePoolPrice scan error:', e.message);
-        }
-
-        // Fallback to get_liquidity_pools (older/wrapper API), used by unit tests
-        if (!chosen) {
+        // 1. Direct lookup
+        if (typeof BitShares.db?.get_liquidity_pool_by_asset_ids === 'function') {
             try {
-                if (BitShares.db && typeof BitShares.db.get_liquidity_pools === 'function') {
-                    const pools = await BitShares.db.get_liquidity_pools();
-                    if (Array.isArray(pools) && pools.length > 0) {
-                        const matches = pools.filter(p => {
-                            const ids = (p.asset_ids || []).map(String);
-                            return ids.includes(String(aMeta.id)) && ids.includes(String(bMeta.id));
-                        });
-                        if (matches.length > 0) {
-                            chosen = matches.sort((a, b) => Number(b.total_reserve || 0) - Number(a.total_reserve || 0))[0];
-                        }
-                    }
-                }
-            } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
+                chosen = await BitShares.db.get_liquidity_pool_by_asset_ids(aMeta.id, bMeta.id);
+            } catch (e) { console.warn(`[utils.js] derivePoolPrice direct lookup failed for ${symA}/${symB}:`, e.message); }
         }
 
-        if (!chosen) {
-            // Fallback to orderbook middle if no pool found
-            // ... existing orderbook fallback logic if desired, or return null to let market ticker handle it
-            // The existing code had orderbook logic here. Let's keep it but condensed.
-            return null;
-        }
+        // 2. Scan if not found
+        if (!chosen && typeof BitShares.db?.list_liquidity_pools === 'function') {
+            try {
+                let startId = '1.19.0';
+                let batchCount = 0;
+                const allMatches = [];
 
-        try {
-            let foundAmountA = null; let foundAmountB = null;
+                while (batchCount < API_LIMITS.MAX_POOL_SCAN_BATCHES) {
+                    const pools = await BitShares.db.list_liquidity_pools(API_LIMITS.POOL_BATCH_SIZE, startId);
+                    if (!pools?.length) break;
 
-            // If we only have a summary object, fetch the full pool object for reserves when possible
-            if ((!chosen.reserves || !Array.isArray(chosen.reserves)) && chosen.id && BitShares.db && typeof BitShares.db.get_objects === 'function') {
-                try {
-                    const objs = await BitShares.db.get_objects([chosen.id]);
-                    if (Array.isArray(objs) && objs[0]) {
-                        chosen = { ...chosen, ...objs[0] };
-                    }
-                } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
-            }
+                    const matches = pools.filter(p => {
+                        const ids = (p.asset_ids || [p.asset_a, p.asset_b]).map(String);
+                        return ids.includes(aMeta.id) && ids.includes(bMeta.id);
+                    });
 
-            // Prefer balance_a / balance_b from live object 1.19.x logic
-            // Note: list_liquidity_pools returns summary objects which HAVE balance_a/b
-            // We can check if we need to fetch the full object, but summary might be enough if up to date.
-            // Let's assume summary from list is fresh enough.
-
-            if (chosen.balance_a !== undefined && chosen.balance_b !== undefined) {
-                // Determine which balance is which
-                // chosen.asset_a might store the ID of asset A
-                const isA = (chosen.asset_a === aMeta.id);
-                foundAmountA = Number(isA ? chosen.balance_a : chosen.balance_b);
-                foundAmountB = Number(isA ? chosen.balance_b : chosen.balance_a);
-            }
-            // Fallback to reserves logic if balances missing (older format?)
-            else {
-                if (Array.isArray(chosen.reserves) && chosen.reserves.length > 0) {
-                    const rA = chosen.reserves.find(r => String(r.asset_id) === String(aMeta.id));
-                    const rB = chosen.reserves.find(r => String(r.asset_id) === String(bMeta.id));
-                    if (rA && rB) {
-                        foundAmountA = Number(rA.amount);
-                        foundAmountB = Number(rB.amount);
-                    }
+                    if (matches.length) allMatches.push(...matches);
+                    if (pools.length < API_LIMITS.POOL_BATCH_SIZE || startId === pools[pools.length - 1].id) break;
+                    
+                    startId = pools[pools.length - 1].id;
+                    batchCount++;
                 }
 
-                if (foundAmountA === null || foundAmountB === null) {
-                    const reserveA = Number(chosen.reserve_a || chosen.reserve_base || 0);
-                    const reserveB = Number(chosen.reserve_b || chosen.reserve_quote || 0);
-                    if (chosen.asset_ids) {
-                        const id0 = chosen.asset_ids[0];
-                        if (String(id0) === String(aMeta.id)) {
-                            foundAmountA = reserveA; foundAmountB = reserveB;
-                        } else {
-                            foundAmountA = reserveB; foundAmountB = reserveA;
-                        }
-                    }
+                if (allMatches.length) {
+                    chosen = allMatches.sort((a, b) => {
+                        const getBal = p => Number(p.asset_a === aMeta.id ? p.balance_a : p.balance_b);
+                        return getBal(b) - getBal(a);
+                    })[0];
                 }
-            }
-
-            if (foundAmountA === null || foundAmountB === null) return null;
-
-            const precisionA = aMeta.precision;
-            const precisionB = bMeta.precision;
-
-            const floatA = foundAmountA / Math.pow(10, precisionA);
-            const floatB = foundAmountB / Math.pow(10, precisionB);
-
-            if (Number.isFinite(floatA) && Number.isFinite(floatB) && floatA !== 0) {
-                return (floatB !== 0 && Number.isFinite(floatB)) ? floatB / floatA : null;
-            }
-        } catch (e) {
-            // console.log('[DEBUG] derivePoolPrice calculation error:', e.message);
+            } catch (e) { console.warn(`[utils.js] derivePoolPrice scan pools failed for ${symA}/${symB}:`, e.message); }
         }
 
-        return null;
+        // 3. Last resort fallback
+        if (!chosen && typeof BitShares.db?.get_liquidity_pools === 'function') {
+            try {
+                const pools = await BitShares.db.get_liquidity_pools();
+                const matches = (pools || []).filter(p => (p.asset_ids || []).map(String).includes(aMeta.id) && (p.asset_ids || []).map(String).includes(bMeta.id));
+                if (matches.length) chosen = matches.sort((a, b) => Number(b.total_reserve || 0) - Number(a.total_reserve || 0))[0];
+            } catch (e) { console.warn(`[utils.js] derivePoolPrice get_liquidity_pools fallback failed for ${symA}/${symB}:`, e.message); }
+        }
+
+        if (!chosen) return null;
+
+        // Fetch full object if needed
+        if (!chosen.balance_a && chosen.id && typeof BitShares.db?.get_objects === 'function') {
+            try {
+                const [full] = await BitShares.db.get_objects([chosen.id]);
+                if (full) chosen = { ...chosen, ...full };
+            } catch (e) { console.debug(`[utils.js] derivePoolPrice get_objects enrichment failed, proceeding with summary:`, e.message); }
+        }
+
+        let amtA = null, amtB = null;
+        if (isValidNumber(chosen.balance_a) && isValidNumber(chosen.balance_b)) {
+            const isA = chosen.asset_a === aMeta.id;
+            amtA = Number(isA ? chosen.balance_a : chosen.balance_b);
+            amtB = Number(isA ? chosen.balance_b : chosen.balance_a);
+        } else if (Array.isArray(chosen.reserves)) {
+            amtA = Number(chosen.reserves.find(r => String(r.asset_id) === aMeta.id)?.amount);
+            amtB = Number(chosen.reserves.find(r => String(r.asset_id) === bMeta.id)?.amount);
+        }
+
+        if (!isValidNumber(amtA) || !isValidNumber(amtB) || amtA === 0) return null;
+
+        const floatA = amtA / Math.pow(10, aMeta.precision);
+        const floatB = amtB / Math.pow(10, bMeta.precision);
+        return floatA > 0 ? floatB / floatA : null;
     } catch (err) {
         return null;
     }
 };
 
 // derivePrice: pooled -> market -> aggregated limit orders
-const derivePrice = async (BitShares, symA, symB, mode) => {
-    mode = (mode === undefined || mode === null) ? 'auto' : String(mode).toLowerCase();
+const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
+    mode = String(mode).toLowerCase();
 
+    // 1. Try Pool Price
     if (mode === 'pool' || mode === 'auto') {
         try {
             const p = await derivePoolPrice(BitShares, symA, symB);
-            if (p && Number.isFinite(p) && p > 0) {
-                return p;
-            }
-        } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
+            if (p > 0) return p;
+        } catch (e) { /* fallback */ }
     }
 
-    // Historically, even explicit 'pool' mode falls back to market/orderbook if pool isn't available.
+    // 2. Try Market Ticker/Orderbook
     if (mode === 'market' || mode === 'auto' || mode === 'pool') {
         try {
             const m = await deriveMarketPrice(BitShares, symA, symB);
-            if (m && Number.isFinite(m) && m > 0) {
-                return m;
-            }
-        } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
+            if (m > 0) return m;
+        } catch (e) { /* fallback */ }
     }
 
+    // 3. Fallback to aggregated limit orders
     try {
-        const aMeta = await lookupAsset(BitShares, symA);
-        const bMeta = await lookupAsset(BitShares, symB);
-        if (!aMeta || !bMeta) return null;
-        const aId = aMeta.id; const bId = bMeta.id;
+        const [aMeta, bMeta] = await Promise.all([
+            lookupAsset(BitShares, symA),
+            lookupAsset(BitShares, symB)
+        ]);
+        if (!aMeta?.id || !bMeta?.id) return null;
 
-        let orders = await (BitShares.db && typeof BitShares.db.get_limit_orders === 'function' ? BitShares.db.get_limit_orders(aId, bId, API_LIMITS.LIMIT_ORDERS_BATCH) : null).catch(() => null);
-        if (!orders || !orders.length) {
-            const rev = await (BitShares.db && typeof BitShares.db.get_limit_orders === 'function' ? BitShares.db.get_limit_orders(bId, aId, API_LIMITS.LIMIT_ORDERS_BATCH) : null).catch(() => null);
-            orders = rev || [];
-        }
-        if (!orders || !orders.length) return null;
-
-        const parseOrder = async (order) => {
-            if (!order || !order.sell_price) return null;
-            const { base, quote } = order.sell_price;
-            const basePrec = await (BitShares.assets && BitShares.assets[base.asset_id] ? (BitShares.assets[base.asset_id].precision || 0) : (async () => { try { const a = await BitShares.db.get_assets([base.asset_id]); return (a && a[0] && typeof a[0].precision === 'number') ? a[0].precision : 0; } catch (e) { return 0; } })());
-            const basePrecision = typeof basePrec === 'number' ? basePrec : await basePrec;
-            const quotePrec = await (BitShares.assets && BitShares.assets[quote.asset_id] ? (BitShares.assets[quote.asset_id].precision || 0) : (async () => { try { const a = await BitShares.db.get_assets([quote.asset_id]); return (a && a[0] && typeof a[0].precision === 'number') ? a[0].precision : 0; } catch (e) { return 0; } })());
-            const quotePrecision = typeof quotePrec === 'number' ? quotePrec : await quotePrec;
-
-            const baseAmt = Number(base.amount || 0);
-            const quoteAmt = Number(quote.amount || 0);
-            if (!baseAmt || !quoteAmt) return null;
-            const price = (quoteAmt / baseAmt) * Math.pow(10, basePrecision - quotePrecision);
-            const size = Number(order.for_sale || 0) / Math.pow(10, basePrecision || 0);
-            return { price, size, baseId: String(base.asset_id), quoteId: String(quote.asset_id) };
-        };
+        const aId = aMeta.id, bId = bMeta.id;
+        const getOrders = (id1, id2) => BitShares.db?.get_limit_orders?.(id1, id2, API_LIMITS.LIMIT_ORDERS_BATCH);
+        
+        let orders = await getOrders(aId, bId).catch(() => null);
+        if (!orders?.length) orders = await getOrders(bId, aId).catch(() => null);
+        if (!orders?.length) return null;
 
         let sumNum = 0, sumDen = 0;
         for (const o of orders) {
-            const p = await parseOrder(o);
-            if (!p) continue;
+            if (!o.sell_price) continue;
+            const { base, quote } = o.sell_price;
+            
+            const getPrec = async (id) => {
+                if (BitShares.assets?.[id]?.precision !== undefined) return BitShares.assets[id].precision;
+                const [a] = await BitShares.db.get_assets([id]).catch(() => []);
+                return a?.precision ?? 0;
+            };
+
+            const [basePrec, quotePrec] = await Promise.all([getPrec(base.asset_id), getPrec(quote.asset_id)]);
+            const baseAmt = Number(base.amount), quoteAmt = Number(quote.amount);
+            if (!baseAmt || !quoteAmt) continue;
+
+            const price = (quoteAmt / baseAmt) * Math.pow(10, basePrec - quotePrec);
+            const size = Number(o.for_sale) / Math.pow(10, basePrec);
+            
             let priceInDesired = null;
-            if (p.baseId === String(aId) && p.quoteId === String(bId)) priceInDesired = p.price;
-            else if (p.baseId === String(bId) && p.quoteId === String(aId)) { if (p.price !== 0) priceInDesired = 1 / p.price; }
-            else continue;
-            if (!Number.isFinite(priceInDesired) || priceInDesired <= 0) continue;
-            const weight = Math.max(1e-12, p.size);
-            sumNum += priceInDesired * weight;
-            sumDen += weight;
+            if (base.asset_id === aId && quote.asset_id === bId) priceInDesired = price;
+            else if (base.asset_id === bId && quote.asset_id === aId && price !== 0) priceInDesired = 1 / price;
+
+            if (isValidNumber(priceInDesired) && priceInDesired > 0) {
+                const weight = Math.max(1e-12, size);
+                sumNum += priceInDesired * weight;
+                sumDen += weight;
+            }
         }
-        if (!sumDen) return null;
-        return sumNum / sumDen;
-    } catch (e) { console.warn("[utils.js] silent catch:", e.message); }
-
-    return null;
-
+        return sumDen > 0 ? sumNum / sumDen : null;
+    } catch (e) {
+        return null;
+    }
 };
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1093,47 +1034,24 @@ function getAssetFees(assetSymbol, assetAmount) {
 async function _fetchBlockchainFees(BitShares) {
     try {
         const globalProps = await BitShares.db.getGlobalProperties();
-        const currentFees = globalProps.parameters.current_fees;
+        const currentFees = globalProps.parameters.current_fees.parameters;
 
-        const fees = {
-            limitOrderCreate: { raw: 0, satoshis: 0, bts: 0 },
-            limitOrderCancel: { raw: 0, satoshis: 0, bts: 0 },
-            limitOrderUpdate: { raw: 0, satoshis: 0, bts: 0 }
+        const findFee = (opCode) => {
+            const param = currentFees.find(p => p[0] === opCode);
+            const fee = param?.[1]?.fee;
+            const feeNum = toFiniteNumber(fee);
+            return {
+                raw: feeNum,
+                satoshis: feeNum,
+                bts: blockchainToFloat(feeNum, 5)
+            };
         };
 
-        // Extract fees from the parameters array
-        for (let i = 0; i < currentFees.parameters.length; i++) {
-            const param = currentFees.parameters[i];
-            if (!param || param.length < 2) continue;
-
-            const opCode = param[0];
-            const feeData = param[1];
-
-            if (opCode === 1 && feeData.fee !== undefined) {
-                // Operation 1: limit_order_create
-                fees.limitOrderCreate = {
-                    raw: feeData.fee,
-                    satoshis: Number(feeData.fee),
-                    bts: blockchainToFloat(feeData.fee, 5)
-                };
-            } else if (opCode === 2 && feeData.fee !== undefined) {
-                // Operation 2: limit_order_cancel
-                fees.limitOrderCancel = {
-                    raw: feeData.fee,
-                    satoshis: Number(feeData.fee),
-                    bts: blockchainToFloat(feeData.fee, 5)
-                };
-            } else if (opCode === 77 && feeData.fee !== undefined) {
-                // Operation 77: limit_order_update
-                fees.limitOrderUpdate = {
-                    raw: feeData.fee,
-                    satoshis: Number(feeData.fee),
-                    bts: blockchainToFloat(feeData.fee, 5)
-                };
-            }
-        }
-
-        return fees;
+        return {
+            limitOrderCreate: findFee(1),
+            limitOrderCancel: findFee(2),
+            limitOrderUpdate: findFee(77)
+        };
     } catch (error) {
         throw new Error(`Failed to fetch blockchain fees: ${error.message}`);
     }
@@ -1144,18 +1062,12 @@ async function _fetchBlockchainFees(BitShares) {
  */
 async function _fetchAssetMarketFees(assetSymbol, BitShares) {
     try {
-        const assetData = await BitShares.db.lookupAssetSymbols([assetSymbol]);
-        if (!assetData || !assetData[0]) {
-            throw new Error(`Asset ${assetSymbol} not found`);
+        const fullAsset = await lookupAsset(BitShares, assetSymbol);
+        if (!fullAsset || !fullAsset.id) {
+            throw new Error(`Asset ${assetSymbol} not found or could not fetch full data`);
         }
 
-        const assetId = assetData[0].id;
-        const fullAssets = await BitShares.db.getAssets([assetId]);
-        if (!fullAssets || !fullAssets[0]) {
-            throw new Error(`Could not fetch full data for ${assetSymbol}`);
-        }
-
-        const fullAsset = fullAssets[0];
+        const assetId = fullAsset.id;
         const options = fullAsset.options || {};
 
         const marketFeeBasisPoints = options.market_fee_percent || 0;
@@ -1165,14 +1077,14 @@ async function _fetchAssetMarketFees(assetSymbol, BitShares) {
         let takerFeePercent = null;
         if (options.extensions && typeof options.extensions === 'object') {
             if (options.extensions.taker_fee_percent !== undefined) {
-                const value = Number(options.extensions.taker_fee_percent || 0);
+                const value = toFiniteNumber(options.extensions.taker_fee_percent);
                 takerFeePercent = value / 100;
             }
         }
 
         // Check if taker_fee_percent exists directly in options
         if (takerFeePercent === null && options.taker_fee_percent !== undefined) {
-            const value = Number(options.taker_fee_percent || 0);
+            const value = toFiniteNumber(options.taker_fee_percent);
             takerFeePercent = value / 100;
         }
 
@@ -1516,26 +1428,6 @@ function buildCreateOrderArgs(order, assetA, assetB) {
 // Validate and convert numeric values
 
 /**
- * Safely convert a value to a finite number with fallback.
- * @param {*} value - Value to convert
- * @param {number} defaultValue - Fallback if not finite (default: 0)
- * @returns {number} Finite number or default
- */
-function toFiniteNumber(value, defaultValue = 0) {
-    const num = Number(value);
-    return Number.isFinite(num) ? num : defaultValue;
-}
-
-/**
- * Check if a value is defined and represents a finite number.
- * @param {*} value - Value to check
- * @returns {boolean} True if value is defined and finite
- */
-function isValidNumber(value) {
-    return value !== null && value !== undefined && Number.isFinite(Number(value));
-}
-
-/**
  * Compare two sizes at blockchain integer precision.
  * @param {number} size1 - First size
  * @param {number} size2 - Second size
@@ -1581,7 +1473,7 @@ function filterOrdersByTypeAndState(orders, orderType, excludeState = null) {
  * @returns {number} Total of all sizes
  */
 function sumOrderSizes(orders) {
-    return Array.isArray(orders) ? orders.reduce((sum, o) => sum + (Number(o.size) || 0), 0) : 0;
+    return Array.isArray(orders) ? orders.reduce((sum, o) => sum + toFiniteNumber(o.size), 0) : 0;
 }
 
 /**
@@ -1601,35 +1493,26 @@ function mapOrderSizes(orders) {
  * @returns {number} Count of ACTIVE + PARTIAL orders of the given type
  */
 function countOrdersByType(orderType, ordersMap) {
-    const { ORDER_STATES, ORDER_TYPES } = require('../constants');
-    if (!ordersMap || ordersMap.size === 0) return 0;
+    if (!ordersMap?.size) return 0;
 
-    let count = 0;
-    let hasOppositeWithPendingRotation = false;
-
-    // First pass: check if opposite side has pendingRotation markers (delayed rotation for dust refill)
     const oppositeType = orderType === ORDER_TYPES.BUY ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
+    let hasOppositeWithPendingRotation = false;
+    const candidates = [];
+
     for (const order of ordersMap.values()) {
         if (order.type === oppositeType && order.pendingRotation) {
             hasOppositeWithPendingRotation = true;
-            break;
+        }
+        if (order.type === orderType) {
+            candidates.push(order);
         }
     }
 
-    // Second pass: count active/partial orders of target type
-    // PENDING-AWARE: If opposite side has pending rotation, also count virtual orders
-    // on this side as "effective active" (they're waiting to activate as rotation partners)
-    for (const order of ordersMap.values()) {
-        if (order.type === orderType) {
-            if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                count++;
-            } else if (hasOppositeWithPendingRotation && order.state === ORDER_STATES.VIRTUAL) {
-                // Count virtual orders as virtual representatives of the active orders on opposite side
-                count++;
-            }
-        }
-    }
-    return count;
+    return candidates.reduce((count, order) => {
+        const isActive = [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL].includes(order.state);
+        const isEffectiveActive = hasOppositeWithPendingRotation && order.state === ORDER_STATES.VIRTUAL;
+        return count + (isActive || isEffectiveActive ? 1 : 0);
+    }, 0);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1693,21 +1576,32 @@ function hasBtsPair(assetA, assetB) {
  * @param {number|null} precision - Blockchain precision for integer comparison
  * @returns {boolean} True if any size is below minimum
  */
-function checkSizesBeforeMinimum(sizes, minSize, precision) {
-    if (minSize <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
+/**
+ * Generic threshold check helper for order sizes.
+ * @param {Array<number>} sizes - Order sizes to check
+ * @param {number} threshold - Threshold size to compare against
+ * @param {number|null} precision - Blockchain precision for integer comparison
+ * @param {boolean} includeNonFinite - If true, non-finite sizes count as below threshold
+ * @returns {boolean} True if any size is below/fails the threshold
+ */
+function checkSizeThreshold(sizes, threshold, precision, includeNonFinite = false) {
+    if (threshold <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
 
-    if (precision !== undefined && precision !== null && Number.isFinite(precision)) {
-        const minInt = floatToBlockchainInt(minSize, precision);
-        return sizes.some(sz =>
-            (!Number.isFinite(sz)) ||
-            (Number.isFinite(sz) && sz > 0 && floatToBlockchainInt(sz, precision) < minInt)
-        );
-    } else {
-        return sizes.some(sz =>
-            (!Number.isFinite(sz)) ||
-            (Number.isFinite(sz) && sz > 0 && sz < (minSize - 1e-8))
-        );
-    }
+    const checkSize = (sz) => {
+        if (!Number.isFinite(sz)) return includeNonFinite;
+        if (sz <= 0) return false; // 0 or negative is accepted (not tradable yet or intentionally 0)
+
+        if (precision !== undefined && precision !== null && Number.isFinite(precision)) {
+            return floatToBlockchainInt(sz, precision) < floatToBlockchainInt(threshold, precision);
+        }
+        return sz < (threshold - 1e-8);
+    };
+
+    return sizes.some(checkSize);
+}
+
+function checkSizesBeforeMinimum(sizes, minSize, precision) {
+    return checkSizeThreshold(sizes, minSize, precision, true);
 }
 
 /**
@@ -1719,14 +1613,7 @@ function checkSizesBeforeMinimum(sizes, minSize, precision) {
  * @returns {boolean} True if any size is near/below warning threshold
  */
 function checkSizesNearMinimum(sizes, warningSize, precision) {
-    if (warningSize <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
-
-    if (precision !== undefined && precision !== null && Number.isFinite(precision)) {
-        const warnInt = floatToBlockchainInt(warningSize, precision);
-        return sizes.some(sz => Number.isFinite(sz) && sz > 0 && floatToBlockchainInt(sz, precision) < warnInt);
-    } else {
-        return sizes.some(sz => Number.isFinite(sz) && sz > 0 && sz < (warningSize - 1e-8));
-    }
+    return checkSizeThreshold(sizes, warningSize, precision, false);
 }
 
 /**
@@ -1961,123 +1848,61 @@ function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderC
  * @returns {number} RMS metric (0 = perfect match, higher = more divergence)
  */
 function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, sideName = 'unknown') {
-    if (!Array.isArray(calculatedOrders) || !Array.isArray(persistedOrders)) {
-        return 0;
-    }
+    if (!Array.isArray(calculatedOrders) || !Array.isArray(persistedOrders)) return 0;
+    if (calculatedOrders.length === 0 && persistedOrders.length === 0) return 0;
 
-    if (calculatedOrders.length === 0 && persistedOrders.length === 0) {
-        return 0;
-    }
-
-    // Build lookup map by grid ID for stable matching
-    const persistedMap = new Map();
-    for (const order of persistedOrders) {
-        if (order.id) {
-            persistedMap.set(order.id, order);
-        }
-    }
-
+    const persistedMap = new Map(persistedOrders.filter(o => o.id).map(o => [o.id, o]));
     let sumSquaredDiff = 0;
     let matchCount = 0;
     let unmatchedCount = 0;
-    let maxRelativeDiff = 0;
-
-    // Compare each calculated order with its persisted counterpart by ID
     const largeDeviations = [];
+
+    const trackDeviation = (id, persSize, calcSize, diff, type = 'Unmatched') => {
+        largeDeviations.push({ id, persSize, calcSize, percentDiff: diff });
+        sumSquaredDiff += 1.0;
+        matchCount++; // For RMS calculation consistency
+    };
 
     for (const calcOrder of calculatedOrders) {
         const persOrder = persistedMap.get(calcOrder.id);
-
         if (persOrder) {
-            // Matched by ID: compare sizes
-            const calcSize = Number(calcOrder.size) || 0;
-            let comparisonTarget = Number(persOrder.size) || 0;
-
-            // DOUBLE-AWARE: If this order has merged dust, the expected size is ideal + dust
-            if (persOrder.isDoubleOrder && persOrder.mergedDustSize) {
-                comparisonTarget = (Number(persOrder.size) || 0) + (Number(persOrder.mergedDustSize) || 0);
-            }
+            const calcSize = toFiniteNumber(calcOrder.size);
+            const comparisonTarget = toFiniteNumber(persOrder.size) + (persOrder.isDoubleOrder ? toFiniteNumber(persOrder.mergedDustSize) : 0);
 
             if (comparisonTarget > 0) {
-                // Normal relative difference when both sizes are positive
                 const relativeDiff = (calcSize - comparisonTarget) / comparisonTarget;
                 const relativePercent = Math.abs(relativeDiff) * 100;
-
-                // Track large deviations for debugging
-                if (relativePercent > 10) {  // More than 10% different
-                    largeDeviations.push({
-                        id: calcOrder.id,
-                        persSize: comparisonTarget.toFixed(8),
-                        calcSize: calcSize.toFixed(8),
-                        percentDiff: relativePercent.toFixed(2),
-                        isDoubleOrder: persOrder.isDoubleOrder ? 'true' : 'false'
-                    });
+                if (relativePercent > 10) {
+                    largeDeviations.push({ id: calcOrder.id, persSize: comparisonTarget.toFixed(8), calcSize: calcSize.toFixed(8), percentDiff: relativePercent.toFixed(2) });
                 }
-
                 sumSquaredDiff += relativeDiff * relativeDiff;
-                maxRelativeDiff = Math.max(maxRelativeDiff, Math.abs(relativeDiff));
                 matchCount++;
             } else if (calcSize > 0) {
-                // If persisted size is 0 but calculated size is > 0, treat as maximum divergence
-                largeDeviations.push({
-                    id: calcOrder.id,
-                    persSize: '0.00000000',
-                    calcSize: calcSize.toFixed(8),
-                    percentDiff: 'Infinity'
-                });
-                sumSquaredDiff += 1.0;
-                maxRelativeDiff = Math.max(maxRelativeDiff, 1.0);
-                matchCount++;
+                trackDeviation(calcOrder.id, '0.00000000', calcSize.toFixed(8), 'Infinity');
             } else {
-                // Both are zero: perfect match
                 matchCount++;
             }
         } else {
-            // Unmatched by ID: grid structure mismatch
-            largeDeviations.push({
-                id: calcOrder.id,
-                persSize: 'NOT_FOUND',
-                calcSize: (Number(calcOrder.size) || 0).toFixed(8),
-                percentDiff: 'Unmatched'
-            });
-            sumSquaredDiff += 1.0;
-            maxRelativeDiff = Math.max(maxRelativeDiff, 1.0);
+            trackDeviation(calcOrder.id, 'NOT_FOUND', toFiniteNumber(calcOrder.size).toFixed(8), 'Unmatched');
             unmatchedCount++;
         }
     }
 
-    // Check for persisted orders that don't exist in calculated
+    // Check for missing orders
     for (const persOrder of persistedOrders) {
         if (!calculatedOrders.some(c => c.id === persOrder.id)) {
-            largeDeviations.push({
-                id: persOrder.id,
-                persSize: (Number(persOrder.size) || 0).toFixed(8),
-                calcSize: 'NOT_FOUND',
-                percentDiff: 'Unmatched'
-            });
-            sumSquaredDiff += 1.0;
-            maxRelativeDiff = Math.max(maxRelativeDiff, 1.0);
+            trackDeviation(persOrder.id, toFiniteNumber(persOrder.size).toFixed(8), 'NOT_FOUND', 'Unmatched');
             unmatchedCount++;
         }
     }
 
-    // Return RMS (Root Mean Square) metric
     const totalOrders = matchCount + unmatchedCount;
-    const meanSquaredDiff = totalOrders > 0 ? sumSquaredDiff / totalOrders : 0;
-    const metric = Math.sqrt(meanSquaredDiff);
-
-    // Log divergence breakdown only when metric exceeds regeneration threshold
-    // Uses same threshold as grid regeneration logic (GRID_COMPARISON.RMS_PERCENTAGE)
+    const metric = totalOrders > 0 ? Math.sqrt(sumSquaredDiff / totalOrders) : 0;
     const rmsThreshold = (GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE || 14.3) / 100;
+
     if (metric > rmsThreshold) {
-        console.debug(`\nDEBUG [${sideName}] Divergence Calculation Breakdown:`);
-        console.debug(`  Matched orders: ${matchCount}`);
-        console.debug(`  Unmatched orders: ${unmatchedCount}`);
-        console.debug(`  RMS (Root Mean Square): ${metric.toFixed(4)} (${(metric * 100).toFixed(2)}%)`);
-        console.debug(`  Threshold: ${(rmsThreshold * 100).toFixed(1)}%`);
-        if (largeDeviations.length > 0) {
-            console.debug(`  Large deviations (>10%): ${largeDeviations.length}`);
-        }
+        console.debug(`\nDEBUG [${sideName}] Divergence Breakdown: RMS=${(metric * 100).toFixed(2)}% (Threshold: ${(rmsThreshold * 100).toFixed(1)}%) Matches: ${matchCount} Unmatched: ${unmatchedCount}`);
+        if (largeDeviations.length) console.debug(`  Large deviations (>10%): ${largeDeviations.length}`);
     }
 
     return metric;
@@ -2143,17 +1968,10 @@ function convertToSpreadPlaceholder(order) {
  */
 function hasValidAccountTotals(accountTotals, checkFree = true) {
     if (!accountTotals) return false;
-
     const buyKey = checkFree ? 'buyFree' : 'buy';
     const sellKey = checkFree ? 'sellFree' : 'sell';
-
-    return (accountTotals[buyKey] !== null &&
-        accountTotals[buyKey] !== undefined &&
-        Number.isFinite(Number(accountTotals[buyKey]))) &&
-                    (accountTotals[sellKey] !== null &&
-                    accountTotals[sellKey] !== undefined &&
-                    Number.isFinite(Number(accountTotals[sellKey])));
-        }
+    return isValidNumber(accountTotals[buyKey]) && isValidNumber(accountTotals[sellKey]);
+}
         
         /**
          * Determine if the spread is too wide and should be flagged for rebalancing. * Pure calculation: checks if spread exceeds threshold AND both sides have orders.

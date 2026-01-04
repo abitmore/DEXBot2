@@ -12,7 +12,9 @@ const {
     allocateFundsByWeights,
     calculateOrderCreationFees,
     floatToBlockchainInt,
-    blockchainToFloat
+    blockchainToFloat,
+    calculateAvailableFundsValue,
+    getMinOrderSize
 } = require("./utils");
 
 class StrategyEngine {
@@ -300,73 +302,25 @@ class StrategyEngine {
                     }
                 }
 
-                // ANCHOR & SPLIT: Resize partial to ideal size, create residual order for leftover capital
-                // This recovers capital from partial fills while maintaining grid coverage
-                const rotIdx = ordersToRotate.findIndex(r => r.oldOrder.orderId === slot.orderId);
-                if (rotIdx !== -1) {
-                    ordersToRotate[rotIdx].newSize = idealSize;
-                } else {
-                    ordersToUpdate.push({
-                        partialOrder: { ...slot },
-                        newSize: idealSize,
-                        isSplitUpdate: true,
-                        newState: ORDER_STATES.ACTIVE
-                    });
-                }
-                stateUpdates.push({ ...slot, size: idealSize, state: ORDER_STATES.ACTIVE });
-                mgr.logger.log(`[UNIFIED] SPLIT: Anchoring partial ${slot.id} to ideal size ${idealSize.toFixed(precision)}.`, "info");
-
-                // If partial size >= dust threshold, place residual order at edge to deploy extra capital
-                if (slot.size >= dustThreshold) {
-                    const minIdx = nextIndices.length > 0 ? Math.min(...nextIndices) : -1;
-                    const maxIdx = nextIndices.length > 0 ? Math.max(...nextIndices) : -1;
-
-                    // Find edge slot to place residual: prefer spread side edge, fallback to opposite edge
-                    let targetIdx = -1;
-                    if (minIdx > 0 && !slots[minIdx - 1].orderId) {
-                        targetIdx = minIdx - 1;  // Empty spread slot
-                    } else if (maxIdx !== -1 && maxIdx + 1 < slots.length && !slots[maxIdx + 1].orderId) {
-                        targetIdx = maxIdx + 1;  // Empty slot past window
+                // ANCHOR: Only resize if it releases capital (current size > ideal)
+                // We do NOT refill substantial partials here (size < ideal) because that 
+                // is only allowed for full fills or dust partials that trigger rebalance.
+                if (slot.size > idealSize && Math.abs(slot.size - idealSize) > 1e-8) {
+                    const rotIdx = ordersToRotate.findIndex(r => r.oldOrder.orderId === slot.orderId);
+                    if (rotIdx !== -1) {
+                        ordersToRotate[rotIdx].newSize = idealSize;
+                    } else if (slot.orderId) {
+                        ordersToUpdate.push({
+                            partialOrder: { ...slot },
+                            newSize: idealSize,
+                            isSplitUpdate: true,
+                            newState: ORDER_STATES.ACTIVE
+                        });
                     }
-
-                    if (targetIdx !== -1) {
-                        const targetSlot = slots[targetIdx];
-                        if (!excludeIds.has(targetSlot.id)) {
-                            ordersToPlace.push({
-                                ...targetSlot,
-                                type: type,
-                                size: slot.size,
-                                state: ORDER_STATES.ACTIVE,
-                                isResidualFromAnchor: true,
-                                anchoredFromPartialId: slot.id
-                            });
-                            stateUpdates.push({
-                                ...targetSlot,
-                                type: type,
-                                size: slot.size,
-                                state: ORDER_STATES.ACTIVE
-                            });
-                            mgr.logger.log(`[UNIFIED] SPLIT: Created residual order ${slot.size.toFixed(precision)} for ${slot.id} at slot ${targetSlot.id}.`, "info");
-                        }
-                    }
+                    stateUpdates.push({ ...slot, size: idealSize, state: ORDER_STATES.ACTIVE });
+                    mgr.logger.log(`[UNIFIED] ANCHOR: Anchoring partial ${slot.id} down to ideal size ${idealSize.toFixed(precision)} (releasing surplus capital).`, "info");
                 }
                 continue;
-            } else if (Math.abs(slot.size - idealSize) > 1e-8) {
-                // ACTIVE ORDER RESIZING: Adjust active orders to match ideal grid distribution
-                // This maintains consistent fund allocation across the active window
-                const rotIdx = ordersToRotate.findIndex(r => r.oldOrder.orderId === slot.orderId);
-                if (rotIdx !== -1) {
-                    ordersToRotate[rotIdx].newSize = idealSize;
-                } else {
-                    ordersToUpdate.push({
-                        partialOrder: { ...slot },
-                        newSize: idealSize,
-                        isSplitUpdate: true,
-                        newState: ORDER_STATES.ACTIVE
-                    });
-                }
-                stateUpdates.push({ ...slot, size: idealSize });
-                mgr.logger.log(`[UNIFIED] Maintenance: Resizing active ${slot.id} to ${idealSize.toFixed(precision)}.`, "info");
             }
         }
 
@@ -447,7 +401,54 @@ class StrategyEngine {
             }
 
             mgr.recalculateFunds();
-            await mgr._persistCacheFunds();
+            await mgr.persistGrid();
+
+            // REBALANCE TRIGGER LOGIC: 
+            // Only take action (rebalance/rotate) if:
+            // 1. We have at least one fully filled order (fillsToSettle > 0)
+            // 2. OR we have dust partials on BOTH sides (cross-fill cleanup)
+            let shouldRebalance = (fillsToSettle > 0);
+
+            if (!shouldRebalance) {
+                const allOrders = Array.from(mgr.orders.values());
+                const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
+                const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
+
+                if (buyPartials.length > 0 && sellPartials.length > 0) {
+                    const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
+                    const budgetBuy = Math.max(snap.chainTotalBuy || 0, snap.allocatedBuy || 0, (mgr.funds?.total?.grid?.buy || 0));
+                    const budgetSell = Math.max(snap.chainTotalSell || 0, snap.allocatedSell || 0, (mgr.funds?.total?.grid?.sell || 0));
+
+                    const getIsDust = (partials, side, budget) => {
+                        const slots = allOrders.filter(o => o.type === (side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL));
+                        if (slots.length === 0) return false;
+                        const precision = getPrecisionForSide(mgr.assets, side);
+                        const weight = mgr.config.weightDistribution[side];
+                        const idealSizes = allocateFundsByWeights(budget, slots.length, weight, mgr.config.incrementPercent / 100, false, 0, precision);
+                        
+                        return partials.some(p => {
+                            const idx = slots.findIndex(s => s.id === p.id);
+                            if (idx === -1) return false;
+                            const dustThreshold = idealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+                            return p.size < dustThreshold;
+                        });
+                    };
+
+                    const buyHasDust = getIsDust(buyPartials, "buy", budgetBuy);
+                    const sellHasDust = getIsDust(sellPartials, "sell", budgetSell);
+                    
+                    if (buyHasDust && sellHasDust) {
+                        mgr.logger.log("[UNIFIED] Dual-side dust partials detected. Triggering cleanup rebalance.", "info");
+                        shouldRebalance = true;
+                    }
+                }
+            }
+
+            if (!shouldRebalance) {
+                mgr.logger.log("[UNIFIED] Skipping rebalance: No full fills and no dual-side dust partials.", "info");
+                mgr.logger.logFundsStatus(mgr, `AFTER processFilledOrders (skipped rebalance)`);
+                return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], partialMoves: [] };
+            }
 
             const result = await this.rebalance(filledOrders, excludeOrderIds);
 
@@ -464,30 +465,6 @@ class StrategyEngine {
         } finally {
             mgr.resumeFundRecalc();
         }
-    }
-
-    async rebalanceOrders(filledCounts, extraTarget = 0, excludeOrderIds = new Set()) {
-        const dummyFills = [];
-        if (filledCounts) {
-            for (const [type, count] of Object.entries(filledCounts)) {
-                const activeOnSide = Array.from(this.manager.orders.values())
-                    .filter(o => o.type === type && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
-                    .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-                
-                for (let i = 0; i < count; i++) {
-                    dummyFills.push({ type, price: this.manager.config.startPrice });
-                    if (activeOnSide[i]) {
-                        this.manager._updateOrder({ ...activeOnSide[i], state: ORDER_STATES.VIRTUAL, orderId: null });
-                    }
-                }
-            }
-        }
-        return await this.rebalance(dummyFills, excludeOrderIds);
-    }
-
-    async rebalanceSideAfterFill(filledType, oppositeType, filledCount, extraTarget = 0, excludeOrderIds = new Set()) {
-        const dummyFills = [{ type: filledType, price: this.manager.config.startPrice }];
-        return await this.rebalance(dummyFills, excludeOrderIds);
     }
 
     evaluatePartialOrderAnchor(partialOrder, moveInfo) {
@@ -507,115 +484,6 @@ class StrategyEngine {
         }
         
         return { isDust, percentOfIdeal, mergedDustSize: isDust ? partialOrder.size : 0, newSize: idealSize, residualCapital };
-    }
-
-    async activateClosestVirtualOrdersForPlacement(targetType, count, excludeOrderIds = new Set()) {
-        const mgr = this.manager;
-        if (count <= 0) return [];
-
-        let virtualOrders = mgr.getOrdersByTypeAndState(targetType, ORDER_STATES.VIRTUAL);
-
-        if (excludeOrderIds && excludeOrderIds.size > 0) {
-            virtualOrders = virtualOrders.filter(o => !excludeOrderIds.has(o.id) && !excludeOrderIds.has(o.orderId) && !mgr.isOrderLocked(o.id) && !mgr.isOrderLocked(o.orderId));
-        } else {
-            virtualOrders = virtualOrders.filter(o => !mgr.isOrderLocked(o.id) && !mgr.isOrderLocked(o.orderId));
-        }
-
-        mgr.logger.log(`Found ${virtualOrders.length} VIRTUAL ${targetType} orders for activation`, "debug");
-
-        virtualOrders.sort((a, b) => targetType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-
-        const toActivate = virtualOrders.slice(0, count);
-        const activated = [];
-
-        for (const order of toActivate) {
-            const currentOrder = mgr.orders.get(order.id);
-            if (!currentOrder || currentOrder.state !== ORDER_STATES.VIRTUAL) continue;
-
-            const orderSize = order.size || 0;
-            if (orderSize <= 0) continue;
-
-            const activatedOrder = { ...order, type: targetType, size: orderSize, state: ORDER_STATES.VIRTUAL };
-            mgr.accountant.updateOptimisticFreeBalance(order, activatedOrder, "spread-activation", 0);
-
-            mgr._updateOrder(activatedOrder);
-            activated.push(activatedOrder);
-            mgr.logger.log(`Activated virtual ${targetType} at ${order.price.toFixed(4)} (Amount: ${orderSize.toFixed(8)})`, "info");
-        }
-        return activated;
-    }
-
-    async prepareFurthestOrdersForRotation(targetType, count, excludeOrderIds = new Set(), filledCount = 0, options = {}) {
-        const mgr = this.manager;
-        if (count <= 0) return [];
-
-        let activeOrders = mgr.getOrdersByTypeAndState(targetType, ORDER_STATES.ACTIVE)
-            .filter(o =>
-                !excludeOrderIds.has(o.id) &&
-                !excludeOrderIds.has(o.orderId) &&
-                !mgr.isOrderLocked(o.id) &&
-                !mgr.isOrderLocked(o.orderId)
-            );
-
-        if (activeOrders.length === 0) {
-            mgr.logger.log(`No active ${targetType} orders available for rotation`, "debug");
-            return [];
-        }
-
-        activeOrders.sort((a, b) => targetType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
-
-        const toRotate = activeOrders.slice(0, count);
-        const rotated = [];
-
-        const side = targetType === ORDER_TYPES.BUY ? "buy" : "sell";
-        const cache = Number(mgr.funds?.cacheFunds?.[side] || 0);
-        const fundsPerOrder = toRotate.length > 0 ? cache / toRotate.length : 0;
-
-        for (const order of toRotate) {
-            const allSpreadOrders = mgr.getOrdersByTypeAndState(ORDER_TYPES.SPREAD, ORDER_STATES.VIRTUAL);
-
-            if (allSpreadOrders.length === 0) {
-                mgr.logger.log(`No SPREAD slots available for ${targetType} rotation`, "warn");
-                break;
-            }
-
-            const activeBuys = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
-            const activeSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE);
-
-            const highestActiveBuy = activeBuys.length > 0 ? Math.max(...activeBuys.map(o => o.price)) : -Infinity;
-            const lowestActiveSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : Infinity;
-
-            const validSpreads = allSpreadOrders.filter(o =>
-                o.price > highestActiveBuy && o.price < lowestActiveSell
-            );
-
-            if (validSpreads.length === 0) {
-                mgr.logger.log(`No valid SPREAD slots in spread zone for ${targetType} rotation`, "warn");
-                break;
-            }
-
-            const targetSpreadSlot = targetType === ORDER_TYPES.BUY
-                ? validSpreads.reduce((min, o) => o.price < min.price ? o : min)
-                : validSpreads.reduce((max, o) => o.price > max.price ? o : max);
-
-            const rotatedOrder = { 
-                oldOrder: { ...order }, 
-                newPrice: targetSpreadSlot.price, 
-                newGridId: targetSpreadSlot.id, 
-                newSize: fundsPerOrder,
-                type: targetType
-            };
-
-            const virtualOrder = { ...targetSpreadSlot, type: targetType, size: fundsPerOrder, state: ORDER_STATES.VIRTUAL };
-            mgr.accountant.updateOptimisticFreeBalance(order, virtualOrder, "rotation", 0);
-            
-            mgr.funds.cacheFunds[side] = Math.max(0, (mgr.funds.cacheFunds[side] || 0) - fundsPerOrder);
-            
-            mgr._updateOrder(virtualOrder);
-            rotated.push(rotatedOrder);
-            mgr.shadowOrderIds.set(order.orderId, Date.now());
-        }
-        return rotated;
     }
 
     preparePartialOrderMove(partialOrder, gridSlotsToMove, reservedGridIds = new Set()) {
@@ -677,8 +545,8 @@ class StrategyEngine {
         const targetGridOrder = mgr.orders.get(newGridId);
         if (targetGridOrder) {
             const precision = (partialOrder.type === ORDER_TYPES.SELL)
-                ? mgr.assets?.assetA?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK
-                : mgr.assets?.assetB?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
+                ? mgr.assets?.assetA?.precision
+                : mgr.assets?.assetB?.precision;
             const partialInt = floatToBlockchainInt(partialOrder.size, precision);
             const idealInt = floatToBlockchainInt(targetGridOrder.size || 0, precision);
             const newState = partialInt >= idealInt ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
@@ -690,57 +558,6 @@ class StrategyEngine {
             mgr.accountant.updateOptimisticFreeBalance(targetGridOrder, updatedNew, "move-occupy", 0);
             mgr._updateOrder(updatedNew);
         }
-    }
-
-    async activateSpreadOrders(targetType, count) {
-        const mgr = this.manager;
-        if (count <= 0) return [];
-
-        const allSpreadOrders = mgr.getOrdersByTypeAndState(ORDER_TYPES.SPREAD, ORDER_STATES.VIRTUAL);
-
-        const activeBuys = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
-        const activeSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE);
-
-        const highestActiveBuy = activeBuys.length > 0 ? Math.max(...activeBuys.map(o => o.price)) : -Infinity;
-        const lowestActiveSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : Infinity;
-
-        const spreadOrders = allSpreadOrders
-            .filter(o => o.price > highestActiveBuy && o.price < lowestActiveSell)
-            .sort((a, b) => targetType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
-
-        const { calculateAvailableFundsValue, getMinOrderSize } = require("./utils");
-        const availableFunds = calculateAvailableFundsValue(targetType === ORDER_TYPES.BUY ? "buy" : "sell", mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
-        if (availableFunds <= 0) return [];
-
-        let desiredCount = Math.min(count, spreadOrders.length);
-        if (desiredCount <= 0) return [];
-
-        const minSize = getMinOrderSize(targetType, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
-        const ordersToCreate = desiredCount;
-
-        const activatedOrders = [];
-        const side = targetType === ORDER_TYPES.BUY ? "buy" : "sell";
-
-        for (let i = 0; i < ordersToCreate && i < spreadOrders.length; i++) {
-            const currentAvailable = calculateAvailableFundsValue(side, mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
-            const remainingOrders = ordersToCreate - i;
-            const fundsPerOrder = remainingOrders > 0 ? currentAvailable / remainingOrders : 0;
-
-            if (fundsPerOrder < minSize) break;
-
-            const order = spreadOrders[i];
-            const activatedOrder = { ...order, type: targetType, size: fundsPerOrder, state: ORDER_STATES.ACTIVE };
-            mgr.accountant.updateOptimisticFreeBalance(order, activatedOrder, "spread-activation", 0);
-            
-            mgr.funds.cacheFunds[side] = Math.max(0, (mgr.funds.cacheFunds[side] || 0) - fundsPerOrder);
-            
-            mgr._updateOrder(activatedOrder);
-            activatedOrders.push(activatedOrder);
-            mgr.currentSpreadCount--;
-            mgr.logger.log(`Prepared ${targetType} order ${i + 1}/${ordersToCreate} at ${order.price.toFixed(2)} (Amount: ${fundsPerOrder.toFixed(8)})`, "info");
-        }
-
-        return activatedOrders;
     }
 }
 

@@ -16,10 +16,11 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { persistGridSnapshot, retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags } = OrderUtils;
+const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags } = OrderUtils;
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
-const { AccountOrders } = require('./account_orders');
+const { AccountOrders, createBotKey } = require('./account_orders');
+const { parseJsonWithComments } = require('./account_bots');
 const AsyncLock = require('./order/async_lock');
 
 const PROFILES_BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
@@ -264,7 +265,7 @@ class DEXBot {
                                 // Log funding state after rotation completes
                                 this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${filledOrder.id}`);
                             }
-                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                            await this.manager.persistGrid();
 
                             // INTERRUPT CHECK: Did new fills arrive while we broadcasted?
                             // This includes consequential fills (e.g., a newly placed buy order being filled instantly)
@@ -309,7 +310,7 @@ class DEXBot {
                             if (spreadResult && spreadResult.ordersPlaced > 0) {
                                 this.manager.logger.log(`✓ Spread correction after sequential fills: ${spreadResult.ordersPlaced} order(s) placed, ` +
                                     `${spreadResult.partialsMoved} partial(s) moved`, 'info');
-                                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                await this.manager.persistGrid();
                             }
 
                             // Check grid health only if pipeline is empty (no pending fills, no pending operations)
@@ -320,7 +321,7 @@ class DEXBot {
                                     this.updateOrdersOnChainBatch.bind(this)
                                 );
                                 if (healthResult.buyDust && healthResult.sellDust) {
-                                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                    await this.manager.persistGrid();
                                 }
                             } else {
                                 const pendingReasons = [];
@@ -341,7 +342,7 @@ class DEXBot {
                                         this.manager._gridSidesUpdated.includes('sell')
                                     );
                                     await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
-                                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                    await this.manager.persistGrid();
                                 }
                                 await OrderUtils.applyGridDivergenceCorrections(
                                     this.manager, this.accountOrders, this.config.botKey, this.updateOrdersOnChainBatch.bind(this)
@@ -459,7 +460,7 @@ class DEXBot {
 
         if (this.config.dryRun) {
             this.manager.logger.log('Dry run enabled, skipping on-chain order placement.', 'info');
-            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+            await this.manager.persistGrid();
             return;
         }
 
@@ -476,8 +477,7 @@ class DEXBot {
         }
 
         const { assetA, assetB } = this.manager.assets;
-        const { getAssetFees } = require('./order/utils');
-        const btsFeeData = getAssetFees('BTS', 1);
+        const btsFeeData = OrderUtils.getAssetFees('BTS', 1);
 
         const createAndSyncOrder = async (order) => {
             this.manager.logger.log(`Placing ${order.type} order: size=${order.size}, price=${order.price}`, 'debug');
@@ -540,7 +540,7 @@ class DEXBot {
         for (const group of orderGroups) {
             await placeOrderGroup(group);
         }
-        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+        await this.manager.persistGrid();
     }
 
     async updateOrdersOnChainBatch(rebalanceResult) {
@@ -611,7 +611,8 @@ class DEXBot {
                         if (!partialOrder.orderId) continue;
 
                         // Check if order still exists on-chain before building op
-                        const onChain = await chainOrders.readOrder(partialOrder.orderId);
+                        const openOrders = await chainOrders.readOpenOrders(this.accountId);
+                        const onChain = openOrders.find(o => o.id === partialOrder.orderId);
                         if (!onChain) {
                             this.manager.logger.log(`[SPLIT UPDATE] Skipping size update: Order ${partialOrder.orderId} no longer exists on-chain`, 'warn');
                             continue;
@@ -698,60 +699,21 @@ class DEXBot {
                         if (!oldOrder.orderId) continue;
 
                         // Check if order still exists on-chain before building op
-                        const onChain = await chainOrders.readOrder(oldOrder.orderId);
+                        const openOrders = await chainOrders.readOpenOrders(this.accountId);
+                        const onChain = openOrders.find(o => o.id === oldOrder.orderId);
                         if (!onChain) {
                             this.manager.logger.log(`Skipping rotation: Order ${oldOrder.orderId} no longer exists on-chain`, 'warn');
                             continue;
                         }
 
-                        let newAmountToSell, newMinToReceive;
-                        if (type === 'sell') {
-                            newAmountToSell = newSize;
-                            newMinToReceive = newSize * newPrice;
-                            // Round both to their respective asset precision
-                            const baseAssetPrecision = this.manager.assets?.assetA?.precision || 8;
-                            const quoteAssetPrecision = this.manager.assets?.assetB?.precision || 8;
-                            const baseScaleFactor = Math.pow(10, baseAssetPrecision);
-                            const quoteScaleFactor = Math.pow(10, quoteAssetPrecision);
-                            const newAmountToSellBeforeRound = newAmountToSell;
-                            const newMinToReceiveBeforeRound = newMinToReceive;
-                            newAmountToSell = Math.round(newAmountToSell * baseScaleFactor) / baseScaleFactor;
-                            newMinToReceive = newAmountToSell * newPrice;
-                            newMinToReceive = Math.round(newMinToReceive * quoteScaleFactor) / quoteScaleFactor;
-                            this.manager.logger.log(
-                                `[Rotation SELL] oldOrder=${oldOrder.orderId}, newPrice=${newPrice.toFixed(4)}, ` +
-                                `newSize=${newSize.toFixed(8)} (amount before rounding=${newAmountToSellBeforeRound.toFixed(8)}, after=${newAmountToSell.toFixed(8)}), ` +
-                                `minReceive before=${newMinToReceiveBeforeRound.toFixed(8)}, after=${newMinToReceive.toFixed(8)} ` +
-                                `(basePrec=${baseAssetPrecision}, quotePrec=${quoteAssetPrecision})`,
-                                'debug'
-                            );
-                        } else {
-                            newAmountToSell = newSize;
-                            newMinToReceive = newSize / newPrice;
-                            // Round both to their respective asset precision
-                            const baseAssetPrecision = this.manager.assets?.assetA?.precision || 8;
-                            const quoteAssetPrecision = this.manager.assets?.assetB?.precision || 8;
-                            const baseScaleFactor = Math.pow(10, baseAssetPrecision);
-                            const quoteScaleFactor = Math.pow(10, quoteAssetPrecision);
-                            const newAmountToSellBeforeRound = newAmountToSell;
-                            const newMinToReceiveBeforeRound = newMinToReceive;
-                            newAmountToSell = Math.round(newAmountToSell * quoteScaleFactor) / quoteScaleFactor;
-                            newMinToReceive = newAmountToSell / newPrice;
-                            newMinToReceive = Math.round(newMinToReceive * baseScaleFactor) / baseScaleFactor;
-                            this.manager.logger.log(
-                                `[Rotation BUY] oldOrder=${oldOrder.orderId}, newPrice=${newPrice.toFixed(4)}, ` +
-                                `newSize=${newSize.toFixed(8)} (amount before rounding=${newAmountToSellBeforeRound.toFixed(8)}, after=${newAmountToSell.toFixed(8)}), ` +
-                                `minReceive before=${newMinToReceiveBeforeRound.toFixed(8)}, after=${newMinToReceive.toFixed(8)} ` +
-                                `(basePrec=${baseAssetPrecision}, quotePrec=${quoteAssetPrecision})`,
-                                'debug'
-                            );
-                        }
+                        // Use buildCreateOrderArgs to ensure consistent quantization/pricing for the new target
+                        const { amountToSell, minToReceive } = buildCreateOrderArgs({ type, size: newSize, price: newPrice }, assetA, assetB);
 
                         const op = await chainOrders.buildUpdateOrderOp(
                             this.account, oldOrder.orderId,
                             { 
-                                amountToSell: newAmountToSell, 
-                                minToReceive: newMinToReceive,
+                                amountToSell, 
+                                minToReceive,
                                 newPrice: newPrice,
                                 orderType: type
                             }
@@ -926,8 +888,8 @@ class DEXBot {
                             'info'
                         );
 
-                        // Persist the updated fees owed
-                        await this.manager._persistBtsFeesOwed();
+                        // Fees are persisted as part of the grid snapshot (via persistGrid)
+                        // No separate persistence call needed here
                     } catch (err) {
                         this.manager.logger.log(`Warning: Could not account for BTS update fees: ${err.message}`, 'warn');
                     }
@@ -970,9 +932,6 @@ class DEXBot {
         }
 
         // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
-        const { parseJsonWithComments } = require('./account_bots');
-        const { createBotKey } = require('./account_orders');
-
         const normalizeBotEntry = (entry, index = 0) => {
             const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
             return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
@@ -1041,11 +1000,11 @@ class DEXBot {
                 chainOpenOrders,
                 manager: this.manager,
                 logger: { log: (msg) => this._log(msg) },
-                storeGrid: (orders) => {
+                storeGrid: async (orders) => {
                     // Temporarily replace manager.orders to persist the specific orders
                     const originalOrders = this.manager.orders;
                     this.manager.orders = new Map(orders.map(o => [o.id, o]));
-                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                    await this.manager.persistGrid();
                     this.manager.orders = originalOrders;
                 },
                 attemptResumeFn: attemptResumePersistedGridByPriceMatch,
@@ -1093,11 +1052,17 @@ class DEXBot {
                 this._log('Generating new grid and placing initial orders on-chain...');
                 await this.placeInitialOrders();
             }
-            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+            await this.manager.persistGrid();
         } else {
             this._log('Found active session. Loading and syncing existing grid.');
             await Grid.loadGrid(this.manager, persistedGrid);
             const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+
+            // Process fills discovered during startup sync (happened while bot was offline)
+            if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
+                await this.manager.processFilledOrders(syncResult.filledOrders);
+            }
 
             // Reconcile existing on-chain orders to the configured target counts.
             // This ensures activeOrders changes in bots.json are applied on restart:
@@ -1113,7 +1078,7 @@ class DEXBot {
                 syncResult,
             });
 
-            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+            await this.manager.persistGrid();
         }
 
         // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
@@ -1133,7 +1098,7 @@ class DEXBot {
                     const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
                     await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
 
-                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                    await this.manager.persistGrid();
 
                     // Apply grid corrections on-chain immediately to use new funds
                     try {
@@ -1165,7 +1130,7 @@ class DEXBot {
                             const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
                             await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
 
-                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                            await this.manager.persistGrid();
 
                             // Apply grid corrections on-chain immediately
                             try {
@@ -1205,7 +1170,7 @@ class DEXBot {
                 if (spreadResult.ordersPlaced > 0) {
                     this._log(`✓ Spread correction at startup: ${spreadResult.ordersPlaced} order(s) placed, ` +
                         `${spreadResult.partialsMoved} partial(s) moved`);
-                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                    await this.manager.persistGrid();
                 }
 
                 // Check grid health at startup only if pipeline is empty
@@ -1216,7 +1181,7 @@ class DEXBot {
                         this.updateOrdersOnChainBatch.bind(this)
                     );
                     if (healthResult.buyDust && healthResult.sellDust) {
-                        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                        await this.manager.persistGrid();
                     }
                 } else {
                     this._log('Startup grid health check deferred: pipeline not empty', 'debug');
@@ -1273,7 +1238,7 @@ class DEXBot {
                     // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
                     this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
                     this.manager.funds.btsFeesOwed = 0;
-                    persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                    await this.manager.persistGrid();
 
                     if (fs.existsSync(this.triggerFile)) {
                         fs.unlinkSync(this.triggerFile);
@@ -1379,10 +1344,14 @@ class DEXBot {
                             chainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
                             const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
 
-                            // Log divergence summary
-                            if (syncResult.unmatchedGridOrders && syncResult.unmatchedGridOrders.length > 0) {
-                                this._log(`Periodic sync: ${syncResult.unmatchedGridOrders.length} grid order(s) not found on chain (treating as filled)`, 'warn');
+                            // Log and process fills discovered during periodic sync
+                            if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                                this._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
+                                
+                                // Process these fills through the strategy to place replacement orders
+                                await this.manager.processFilledOrders(syncResult.filledOrders);
                             }
+                            
                             if (syncResult.unmatchedChainOrders && syncResult.unmatchedChainOrders.length > 0) {
                                 this._log(`Periodic sync: ${syncResult.unmatchedChainOrders.length} chain order(s) not in grid (surplus/divergence)`, 'warn');
                             }
@@ -1403,7 +1372,7 @@ class DEXBot {
                                 const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
                                 await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
 
-                                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                await this.manager.persistGrid();
 
                                 // Apply grid corrections on-chain to use new funds
                                 await OrderUtils.applyGridDivergenceCorrections(
@@ -1429,7 +1398,7 @@ class DEXBot {
                         if (spreadResult.ordersPlaced > 0) {
                             this._log(`✓ Spread correction at 4h fetch: ${spreadResult.ordersPlaced} order(s) placed, ` +
                                 `${spreadResult.partialsMoved} partial(s) moved`);
-                            persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                            await this.manager.persistGrid();
                         }
 
                         // Check grid health after periodic blockchain fetch only if pipeline is empty
@@ -1440,7 +1409,7 @@ class DEXBot {
                                 this.updateOrdersOnChainBatch.bind(this)
                             );
                             if (healthResult.buyDust && healthResult.sellDust) {
-                                persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                                await this.manager.persistGrid();
                             }
                         } else {
                             const pendingReasons = [];
@@ -1511,7 +1480,7 @@ class DEXBot {
                 // Persist final state
                 if (this.manager && this.accountOrders && this.config?.botKey) {
                     try {
-                        persistGridSnapshot(this.manager, this.accountOrders, this.config.botKey);
+                        await this.manager.persistGrid();
                         this._log('Final grid snapshot persisted');
                     } catch (err) {
                         this._warn(`Failed to persist final state: ${err.message}`);

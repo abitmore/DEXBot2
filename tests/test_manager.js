@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor, activateSpreadOrders } = require('../modules/order/legacy-testing');
 console.log('Running manager tests');
 
 const { OrderManager, grid: Grid } = require('../modules/order/index.js');
@@ -30,7 +31,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
 
 // activateSpreadOrders should return empty array when asked to create 0 orders
 (async () => {
-    const createdZero = await mgr.activateSpreadOrders('buy', 0);
+    const createdZero = await activateSpreadOrders(mgr, 'buy', 0);
     assert.deepStrictEqual(createdZero, []);
 })();
 
@@ -90,7 +91,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
 
     // Activate 1 BUY: expect the lowest priced spread (95)
     (async () => {
-        const buyCreated = await mgr.activateSpreadOrders(ORDER_TYPES.BUY, 1);
+        const buyCreated = await activateSpreadOrders(mgr, ORDER_TYPES.BUY, 1);
         assert(Array.isArray(buyCreated), 'activateSpreadOrders should return an array for buy');
         assert.strictEqual(buyCreated.length, 1);
         assert.strictEqual(buyCreated[0].price, 95, 'BUY activation should pick lowest spread price');
@@ -102,7 +103,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
         ];
         more.forEach(s => mgr._updateOrder(s));
 
-        const sellCreated = await mgr.activateSpreadOrders(ORDER_TYPES.SELL, 1);
+        const sellCreated = await activateSpreadOrders(mgr, ORDER_TYPES.SELL, 1);
         assert(Array.isArray(sellCreated), 'activateSpreadOrders should return an array for sell');
         assert.strictEqual(sellCreated.length, 1);
         assert.strictEqual(sellCreated[0].price, 110, 'SELL activation should pick highest spread price');
@@ -173,7 +174,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     rotateMgr.funds.committed.grid.sell = 3;
 
     // Test activateClosestVirtualOrdersForPlacement: should activate the closest virtual order for on-chain placement
-    const activatedBuys = await rotateMgr.activateClosestVirtualOrdersForPlacement(ORDER_TYPES.BUY, 1);
+    const activatedBuys = await activateClosestVirtualOrdersForPlacement(rotateMgr, ORDER_TYPES.BUY, 1);
     assert.strictEqual(activatedBuys.length, 1, 'Should activate 1 buy');
     assert.strictEqual(activatedBuys[0].id, 'vbuy1', 'Should activate the closest virtual buy (95)');
     assert.strictEqual(activatedBuys[0].state, ORDER_STATES.VIRTUAL, 'Prepared orders remain VIRTUAL until confirmed on-chain');
@@ -183,7 +184,7 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     rotateMgr.funds.cacheFunds.sell = 1;
 
     // Test prepareFurthestOrdersForRotation: should select the furthest active order for rotation
-    const rotations = await rotateMgr.prepareFurthestOrdersForRotation(ORDER_TYPES.SELL, 1);
+    const rotations = await prepareFurthestOrdersForRotation(rotateMgr, ORDER_TYPES.SELL, 1);
     assert.strictEqual(rotations.length, 1, 'Should prepare 1 sell order for rotation');
     assert.strictEqual(rotations[0].oldOrder.id, 'sell3', 'Should rotate the furthest sell (130)');
     // The new price should come from the closest spread placeholder above market (102)

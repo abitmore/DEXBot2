@@ -123,19 +123,13 @@ class SyncEngine {
             mgr.logger?.log?.('Error: manager.orders is not initialized as a Map', 'error');
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
-        if (!mgr.assets || !mgr.assets.assetA || !mgr.assets.assetB) {
-            mgr.logger?.log?.('Error: manager.assets not initialized properly', 'error');
+        if (mgr.assets?.assetA?.precision === undefined || mgr.assets?.assetB?.precision === undefined) {
+            mgr.logger?.log?.('Error: manager.assets precision missing', 'error');
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
 
-        const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromOpenOrders, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-            return PRECISION_DEFAULTS.ASSET_FALLBACK;
-        })();
-        const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromOpenOrders, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-            return PRECISION_DEFAULTS.ASSET_FALLBACK;
-        })();
+        const assetAPrecision = mgr.assets.assetA.precision;
+        const assetBPrecision = mgr.assets.assetB.precision;
 
         const parsedChainOrders = new Map();
         for (const order of chainOrders) {
@@ -277,7 +271,7 @@ class SyncEngine {
 
         for (const [chainOrderId, chainOrder] of parsedChainOrders) {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
-            let bestMatch = findMatchingGridOrderByOpenOrder({ orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, { orders: mgr.orders, ordersByState: mgr._ordersByState, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+            let bestMatch = findMatchingGridOrderByOpenOrder({ orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
 
             if (bestMatch && !matchedGridOrderIds.has(bestMatch.id)) {
                 bestMatch.orderId = chainOrderId;
@@ -355,14 +349,13 @@ class SyncEngine {
             const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
             const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
 
-            const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
-                mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromFillHistory, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-                return PRECISION_DEFAULTS.ASSET_FALLBACK;
-            })();
-            const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
-                mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromFillHistory, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-                return PRECISION_DEFAULTS.ASSET_FALLBACK;
-            })();
+            const assetAPrecision = mgr.assets?.assetA?.precision;
+            const assetBPrecision = mgr.assets?.assetB?.precision;
+
+            if (assetAPrecision === undefined || assetBPrecision === undefined) {
+                mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistory', 'error');
+                return { filledOrders: [], updatedOrders: [], partialFill: false };
+            }
 
             let matchedGridOrder = null;
             for (const gridOrder of mgr.orders.values()) {
@@ -507,7 +500,7 @@ class SyncEngine {
             }
             case 'cancelOrder': {
                 const orderId = chainData;
-                const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, ordersByState: mgr._ordersByState, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+                const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
                 if (gridOrder) {
                     // Lock both chain orderId and grid order ID to prevent concurrent modifications
                     const orderIds = [orderId, gridOrder.id].filter(Boolean);
