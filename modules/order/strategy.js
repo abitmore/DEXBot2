@@ -185,6 +185,7 @@ class StrategyEngine {
             const shortageIdx = shortages[i];
             const shortageSlot = slots[shortageIdx];
             const idealSize = idealSizes[shortageIdx];
+            if (!idealSize || idealSize <= 0) continue;
 
             ordersToRotate.push({
                 oldOrder: { ...surplus },
@@ -202,6 +203,7 @@ class StrategyEngine {
             const idx = shortages[i];
             const slot = slots[idx];
             const idealSize = idealSizes[idx];
+            if (!idealSize || idealSize <= 0) continue;
             ordersToPlace.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
             stateUpdates.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
             mgr.logger.log(`[UNIFIED] Expansion: Placing ${type} at fixed edge slot ${slot.id}.`, "info");

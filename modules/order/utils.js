@@ -2070,13 +2070,13 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     // Uses same threshold as grid regeneration logic (GRID_COMPARISON.RMS_PERCENTAGE)
     const rmsThreshold = (GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE || 14.3) / 100;
     if (metric > rmsThreshold) {
-        console.log(`\nDEBUG [${sideName}] Divergence Calculation Breakdown:`);
-        console.log(`  Matched orders: ${matchCount}`);
-        console.log(`  Unmatched orders: ${unmatchedCount}`);
-        console.log(`  RMS (Root Mean Square): ${metric.toFixed(4)} (${(metric * 100).toFixed(2)}%)`);
-        console.log(`  Threshold: ${(rmsThreshold * 100).toFixed(1)}%`);
+        console.debug(`\nDEBUG [${sideName}] Divergence Calculation Breakdown:`);
+        console.debug(`  Matched orders: ${matchCount}`);
+        console.debug(`  Unmatched orders: ${unmatchedCount}`);
+        console.debug(`  RMS (Root Mean Square): ${metric.toFixed(4)} (${(metric * 100).toFixed(2)}%)`);
+        console.debug(`  Threshold: ${(rmsThreshold * 100).toFixed(1)}%`);
         if (largeDeviations.length > 0) {
-            console.log(`  Large deviations (>10%): ${largeDeviations.length}`);
+            console.debug(`  Large deviations (>10%): ${largeDeviations.length}`);
         }
     }
 
