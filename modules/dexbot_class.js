@@ -611,7 +611,8 @@ class DEXBot {
                         if (!partialOrder.orderId) continue;
 
                         // Check if order still exists on-chain before building op
-                        const onChain = await chainOrders.readOrder(partialOrder.orderId);
+                        const openOrders = await chainOrders.readOpenOrders(this.accountId);
+                        const onChain = openOrders.find(o => o.id === partialOrder.orderId);
                         if (!onChain) {
                             this.manager.logger.log(`[SPLIT UPDATE] Skipping size update: Order ${partialOrder.orderId} no longer exists on-chain`, 'warn');
                             continue;
@@ -698,7 +699,8 @@ class DEXBot {
                         if (!oldOrder.orderId) continue;
 
                         // Check if order still exists on-chain before building op
-                        const onChain = await chainOrders.readOrder(oldOrder.orderId);
+                        const openOrders = await chainOrders.readOpenOrders(this.accountId);
+                        const onChain = openOrders.find(o => o.id === oldOrder.orderId);
                         if (!onChain) {
                             this.manager.logger.log(`Skipping rotation: Order ${oldOrder.orderId} no longer exists on-chain`, 'warn');
                             continue;
@@ -886,8 +888,8 @@ class DEXBot {
                             'info'
                         );
 
-                        // Persist the updated fees owed
-                        await this.manager._persistBtsFeesOwed();
+                        // Fees are persisted as part of the grid snapshot (via persistGrid)
+                        // No separate persistence call needed here
                     } catch (err) {
                         this.manager.logger.log(`Warning: Could not account for BTS update fees: ${err.message}`, 'warn');
                     }
@@ -998,7 +1000,7 @@ class DEXBot {
                 chainOpenOrders,
                 manager: this.manager,
                 logger: { log: (msg) => this._log(msg) },
-                storeGrid: (orders) => {
+                storeGrid: async (orders) => {
                     // Temporarily replace manager.orders to persist the specific orders
                     const originalOrders = this.manager.orders;
                     this.manager.orders = new Map(orders.map(o => [o.id, o]));

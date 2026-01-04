@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor } = require('../modules/legacy-testing');
 console.log('Running rotation cacheFunds tests');
 
 const { OrderManager, grid: Grid, constants } = require('../modules/order/index.js');
@@ -46,7 +47,7 @@ function seedGridForRotation(mgr, targetType, orderCount) {
     const origFn = GridModule.calculateOrderSizes;
     GridModule.calculateOrderSizes = (orders) => orders.map((o, i) => ({ ...o, size: [30, 20, 20, 10][i] || 0 }));
 
-    const rotations1 = await mgr1.prepareFurthestOrdersForRotation(ORDER_TYPES.BUY, 4);
+    const rotations1 = await prepareFurthestOrdersForRotation(mgr1, ORDER_TYPES.BUY, 4);
     // Budget: cacheFunds (100)
     // patch sum: 80
     // Surplus = 100 - 80 = 20
@@ -68,7 +69,7 @@ function seedGridForRotation(mgr, targetType, orderCount) {
     // Budget: cache (100)
     // Sizing 120 > 100, so scales to 100.
 
-    const rotations2 = await mgr2.prepareFurthestOrdersForRotation(ORDER_TYPES.BUY, 4);
+    const rotations2 = await prepareFurthestOrdersForRotation(mgr2, ORDER_TYPES.BUY, 4);
     const cached2 = mgr2.funds.cacheFunds.buy || 0;
     assert(Math.abs(cached2 - 0) < 1e-8, `Expected cacheFunds.buy == 0 after scaling, got ${cached2}`);
     console.log('Test 2 passed: geometric > cache scaled and no surplus added');

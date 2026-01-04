@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor } = require('../modules/legacy-testing');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
@@ -89,7 +90,7 @@ async function testSingleDustPartial() {
 
     mgr._updateOrder(dustPartial);
 
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // Combine all moves for verification (SPLIT updates are in ordersToUpdate)
     const allMoves = [...result.partialMoves, ...(result.ordersToUpdate || [])];
@@ -128,7 +129,7 @@ async function testMultipleDustPartials() {
         mgr._updateOrder(order);
     }
 
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // Combine all moves for verification
     const allMoves = [...result.partialMoves, ...(result.ordersToUpdate || [])];
@@ -175,7 +176,7 @@ async function testSubstantialPartialAsInnermost() {
     mgr._updateOrder(outerDust);
     mgr._updateOrder(innerSubstantial);
 
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // Combine all moves for verification
     const allMoves = [...result.partialMoves, ...(result.ordersToUpdate || [])];
@@ -226,7 +227,7 @@ async function testLargeResidualSplit() {
     mgr._updateOrder(outerOversized);
     mgr._updateOrder(innerDust);
 
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // Combine all moves for verification
     const allMoves = [...result.partialMoves, ...(result.ordersToUpdate || [])];
@@ -289,7 +290,7 @@ async function testGhostVirtualizationIsolation() {
     assert(mgr.orders.get('sell-2').state === ORDER_STATES.PARTIAL);
     assert(mgr.orders.get('sell-4').state === ORDER_STATES.PARTIAL);
 
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // All 3 partials should be processed (ghost virtualization prevents blocking)
     const allMoves = [...result.partialMoves, ...(result.ordersToUpdate || [])];
@@ -349,7 +350,7 @@ async function testInnermostMergeWithAccumulatedResiduals() {
     mgr._updateOrder(outer2);
     mgr._updateOrder(inner);
 
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     // Combine all moves for verification
     const allMoves = [...result.partialMoves, ...(result.ordersToUpdate || [])];

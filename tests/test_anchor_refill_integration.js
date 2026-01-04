@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor } = require('../modules/legacy-testing');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
@@ -63,7 +64,7 @@ async function testCaseADustRefill() {
         newPrice: 0.96
     };
 
-    const decision = mgr._evaluatePartialOrderAnchor(dustPartial, moveInfo);
+    const decision = evaluatePartialOrderAnchor(mgr, dustPartial, moveInfo);
 
     console.log('  Testing dust classification (1% < threshold):');
     assert(decision.isDust === true, `Expected isDust=true, got ${decision.isDust}`);
@@ -102,7 +103,7 @@ async function testCaseBFullAnchor() {
         newPrice: 1.05
     };
 
-    const decision = mgr._evaluatePartialOrderAnchor(substantialPartial, moveInfo);
+    const decision = evaluatePartialOrderAnchor(mgr, substantialPartial, moveInfo);
 
     console.log('  Testing substantial classification (25% of ideal):');
     assert(decision.isDust === false, `Expected isDust=false, got ${decision.isDust}`);

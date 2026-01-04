@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor } = require('../modules/legacy-testing');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
@@ -68,7 +69,7 @@ async function testMultiPartialConsolidation() {
     mgr._updateOrder(p3);
 
     // Execute rebalance logic
-    const result = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const result = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     console.log('  Verifying partialMoves and ordersToUpdate:');
     console.log(`  partialMoves: ${result.partialMoves.length}, ordersToUpdate: ${result.ordersToUpdate.length}, ordersToRotate: ${result.ordersToRotate.length}`);

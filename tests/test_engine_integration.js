@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor } = require('../modules/legacy-testing');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
@@ -234,7 +235,7 @@ async function testConsolidationSyncRebalanceCycle() {
         };
     };
 
-    const consolidationResult = await mgr._rebalanceSideAfterFill(ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
+    const consolidationResult = await rebalanceSideAfterFill(mgr, ORDER_TYPES.BUY, ORDER_TYPES.SELL, 1, 0, new Set());
 
     assert(consolidationResult.partialMoves.length > 0, 'Should have partial moves from consolidation');
     console.log(`  ✓ Step 2: Consolidation created ${consolidationResult.partialMoves.length} moves`);

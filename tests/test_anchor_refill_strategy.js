@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { activateClosestVirtualOrdersForPlacement, prepareFurthestOrdersForRotation, rebalanceSideAfterFill, evaluatePartialOrderAnchor } = require('../modules/legacy-testing');
 const fs = require('fs');
 const path = require('path');
 const { OrderManager } = require('../modules/order/manager');
@@ -51,7 +52,7 @@ function testDustClassification() {
         size: 1.0  // 1% of 100
     };
 
-    const decision = mgr._evaluatePartialOrderAnchor(dustPartial, moveInfo);
+    const decision = evaluatePartialOrderAnchor(mgr, dustPartial, moveInfo);
 
     assert(decision.isDust === true, `Expected isDust=true for 1% partial, got ${decision.isDust}`);
     assert(Math.abs(decision.percentOfIdeal - 0.01) < 0.001, `Expected percentOfIdeal=0.01, got ${decision.percentOfIdeal}`);
@@ -100,7 +101,7 @@ function testSubstantialClassification() {
         size: 25.0  // 25% of 100
     };
 
-    const decision = mgr._evaluatePartialOrderAnchor(substantialPartial, moveInfo);
+    const decision = evaluatePartialOrderAnchor(mgr, substantialPartial, moveInfo);
 
     assert(decision.isDust === false, `Expected isDust=false for 25% partial, got ${decision.isDust}`);
     assert(Math.abs(decision.percentOfIdeal - 0.25) < 0.001, `Expected percentOfIdeal=0.25, got ${decision.percentOfIdeal}`);
@@ -126,7 +127,7 @@ function testSubstantialClassification() {
         size: 150.0  // 150% of ideal
     };
 
-    const decision2 = mgr._evaluatePartialOrderAnchor(oversizePartial, moveInfo);
+    const decision2 = evaluatePartialOrderAnchor(mgr, oversizePartial, moveInfo);
 
     assert(decision2.isDust === false, `Expected isDust=false for 150% partial`);
     const expectedResidual = (150 - 100) * 1.05; // 50 * 1.05 = 52.5 (base asset * new price)
