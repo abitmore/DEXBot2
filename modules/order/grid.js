@@ -101,7 +101,11 @@ class Grid {
      */
     static async loadGrid(manager, grid) {
         if (!Array.isArray(grid)) return;
-        try { await manager._initializeAssets(); } catch (e) { }
+        try {
+            await manager._initializeAssets();
+        } catch (e) {
+            manager.logger?.log?.(`Asset initialization failed during grid load: ${e.message}`, 'warn');
+        }
 
         manager.orders.clear();
         Object.values(manager._ordersByState).forEach(set => set.clear());
@@ -269,7 +273,7 @@ class Grid {
 
         const totalInputInt = floatToBlockchainInt(allocatedFunds, precision);
         let totalAllocatedInt = 0;
-        newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(size, precision));
+        newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, precision));
         
         if (!manager.funds.cacheFunds) manager.funds.cacheFunds = { buy: 0, sell: 0 };
         manager.funds.cacheFunds[sideName] = blockchainToFloat(totalInputInt - totalAllocatedInt, precision);
@@ -354,7 +358,9 @@ class Grid {
      */
     static async checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch = null) {
         const currentSpread = Grid.calculateCurrentSpread(manager);
+        // Base target widens spread beyond nominal value to account for order density and price movement
         const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
+        // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
         const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
 
         const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
@@ -430,7 +436,7 @@ class Grid {
     static calculateGeometricSizeForSpreadCorrection(manager, targetType) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
-        const total = (manager.funds.available[side] || 0) + (manager.funds.virtuel[side] || 0);
+        const total = (manager.funds.available[side] || 0) + (manager.funds.virtual[side] || 0);
         if (total <= 0 || slotsCount <= 1) return null;
 
         const precision = getPrecisionForSide(manager.assets, side);

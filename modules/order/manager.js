@@ -157,17 +157,35 @@ class OrderManager {
 
     // --- Controller Logic ---
 
+    /**
+     * Resolve a configuration value (absolute or percentage-based).
+     * SIDE EFFECT: If value is a percentage but total is unavailable,
+     * this method triggers an async fetch of account totals for future calls.
+     * Use _resolveConfigValueWithAccountFetch() to handle the fetch explicitly.
+     */
     _resolveConfigValue(value, total) {
         const resolved = resolveConfigValue(value, total);
+        // If percentage-based but no total available, trigger background fetch
         if (resolved === 0 && typeof value === 'string' && value.trim().endsWith('%')) {
             if (total === null || total === undefined) {
-                if (!this._isFetchingTotals) {
-                    this._isFetchingTotals = true;
-                    this._fetchAccountBalancesAndSetTotals().finally(() => { this._isFetchingTotals = false; });
-                }
+                this._triggerAccountTotalsFetchIfNeeded();
             }
         }
         return resolved;
+    }
+
+    /**
+     * Trigger background fetch of account totals if not already fetching.
+     * Used by _resolveConfigValue() when percentage-based allocation is requested.
+     * @private
+     */
+    _triggerAccountTotalsFetchIfNeeded() {
+        if (!this._isFetchingTotals) {
+            this._isFetchingTotals = true;
+            this._fetchAccountBalancesAndSetTotals().finally(() => {
+                this._isFetchingTotals = false;
+            });
+        }
     }
 
     getChainFundsSnapshot() {
@@ -184,7 +202,7 @@ class OrderManager {
      * WHY LOCKING IS NEEDED:
      * ========================================================================
      * The bot processes orders asynchronously from multiple sources:
-     * 1. Blockchain syncs (detectingfills, price changes)
+     * 1. Blockchain syncs (detecting fills, price changes)
      * 2. Strategy engine (rebalancing, rotations)
      * 3. User actions (manual adjustments)
      *
@@ -311,8 +329,13 @@ class OrderManager {
         if (!this.funds) this.resetFunds();
         this.recalculateFunds();
         if (hasValidAccountTotals(this.accountTotals, true) && typeof this._accountTotalsResolve === 'function') {
-            try { this._accountTotalsResolve(); } catch (e) { }
-            this._accountTotalsPromise = null; this._accountTotalsResolve = null;
+            try {
+                this._accountTotalsResolve();
+            } catch (e) {
+                this.logger?.log?.(`Error resolving account totals promise: ${e.message}`, 'warn');
+            }
+            this._accountTotalsPromise = null;
+            this._accountTotalsResolve = null;
         }
     }
 
@@ -402,8 +425,11 @@ class OrderManager {
         // Validate state transition if order exists
         if (existing && existing.state && order.state && existing.state !== order.state) {
             const validTransitions = {
+                // VIRTUAL can go ACTIVE (normal) or directly PARTIAL (partial fill before activation)
                 [ORDER_STATES.VIRTUAL]: [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL],
+                // ACTIVE can go PARTIAL (partial fill) or back to VIRTUAL (cancelled)
                 [ORDER_STATES.ACTIVE]: [ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL],
+                // PARTIAL can be upgraded to ACTIVE (consolidation) or returned to VIRTUAL (rebalance)
                 [ORDER_STATES.PARTIAL]: [ORDER_STATES.ACTIVE, ORDER_STATES.VIRTUAL]
             };
 
