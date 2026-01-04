@@ -175,6 +175,13 @@ class Grid {
             throw new Error('Calculated orders fall below minimum allowable size.');
         }
 
+        // Check for warning if orders are near minimal size (regression fix) 
+        const warningSellSize = minSellSize > 0 ? getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0; 
+        const warningBuySize = minBuySize > 0 ? getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0; 
+        if (checkSizesNearMinimum(sells, warningSellSize, precA) || checkSizesNearMinimum(buys, warningBuySize, precB)) { 
+            manager.logger.log("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn"); 
+        }
+
         manager.orders.clear();
         Object.values(manager._ordersByState).forEach(set => set.clear());
         Object.values(manager._ordersByType).forEach(set => set.clear());
