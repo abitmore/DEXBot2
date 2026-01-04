@@ -10,34 +10,29 @@ function _countActiveOnGrid(manager, type) {
 function _pickVirtualSlotsToActivate(manager, type, count) {
     if (count <= 0) return [];
 
+    const side = type === ORDER_TYPES.BUY ? "buy" : "sell";
+    const allSlots = Array.from(manager.orders.values())
+        .filter(o => (o.id && String(o.id).startsWith(side + "-")) || o.type === type)
+        .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+
     let effectiveMin = 0;
     try {
         effectiveMin = OrderUtils.getMinOrderSize(type, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
-    } catch (e) {
-        effectiveMin = 0;
+    } catch (e) { effectiveMin = 0; }
+
+    const firstVirtualIdx = allSlots.findIndex(o => !o.orderId && o.state === ORDER_STATES.VIRTUAL);
+    if (firstVirtualIdx === -1) return [];
+
+    const valid = [];
+    for (let i = 0; i < count && (firstVirtualIdx + i) < allSlots.length; i++) {
+        const slot = allSlots[firstVirtualIdx + i];
+        if (slot.id && (Number(slot.size) || 0) >= effectiveMin) {
+            valid.push(slot);
+        }
     }
-
-    const allVirtual = manager.getOrdersByTypeAndState(type, ORDER_STATES.VIRTUAL);
-
-    // Closest-to-market block
-    if (type === ORDER_TYPES.SELL) {
-        allVirtual.sort((a, b) => a.price - b.price); // lowest sell first (closest to market)
-    } else {
-        allVirtual.sort((a, b) => b.price - a.price); // highest buy first (closest to market)
-    }
-
-    const block = allVirtual.slice(0, count);
-    // Filter for valid orders: must have proper id AND sufficient size
-    // Orders with null/undefined id would corrupt the grid
-    const valid = block.filter(o => o.id && (Number(o.size) || 0) >= effectiveMin);
-
-    // Outside-in ordering
-    if (type === ORDER_TYPES.SELL) valid.sort((a, b) => (b.price || 0) - (a.price || 0));
-    else valid.sort((a, b) => (a.price || 0) - (b.price || 0));
 
     return valid;
 }
-
 /**
  * Detect if grid edge is fully occupied with active orders.
  * When all outermost (furthest from market) orders are ACTIVE with orderId,
