@@ -32,7 +32,7 @@
  * SECTION 3: FUND CALCULATIONS (lines 95-240)
  *   - computeChainFundTotals, calculateAvailableFundsValue
  *   - calculateSpreadFromOrders, resolveConfigValue
- *   - getCacheFundsValue, getGridTotalValue, hasValidAccountTotals
+ *   - hasValidAccountTotals
  *   Purpose: Calculate fund-related values from state
  *
  * SECTION 4: PRICE OPERATIONS (lines 275-950)
@@ -43,13 +43,13 @@
  *
  * SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (lines 351-611)
  *   - parseChainOrder, findBestMatchByPrice
- *   - findMatchingGridOrderByOpenOrder, findMatchingGridOrderByHistory
+ *   - findMatchingGridOrderByOpenOrder
  *   - applyChainSizeToGridOrder, correctOrderPriceOnChain
  *   - correctAllPriceMismatches, validateOrderAmountsWithinLimits
  *   Purpose: Match grid orders to blockchain orders and reconcile state
  *
  * SECTION 6: FEE MANAGEMENT (lines 922-1180)
- *   - initializeFeeCache, getCachedFees, clearFeeCache, getAssetFees
+ *   - initializeFeeCache, getCachedFees, getAssetFees
  *   - _fetchBlockchainFees, _fetchAssetMarketFees
  *   - calculateOrderCreationFees, deductOrderFeesFromFunds
  *   Purpose: Cache and calculate market-making fees
@@ -57,7 +57,7 @@
  * SECTION 7: GRID STATE MANAGEMENT (lines 1179-1440)
  *   - persistGridSnapshot, retryPersistenceIfNeeded
  *   - runGridComparisons, applyGridDivergenceCorrections
- *   - compareBlockchainSizes, computeSizeAfterFill
+ *   - compareBlockchainSizes
  *   Purpose: Persist and compare grid state with blockchain
  *
  * SECTION 8: ORDER UTILITIES (lines 1442-1545)
@@ -75,7 +75,7 @@
  *   - filterOrdersByType, filterOrdersByTypeAndState
  *   - sumOrderSizes, mapOrderSizes, countOrdersByType
  *   - checkSizesBeforeMinimum, checkSizesNearMinimum
- *   - shouldFlagOutOfSpread, getChainFreeKey
+ *   - shouldFlagOutOfSpread
  *   Purpose: Filter, count, and analyze orders
  *
  * ═══════════════════════════════════════════════════════════════════════════════
@@ -546,46 +546,6 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
 
     logger?.log?.(`No grid match for chain ${parsedChainOrder.orderId} (type=${parsedChainOrder.type}, price=${chainPrice.toFixed(6)}, size=${chainSize.toFixed(8)})`, 'warn');
     return null;
-}
-
-function findMatchingGridOrderByHistory(fillOp, opts) {
-    const { orders, assets, calcToleranceFn, logger } = opts || {};
-    if (!fillOp) return null;
-
-    if (fillOp.order_id) {
-        for (const gridOrder of orders.values()) {
-            if (gridOrder.orderId === fillOp.order_id && gridOrder.state === ORDER_STATES.ACTIVE) return gridOrder;
-        }
-    }
-
-    if (!fillOp.pays || !fillOp.receives || !assets) return null;
-
-    const paysAssetId = String(fillOp.pays.asset_id);
-    const receivesAssetId = String(fillOp.receives.asset_id);
-    const assetAId = String(assets.assetA?.id || '');
-    const assetBId = String(assets.assetB?.id || '');
-    let fillType = null; let fillPrice = null;
-
-    if (paysAssetId === assetAId && receivesAssetId === assetBId) {
-        fillType = ORDER_TYPES.SELL;
-        const paysAmount = blockchainToFloat(Number(fillOp.pays.amount), assets.assetA?.precision || 0);
-        const receivesAmount = blockchainToFloat(Number(fillOp.receives.amount), assets.assetB?.precision || 0);
-        if (paysAmount > 0) fillPrice = receivesAmount / paysAmount;
-    } else if (paysAssetId === assetBId && receivesAssetId === assetAId) {
-        fillType = ORDER_TYPES.BUY;
-        const paysAmount = blockchainToFloat(Number(fillOp.pays.amount), assets.assetB?.precision || 0);
-        const receivesAmount = blockchainToFloat(Number(fillOp.receives.amount), assets.assetA?.precision || 0);
-        if (receivesAmount > 0) fillPrice = paysAmount / receivesAmount;
-    } else return null;
-
-    if (!fillType || !Number.isFinite(fillPrice)) return null;
-
-    logger?.log?.(`Fill analysis: type=${fillType}, price=${fillPrice.toFixed(4)}`, 'debug');
-
-    const activeIds = [];
-    for (const [id, order] of orders.entries()) if (order.state === ORDER_STATES.ACTIVE) activeIds.push(id);
-    const result = findBestMatchByPrice({ type: fillType, price: fillPrice }, activeIds, orders, calcToleranceFn);
-    return result.match;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1083,10 +1043,6 @@ function getCachedFees(assetSymbol) {
 /**
  * Clear the fee cache (useful for testing or refreshing)
  */
-function clearFeeCache() {
-    feeCache = {};
-}
-
 /**
  * Get total fees (blockchain + market) for a filled order amount
  *
@@ -1591,20 +1547,6 @@ function compareBlockchainSizes(size1, size2, precision) {
     const int2 = floatToBlockchainInt(size2, precision);
     if (int1 === int2) return 0;
     return int1 > int2 ? 1 : -1;
-}
-
-/**
- * Compute remaining size after a fill at blockchain precision.
- * @param {number} currentSize - Current order size
- * @param {number} filledAmount - Amount filled
- * @param {number} precision - Blockchain precision
- * @returns {number} Remaining size after fill
- */
-function computeSizeAfterFill(currentSize, filledAmount, precision) {
-    const currentInt = floatToBlockchainInt(currentSize, precision);
-    const filledInt = floatToBlockchainInt(filledAmount, precision);
-    const remainingInt = Math.max(0, currentInt - filledInt);
-    return blockchainToFloat(remainingInt, precision);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -2192,44 +2134,6 @@ function convertToSpreadPlaceholder(order) {
 }
 
 /**
- * Safely get cacheFunds value for a side with fallback to 0.
- * @param {Object} funds - Funds object
- * @param {string} side - 'buy' or 'sell'
- * @returns {number} Cache funds amount or 0 if undefined
- */
-function getCacheFundsValue(funds, side) {
-    return Number(funds?.cacheFunds?.[side] || 0);
-}
-
-/**
- * Safely get grid total value for a side with fallback to 0.
- * @param {Object} funds - Funds object
- * @param {string} side - 'buy' or 'sell'
- * @returns {number} Grid total or 0 if undefined
- */
-function getGridTotalValue(funds, side) {
-    return Number(funds?.total?.grid?.[side] || 0);
-}
-
-/**
- * Get total funds available to the grid for rebalancing/rotation operations.
- *
- * Formula: available (unallocated) + committed.grid (on-chain) + virtuel (reserved) + cacheFunds (proceeds)
- *
- * This represents ALL funds the bot has in the grid:
- * - available: Unallocated blockchain free balance (after accounting for reserved/cache/fees)
- * - committed.grid: Funds currently locked in ACTIVE and PARTIAL orders on-chain
- * - virtuel: Funds reserved for VIRTUAL orders not yet placed on-chain
- * - cacheFunds: Proceeds from filled orders waiting for next rotation
- *
- * Used for geometric sizing during rotations and spread corrections to ensure
- * all grid orders are sized proportionally to the actual total grid funds.
- *
- * @param {Object} funds - Funds object with available, committed.grid, virtuel, cacheFunds
- * @param {string} side - 'buy' or 'sell'
- * @returns {number} Total grid funds for sizing calculations
- */
-/**
  * Check if account totals have valid buy and sell free amounts.
  * Used for validation before using accountTotals in calculations.
  *
@@ -2246,18 +2150,13 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
     return (accountTotals[buyKey] !== null &&
         accountTotals[buyKey] !== undefined &&
         Number.isFinite(Number(accountTotals[buyKey]))) &&
-        (accountTotals[sellKey] !== null &&
-            accountTotals[sellKey] !== undefined &&
-            Number.isFinite(Number(accountTotals[sellKey])));
-}
-
-function getChainFreeKey(orderType) {
-    return orderType === ORDER_TYPES.BUY ? 'buyFree' : 'sellFree';
-}
-
-/**
- * Determine if the spread is too wide and should be flagged for rebalancing.
- * Pure calculation: checks if spread exceeds threshold AND both sides have orders.
+                    (accountTotals[sellKey] !== null &&
+                    accountTotals[sellKey] !== undefined &&
+                    Number.isFinite(Number(accountTotals[sellKey])));
+        }
+        
+        /**
+         * Determine if the spread is too wide and should be flagged for rebalancing. * Pure calculation: checks if spread exceeds threshold AND both sides have orders.
  *
  * @param {number} currentSpread - Current spread percentage
  * @param {number} targetSpread - Target spread threshold
@@ -2300,7 +2199,6 @@ module.exports = {
     parseChainOrder,
     findBestMatchByPrice,
     findMatchingGridOrderByOpenOrder,
-    findMatchingGridOrderByHistory,
 
     // Reconciliation
     applyChainSizeToGridOrder,
@@ -2317,7 +2215,6 @@ module.exports = {
     // Fee caching and retrieval
     initializeFeeCache,
     getCachedFees,
-    clearFeeCache,
     getAssetFees,
 
     // Persistence
@@ -2335,7 +2232,6 @@ module.exports = {
     toFiniteNumber,
     isValidNumber,
     compareBlockchainSizes,
-    computeSizeAfterFill,
 
     // Order filtering helpers
     filterOrdersByType,
@@ -2372,12 +2268,7 @@ module.exports = {
     formatOrderSize,
     convertToSpreadPlaceholder,
 
-    // Safe getters
-    getCacheFundsValue,
-    getGridTotalValue,
-
     // Validation helpers
     hasValidAccountTotals,
-    getChainFreeKey,
     shouldFlagOutOfSpread
 };
