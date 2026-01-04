@@ -1862,10 +1862,10 @@ function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse 
         // Adjust for rounding discrepancy in units calculation (usually +/- 1 unit)
         const diff = totalUnits - unitsSummary;
         if (diff !== 0 && n > 0) {
-            // Adjust first order for simplicity (closest to market in mountain style)
-            units[0] = Math.max(0, units[0] + diff);
+            let largestIdx = 0;
+            for (let j = 1; j < n; j++) if (units[j] > units[largestIdx]) largestIdx = j;
+            units[largestIdx] = Math.max(0, units[largestIdx] + diff);
         }
-
         for (let i = 0; i < n; i++) {
             sizes[i] = blockchainToFloat(units[i], precision);
         }

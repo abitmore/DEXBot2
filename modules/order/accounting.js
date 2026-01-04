@@ -109,6 +109,9 @@ class Accountant {
         let chainBuy = 0, chainSell = 0;
         let virtualBuy = 0, virtualSell = 0;
 
+        // AUTO-SYNC SPREAD COUNT: Centralized logic ensures spread counts are always accurate
+        mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
+
         // Use indices for faster iteration - only walk active/partial/virtual states
         const activePartialIds = [
             ...(mgr._ordersByState[ORDER_STATES.ACTIVE] || new Set()),
