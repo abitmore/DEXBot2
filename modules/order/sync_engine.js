@@ -277,7 +277,7 @@ class SyncEngine {
 
         for (const [chainOrderId, chainOrder] of parsedChainOrders) {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
-            let bestMatch = findMatchingGridOrderByOpenOrder({ orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, { orders: mgr.orders, ordersByState: mgr._ordersByState, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+            let bestMatch = findMatchingGridOrderByOpenOrder({ orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
 
             if (bestMatch && !matchedGridOrderIds.has(bestMatch.id)) {
                 bestMatch.orderId = chainOrderId;
@@ -507,7 +507,7 @@ class SyncEngine {
             }
             case 'cancelOrder': {
                 const orderId = chainData;
-                const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, ordersByState: mgr._ordersByState, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+                const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
                 if (gridOrder) {
                     // Lock both chain orderId and grid order ID to prevent concurrent modifications
                     const orderIds = [orderId, gridOrder.id].filter(Boolean);
