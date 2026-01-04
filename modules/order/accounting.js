@@ -199,8 +199,8 @@ class Accountant {
      */
     _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
         // 1. Dynamic tolerance based on asset precision (slack for rounding)
-        const buyPrecision = mgr.assets?.assetB?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
-        const sellPrecision = mgr.assets?.assetA?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
+        const buyPrecision = mgr.assets?.assetB?.precision;
+        const sellPrecision = mgr.assets?.assetA?.precision;
         const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
         const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
 

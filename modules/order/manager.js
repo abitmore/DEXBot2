@@ -507,8 +507,8 @@ class OrderManager {
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 
         // Use integer arithmetic for size comparisons to match blockchain behavior
-        const sellPrecision = this.assets?.assetA?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
-        const buyPrecision = this.assets?.assetB?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
+        const sellPrecision = this.assets?.assetA?.precision;
+        const buyPrecision = this.assets?.assetB?.precision;
         const minSellSizeInt = floatToBlockchainInt(minSellSize, sellPrecision);
         const minBuySizeInt = floatToBlockchainInt(minBuySize, buyPrecision);
 

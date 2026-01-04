@@ -546,8 +546,8 @@ class StrategyEngine {
         const targetGridOrder = mgr.orders.get(newGridId);
         if (targetGridOrder) {
             const precision = (partialOrder.type === ORDER_TYPES.SELL)
-                ? mgr.assets?.assetA?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK
-                : mgr.assets?.assetB?.precision || PRECISION_DEFAULTS.ASSET_FALLBACK;
+                ? mgr.assets?.assetA?.precision
+                : mgr.assets?.assetB?.precision;
             const partialInt = floatToBlockchainInt(partialOrder.size, precision);
             const idealInt = floatToBlockchainInt(targetGridOrder.size || 0, precision);
             const newState = partialInt >= idealInt ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;

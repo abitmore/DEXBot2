@@ -123,19 +123,13 @@ class SyncEngine {
             mgr.logger?.log?.('Error: manager.orders is not initialized as a Map', 'error');
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
-        if (!mgr.assets || !mgr.assets.assetA || !mgr.assets.assetB) {
-            mgr.logger?.log?.('Error: manager.assets not initialized properly', 'error');
+        if (mgr.assets?.assetA?.precision === undefined || mgr.assets?.assetB?.precision === undefined) {
+            mgr.logger?.log?.('Error: manager.assets precision missing', 'error');
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
 
-        const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromOpenOrders, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-            return PRECISION_DEFAULTS.ASSET_FALLBACK;
-        })();
-        const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
-            mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromOpenOrders, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-            return PRECISION_DEFAULTS.ASSET_FALLBACK;
-        })();
+        const assetAPrecision = mgr.assets.assetA.precision;
+        const assetBPrecision = mgr.assets.assetB.precision;
 
         const parsedChainOrders = new Map();
         for (const order of chainOrders) {
@@ -355,14 +349,13 @@ class SyncEngine {
             const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
             const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
 
-            const assetAPrecision = mgr.assets?.assetA?.precision || (() => {
-                mgr.logger?.log?.(`WARNING: Asset precision not found for assetA in syncFromFillHistory, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-                return PRECISION_DEFAULTS.ASSET_FALLBACK;
-            })();
-            const assetBPrecision = mgr.assets?.assetB?.precision || (() => {
-                mgr.logger?.log?.(`WARNING: Asset precision not found for assetB in syncFromFillHistory, using fallback precision=${PRECISION_DEFAULTS.ASSET_FALLBACK}`, 'warn');
-                return PRECISION_DEFAULTS.ASSET_FALLBACK;
-            })();
+            const assetAPrecision = mgr.assets?.assetA?.precision;
+            const assetBPrecision = mgr.assets?.assetB?.precision;
+
+            if (assetAPrecision === undefined || assetBPrecision === undefined) {
+                mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistory', 'error');
+                return { filledOrders: [], updatedOrders: [], partialFill: false };
+            }
 
             let matchedGridOrder = null;
             for (const gridOrder of mgr.orders.values()) {
