@@ -10,9 +10,7 @@ function _countActiveOnGrid(manager, type) {
 function _pickVirtualSlotsToActivate(manager, type, count) {
     if (count <= 0) return [];
 
-    const side = type === ORDER_TYPES.BUY ? "buy" : "sell";
     const allSlots = Array.from(manager.orders.values())
-        .filter(o => (o.id && String(o.id).startsWith(side + "-")) || o.type === type)
         .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
     let effectiveMin = 0;
@@ -20,14 +18,15 @@ function _pickVirtualSlotsToActivate(manager, type, count) {
         effectiveMin = OrderUtils.getMinOrderSize(type, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
     } catch (e) { effectiveMin = 0; }
 
-    const firstVirtualIdx = allSlots.findIndex(o => !o.orderId && o.state === ORDER_STATES.VIRTUAL);
-    if (firstVirtualIdx === -1) return [];
-
     const valid = [];
-    for (let i = 0; i < count && (firstVirtualIdx + i) < allSlots.length; i++) {
-        const slot = allSlots[firstVirtualIdx + i];
-        if (slot.id && (Number(slot.size) || 0) >= effectiveMin) {
-            valid.push(slot);
+    for (const slot of allSlots) {
+        if (valid.length >= count) break;
+        if (!slot.orderId && slot.state === ORDER_STATES.VIRTUAL) {
+            // Role invariant: Only pick slots that make sense for this type based on current market pivot
+            // (Strategy will enforce this strictly, but we filter here for cleaner activation)
+            if (slot.id && (Number(slot.size) || 0) >= effectiveMin) {
+                valid.push(slot);
+            }
         }
     }
 

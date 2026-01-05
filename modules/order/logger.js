@@ -51,8 +51,8 @@ class Logger {
     logOrderGrid(orders, startPrice) {
         console.log('\n===== ORDER GRID (SAMPLE) =====');
         if (this.marketName) console.log(`Market: ${this.marketName} @ ${startPrice}`);
-        console.log('Price\t\tType\t\tState\t\tSize');
-        console.log('-----------------------------------------------');
+        console.log('Price       Slot      Type      State       Size');
+        console.log('----------------------------------------------------');
 
         const sorted = [...orders].sort((a, b) => b.price - a.price);
 
@@ -87,12 +87,13 @@ class Logger {
     _logOrderRow(order) {
         const typeColor = this.colors[order.type] || '';
         const stateColor = this.colors[order.state] || '';
-        const price = order.price.toFixed(4).padEnd(17);
-        const type = order.type.padEnd(15);
-        const state = order.state.padEnd(15);
+        const price = order.price.toFixed(4).padEnd(12);
+        const id = (order.id || '').padEnd(10);
+        const type = order.type.padEnd(10);
+        const state = order.state.padEnd(12);
         const size = order.size.toFixed(8);
         console.log(
-            `${price}${typeColor}${type}${this.colors.reset}${stateColor}${state}${this.colors.reset}${size}`
+            `${price}${id}${typeColor}${type}${this.colors.reset}${stateColor}${state}${this.colors.reset}${size}`
         );
     }
 

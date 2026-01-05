@@ -50,67 +50,75 @@ class Grid {
             throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be between ${INCREMENT_BOUNDS.MIN_PERCENT} and ${INCREMENT_BOUNDS.MAX_PERCENT}.`);
         }
 
-        // Geometric price steps: each order is multiplied by stepUp (sell) or stepDown (buy)
-        // This creates exponential spacing: useful for covering wide price ranges
         const stepUp = 1 + (incrementPercent / 100);
         const stepDown = 1 - (incrementPercent / 100);
 
-        // Spread zone width calculation: determine how many orders should be in the spread zone
-        // between market price. Spread width determines order density near market.
-        const minSpreadPercent = incrementPercent * Number(GRID_LIMITS.MIN_SPREAD_FACTOR);
-        const targetSpreadPercent = Math.max(config.targetSpreadPercent, minSpreadPercent);
-
-        // Calculate number of spread orders needed to achieve target spread width
-        // Formula: nOrders = ceil(log(1 + spread%) / log(stepUp))
-        // This ensures the outer-most spread order is approximately at the target spread distance
-        const calculatedNOrders = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
-        const nOrders = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS, calculatedNOrders);
-
-        // SELL LEVEL GENERATION: Generate prices above market, growing exponentially upward
-        // Starting from startPrice * sqrt(stepUp) ensures symmetric levels around market price
-        const sellLevels = [];
-        let currentSell = startPrice * Math.sqrt(stepUp);
-        while (currentSell <= maxPrice) {
-            sellLevels.push(currentSell);
-            currentSell *= stepUp;
+        // Generate all possible price levels for the total grid
+        const priceLevels = [];
+        
+        // 1. Generate levels upwards from startPrice
+        let upPrice = startPrice * Math.sqrt(stepUp);
+        while (upPrice <= maxPrice) {
+            priceLevels.push(upPrice);
+            upPrice *= stepUp;
         }
-        sellLevels.reverse(); // Reverse to sort from lowest to highest sell price
 
-        // BUY LEVEL GENERATION: Generate prices below market, growing exponentially downward
-        // Starting from startPrice * sqrt(stepDown) for symmetric positioning
-        const buyLevels = [];
-        let currentBuy = startPrice * Math.sqrt(stepDown);
-        while (currentBuy >= minPrice) {
-            buyLevels.push(currentBuy);
-            currentBuy *= stepDown;
+        // 2. Generate levels downwards from startPrice
+        let downPrice = startPrice * Math.sqrt(stepDown);
+        while (downPrice >= minPrice) {
+            priceLevels.push(downPrice);
+            downPrice *= stepDown;
         }
-        // Note: buyLevels are naturally in descending order (highest prices first)
 
-        // SPREAD ZONE ASSIGNMENT: Designate outermost orders as SPREAD placeholders
-        // These sit in the spread zone and are only activated when price moves
-        const buySpread = Math.floor(nOrders / 2);
-        const sellSpread = nOrders - buySpread;
-        const initialSpreadCount = { buy: 0, sell: 0 };
+        // 3. Sort levels (lowest to highest) and assign unified slot IDs
+        priceLevels.sort((a, b) => a - b);
 
-        // Map sell levels to order objects: highest indices (furthest prices) are SPREAD orders
-        const sellOrders = sellLevels.map((price, i) => ({
-            price,
-            type: i >= sellLevels.length - sellSpread ? (initialSpreadCount.sell++, ORDER_TYPES.SPREAD) : ORDER_TYPES.SELL,
-            id: `sell-${i}`,
-            state: ORDER_STATES.VIRTUAL,
-            size: 0
-        }));
+        // 4. Find Pivot Index (slot closest to startPrice)
+        let pivotIdx = 0;
+        let minDiff = Infinity;
+        priceLevels.forEach((p, i) => {
+            const diff = Math.abs(p - startPrice);
+            if (diff < minDiff) {
+                minDiff = diff;
+                pivotIdx = i;
+            }
+        });
 
-        // Map buy levels to order objects: lowest indices (furthest prices) are SPREAD orders
-        const buyOrders = buyLevels.map((price, i) => ({
-            price,
-            type: i < buySpread ? (initialSpreadCount.buy++, ORDER_TYPES.SPREAD) : ORDER_TYPES.BUY,
-            id: `buy-${i}`,
-            state: ORDER_STATES.VIRTUAL,
-            size: 0
-        }));
+        // 5. Role Assignment (Initial pivot-aware roles)
+        const step = 1 + (incrementPercent / 100);
+        const requiredSteps = Math.ceil(Math.log(1 + (config.targetSpreadPercent / 100)) / Math.log(step));
+        const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+        
+        const halfGap = Math.floor(gapSlots / 2);
+        const buyEndIdx = pivotIdx - halfGap;
+        const sellStartIdx = buyEndIdx + gapSlots + 1;
 
-        return { orders: [...sellOrders, ...buyOrders], initialSpreadCount };
+        const orders = priceLevels.map((price, i) => {
+            let type = ORDER_TYPES.SPREAD;
+            
+            if (i <= buyEndIdx) {
+                type = ORDER_TYPES.BUY;
+            } else if (i >= sellStartIdx) {
+                type = ORDER_TYPES.SELL;
+            } else {
+                type = ORDER_TYPES.SPREAD;
+            }
+
+            return {
+                id: `slot-${i}`,
+                price,
+                type,
+                state: ORDER_STATES.VIRTUAL,
+                size: 0
+            };
+        });
+
+        const initialSpreadCount = {
+            buy: orders.filter(o => o.type === ORDER_TYPES.SPREAD && o.price < startPrice).length,
+            sell: orders.filter(o => o.type === ORDER_TYPES.SPREAD && o.price > startPrice).length
+        };
+
+        return { orders, pivotIdx, initialSpreadCount };
     }
 
     /**
@@ -171,7 +179,11 @@ class Grid {
             }
         } catch (e) { console.warn("[grid.js] silent catch:", e.message); }
 
-        const { orders, initialSpreadCount } = Grid.createOrderGrid(manager.config);
+        const { orders, pivotIdx } = Grid.createOrderGrid(manager.config);
+        
+        // Persist pivot index for StrategyEngine
+        manager.currentPivotIdx = pivotIdx;
+
         const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 
@@ -204,7 +216,11 @@ class Grid {
         manager.resetFunds();
 
         sizedOrders.forEach(order => manager._updateOrder(order));
-        manager.targetSpreadCount = initialSpreadCount.buy + initialSpreadCount.sell; manager.currentSpreadCount = manager.targetSpreadCount;
+        
+        // Calculate spread count from initialized orders
+        const spreadCount = sizedOrders.filter(o => o.type === ORDER_TYPES.SPREAD).length;
+        manager.targetSpreadCount = spreadCount;
+        manager.currentSpreadCount = spreadCount;
         
         manager.logger.log(`Initialized grid with ${orders.length} orders.`, 'info');
         manager.logger?.logFundsStatus?.(manager);
@@ -498,18 +514,18 @@ class Grid {
         } catch (e) { return null; }
     }
 
-    /**
-     * Prepare a new active order at a candidate rail slot to correct wide spread.
-     */
     static async prepareSpreadCorrectionOrders(manager, preferredSide) {
         const ordersToPlace = [];
         const railType = preferredSide;
-        const railPrefix = railType === ORDER_TYPES.BUY ? 'buy-' : 'sell-';
-        const slots = Array.from(manager.orders.values())
-            .filter(o => o.id.startsWith(railPrefix))
+        
+        // Find all virtual slots that could potentially take this role
+        const candidateSlots = Array.from(manager.orders.values())
+            .filter(o => o.state === ORDER_STATES.VIRTUAL && !o.orderId)
             .sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
-        const candidate = slots.find(o => !o.orderId && o.state === ORDER_STATES.VIRTUAL);
+        // Find the slot closest to market that isn't currently active
+        const candidate = candidateSlots[0];
+        
         if (candidate) {
             const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
             if (size && size <= manager.funds.available[railType === ORDER_TYPES.BUY ? 'buy' : 'sell']) {
