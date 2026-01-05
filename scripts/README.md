@@ -1,48 +1,142 @@
-# DEXBot2 Scripts
+# DEXBot2 /scripts CLI Documentation
 
-This directory contains utility scripts for managing, maintaining, and developing DEXBot2. These scripts automate common tasks like updates, profile bootstrapping, log clearing, and system diagnostics.
-
-## 🚀 Key Scripts
-
-### 🛠️ Maintenance & Setup
-
-| Script | Description | Usage |
-| :--- | :--- | :--- |
-| **`update.sh`** | **Primary Update Script.** Fetches latest code, installs dependencies, and restarts PM2 processes. Safe to use in production. | `bash scripts/update.sh` |
-| **`bootstrap-profiles.js`** | Creates the `profiles/` directory structure from examples if it doesn't exist. Useful for new installs. | `node scripts/bootstrap-profiles.js` |
-| **`create-bot-symlinks.sh`** | Creates convenience symlinks (`logs`, `orders`) in the root directory pointing to `profiles/`. | `bash scripts/create-bot-symlinks.sh` |
-
-### 🧹 Cleaning & Reset
-
-| Script | Description | Usage |
-| :--- | :--- | :--- |
-| **`clear-logs.sh`** | Deletes all log files in `profiles/logs/`. Use when logs consume too much space. | `bash scripts/clear-logs.sh` |
-| **`clear-orders.sh`** | **Danger Zone.** Deletes all persisted order state files in `profiles/orders/`. Forces a full grid regeneration on next run. | `bash scripts/clear-orders.sh` |
-
-### 📊 Diagnostics & Analysis
-
-| Script | Description | Usage |
-| :--- | :--- | :--- |
-| **`analyze-repo-stats.js`** | Generates an HTML report (`repo-stats.html`) visualizing codebase statistics (file sizes, line counts). | `node scripts/analyze-repo-stats.js` |
-| **`print_grid.js`** | Visualizes the order grid for a specific bot without running it. Useful for checking strategy parameters. | `node scripts/print_grid.js <bot-name>` |
-| **`divergence-calc.js`** | Calculates and displays grid divergence metrics (RMS error) for debugging order sizing logic. | `node scripts/divergence-calc.js` |
-| **`validate_bots.js`** | Validates the integrity and schema of `profiles/bots.json`. Checks for missing fields or invalid types. | `node scripts/validate_bots.js` |
-
-## 💻 Development Scripts
-
-These scripts are primarily for contributors and developers working on the DEXBot2 codebase.
-
-| Script | Description | Usage |
-| :--- | :--- | :--- |
-| **`dev-install.sh`** | Installs development dependencies (Jest, ESLint) required for running unit tests. | `bash scripts/dev-install.sh` |
-| **`update-dev.sh`** | Developer-focused update. Pulls changes but skips PM2 restarts and production safeguards. | `bash scripts/update-dev.sh` |
-
-## 📂 Directories
-
-- **`bots/`**: Contains logic or templates related to bot configuration management (internal use).
-- **`keys/`**: Contains logic or templates related to key management (internal use).
+This guide provides a terminal-focused reference for the maintenance and diagnostic utilities available in the `scripts/` directory.
 
 ---
 
-**Note:** Always run scripts from the project root directory unless otherwise specified.
-Example: `bash scripts/update.sh`, not `cd scripts && ./update.sh`.
+## 🛠️ CORE MAINTENANCE
+
+### Update DEXBot2
+**File:** `update.sh`
+**Purpose:** Perform a safe, production-ready update.
+```bash
+# Pull latest code, install deps, and reload PM2
+bash scripts/update.sh
+```
+*Note: Protects your `profiles/` directory and logs all changes to `profiles/logs/update.log`.*
+
+### Bootstrap Environment
+**File:** `bootstrap-profiles.js`
+**Purpose:** Initialize directory structure for new installations.
+```bash
+# Create profiles/, logs/, and orders/ from examples
+node scripts/bootstrap-profiles.js
+```
+
+### Fix Environment Paths
+**File:** `create-bot-symlinks.sh`
+**Purpose:** Create convenience root-level symlinks to profile data.
+```bash
+# Creates logs -> profiles/logs and orders -> profiles/orders
+bash scripts/create-bot-symlinks.sh
+```
+
+---
+
+## 🧹 CLEANING & RESET (DANGER ZONE)
+
+### Wipe Logs
+**File:** `clear-logs.sh`
+**Purpose:** Free up disk space by deleting all bot logs.
+```bash
+# IRREVERSIBLE: Deletes everything in profiles/logs/*.log
+bash scripts/clear-logs.sh
+```
+
+### Hard Reset Grid
+**File:** `clear-orders.sh`
+**Purpose:** Clear all persistent grid state.
+```bash
+# IRREVERSIBLE: Forces full grid regeneration on next run
+bash scripts/clear-orders.sh
+```
+
+---
+
+## 📊 DIAGNOSTICS & VALIDATION
+
+### Configuration Audit
+**File:** `validate_bots.js`
+**Purpose:** Check `bots.json` for schema errors or missing required fields.
+```bash
+# Validate both example and live bot configurations
+node scripts/validate_bots.js
+```
+
+### Grid Divergence Audit
+**File:** `divergence-calc.js`
+**Purpose:** Measure the "drift" between in-memory grid and disk state.
+```bash
+# Calculates RMS Error (Default threshold is 14.3%)
+node scripts/divergence-calc.js
+```
+
+### Codebase Health
+**File:** `analyze-repo-stats.js`
+**Purpose:** Generate a visual complexity and size report.
+```bash
+# Outputs repo-stats.html
+node scripts/analyze-repo-stats.js
+```
+
+---
+
+## 💻 DEVELOPMENT UTILITIES
+
+### Test Suite Setup
+**File:** `dev-install.sh`
+**Purpose:** Install Jest, ESLint, and other dev-only dependencies.
+```bash
+bash scripts/dev-install.sh
+```
+
+### Dev update
+**File:** `update-dev.sh`
+**Purpose:** Update code without production side-effects (skips PM2 reloads).
+```bash
+bash scripts/update-dev.sh
+```
+
+---
+
+## ⚡ CONVENIENCE WRAPPERS
+
+The following scripts allow you to call `dexbot` commands directly from the `scripts/` directory:
+
+| Wrapper | Target Command | Usage |
+|:---|:---|:---|
+| `scripts/bots` | `node dexbot bots` | `./scripts/bots` |
+| `scripts/keys` | `node dexbot keys` | `./scripts/keys` |
+| `scripts/dexbot` | `node dexbot` | `./scripts/dexbot <cmd>` |
+| `scripts/pm2` | `node pm2.js` | `./scripts/pm2` |
+
+---
+
+## ⌨️ TERMINAL PRODUCTIVITY
+
+Boost your workflow by adding these aliases to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+# DEXBot2 Shortcuts
+alias dbu='bash scripts/update.sh'
+alias dbc='bash scripts/clear-logs.sh'
+alias dbr='bash scripts/clear-orders.sh'
+alias dbv='node scripts/validate_bots.js'
+alias dbd='node scripts/divergence-calc.js'
+```
+
+---
+
+## 💡 PRO-TIPS FOR TERMINAL USERS
+
+**Monitor live updates while running a script:**
+```bash
+# Tail the update log in a separate pane
+tail -f profiles/logs/update.log
+```
+
+**Run a specific bot dry-run from the CLI:**
+```bash
+# Force a clean start for 'my-bot'
+bash scripts/clear-orders.sh && BOT_NAME=my-bot node dexbot start
+```
