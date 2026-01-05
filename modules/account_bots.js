@@ -783,7 +783,7 @@ async function main() {
                     if (confirm) {
                         const removed = config.bots.splice(idx, 1)[0];
                         saveBotsConfig(config, filePath);
-                        console.log(`\nRemoved bot '${removed.name || placeholderName}' from ${path.basename(filePath)}.`);
+                        console.log(`Removed bot '${removed.name || placeholderName}' from ${path.basename(filePath)}.\n`);
                     } else {
                         console.log('\nDeletion cancelled.');
                     }
@@ -799,7 +799,7 @@ async function main() {
                         if (entry) {
                             config.bots.splice(idx + 1, 0, entry);
                             saveBotsConfig(config, filePath);
-                            console.log(`\nCopied bot '${entry.name}' into ${path.basename(filePath)}.`);
+                            console.log(`Copied bot '${entry.name}' into ${path.basename(filePath)}.\n`);
                         }
                     } catch (err) {
                         console.log(`\n❌ Invalid input: ${err.message}\n`);
