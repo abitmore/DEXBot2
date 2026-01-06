@@ -38,10 +38,57 @@ const {
 class Grid {
     /**
      * Create the initial order grid structure based on configuration.
-     * Generates physical price levels and identifies the spread zone.
+     * 
+     * ALGORITHM: Geometric Grid Creation with Fixed Spread Gap
+     * =========================================================
+     * This method generates a unified "Master Rail" of price levels with geometric spacing.
+     * The grid is centered around startPrice with a fixed-size spread gap.
+     * 
+     * KEY CONCEPTS:
+     * - Geometric Spacing: Each price level is incrementPercent% away from neighbors
+     * - Master Rail: Single unified array (not separate buy/sell rails)
+     * - Spread Gap: Fixed-size buffer between best buy and best sell
+     * - Role Assignment: BUY / SPREAD / SELL based on position relative to startPrice
+     * 
+     * SPREAD GAP FORMULA:
+     * ===================
+     * The spread gap size is calculated to match the target spread percentage:
+     * 
+     * 1. Step Factor (s): s = 1 + (incrementPercent / 100)
+     *    Example: If incrementPercent = 0.5%, then s = 1.005
+     * 
+     * 2. Minimum Spread: minSpread = incrementPercent × MIN_SPREAD_FACTOR
+     *    This ensures spread is at least 2× the increment (prevents too-narrow spread)
+     * 
+     * 3. Target Steps (n): Number of price levels needed to achieve target spread
+     *    Formula: n = ceil(ln(1 + targetSpread/100) / ln(s))
+     *    
+     *    Derivation: If we want price to grow by targetSpread% over n steps:
+     *    - Final price = startPrice × s^n
+     *    - Growth factor = (1 + targetSpread/100)
+     *    - Therefore: s^n = (1 + targetSpread/100)
+     *    - Taking ln: n × ln(s) = ln(1 + targetSpread/100)
+     *    - Solving: n = ln(1 + targetSpread/100) / ln(s)
+     * 
+     * 4. Gap Slots (G): G = max(MIN_SPREAD_ORDERS, n)
+     *    Ensures at least MIN_SPREAD_ORDERS slots even if target spread is small
+     * 
+     * EXAMPLE:
+     * --------
+     * incrementPercent = 0.5%, targetSpread = 2%
+     * - s = 1.005
+     * - minSpread = 0.5% × 2 = 1%
+     * - targetSpread = max(2%, 1%) = 2%
+     * - n = ceil(ln(1.02) / ln(1.005)) = ceil(3.98) = 4 steps
+     * - G = max(2, 4) = 4 slots
      * 
      * @param {Object} config - Grid configuration
-     * @returns {Object} { orders: Array, initialSpreadCount: { buy, sell } }
+     * @param {number} config.startPrice - Market price (grid center)
+     * @param {number} config.minPrice - Minimum price bound
+     * @param {number} config.maxPrice - Maximum price bound
+     * @param {number} config.incrementPercent - Price step percentage (e.g., 0.5 for 0.5%)
+     * @param {number} config.targetSpreadPercent - Target spread width (e.g., 2 for 2%)
+     * @returns {Object} { orders: Array, boundaryIdx: number, initialSpreadCount: {buy, sell} }
      */
     static createOrderGrid(config) {
         const { startPrice, minPrice, maxPrice, incrementPercent } = config;
@@ -53,27 +100,43 @@ class Grid {
         const stepUp = 1 + (incrementPercent / 100);
         const stepDown = 1 - (incrementPercent / 100);
 
-        // Generate all possible price levels for the total grid
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 1: GENERATE PRICE LEVELS (Geometric progression)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // Create a geometric series of prices from minPrice to maxPrice.
+        // Each level is incrementPercent% away from its neighbors.
+        // 
+        // We start from startPrice and expand outward in both directions to ensure
+        // the grid is centered around the market price.
+
         const priceLevels = [];
 
-        // 1. Generate levels upwards from startPrice
+        // Generate levels upwards from startPrice (higher prices for SELL orders)
+        // Start from sqrt(stepUp) × startPrice to center the grid
         let upPrice = startPrice * Math.sqrt(stepUp);
         while (upPrice <= maxPrice) {
             priceLevels.push(upPrice);
             upPrice *= stepUp;
         }
 
-        // 2. Generate levels downwards from startPrice
+        // Generate levels downwards from startPrice (lower prices for BUY orders)
+        // Start from sqrt(stepDown) × startPrice to center the grid
         let downPrice = startPrice * Math.sqrt(stepDown);
         while (downPrice >= minPrice) {
             priceLevels.push(downPrice);
             downPrice *= stepDown;
         }
 
-        // 3. Sort levels (lowest to highest) and assign unified slot IDs
+        // Sort all levels from lowest to highest (Master Rail order)
         priceLevels.sort((a, b) => a - b);
 
-        // 4. Find Pivot Index (slot closest to startPrice)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 2: FIND PIVOT INDEX (Slot closest to startPrice)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // The pivot is used as a reference point for role assignment.
+        // Not currently used for boundary (boundary is calculated separately in strategy.js)
+        // but kept for potential future use.
+
         let pivotIdx = 0;
         let minDiff = Infinity;
         priceLevels.forEach((p, i) => {
@@ -84,23 +147,56 @@ class Grid {
             }
         });
 
-        // 5. Role Assignment (Initial market-aware roles)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 3: CALCULATE SPREAD GAP SIZE
+        // ════════════════════════════════════════════════════════════════════════════════
+        // Determine how many slots should be in the spread zone.
+        // See formula documentation in JSDoc above.
+
         const step = 1 + (incrementPercent / 100);
+
+        // Enforce minimum spread (prevents spread from being too narrow)
         const minSpreadPercent = incrementPercent * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
         const targetSpreadPercent = Math.max(config.targetSpreadPercent || 0, minSpreadPercent);
+
+        // Calculate number of steps needed to achieve target spread
+        // Formula: n = ceil(ln(1 + targetSpread/100) / ln(stepFactor))
         const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(step));
+
+        // Final gap size: At least MIN_SPREAD_ORDERS, or more if needed for target spread
         const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
 
-        // Find Split Point (first slot >= startPrice)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 4: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // Assign each price level to a role based on its position relative to startPrice.
+        // 
+        // STRATEGY: Center the spread gap around startPrice
+        // - Find the first slot >= startPrice (splitIdx)
+        // - Place half the gap below splitIdx (buySpread)
+        // - Place remaining gap above splitIdx (sellSpread)
+        // 
+        // RESULT:
+        // [0 ... buyEndIdx] = BUY zone (prices < spread)
+        // [buyEndIdx+1 ... sellStartIdx-1] = SPREAD zone (empty buffer)
+        // [sellStartIdx ... N] = SELL zone (prices > spread)
+
+        // Find the first slot at or above startPrice
         let splitIdx = priceLevels.findIndex(p => p >= startPrice);
         if (splitIdx === -1) splitIdx = priceLevels.length;
 
-        // Balanced centering: split gapSlots around the splitIdx point
+        // Distribute gap slots: Half below startPrice, half above
         const buySpread = Math.floor(gapSlots / 2);
         const sellSpread = gapSlots - buySpread;
 
+        // Calculate zone boundaries
         const buyEndIdx = splitIdx - buySpread - 1;
         const sellStartIdx = splitIdx + sellSpread;
+
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 5: CREATE ORDER OBJECTS
+        // ════════════════════════════════════════════════════════════════════════════════
+        // Convert price levels to order objects with assigned roles.
 
         const orders = priceLevels.map((price, i) => {
             let type = ORDER_TYPES.SPREAD;

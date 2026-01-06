@@ -30,20 +30,27 @@ const ORDER_STATES = Object.freeze({
 });
 
 // Defaults applied when instantiating an OrderManager with minimal configuration.
+// These values are used when a parameter is not explicitly provided in the bot config.
 let DEFAULT_CONFIG = {
-    startPrice: "pool",
-    minPrice: "3x",
-    maxPrice: "3x",
-    incrementPercent: 0.5,
-    targetSpreadPercent: 2,
-    active: true,
-    dryRun: false,
-    assetA: null,
-    assetB: null,
-    weightDistribution: { sell: 0.5, buy: 0.5 },
-    // Order of keys changed: place sell first then buy for readability/consistency
-    botFunds: { sell: "100%", buy: "100%" },
-    activeOrders: { sell: 20, buy: 20 },
+    // Price configuration
+    startPrice: "pool",          // Market price source: "pool" (liquidity pool), "orderbook", or numeric value
+    minPrice: "3x",               // Lower price bound: "Nx" = N times below startPrice, or numeric value
+    maxPrice: "3x",               // Upper price bound: "Nx" = N times above startPrice, or numeric value
+    incrementPercent: 0.5,        // Price step between grid levels (0.5 = 0.5% geometric spacing)
+    targetSpreadPercent: 2,       // Target spread width between best buy and best sell (2 = 2%)
+
+    // Bot control
+    active: true,                 // Whether bot should actively place/manage orders
+    dryRun: false,                // If true, simulate operations without blockchain transactions
+
+    // Trading pair
+    assetA: null,                 // Base asset symbol (e.g., "BTS")
+    assetB: null,                 // Quote asset symbol (e.g., "USD")
+
+    // Fund allocation
+    weightDistribution: { sell: 0.5, buy: 0.5 },  // Geometric weight for order sizing (0.5 = linear, >0.5 = more weight to market-close orders)
+    botFunds: { sell: "100%", buy: "100%" },      // Percentage of wallet balance to allocate ("100%" or numeric value)
+    activeOrders: { sell: 20, buy: 20 },          // Number of orders to maintain closest to market on each side
 };
 
 // Timing constants used by OrderManager and helpers
@@ -69,8 +76,16 @@ let TIMING = {
 
 // Grid limits and scaling constants
 let GRID_LIMITS = {
+    // Minimum spread factor: Ensures spread is at least (incrementPercent × MIN_SPREAD_FACTOR)
+    // Prevents spread from being too narrow relative to grid spacing
+    // Default: 2 (spread must be at least 2× the increment)
     MIN_SPREAD_FACTOR: 2,
+
+    // Minimum order size safety factor: Multiplied by blockchain minimum to ensure orders are well above limits
+    // Prevents orders from being rejected due to rounding or fee deductions
+    // Default: 50 (orders must be 50× the blockchain minimum)
     MIN_ORDER_SIZE_FACTOR: 50,
+
     // Grid regeneration threshold (percentage)
     // When (cacheFunds / total.grid) * 100 >= this percentage on one side, trigger Grid.updateGridOrderSizes() for that side
     // Checked independently for buy and sell sides
@@ -78,17 +93,27 @@ let GRID_LIMITS = {
     // Example: If cacheFunds.buy = 100 and total.grid.buy = 1000, ratio = 10%
     // If threshold = 5%, then 10% >= 5% triggers update for buy side only
     GRID_REGENERATION_PERCENTAGE: 3,
-    // Threshold for considering a partial order as "dust" relative to neighboring active orders.
-    // If (partial.size / nearestActive.size) * 100 < PARTIAL_DUST_THRESHOLD_PERCENTAGE, it is marked for refill.
-    // Default: 5 (5%)
+
+    // Threshold for considering a partial order as "dust" relative to ideal size
+    // If (partial.size / idealSize) * 100 < PARTIAL_DUST_THRESHOLD_PERCENTAGE, it may trigger rebalancing
+    // Default: 5 (5% - partials below 5% of ideal size are considered dust)
     PARTIAL_DUST_THRESHOLD_PERCENTAGE: 5,
-    // Tolerance for fund invariant checks (percentage).
-    // Discrepancies below this threshold will not trigger a warning.
+
+    // Tolerance for fund invariant checks (percentage)
+    // Discrepancies below this threshold will not trigger a warning
+    // Accounts for rounding errors and blockchain precision limits
     // Default: 0.1 (0.1%)
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
-    // Minimum number of spread orders (1 buy, 1 sell) to maintain proper spread zone
-    // Default: 2
+
+    // Minimum number of spread slots to maintain proper spread zone
+    // Ensures at least this many empty slots between best buy and best sell
+    // Default: 2 (minimum 2 slots in spread zone)
     MIN_SPREAD_ORDERS: 2,
+
+    // Spread widening multiplier for spread correction tolerance
+    // Actual spread tolerance = targetSpreadPercent + (incrementPercent × SPREAD_WIDENING_MULTIPLIER)
+    // Prevents over-correction when spread is slightly wider than target
+    // Default: 1.5 (allows spread to be 1.5× increment wider before triggering correction)
     SPREAD_WIDENING_MULTIPLIER: 1.5,
 
     // Grid comparison metrics
