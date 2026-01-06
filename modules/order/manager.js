@@ -54,7 +54,7 @@ class OrderManager {
         this.logger = new Logger(LOG_LEVEL);
         this.logger.marketName = this.marketName;
         this.orders = new Map();
-        
+
         // Specialized Engines
         this.accountant = new Accountant(this);
         this.strategy = new StrategyEngine(this);
@@ -132,10 +132,6 @@ class OrderManager {
         const key = `${fromState}→${toState}`;
         this._metrics.stateTransitions[key] = (this._metrics.stateTransitions[key] || 0) + 1;
     }
-    _deductFromChainFree(type, size, op) { return this.accountant.deductFromChainFree(type, size, op); }
-    _addToChainFree(type, size, op) { return this.accountant.addToChainFree(type, size, op); }
-    _updateOptimisticFreeBalance(oldO, newO, ctx, fee) { return this.accountant.updateOptimisticFreeBalance(oldO, newO, ctx, fee); }
-    async deductBtsFees(side) { return await this.accountant.deductBtsFees(side); }
 
     // --- Strategy Delegation ---
     async processFilledOrders(orders, excl) { return await this.strategy.processFilledOrders(orders, excl); }
