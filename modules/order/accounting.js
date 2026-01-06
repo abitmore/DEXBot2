@@ -7,10 +7,10 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, PRECISION_DEFAULTS } = require('../constants');
-const { 
-    computeChainFundTotals, 
-    calculateAvailableFundsValue, 
-    getAssetFees 
+const {
+    computeChainFundTotals,
+    calculateAvailableFundsValue,
+    getAssetFees
 } = require('./utils');
 
 /**
@@ -48,8 +48,6 @@ class Accountant {
             cacheFunds: { buy: 0, sell: 0 },       // Surplus from rotation + fill proceeds
             btsFeesOwed: 0                         // Unpaid BTS fees (deducted from cache)
         };
-        // Backwards-compatible alias for virtual
-        mgr.funds.reserved = mgr.funds.virtual;
     }
 
     /**
@@ -73,7 +71,6 @@ class Accountant {
      *
      * 3. VIRTUAL FUNDS (in grid but not on-chain)
      *    - virtualBuy/virtualSell: VIRTUAL orders (pure grid state, no blockchain)
-     *    - Also called "reserved" in old code (backwards compat alias)
      *
      * 4. AVAILABLE FUNDS (what we can spend right now)
      *    - Calculated as: max(0, chainFree - virtual - btsFeesOwed - btsFeesReservation)
@@ -309,34 +306,9 @@ class Accountant {
 
         // Deduct: Now that we've passed the check, deduct
         mgr.accountTotals[key] = Math.max(0, current - size);
-        const asset = isBuy ? (mgr.config?.assetB || 'quote') : (mgr.config?.assetA || 'base');
-        mgr.logger.log(
-            `[chainFree update] ${orderType} order ${operation}: ${current.toFixed(8)} - ${size.toFixed(8)} = ${mgr.accountTotals[key].toFixed(8)} ${asset}`,
-            'debug'
-        );
         return true;
     }
 
-    /**
-     * Deduct an amount from the optimistic chainFree balance.
-     * DEPRECATED: Use tryDeductFromChainFree() for new code to prevent race conditions.
-     * This method is kept for backward compatibility but doesn't validate availability.
-     */
-    deductFromChainFree(orderType, size, operation = 'move') {
-        const mgr = this.manager;
-        const isBuy = orderType === ORDER_TYPES.BUY;
-        const key = isBuy ? 'buyFree' : 'sellFree';
-
-        if (mgr.accountTotals && mgr.accountTotals[key] !== undefined) {
-            const oldFree = Number(mgr.accountTotals[key]) || 0;
-            mgr.accountTotals[key] = Math.max(0, oldFree - size);
-            const asset = isBuy ? (mgr.config?.assetB || 'quote') : (mgr.config?.assetA || 'base');
-            mgr.logger.log(
-                `[chainFree update] ${orderType} order ${operation}: ${oldFree.toFixed(8)} - ${size.toFixed(8)} = ${mgr.accountTotals[key].toFixed(8)} ${asset}`,
-                'debug'
-            );
-        }
-    }
 
     /**
      * Add an amount back to the optimistic chainFree balance.
@@ -349,13 +321,9 @@ class Accountant {
         if (mgr.accountTotals && mgr.accountTotals[key] !== undefined) {
             const oldFree = Number(mgr.accountTotals[key]) || 0;
             mgr.accountTotals[key] = oldFree + size;
-            const asset = isBuy ? (mgr.config?.assetB || 'quote') : (mgr.config?.assetA || 'base');
-            mgr.logger.log(
-                `[chainFree update] ${orderType} order ${operation}: ${oldFree.toFixed(8)} + ${size.toFixed(8)} = ${mgr.accountTotals[key].toFixed(8)} ${asset}`,
-                'debug'
-            );
         }
     }
+
 
     /**
      * Update optimistic free balance during order state transitions.
@@ -404,10 +372,10 @@ class Accountant {
 
         if (!oldIsActive && newIsActive) {
             if (newSize > 0) {
-                this.deductFromChainFree(newOrder.type, newSize, `${context} (${oldOrder.state}->${newOrder.state})`);
+                this.tryDeductFromChainFree(newOrder.type, newSize, `${context} (${oldOrder.state}->${newOrder.state})`);
             }
             if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                this.deductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
+                this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
             }
         }
         else if (oldIsActive && !newIsActive) {
@@ -418,12 +386,12 @@ class Accountant {
         else if (oldIsActive && newIsActive) {
             const sizeDelta = newSize - oldSize;
             if (sizeDelta > 0) {
-                this.deductFromChainFree(newOrder.type, sizeDelta, `${context} (resize-up)`);
+                this.tryDeductFromChainFree(newOrder.type, sizeDelta, `${context} (resize-up)`);
             } else if (sizeDelta < 0) {
                 this.addToChainFree(newOrder.type, Math.abs(sizeDelta), `${context} (resize-down)`);
             }
             if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                this.deductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
+                this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
             }
         }
     }
@@ -472,7 +440,7 @@ class Accountant {
             // This ensures invariant stays: chainTotal = chainFree + chainCommitted
             if (chainDeduction > 0) {
                 const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-                this.deductFromChainFree(orderType, chainDeduction, 'bts-fee-settlement');
+                this.tryDeductFromChainFree(orderType, chainDeduction, 'bts-fee-settlement');
             }
 
             // Update total owed (now fully settled)

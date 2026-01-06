@@ -276,8 +276,6 @@ class StrategyEngine {
             ordersToRotate.push({ oldOrder: { ...surplus }, newPrice: shortageSlot.price, newSize: size, newGridId: shortageSlot.id, type: type });
             stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL });
             stateUpdates.push({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-
-            mgr.logger.log(`  - Rotation: ${surplus.id} (${surplus.size.toFixed(precision)}) -> ${shortageSlot.id} (capped size=${size.toFixed(precision)})`, "debug");
         }
 
         const remainingCap = Math.max(0, effectiveCap - pairCount);
@@ -290,7 +288,6 @@ class StrategyEngine {
             if (size > 0) {
                 ordersToPlace.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
                 stateUpdates.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-                mgr.logger.log(`  - Placement: ${slot.id} (capped size=${size.toFixed(precision)})`, "debug");
             }
         }
 
@@ -321,8 +318,7 @@ class StrategyEngine {
         const oldGridOrder = mgr.orders.get(oldOrderInfo.id);
         if (oldGridOrder && oldGridOrder.orderId === oldOrderInfo.orderId) {
             const size = oldGridOrder.size || 0;
-            if (oldGridOrder.type === ORDER_TYPES.BUY) mgr.accountTotals.buyFree = (mgr.accountTotals.buyFree || 0) + size;
-            else if (oldGridOrder.type === ORDER_TYPES.SELL) mgr.accountTotals.sellFree = (mgr.accountTotals.sellFree || 0) + size;
+            mgr.accountant.addToChainFree(oldGridOrder.type, size, 'rotation');
 
             const updatedOld = { ...oldGridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
             mgr._updateOrder(updatedOld);
@@ -372,20 +368,18 @@ class StrategyEngine {
                 if (filledOrder.type === ORDER_TYPES.SELL) {
                     mgr.funds.cacheFunds.buy = (mgr.funds.cacheFunds.buy || 0) + netProceeds;
                     // Optimistic update to wallet balances
+                    mgr.accountant.addToChainFree(ORDER_TYPES.BUY, netProceeds, 'fill-proceeds');
                     if (mgr.accountTotals) {
-                        mgr.accountTotals.buyFree = (mgr.accountTotals.buyFree || 0) + netProceeds;
                         mgr.accountTotals.buy = (mgr.accountTotals.buy || 0) + netProceeds;
                         mgr.accountTotals.sell = (mgr.accountTotals.sell || 0) - filledOrder.size;
-                        // Note: sellFree was already deducted at order creation
                     }
                 } else {
                     mgr.funds.cacheFunds.sell = (mgr.funds.cacheFunds.sell || 0) + netProceeds;
                     // Optimistic update to wallet balances
+                    mgr.accountant.addToChainFree(ORDER_TYPES.SELL, netProceeds, 'fill-proceeds');
                     if (mgr.accountTotals) {
-                        mgr.accountTotals.sellFree = (mgr.accountTotals.sellFree || 0) + netProceeds;
                         mgr.accountTotals.sell = (mgr.accountTotals.sell || 0) + netProceeds;
                         mgr.accountTotals.buy = (mgr.accountTotals.buy || 0) - filledOrder.size;
-                        // Note: buyFree was already deducted at order creation
                     }
                 }
             }

@@ -28,8 +28,6 @@ const path = require('path');
 const { ORDER_STATES } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 
-const PROFILES_ORDERS_FILE = path.join(__dirname, '..', 'profiles', 'orders.json');
-
 function ensureDirExists(filePath) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -82,8 +80,6 @@ class AccountOrders {
    * Create an AccountOrders instance.
    * @param {Object} options - Configuration options
    * @param {string} options.botKey - Bot identifier (e.g., 'xrp-bts-0', 'h-bts-1')
-   *                                   If provided, uses {botKey}.json
-   * @param {string} options.profilesPath - Custom path for orders.json (legacy single-file mode)
    */
   constructor(options = {}) {
     if (!options.botKey) throw new Error("botKey required for AccountOrders");
@@ -94,7 +90,6 @@ class AccountOrders {
     this.profilesPath = path.join(ordersDir, `${this.botKey}.json`);
 
     // AsyncLock prevents concurrent read-modify-write races on file I/O
-    // Serializes storeMasterGrid, updateCacheFunds, updateBtsFeesOwed operations
     this._persistenceLock = new AsyncLock();
 
     this._needsBootstrapSave = !fs.existsSync(this.profilesPath);
@@ -150,8 +145,8 @@ class AccountOrders {
 
       // Filter to only the matching bot entry
       const entriesToProcess = botEntries.filter(bot => {
-          const key = bot.botKey || createBotKey(bot, botEntries.indexOf(bot));
-          return key === this.botKey;
+        const key = bot.botKey || createBotKey(bot, botEntries.indexOf(bot));
+        return key === this.botKey;
       });
 
       // 1. Update/Create the matching bot entry
