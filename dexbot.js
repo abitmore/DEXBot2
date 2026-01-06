@@ -17,16 +17,12 @@ const { BitShares, waitForConnected, setSuppressConnectionLog } = require('./mod
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline-sync');
-const chainOrders = require('./modules/chain_orders');
 const chainKeys = require('./modules/chain_keys');
-const { OrderManager, grid: Grid, utils: OrderUtils } = require('./modules/order');
-const { retryPersistenceIfNeeded } = OrderUtils;
-const { ORDER_STATES } = require('./modules/constants');
-const { reconcileStartupOrders, attemptResumePersistedGridByPriceMatch, decideStartupGridAction } = require('./modules/order/startup_reconcile');
+const { utils: OrderUtils } = require('./modules/order');
 const accountKeys = require('./modules/chain_keys');
 const accountBots = require('./modules/account_bots');
 const { parseJsonWithComments } = accountBots;
-const { AccountOrders, createBotKey } = require('./modules/account_orders');
+const { createBotKey } = require('./modules/account_orders');
 const SharedDEXBot = require('./modules/dexbot_class');
 
 // Note: accountOrders is now per-bot only. Each bot has its own AccountOrders instance
