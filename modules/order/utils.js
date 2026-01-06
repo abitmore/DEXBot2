@@ -218,6 +218,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
 
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
     const virtual = toFiniteNumber(side === 'buy' ? funds.virtual?.buy : funds.virtual?.sell);
+    const cacheFunds = toFiniteNumber(side === 'buy' ? funds.cacheFunds?.buy : funds.cacheFunds?.sell);
     const btsFeesOwed = toFiniteNumber(funds.btsFeesOwed);
 
     // Determine which side actually has BTS as the asset
@@ -243,7 +244,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
 
-    return Math.max(0, chainFree - virtual - currentFeesOwed - btsFeesReservation);
+    return Math.max(0, chainFree - virtual - cacheFunds - currentFeesOwed - btsFeesReservation);
 }
 
 /**

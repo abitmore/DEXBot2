@@ -48,6 +48,8 @@ class Accountant {
             cacheFunds: { buy: 0, sell: 0 },       // Surplus from rotation + fill proceeds
             btsFeesOwed: 0                         // Unpaid BTS fees (deducted from cache)
         };
+        // Backwards-compatible alias for virtual
+        mgr.funds.reserved = mgr.funds.virtual;
     }
 
     /**

@@ -93,16 +93,10 @@ class StrategyEngine {
         const targetSell = snap.allocatedSell + (mgr.funds.cacheFunds?.sell || 0);
 
         // Reality from Wallet (What we have)
-        // Note: available already subtracts virtual reserves and fees
-        const realityBuy = (mgr.funds.available?.buy || 0) + 
-                          (mgr.funds.committed?.grid?.buy || 0) + 
-                          (mgr.funds.virtual?.buy || 0) + 
-                          (mgr.funds.cacheFunds?.buy || 0);
-        
-        const realitySell = (mgr.funds.available?.sell || 0) + 
-                           (mgr.funds.committed?.grid?.sell || 0) + 
-                           (mgr.funds.virtual?.sell || 0) + 
-                           (mgr.funds.cacheFunds?.sell || 0);
+        // Note: snap.chainTotalBuy already includes free + committed on-chain.
+        // Combined with processFilledOrders optimistic updates, this is our total wealth.
+        const realityBuy = snap.chainTotalBuy;
+        const realitySell = snap.chainTotalSell;
 
         // Final Sizing Budgets: Cap strategy target by liquid reality
         const budgetBuy = Math.min(targetBuy, realityBuy);
@@ -249,6 +243,19 @@ class StrategyEngine {
             stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL, orderId: null });
         }
 
+        // 6. Surplus Consumption
+        // Whatever we didn't put into grid slots (including virtual) remains in cacheFunds.
+        // totalAllocated is the sum of sizes assigned to EVERY slot in the side.
+        const finalStateMap = new Map();
+        stateUpdates.forEach(s => finalStateMap.set(s.id, s));
+        
+        const sideSlotIds = new Set(sideSlots.map(s => s.id));
+        const totalAllocated = Array.from(finalStateMap.values())
+            .filter(s => sideSlotIds.has(s.id))
+            .reduce((sum, s) => sum + (s.size || 0), 0);
+        
+        mgr.funds.cacheFunds[side] = Math.max(0, totalBudget - totalAllocated);
+
         return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates };
     }
 
@@ -307,8 +314,22 @@ class StrategyEngine {
 
                 if (filledOrder.type === ORDER_TYPES.SELL) {
                     mgr.funds.cacheFunds.buy = (mgr.funds.cacheFunds.buy || 0) + netProceeds;
+                    // Optimistic update to wallet balances
+                    if (mgr.accountTotals) {
+                        mgr.accountTotals.buyFree = (mgr.accountTotals.buyFree || 0) + netProceeds;
+                        mgr.accountTotals.buy = (mgr.accountTotals.buy || 0) + netProceeds;
+                        mgr.accountTotals.sell = (mgr.accountTotals.sell || 0) - filledOrder.size;
+                        // Note: sellFree was already deducted at order creation
+                    }
                 } else {
                     mgr.funds.cacheFunds.sell = (mgr.funds.cacheFunds.sell || 0) + netProceeds;
+                    // Optimistic update to wallet balances
+                    if (mgr.accountTotals) {
+                        mgr.accountTotals.sellFree = (mgr.accountTotals.sellFree || 0) + netProceeds;
+                        mgr.accountTotals.sell = (mgr.accountTotals.sell || 0) + netProceeds;
+                        mgr.accountTotals.buy = (mgr.accountTotals.buy || 0) - filledOrder.size;
+                        // Note: buyFree was already deducted at order creation
+                    }
                 }
             }
 
