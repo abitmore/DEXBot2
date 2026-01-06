@@ -29,7 +29,7 @@ class StrategyEngine {
     async rebalance(fills = [], excludeIds = new Set()) {
         const mgr = this.manager;
         mgr.logger.log("[BOUNDARY] Starting robust boundary-crawl rebalance.", "info");
-        
+
         const allSlots = Array.from(mgr.orders.values())
             .sort((a, b) => {
                 const idxA = parseInt(a.id.split('-')[1]);
@@ -63,7 +63,7 @@ class StrategyEngine {
             if (fill.type === ORDER_TYPES.SELL) mgr.boundaryIdx++;
             else if (fill.type === ORDER_TYPES.BUY) mgr.boundaryIdx--;
         }
-        
+
         mgr.boundaryIdx = Math.max(0, Math.min(allSlots.length - 1, mgr.boundaryIdx));
         const boundaryIdx = mgr.boundaryIdx;
 
@@ -71,7 +71,7 @@ class StrategyEngine {
         const step = 1 + (mgr.config.incrementPercent / 100);
         const requiredSteps = Math.ceil(Math.log(1 + (mgr.config.targetSpreadPercent / 100)) / Math.log(step));
         const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 0, requiredSteps);
-        
+
         const buyEndIdx = boundaryIdx;
         const sellStartIdx = boundaryIdx + gapSlots + 1;
 
@@ -87,7 +87,7 @@ class StrategyEngine {
 
         // 4. Budget Calculation (Total side budget for geometric sizing)
         const snap = mgr.getChainFundsSnapshot();
-        
+
         // Target from Config (What we want)
         const targetBuy = snap.allocatedBuy + (mgr.funds.cacheFunds?.buy || 0);
         const targetSell = snap.allocatedSell + (mgr.funds.cacheFunds?.sell || 0);
@@ -112,9 +112,9 @@ class StrategyEngine {
         // 5. Minimalist Side Rebalancing
         const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCap);
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCap);
-        
-        const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates]; 
-        allUpdates.forEach(upd => mgr._updateOrder(upd)); 
+
+        const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates];
+        allUpdates.forEach(upd => mgr._updateOrder(upd));
 
         const result = {
             ordersToPlace: [...buyResult.ordersToPlace, ...sellResult.ordersToPlace],
@@ -124,9 +124,9 @@ class StrategyEngine {
             hadRotation: (buyResult.ordersToRotate.length > 0 || sellResult.ordersToRotate.length > 0),
             partialMoves: []
         };
-        
+
         mgr.logger.log(`[BOUNDARY] Sequence complete: ${result.ordersToPlace.length} place, ${result.ordersToRotate.length} rotate. Gap size: ${gapSlots} slots.`, "info");
-        
+
         return result;
     }
 
@@ -142,10 +142,11 @@ class StrategyEngine {
         const ordersToUpdate = [];
 
         const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : sideSlots.length;
-        
+
         // SORT SIDE SLOTS: Market-closest first
-        const sortedSideSlots = [...sideSlots].sort((a, b) => direction === 1 ? a.price - b.price : b.price - a.price);
-        
+        // BUY: Highest price is closest. SELL: Lowest price is closest.
+        const sortedSideSlots = [...sideSlots].sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+
         const targetIndices = [];
         for (let i = 0; i < Math.min(targetCount, sortedSideSlots.length); i++) {
             targetIndices.push(allSlots.findIndex(s => s.id === sortedSideSlots[i].id));
@@ -154,86 +155,140 @@ class StrategyEngine {
 
         const sideWeight = mgr.config.weightDistribution[side];
         const precision = getPrecisionForSide(mgr.assets, side);
-        
+
         const currentGridAllocation = sideSlots
             .filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL))
             .reduce((sum, o) => sum + (Number(o.size) || 0), 0);
-        
-        // Total budget is target strategy value (allocated + surplus)
-        const totalBudget = totalSideBudget;
-        
+
+        // Calculate side-specific budget (Chain Total minus BTS fees reservation)
+        // Only subtract fees if this side trades BTS (otherwise fees come from the OTHER side's balance)
+        const hasBtsSide = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
+        const isBtsSide = (type === ORDER_TYPES.BUY && mgr.config.assetB === "BTS") || (type === ORDER_TYPES.SELL && mgr.config.assetA === "BTS");
+
+        const btsFees = (hasBtsSide && isBtsSide)
+            ? calculateOrderCreationFees(mgr.config.assetA, mgr.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER)
+            : 0;
+
+        const effectiveTotalSideBudget = Math.max(0, totalSideBudget - btsFees);
+
         const reverse = (type === ORDER_TYPES.BUY);
-        const sideIdealSizes = allocateFundsByWeights(totalBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
-        
+        const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
+
+        // ════════════════════════════════════════════════════════════════════════════════
+        // 1. GLOBAL SIDE CAPPING (The "Perfect Budget" Logic)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // We calculate the net capital growth needed across the ENTIRE rail (all 347 slots).
+        // If growth > availablePool, we scale down only the INCREASES to keep the bot within liquid limits.
+
+        let totalSideGrowthNeeded = 0;
         const idealSizes = new Array(allSlots.length).fill(0);
+
         sideSlots.forEach((slot, i) => {
             const globalIdx = allSlots.findIndex(s => s.id === slot.id);
-            const size = sideIdealSizes[i] || 0;
-            idealSizes[globalIdx] = size;
-            stateUpdates.push({ ...slot, size });
+            const targetIdealSize = sideIdealSizes[i] || 0;
+            idealSizes[globalIdx] = targetIdealSize;
+
+            const oldReservedSize = Number(allSlots[globalIdx].size) || 0;
+            if (targetIdealSize > oldReservedSize) {
+                totalSideGrowthNeeded += (targetIdealSize - oldReservedSize);
+            }
         });
+
+        // Batch Scale: Total available / Total requested increase
+        const sideScale = (totalSideGrowthNeeded > availablePool) ? (availablePool / totalSideGrowthNeeded) : 1.0;
+
+        // Apply scale to the entire side and update state (Maintains Available=0 feature)
+        const finalIdealSizes = new Array(allSlots.length).fill(0);
+        sideSlots.forEach((slot) => {
+            const globalIdx = allSlots.findIndex(s => s.id === slot.id);
+            const targetIdealSize = idealSizes[globalIdx];
+            const oldReservedSize = Number(allSlots[globalIdx].size) || 0;
+
+            if (targetIdealSize > oldReservedSize) {
+                finalIdealSizes[globalIdx] = oldReservedSize + (targetIdealSize - oldReservedSize) * sideScale;
+            } else {
+                finalIdealSizes[globalIdx] = targetIdealSize; // Shrinking or same: releases capital
+            }
+
+            const size = blockchainToFloat(floatToBlockchainInt(finalIdealSizes[globalIdx], precision), precision);
+            stateUpdates.push({ ...slot, size: size });
+        });
+
+        if (totalSideGrowthNeeded > 0) {
+            mgr.logger.log(`[CAPPING] ${side.toUpperCase()} Side Growth (Pool=${availablePool.toFixed(precision)}, Needed=${totalSideGrowthNeeded.toFixed(precision)}, Scale=${sideScale.toFixed(4)})`, "info");
+        }
+
+        // ════════════════════════════════════════════════════════════════════════════════
+        // 2. REBALANCE EXECUTION (Using Capped Sizes)
+        // ════════════════════════════════════════════════════════════════════════════════
 
         const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !excludeIds.has(s.id));
         const activeThisSide = activeOnChain.filter(s => s.type === type);
-        
-        const surpluses = activeThisSide.filter(s => !targetSet.has(allSlots.findIndex(o => o.id === s.id)));
-        const shortages = targetIndices.filter(idx => (!allSlots[idx].orderId || excludeIds.has(allSlots[idx].id)) && idealSizes[idx] > 0);
 
+        const shortages = targetIndices.filter(idx => (!allSlots[idx].orderId || excludeIds.has(allSlots[idx].id)) && idealSizes[idx] > 0);
         const effectiveCap = (activeThisSide.length > 0) ? reactionCap : targetCount;
 
-        // SORT SURPLUSES: Furthest from market first
-        surpluses.sort((a, b) => direction === 1 ? b.price - a.price : a.price - b.price); 
-        
         // SORT SHORTAGES: Closest to market first
+        // BUY: Highest price is closest. SELL: Lowest price is closest.
         shortages.sort((a, b) => {
-            if (direction === 1) return allSlots[a].price - allSlots[b].price; 
-            return allSlots[b].price - allSlots[a].price; 
+            if (type === ORDER_TYPES.BUY) return allSlots[b].price - allSlots[a].price;
+            return allSlots[a].price - allSlots[b].price;
         });
+
+        // GREEDY CRAWL: Identify Surpluses
+        // 1. Hard Surpluses (Outside the targetCount window)
+        const hardSurpluses = activeThisSide.filter(s => !targetSet.has(allSlots.findIndex(o => o.id === s.id)));
+
+        // 2. Crawl Candidate (Furthest order inside the window if we have shortages closer)
+        let surpluses = [...hardSurpluses];
+        const activeInsideWindow = activeThisSide
+            .filter(s => targetSet.has(allSlots.findIndex(o => o.id === s.id)))
+            .sort((a, b) => type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price); // Furthest first
+
+        // Move furthest orders into closest shortages
+        const shortagesToFill = shortages.length;
+        const crawlCapacity = Math.max(0, (activeThisSide.length > 0 ? reactionCap : targetCount) - surpluses.length);
+
+        for (let i = 0; i < Math.min(crawlCapacity, shortagesToFill, activeInsideWindow.length); i++) {
+            const furthest = activeInsideWindow[i];
+            const furthestIdx = allSlots.findIndex(o => o.id === furthest.id);
+            const bestShortageIdx = shortages[i];
+
+            // Only crawl if it's strictly a price improvement
+            const isCloser = type === ORDER_TYPES.BUY ? (bestShortageIdx > furthestIdx) : (bestShortageIdx < furthestIdx);
+            if (isCloser) {
+                surpluses.push(furthest);
+            }
+        }
+
+        // Final sort: furthest from market first (for rotation efficiency)
+        surpluses.sort((a, b) => type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
 
         const pairCount = Math.min(surpluses.length, shortages.length, effectiveCap);
         for (let i = 0; i < pairCount; i++) {
             const surplus = surpluses[i];
             const shortageIdx = shortages[i];
             const shortageSlot = allSlots[shortageIdx];
-            const idealSize = idealSizes[shortageIdx];
+            const size = blockchainToFloat(floatToBlockchainInt(finalIdealSizes[shortageIdx], precision), precision);
 
-            ordersToRotate.push({ oldOrder: { ...surplus }, newPrice: shortageSlot.price, newSize: idealSize, newGridId: shortageSlot.id, type: type });
+            ordersToRotate.push({ oldOrder: { ...surplus }, newPrice: shortageSlot.price, newSize: size, newGridId: shortageSlot.id, type: type });
             stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL });
-            stateUpdates.push({ ...shortageSlot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
+            stateUpdates.push({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
+
+            mgr.logger.log(`  - Rotation: ${surplus.id} (${surplus.size.toFixed(precision)}) -> ${shortageSlot.id} (capped size=${size.toFixed(precision)})`, "debug");
         }
 
-        const remainingCap = Math.max(0, effectiveCap - ordersToRotate.length);
+        const remainingCap = Math.max(0, effectiveCap - pairCount);
         const placementShortages = shortages.slice(pairCount, pairCount + remainingCap);
-        
-        if (placementShortages.length > 0) {
-            // Calculate Net Capital Increase for this batch
-            let totalIncreaseNeeded = 0;
-            placementShortages.forEach(idx => {
-                const oldReservedSize = allSlots[idx].size || 0;
-                const newIdealSize = idealSizes[idx];
-                totalIncreaseNeeded += Math.max(0, newIdealSize - oldReservedSize);
-            });
 
-            // Scale factor only applies to the *increase* component
-            const scale = (totalIncreaseNeeded > availablePool) ? (availablePool / totalIncreaseNeeded) : 1.0;
+        for (const idx of placementShortages) {
+            const slot = allSlots[idx];
+            const size = blockchainToFloat(floatToBlockchainInt(finalIdealSizes[idx], precision), precision);
 
-            for (const idx of placementShortages) {
-                const slot = allSlots[idx];
-                const oldReservedSize = slot.size || 0;
-                const newIdealSize = idealSizes[idx];
-                
-                // Final size = old reserved amount + allowed increase
-                // If newIdealSize is smaller than old, we just use newIdealSize (releasing funds)
-                let finalSize = (newIdealSize <= oldReservedSize) 
-                    ? newIdealSize 
-                    : (oldReservedSize + (newIdealSize - oldReservedSize) * scale);
-
-                const size = blockchainToFloat(floatToBlockchainInt(finalSize, precision), precision);
-                
-                if (size > 0) {
-                    ordersToPlace.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-                    stateUpdates.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-                }
+            if (size > 0) {
+                ordersToPlace.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
+                stateUpdates.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
+                mgr.logger.log(`  - Placement: ${slot.id} (capped size=${size.toFixed(precision)})`, "debug");
             }
         }
 
@@ -248,13 +303,13 @@ class StrategyEngine {
         // totalAllocated is the sum of sizes assigned to EVERY slot in the side.
         const finalStateMap = new Map();
         stateUpdates.forEach(s => finalStateMap.set(s.id, s));
-        
+
         const sideSlotIds = new Set(sideSlots.map(s => s.id));
         const totalAllocated = Array.from(finalStateMap.values())
             .filter(s => sideSlotIds.has(s.id))
             .reduce((sum, s) => sum + (s.size || 0), 0);
-        
-        mgr.funds.cacheFunds[side] = Math.max(0, totalBudget - totalAllocated);
+
+        mgr.funds.cacheFunds[side] = Math.max(0, totalSideBudget - totalAllocated);
 
         return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates };
     }
@@ -286,7 +341,7 @@ class StrategyEngine {
 
             for (const filledOrder of filledOrders) {
                 if (excludeOrderIds?.has?.(filledOrder.id)) continue;
-                
+
                 const isPartial = filledOrder.isPartial === true;
                 if (!isPartial || filledOrder.isDelayedRotationTrigger) {
                     fillsToSettle++;
@@ -343,7 +398,7 @@ class StrategyEngine {
             await mgr.persistGrid();
 
             let shouldRebalance = (fillsToSettle > 0);
-            
+
             if (!shouldRebalance) {
                 const allOrders = Array.from(mgr.orders.values());
                 const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
@@ -360,7 +415,7 @@ class StrategyEngine {
                         const precision = getPrecisionForSide(mgr.assets, side);
                         const sideWeight = mgr.config.weightDistribution[side];
                         const idealSizes = allocateFundsByWeights(budget, slots.length, sideWeight, mgr.config.incrementPercent / 100, side === "sell", 0, precision);
-                        
+
                         return partials.some(p => {
                             const idx = slots.findIndex(s => s.id === p.id);
                             if (idx === -1) return false;
@@ -371,7 +426,7 @@ class StrategyEngine {
 
                     const buyHasDust = getIsDust(buyPartials, "buy", budgetBuy);
                     const sellHasDust = getIsDust(sellPartials, "sell", budgetSell);
-                    
+
                     if (buyHasDust && sellHasDust) {
                         mgr.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");
                         shouldRebalance = true;
@@ -424,7 +479,7 @@ class StrategyEngine {
 
         const newPrice = targetGridOrder.price;
         let newMinToReceive;
-        
+
         if (partialOrder.type === ORDER_TYPES.SELL) {
             const rawMin = partialOrder.size * newPrice;
             const prec = mgr.assets?.assetB?.precision || 8;
