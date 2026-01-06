@@ -152,9 +152,17 @@ class StrategyEngine {
         const targetSell = snap.allocatedSell + (mgr.funds.cacheFunds?.sell || 0);
 
         // Reality Budget: Total on-chain balance (free + committed)
-        // Note: snap.chainTotalBuy already includes optimistic updates from processFilledOrders
-        const realityBuy = snap.chainTotalBuy;
-        const realitySell = snap.chainTotalSell;
+        // CRITICAL: We strictly define "Reality" as (Available Free Balance + Our Committed Funds).
+        // We do NOT use chainTotal directly because it might include funds locked by OTHER bots or manual orders.
+        // Using chainTotal in that case would cause us to treat foreign locked funds as "surplus/cacheFunds",
+        // leading to massive over-allocation attempts.
+        const realityBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0);
+        const realitySell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0);
+
+        if (mgr.logger.level === 'debug') {
+            mgr.logger.log(`[BUDGET] Reality Check: Buy=(Free:${snap.chainFreeBuy?.toFixed(5)} + Cmtd:${snap.committedChainBuy?.toFixed(5)} = ${realityBuy.toFixed(5)}), Sell=(Free:${snap.chainFreeSell?.toFixed(5)} + Cmtd:${snap.committedChainSell?.toFixed(5)} = ${realitySell.toFixed(5)})`, 'debug');
+            if (snap.chainTotalBuy > realityBuy + 1) mgr.logger.log(`[BUDGET] WARN: ChainTotalBuy (${snap.chainTotalBuy}) > RealityBuy (${realityBuy}). Foreign locks detected!`, 'warn');
+        }
 
         // Final Sizing Budget: Cap target by reality to prevent overdraft
         const budgetBuy = Math.min(targetBuy, realityBuy);
@@ -181,7 +189,16 @@ class StrategyEngine {
 
         // Apply all state updates to manager
         const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates];
-        allUpdates.forEach(upd => mgr._updateOrder(upd));
+        allUpdates.forEach(upd => {
+            const existing = mgr.orders.get(upd.id);
+            if (existing) {
+                // IMPORTANT: Optimistically update chainFree usage.
+                // If we are growing an ACTIVE order, we must deduce from chainFree immediately
+                // so that 'available' funds reflects this commitment.
+                mgr.accountant.updateOptimisticFreeBalance(existing, upd, 'rebalance-apply');
+            }
+            mgr._updateOrder(upd);
+        });
 
         // Combine results from both sides
         const result = {
@@ -471,13 +488,22 @@ class StrategyEngine {
         const finalStateMap = new Map();
         stateUpdates.forEach(s => finalStateMap.set(s.id, s));
 
-        const sideSlotIds = new Set(sideSlots.map(s => s.id));
-        const totalAllocated = Array.from(finalStateMap.values())
-            .filter(s => sideSlotIds.has(s.id))
-            .reduce((sum, s) => sum + (s.size || 0), 0);
+        // Correctly calculate total allocated capital:
+        // Sum sizes of ALL orders on this side, using the NEW size (if updated) or EXISTING size (if unchanged)
+        const totalAllocated = sideSlots.reduce((sum, slot) => {
+            const updated = finalStateMap.get(slot.id);
+            const size = updated ? (Number(updated.size) || 0) : (Number(slot.size) || 0);
+            return sum + size;
+        }, 0);
 
-        // Update cacheFunds: Budget minus what we allocated
-        mgr.funds.cacheFunds[side] = Math.max(0, totalSideBudget - totalAllocated);
+        // Update cacheFunds: Budget minus what we allocated, AND minus the fee reservation.
+        // The fee reservation (btsFees) is capital we MUST keep free (in chainFree) for fees, 
+        // it cannot be considered "surplus" (cacheFunds) to be re-injected into grid size.
+        mgr.funds.cacheFunds[side] = Math.max(0, totalSideBudget - totalAllocated - btsFees);
+
+        if (mgr.logger.level === 'debug' && mgr.funds.cacheFunds[side] > 0) {
+            mgr.logger.log(`[FUNDS] calc cacheFunds.${side}: Budget(${totalSideBudget.toFixed(5)}) - Alloc(${totalAllocated.toFixed(5)}) - Fees(${btsFees.toFixed(5)}) = ${mgr.funds.cacheFunds[side].toFixed(5)}`, 'debug');
+        }
 
         return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates };
     }
@@ -513,11 +539,19 @@ class StrategyEngine {
                 if (!isPartial || filledOrder.isDelayedRotationTrigger) {
                     fillsToSettle++;
                     mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, orderId: null });
+
+                    // CRITICAL: _updateOrder(VIRTUAL) treats this as a cancellation and refunds chainFree.
+                    // Since this is a FILL, the funds were spent. We must re-deduct them immediately.
+                    mgr.accountant.tryDeductFromChainFree(filledOrder.type, filledOrder.size, 'fill-consumption');
+                    mgr.logger.log(`[FUNDS] Consumed refunded capital for fill ${filledOrder.id}: ${filledOrder.size}`, 'debug');
                 }
 
                 let rawProceeds = 0;
                 let assetForFee = null;
-                if (filledOrder.type === ORDER_TYPES.SELL) {
+                // Normalize type to ensure case-insensitive matching
+                const orderType = String(filledOrder.type).toLowerCase();
+
+                if (orderType === ORDER_TYPES.SELL) {
                     rawProceeds = filledOrder.size * filledOrder.price;
                     assetForFee = mgr.config.assetB;
                 } else {
@@ -528,14 +562,23 @@ class StrategyEngine {
                 let netProceeds = rawProceeds;
                 if (assetForFee !== "BTS") {
                     try {
-                        netProceeds = getAssetFees(assetForFee, rawProceeds);
+                        const feeInfo = getAssetFees(assetForFee, rawProceeds);
+                        netProceeds = (typeof feeInfo === 'object') ? feeInfo.total : feeInfo; // Handle both object and number returns
+                        // If utils.js returns full amount minus fee, use that. 
+                        // Note: getAssetFees implementation returns (amount - fee) for non-BTS, or object for BTS.
+                        // Let's verify utils.js: "return assetAmount - marketFeeAmount;" for non-BTS. 
+                        // So netProceeds is already correct.
                     } catch (e) {
                         mgr.logger.log(`Warning: Could not calculate market fees for ${assetForFee}: ${e.message}`, "warn");
                     }
                 }
 
-                if (filledOrder.type === ORDER_TYPES.SELL) {
-                    mgr.funds.cacheFunds.buy = (mgr.funds.cacheFunds.buy || 0) + netProceeds;
+                mgr.logger.log(`[FILL] ${orderType.toUpperCase()} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");
+
+                if (orderType === ORDER_TYPES.SELL) {
+                    const oldCache = mgr.funds.cacheFunds.buy || 0;
+                    mgr.funds.cacheFunds.buy = oldCache + netProceeds;
+                    mgr.logger.log(`[FUNDS] cacheFunds.buy updated: ${oldCache.toFixed(5)} -> ${mgr.funds.cacheFunds.buy.toFixed(5)}`, "debug");
                     // Optimistic update to wallet balances
                     mgr.accountant.addToChainFree(ORDER_TYPES.BUY, netProceeds, 'fill-proceeds');
                     if (mgr.accountTotals) {
@@ -543,7 +586,9 @@ class StrategyEngine {
                         mgr.accountTotals.sell = (mgr.accountTotals.sell || 0) - filledOrder.size;
                     }
                 } else {
-                    mgr.funds.cacheFunds.sell = (mgr.funds.cacheFunds.sell || 0) + netProceeds;
+                    const oldCache = mgr.funds.cacheFunds.sell || 0;
+                    mgr.funds.cacheFunds.sell = oldCache + netProceeds;
+                    mgr.logger.log(`[FUNDS] cacheFunds.sell updated: ${oldCache.toFixed(5)} -> ${mgr.funds.cacheFunds.sell.toFixed(5)}`, "debug");
                     // Optimistic update to wallet balances
                     mgr.accountant.addToChainFree(ORDER_TYPES.SELL, netProceeds, 'fill-proceeds');
                     if (mgr.accountTotals) {
@@ -602,6 +647,13 @@ class StrategyEngine {
             if (!shouldRebalance) {
                 mgr.logger.log("[BOUNDARY] Skipping rebalance: No full fills and no dual-side dust partials.", "info");
                 return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], partialMoves: [] };
+            }
+
+            // Log detailed fund state before entering rebalance
+            if (mgr.logger.level === 'debug') {
+                mgr.logger.log(`[PRE-REBALANCE] Available: buy=${mgr.funds.available.buy.toFixed(5)}, sell=${mgr.funds.available.sell.toFixed(5)}`, 'debug');
+                mgr.logger.log(`[PRE-REBALANCE] CacheFunds: buy=${mgr.funds.cacheFunds.buy.toFixed(5)}, sell=${mgr.funds.cacheFunds.sell.toFixed(5)}`, 'debug');
+                mgr.logger.log(`[PRE-REBALANCE] ChainFree: buy=${mgr.accountTotals.buyFree.toFixed(5)}, sell=${mgr.accountTotals.sellFree.toFixed(5)}`, 'debug');
             }
 
             const result = await this.rebalance(filledOrders, excludeOrderIds);

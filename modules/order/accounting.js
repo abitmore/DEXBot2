@@ -321,8 +321,14 @@ class Accountant {
         if (mgr.accountTotals && mgr.accountTotals[key] !== undefined) {
             const oldFree = Number(mgr.accountTotals[key]) || 0;
             mgr.accountTotals[key] = oldFree + size;
+
+            if (mgr.logger && mgr.logger.level === 'debug') {
+                mgr.logger.log(`[ACCOUNTING] ${key} +${size.toFixed(8)} (${operation}) -> ${mgr.accountTotals[key].toFixed(8)}`, 'debug');
+            }
         }
     }
+
+
 
 
     /**
@@ -424,6 +430,10 @@ class Accountant {
             // First deduct from cacheFunds (preferred, as it's surplus from fills/rotations)
             const cacheDeduction = Math.min(feesOwedThisSide, cache);
             const chainDeduction = feesOwedThisSide - cacheDeduction;
+
+            if (mgr.logger.level === 'debug') {
+                mgr.logger.log(`[FEES] Deducting BTS fees. Owed: ${feesOwedThisSide.toFixed(8)}, Cache: ${cache.toFixed(8)} (${side}). Plan: Cache=${cacheDeduction.toFixed(8)}, Chain=${chainDeduction.toFixed(8)}`, 'debug');
+            }
 
             mgr.logger.log(
                 `Deducting BTS fees: ${cacheDeduction.toFixed(8)} from cacheFunds, ` +
