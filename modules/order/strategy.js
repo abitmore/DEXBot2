@@ -97,6 +97,7 @@ class StrategyEngine {
         // This creates the "crawl" effect where orders follow price movement.
 
         for (const fill of fills) {
+            if (fill.isPartial) continue;
             if (fill.type === ORDER_TYPES.SELL) mgr.boundaryIdx++;
             else if (fill.type === ORDER_TYPES.BUY) mgr.boundaryIdx--;
         }
@@ -267,10 +268,29 @@ class StrategyEngine {
         const shortages = targetIndices.filter(idx => {
             const slot = allSlots[idx];
             const isExcluded = excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId));
-            return !slot.orderId && !isExcluded && finalIdealSizes[idx] > 0;
+            if (!slot.orderId && !isExcluded && finalIdealSizes[idx] > 0) return true;
+
+            // Dust detection: Treat slot as shortage if it has a dust order
+            // This allows the strategy to "refill" it (either by rotation or update)
+            if (slot.orderId && !isExcluded && finalIdealSizes[idx] > 0) {
+                const threshold = finalIdealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+                if (slot.size < threshold) return true;
+            }
+            return false;
         });
 
-        const surpluses = activeThisSide.filter(s => !targetSet.has(allSlots.findIndex(o => o.id === s.id)));
+        const surpluses = activeThisSide.filter(s => {
+            const idx = allSlots.findIndex(o => o.id === s.id);
+            // Hard Surplus: Outside window
+            if (!targetSet.has(idx)) return true;
+            
+            // Dust Surplus: Inside window but dust (needs to be moved/updated)
+            const idealSize = finalIdealSizes[idx];
+            const threshold = idealSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            if (s.size < threshold) return true;
+            
+            return false;
+        });
         surpluses.sort((a, b) => type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price); // furthest first
 
         let budgetRemaining = reactionCap;
