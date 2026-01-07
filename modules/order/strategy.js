@@ -154,33 +154,21 @@ class StrategyEngine {
 
         const snap = mgr.getChainFundsSnapshot();
 
-        // Target Budget: Config allocation + fill proceeds available for reinvestment
-        const targetBuy = snap.allocatedBuy + (mgr.funds.cacheFunds?.buy || 0);
-        const targetSell = snap.allocatedSell + (mgr.funds.cacheFunds?.sell || 0);
+        // Total Side Budget: All capital on this side (Free + Committed + Cache)
+        // This represents the total "pie" to be distributed across the zone.
+        const budgetBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
+        const budgetSell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
-        // Reality Budget: Total on-chain balance (free + committed)
-        // CRITICAL: We strictly define "Reality" as (Available Free Balance + Our Committed Funds).
-        const realityBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0);
-        const realitySell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0);
-
-        // Final Sizing Budget: Cap target by reality to prevent overdraft
-        const budgetBuy = Math.min(targetBuy, realityBuy);
-        const budgetSell = Math.min(targetSell, realitySell);
-
-        // Available Pool: Liquid funds for net capital increases
-        // = available (chainFree - virtual - fees) + cacheFunds (fill proceeds)
-        const availablePoolBuy = (mgr.funds.available?.buy || 0) + (mgr.funds.cacheFunds?.buy || 0);
-        const availablePoolSell = (mgr.funds.available?.sell || 0) + (mgr.funds.cacheFunds?.sell || 0);
+        // Available Pool: Liquid funds for net capital increases (ChainFree + Cache)
+        const availablePoolBuy = (snap.chainFreeBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
+        const availablePoolSell = (snap.chainFreeSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
-        // In sequential mode, fills.length is 1, so we allow 1 action per side.
         const reactionCap = Math.max(1, fills.length);
  
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
         // ════════════════════════════════════════════════════════════════════════════════
-        // Rebalance each side independently using the Greedy Crawl algorithm.
-        // See rebalanceSideRobust() for detailed algorithm documentation.
  
         const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCap, fills);
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCap, fills);
@@ -250,13 +238,15 @@ class StrategyEngine {
         const isBtsSide = (type === ORDER_TYPES.BUY && mgr.config.assetB === "BTS") || (type === ORDER_TYPES.SELL && mgr.config.assetA === "BTS");
         const btsFees = (hasBtsSide && isBtsSide) ? calculateOrderCreationFees(mgr.config.assetA, mgr.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) : 0;
         const effectiveTotalSideBudget = Math.max(0, totalSideBudget - btsFees);
+        
+        // Calculate ideal sizes by distributing the total budget across ALL slots currently in the zone.
+        // This denominator naturally increases/decreases as the boundary shifts.
         const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, (type === ORDER_TYPES.BUY), 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
         sideSlots.forEach((slot, i) => {
             const size = blockchainToFloat(floatToBlockchainInt(sideIdealSizes[i] || 0, precision), precision);
             finalIdealSizes[allSlots.findIndex(s => s.id === slot.id)] = size;
-            stateUpdates.push({ ...slot, size: size });
         });
 
         // ════════════════════════════════════════════════════════════════════════════════
