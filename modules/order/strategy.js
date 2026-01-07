@@ -131,7 +131,13 @@ class StrategyEngine {
         // Update slot types (triggers state transitions if role changed)
         buySlots.forEach(s => { if (s.type !== ORDER_TYPES.BUY) mgr._updateOrder({ ...s, type: ORDER_TYPES.BUY }); });
         sellSlots.forEach(s => { if (s.type !== ORDER_TYPES.SELL) mgr._updateOrder({ ...s, type: ORDER_TYPES.SELL }); });
-        spreadSlots.forEach(s => { if (s.type !== ORDER_TYPES.SPREAD) mgr._updateOrder({ ...s, type: ORDER_TYPES.SPREAD }); });
+        spreadSlots.forEach(s => { 
+            // Only convert to SPREAD if it doesn't have an active order!
+            // This allows side rebalancers to see these orders as surpluses for rotation.
+            if (s.type !== ORDER_TYPES.SPREAD && !s.orderId) {
+                mgr._updateOrder({ ...s, type: ORDER_TYPES.SPREAD }); 
+            }
+        });
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 4: BUDGET CALCULATION (Target vs Reality)
@@ -153,16 +159,8 @@ class StrategyEngine {
 
         // Reality Budget: Total on-chain balance (free + committed)
         // CRITICAL: We strictly define "Reality" as (Available Free Balance + Our Committed Funds).
-        // We do NOT use chainTotal directly because it might include funds locked by OTHER bots or manual orders.
-        // Using chainTotal in that case would cause us to treat foreign locked funds as "surplus/cacheFunds",
-        // leading to massive over-allocation attempts.
         const realityBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0);
         const realitySell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0);
-
-        if (mgr.logger.level === 'debug') {
-            mgr.logger.log(`[BUDGET] Reality Check: Buy=(Free:${snap.chainFreeBuy?.toFixed(5)} + Cmtd:${snap.committedChainBuy?.toFixed(5)} = ${realityBuy.toFixed(5)}), Sell=(Free:${snap.chainFreeSell?.toFixed(5)} + Cmtd:${snap.committedChainSell?.toFixed(5)} = ${realitySell.toFixed(5)})`, 'debug');
-            if (snap.chainTotalBuy > realityBuy + 1) mgr.logger.log(`[BUDGET] WARN: ChainTotalBuy (${snap.chainTotalBuy}) > RealityBuy (${realityBuy}). Foreign locks detected!`, 'warn');
-        }
 
         // Final Sizing Budget: Cap target by reality to prevent overdraft
         const budgetBuy = Math.min(targetBuy, realityBuy);
@@ -170,26 +168,21 @@ class StrategyEngine {
 
         // Available Pool: Liquid funds for net capital increases
         // = available (chainFree - virtual - fees) + cacheFunds (fill proceeds)
-        // This is the "fuel" for growing order sizes or placing new orders
         const availablePoolBuy = (mgr.funds.available?.buy || 0) + (mgr.funds.cacheFunds?.buy || 0);
         const availablePoolSell = (mgr.funds.available?.sell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
-        // Reaction Cap: Limit how many orders we rotate per cycle (TOTAL across both sides)
-        // Prevents excessive churn; scales with number of fills
-        // CRITICAL: This is a SHARED budget between sides, not independent!
-        // Each side gets reactionCap / 2 (rounded up for buy, down for sell to share evenly)
-        const totalReactionCap = Math.max(1, fills.length);
-        const buyRotationCap = Math.ceil(totalReactionCap / 2);
-        const sellRotationCap = Math.floor(totalReactionCap / 2);
-
+        // Reaction Cap: Limit how many orders we rotate/place per cycle.
+        // In sequential mode, fills.length is 1, so we allow 1 action per side.
+        const reactionCap = Math.max(1, fills.length);
+ 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
         // ════════════════════════════════════════════════════════════════════════════════
         // Rebalance each side independently using the Greedy Crawl algorithm.
         // See rebalanceSideRobust() for detailed algorithm documentation.
-
-        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, buyRotationCap);
-        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, sellRotationCap);
+ 
+        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCap, fills);
+        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCap, fills);
 
         // Apply all state updates to manager
         const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates];
@@ -225,15 +218,9 @@ class StrategyEngine {
      * =================================================
      * This method implements a sophisticated order rotation strategy that:
      * 1. Calculates ideal geometric sizes for all slots
-     * 2. Applies Global Side Capping to prevent overdraft
-     * 3. Identifies shortages (empty slots) and surpluses (orders to rotate)
-     * 4. Greedily rotates orders from furthest positions to closest shortages
-     * 
-     * KEY FEATURES:
-     * - Fund-neutral rotations: Can rotate even with 0 available balance
-     * - Global Side Capping: Scales ALL increases proportionally when funds are tight
-     * - Greedy Crawl: Moves furthest orders to closest shortages for maximum efficiency
-     * - Surplus consumption: Unused capital stays in cacheFunds for future cycles
+     * 2. Identifies shortages (empty slots) and surpluses (orders to rotate)
+     * 3. FORCES placements for gaps created by actual fills (Refill)
+     * 4. Greedily rotates orders for maintenance gaps (Crawl)
      * 
      * @param {string} type - ORDER_TYPES.BUY or ORDER_TYPES.SELL
      * @param {Array} allSlots - All grid slots (Master Rail)
@@ -243,9 +230,10 @@ class StrategyEngine {
      * @param {number} availablePool - Liquid funds for net capital increases
      * @param {Set} excludeIds - Order IDs to skip (locked)
      * @param {number} reactionCap - Max orders to rotate per cycle
+     * @param {Array} fills - Actual fills being processed (to prioritize refills)
      * @returns {Object} Rebalancing actions (place, rotate, update, cancel, stateUpdates)
      */
-    async rebalanceSideRobust(type, allSlots, sideSlots, direction, totalSideBudget, availablePool, excludeIds, reactionCap) {
+    async rebalanceSideRobust(type, allSlots, sideSlots, direction, totalSideBudget, availablePool, excludeIds, reactionCap, fills = []) {
         if (sideSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
 
         const mgr = this.manager;
@@ -278,10 +266,6 @@ class StrategyEngine {
         const sideWeight = mgr.config.weightDistribution[side];
         const precision = getPrecisionForSide(mgr.assets, side);
 
-        const currentGridAllocation = sideSlots
-            .filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL))
-            .reduce((sum, o) => sum + (Number(o.size) || 0), 0);
-
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 2: CALCULATE IDEAL SIZES (Geometric distribution)
         // ════════════════════════════════════════════════════════════════════════════════
@@ -301,150 +285,84 @@ class StrategyEngine {
         const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 3: GLOBAL SIDE CAPPING (The "Perfect Budget" Logic)
+        // STEP 3: APPLY IDEAL SIZES
         // ════════════════════════════════════════════════════════════════════════════════
-        // PROBLEM: If we naively try to grow all orders to their ideal sizes, we might
-        // need more capital than we have available (overdraft).
-        // 
-        // SOLUTION: Calculate the TOTAL net capital increase needed across ALL slots.
-        // If total increase > availablePool, scale down ALL increases proportionally.
-        // 
-        // BENEFITS:
-        // - Fund-neutral rotations: Can rotate orders even with 0 available balance
-        //   (rotation releases capital from old order, uses it for new order)
-        // - Proportional scaling: All orders shrink equally when funds are tight
-        // - No overdraft: Never attempt to allocate more than we have
-        // 
-        // FORMULA:
-        // - For each slot: delta = max(0, idealSize - currentSize)
-        // - totalGrowth = sum(delta)
-        // - scaleFactor = min(1.0, availablePool / totalGrowth)
-        // - finalSize = currentSize + (delta * scaleFactor)
+        // Use the calculated geometric sizes for all slots. Since the total side budget
+        // is already capped by the bot's actual on-chain reality (Free + Committed),
+        // we can apply these sizes directly.
 
-        let totalSideGrowthNeeded = 0;
-        const idealSizes = new Array(allSlots.length).fill(0);
-
-        // Calculate total growth needed across entire side
-        sideSlots.forEach((slot, i) => {
-            const globalIdx = allSlots.findIndex(s => s.id === slot.id);
-            const targetIdealSize = sideIdealSizes[i] || 0;
-            idealSizes[globalIdx] = targetIdealSize;
-
-            const oldReservedSize = Number(allSlots[globalIdx].size) || 0;
-            if (targetIdealSize > oldReservedSize) {
-                // This slot needs to grow
-                totalSideGrowthNeeded += (targetIdealSize - oldReservedSize);
-            }
-        });
-
-        // Calculate scale factor: How much of the requested growth can we afford?
-        // - If totalGrowth <= availablePool: scale = 1.0 (no scaling needed)
-        // - If totalGrowth > availablePool: scale < 1.0 (proportional reduction)
-        const sideScale = (totalSideGrowthNeeded > availablePool) ? (availablePool / totalSideGrowthNeeded) : 1.0;
-
-        // Apply scale factor to all slots
-        // - Growing orders: Scale the increase
-        // - Shrinking orders: No scaling (releases capital immediately)
         const finalIdealSizes = new Array(allSlots.length).fill(0);
-        sideSlots.forEach((slot) => {
+        sideSlots.forEach((slot, i) => {
+            const targetIdealSize = sideIdealSizes[i] || 0;
             const globalIdx = allSlots.findIndex(s => s.id === slot.id);
-            const targetIdealSize = idealSizes[globalIdx];
-            const oldReservedSize = Number(allSlots[globalIdx].size) || 0;
-
-            if (targetIdealSize > oldReservedSize) {
-                // Growing: Apply scale factor
-                finalIdealSizes[globalIdx] = oldReservedSize + (targetIdealSize - oldReservedSize) * sideScale;
-            } else {
-                // Shrinking or same: No scaling (instant capital release)
-                finalIdealSizes[globalIdx] = targetIdealSize;
-            }
-
+            
             // Quantize to blockchain precision
-            const size = blockchainToFloat(floatToBlockchainInt(finalIdealSizes[globalIdx], precision), precision);
+            const size = blockchainToFloat(floatToBlockchainInt(targetIdealSize, precision), precision);
+            finalIdealSizes[globalIdx] = size;
             stateUpdates.push({ ...slot, size: size });
         });
-
-        if (totalSideGrowthNeeded > 0) {
-            mgr.logger.log(`[CAPPING] ${side.toUpperCase()} Side Growth (Pool=${availablePool.toFixed(precision)}, Needed=${totalSideGrowthNeeded.toFixed(precision)}, Scale=${sideScale.toFixed(4)})`, "info");
-        }
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 4: IDENTIFY SHORTAGES AND SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
-        // SHORTAGES: Empty slots in the target window (closest N to market)
-        // SURPLUSES: Orders that can be rotated to fill shortages
-        // 
-        // TWO TYPES OF SURPLUSES:
-        // 1. Hard Surpluses: Orders OUTSIDE the target window (beyond N closest)
-        // 2. Crawl Candidates: Orders INSIDE the window but furthest from market
-        // 
-        // GREEDY CRAWL STRATEGY:
-        // - If we have a shortage closer to market than a crawl candidate,
-        //   rotate the candidate to the shortage (moves capital toward market)
-        // - This creates a "crawling" effect where orders follow price movement
-
+        
         const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !excludeIds.has(s.id));
         const activeThisSide = activeOnChain.filter(s => s.type === type);
 
-        // Shortages: Target slots without on-chain orders
-        const shortages = targetIndices.filter(idx => (!allSlots[idx].orderId || excludeIds.has(allSlots[idx].id)) && idealSizes[idx] > 0);
-        const effectiveCap = (activeThisSide.length > 0) ? reactionCap : targetCount;
-
-        // Sort shortages: Closest to market first
-        // - BUY: Highest price first (descending)
-        // - SELL: Lowest price first (ascending)
-        shortages.sort((a, b) => {
-            if (type === ORDER_TYPES.BUY) return allSlots[b].price - allSlots[a].price;
-            return allSlots[a].price - allSlots[b].price;
+        // Shortages: Target slots without on-chain orders.
+        // CRITICAL for sequential processing: If an order is in excludeIds, it means it is
+        // pending its own turn in the sequential loop. We must NOT treat it as a shortage
+        // yet, otherwise the first fill's rebalance will try to fill the second fill's gap.
+        const shortages = targetIndices.filter(idx => {
+            const slot = allSlots[idx];
+            const isExcluded = excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId));
+            return !slot.orderId && !isExcluded && finalIdealSizes[idx] > 0;
         });
 
+        const effectiveCap = (activeThisSide.length > 0) ? reactionCap : targetCount;
+
+        // Sort all shortages: Closest to market first.
+        // This ensures inner gaps (fills) are prioritized for handling.
+        shortages.sort((a, b) => type === ORDER_TYPES.BUY ? allSlots[b].price - allSlots[a].price : allSlots[a].price - allSlots[b].price);
+
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 5: GREEDY CRAWL (Identify Rotation Candidates)
+        // STEP 5: IDENTIFY ROTATION CANDIDATES (Greedy Crawl)
         // ════════════════════════════════════════════════════════════════════════════════
 
         // 1. Hard Surpluses: Orders outside the target window
         const hardSurpluses = activeThisSide.filter(s => !targetSet.has(allSlots.findIndex(o => o.id === s.id)));
 
         // 2. Crawl Candidates: Furthest orders INSIDE the window
-        // These can be rotated to closer shortages for better market positioning
         let surpluses = [...hardSurpluses];
         const activeInsideWindow = activeThisSide
             .filter(s => targetSet.has(allSlots.findIndex(o => o.id === s.id)))
             .sort((a, b) => type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price); // Furthest first
 
-        // Identify crawl opportunities: Move furthest orders to closest shortages
-        const shortagesToFill = shortages.length;
-        const crawlCapacity = Math.max(0, (activeThisSide.length > 0 ? reactionCap : targetCount) - surpluses.length);
+        const crawlCapacity = Math.max(0, effectiveCap - surpluses.length);
 
-        for (let i = 0; i < Math.min(crawlCapacity, shortagesToFill, activeInsideWindow.length); i++) {
+        for (let i = 0; i < Math.min(crawlCapacity, shortages.length, activeInsideWindow.length); i++) {
             const furthest = activeInsideWindow[i];
             const furthestIdx = allSlots.findIndex(o => o.id === furthest.id);
             const bestShortageIdx = shortages[i];
 
-            // Only crawl if it's a price improvement (closer to market)
-            // - BUY: Higher index = closer to market (higher price)
-            // - SELL: Lower index = closer to market (lower price)
             const isCloser = type === ORDER_TYPES.BUY ? (bestShortageIdx > furthestIdx) : (bestShortageIdx < furthestIdx);
-            if (isCloser) {
-                surpluses.push(furthest);
-            }
+            if (isCloser) surpluses.push(furthest);
         }
 
-        // Sort surpluses: Furthest from market first (for rotation efficiency)
         surpluses.sort((a, b) => type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 6: EXECUTE ROTATIONS
+        // STEP 6: EXECUTE ROTATIONS FOR BEST SHORTAGES
         // ════════════════════════════════════════════════════════════════════════════════
-        // Pair surpluses with shortages and create rotation actions.
-        // Rotation = Cancel old order + Place new order at shortage price
+        // Pair furthest surpluses with closest shortages.
+        // This handles inner gaps (fills) by moving existing capital inward.
 
         const pairCount = Math.min(surpluses.length, shortages.length, effectiveCap);
         for (let i = 0; i < pairCount; i++) {
             const surplus = surpluses[i];
             const shortageIdx = shortages[i];
             const shortageSlot = allSlots[shortageIdx];
-            const size = blockchainToFloat(floatToBlockchainInt(finalIdealSizes[shortageIdx], precision), precision);
+            const size = finalIdealSizes[shortageIdx];
 
             ordersToRotate.push({ oldOrder: { ...surplus }, newPrice: shortageSlot.price, newSize: size, newGridId: shortageSlot.id, type: type });
             stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL });
@@ -452,17 +370,17 @@ class StrategyEngine {
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 7: PLACE NEW ORDERS (Remaining shortages)
+        // STEP 7: PLACE NEW ORDERS FOR REMAINING SHORTAGES
         // ════════════════════════════════════════════════════════════════════════════════
-        // If we have shortages left after rotations, place new orders (if funds available)
+        // Any shortages that couldn't be filled by rotations (likely the furthest ones)
+        // are handled via new order placements.
 
         const remainingCap = Math.max(0, effectiveCap - pairCount);
         const placementShortages = shortages.slice(pairCount, pairCount + remainingCap);
 
         for (const idx of placementShortages) {
             const slot = allSlots[idx];
-            const size = blockchainToFloat(floatToBlockchainInt(finalIdealSizes[idx], precision), precision);
-
+            const size = finalIdealSizes[idx];
             if (size > 0) {
                 ordersToPlace.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
                 stateUpdates.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
@@ -472,7 +390,6 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 8: CANCEL EXCESS SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
-        // Surpluses beyond rotation capacity are cancelled
 
         for (let i = pairCount; i < surpluses.length; i++) {
             const surplus = surpluses[i];
@@ -481,27 +398,18 @@ class StrategyEngine {
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 9: SURPLUS CONSUMPTION (Update cacheFunds)
+        // STEP 10: SURPLUS CONSUMPTION (Update cacheFunds)
         // ════════════════════════════════════════════════════════════════════════════════
-        // Calculate how much of the budget was actually allocated to grid slots.
-        // Unallocated capital remains in cacheFunds for future cycles.
-        // 
-        // This enables gradual capital deployment as funds become available.
 
         const finalStateMap = new Map();
         stateUpdates.forEach(s => finalStateMap.set(s.id, s));
 
-        // Correctly calculate total allocated capital:
-        // Sum sizes of ALL orders on this side, using the NEW size (if updated) or EXISTING size (if unchanged)
         const totalAllocated = sideSlots.reduce((sum, slot) => {
             const updated = finalStateMap.get(slot.id);
             const size = updated ? (Number(updated.size) || 0) : (Number(slot.size) || 0);
             return sum + size;
         }, 0);
 
-        // Update cacheFunds: Budget minus what we allocated, AND minus the fee reservation.
-        // The fee reservation (btsFees) is capital we MUST keep free (in chainFree) for fees, 
-        // it cannot be considered "surplus" (cacheFunds) to be re-injected into grid size.
         mgr.funds.cacheFunds[side] = Math.max(0, totalSideBudget - totalAllocated - btsFees);
 
         if (mgr.logger.level === 'debug' && mgr.funds.cacheFunds[side] > 0) {

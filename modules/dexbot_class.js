@@ -226,67 +226,43 @@ class DEXBot {
 
                     // 5. Sequential Rebalance Loop (Interruptible)
                     if (allFilledOrders.length > 0) {
-                        this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders...`, 'info');
+                        this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders sequentially...`, 'info');
 
                         let anyRotations = false;
 
                         let i = 0;
                         while (i < allFilledOrders.length) {
-                            const firstFill = allFilledOrders[i];
-                            const currentBlock = firstFill.blockNum;
-                            
-                            // Collect all fills for the SAME block to process as a batch
-                            const currentBatch = [firstFill];
+                            const filledOrder = allFilledOrders[i];
                             i++;
-                            while (i < allFilledOrders.length && allFilledOrders[i].blockNum === currentBlock && currentBlock !== undefined) {
-                                currentBatch.push(allFilledOrders[i]);
-                                i++;
-                            }
 
-                            if (currentBatch.length > 1) {
-                                this.manager.logger.log(`>>> Processing batch of ${currentBatch.length} fills from block ${currentBlock} (${i}/${allFilledOrders.length})`, 'info');
-                            } else {
-                                this.manager.logger.log(`>>> Processing sequential fill for order ${firstFill.id} (${i}/${allFilledOrders.length})`, 'info');
-                            }
+                            this.manager.logger.log(`>>> Processing sequential fill for order ${filledOrder.id} (${i}/${allFilledOrders.length})`, 'info');
 
                             // Create an exclusion set from OTHER pending fills in the worklist
                             // to prevent the rebalancer from picking an order that is about to be processed.
-                            // CRITICAL: Do NOT exclude any order ID that is part of the current batch!
+                            // CRITICAL: Do NOT exclude the current order we are processing!
                             const fullExcludeSet = new Set();
-                            const currentBatchGridIds = new Set(currentBatch.map(o => o.id));
-                            const currentBatchOrderIds = new Set(currentBatch.map(o => o.orderId).filter(Boolean));
-
                             for (const other of allFilledOrders) {
-                                // Skip if the other fill is part of the current batch (we're processing it now)
-                                if (currentBatch.includes(other)) continue;
-                                
-                                // Skip if it refers to the same grid slot/ID as something in our batch
-                                if (currentBatchGridIds.has(other.id)) continue;
-                                if (other.orderId && currentBatchOrderIds.has(other.orderId)) continue;
+                                // Skip the current fill - we WANT to process it
+                                if (other === filledOrder) continue;
 
                                 if (other.orderId) fullExcludeSet.add(other.orderId);
                                 if (other.id) fullExcludeSet.add(other.id);
                             }
 
-                            // Log funding state before processing this batch
-                            if (currentBatch.length > 1) {
-                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing batch of ${currentBatch.length} fills`);
-                            } else {
-                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill ${firstFill.id}`);
-                            }
+                            // Log funding state before processing this fill
+                            this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill ${filledOrder.id}`);
 
-                            const rebalanceResult = await this.manager.processFilledOrders(currentBatch, fullExcludeSet);
+                            const rebalanceResult = await this.manager.processFilledOrders([filledOrder], fullExcludeSet);
 
                             // Log funding state after rebalance calculation (before actual placement)
-                            const logId = currentBatch.length > 1 ? `batch@${currentBlock}` : firstFill.id;
-                            this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for ${logId} (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
+                            this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for ${filledOrder.id} (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
 
                             const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
 
                             if (batchResult.hadRotation) {
                                 anyRotations = true;
                                 // Log funding state after rotation completes
-                                this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${logId}`);
+                                this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${filledOrder.id}`);
                             }
                             await this.manager.persistGrid();
 
