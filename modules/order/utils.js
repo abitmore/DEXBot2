@@ -481,7 +481,13 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
         if (priceDiff > priceTolerance) continue;
 
         // Size check: compare in blockchain integer units
-        if (!opts?.skipSizeMatch && Math.abs(floatToBlockchainInt(gridOrder.size, precision) - chainInt) > 1) {
+        // During startup/sync, we allow the chain size to be SMALLER than grid size (partial fill occurred)
+        const gridInt = floatToBlockchainInt(gridOrder.size, precision);
+        const sizeMismatch = opts?.allowSmallerChainSize 
+            ? (chainInt > gridInt + 1) // Chain size cannot be GREATER than grid size
+            : (Math.abs(gridInt - chainInt) > 1); // Normal case: must match exactly
+
+        if (!opts?.skipSizeMatch && sizeMismatch) {
             logger?.log?.(`Chain size mismatch grid ${gridOrder.id}: chain=${chainSize.toFixed(8)}, grid=${toFiniteNumber(gridOrder.size).toFixed(8)}`, 'debug');
             continue;
         }

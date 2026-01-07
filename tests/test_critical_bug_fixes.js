@@ -324,7 +324,7 @@ async function testGhostVirtualizationRestoresStates() {
     assert(s1After, 's-1 should exist after rebalance');
 
     // States should not be VIRTUAL
-    const validStates = [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL, ORDER_STATES.SPREAD];
+    const validStates = [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL];
     assert(validStates.includes(s0After.state), `s-0 state should be valid, got ${s0After.state}`);
     assert(validStates.includes(s1After.state), `s-1 state should be valid, got ${s1After.state}`);
 

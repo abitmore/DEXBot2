@@ -258,7 +258,7 @@ async function testConsolidationSyncRebalanceCycle() {
 
     // Step 3: SYNC ENGINE - Sync updated orders from blockchain
     // Simulate one of the partials completing fill
-    const filledPartial = { ...partial1, size: 0, state: ORDER_STATES.SPREAD };
+    const filledPartial = { ...partial1, size: 0, state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SPREAD };
     mgr._updateOrder(filledPartial);
 
     console.log('  ✓ Step 3: Sync detected full fill of partial');

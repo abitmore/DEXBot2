@@ -265,10 +265,12 @@ async function testPartialStateTransitions() {
     console.log(`  ✓ ACTIVE → PARTIAL transition valid (size: 100 → 50)`);
 
     // TEST 4b: PARTIAL → SPREAD transition (full fill, size = 0)
-    order.state = ORDER_STATES.SPREAD;
+    order.state = ORDER_STATES.VIRTUAL;
+    order.type = ORDER_TYPES.SPREAD;
     order.size = 0;
     mgr._updateOrder(order);
-    assert.strictEqual(mgr.orders.get('sell-10').state, ORDER_STATES.SPREAD, 'Should transition to SPREAD');
+    assert.strictEqual(mgr.orders.get('sell-10').state, ORDER_STATES.VIRTUAL, 'Should transition to VIRTUAL');
+    assert.strictEqual(mgr.orders.get('sell-10').type, ORDER_TYPES.SPREAD, 'Should become SPREAD type');
     assert.strictEqual(mgr.orders.get('sell-10').size, 0, 'SPREAD must have size = 0');
 
     console.log(`  ✓ PARTIAL → SPREAD transition valid (size: 50 → 0)`);

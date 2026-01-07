@@ -413,48 +413,26 @@ class OrderManager {
 
         const existing = this.orders.get(order.id);
 
-        // Validate state transition if order exists
-        if (existing && existing.state && order.state && existing.state !== order.state) {
-            const validTransitions = {
-                // VIRTUAL can go ACTIVE (normal) or directly PARTIAL (partial fill before activation)
-                [ORDER_STATES.VIRTUAL]: [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL],
-                // ACTIVE can go PARTIAL (partial fill) or back to VIRTUAL (cancelled)
-                [ORDER_STATES.ACTIVE]: [ORDER_STATES.PARTIAL, ORDER_STATES.VIRTUAL],
-                // PARTIAL can be upgraded to ACTIVE (consolidation) or returned to VIRTUAL (rebalance)
-                [ORDER_STATES.PARTIAL]: [ORDER_STATES.ACTIVE, ORDER_STATES.VIRTUAL]
-            };
+        // Ensure we store a clean clone to prevent external modification races
+        const updatedOrder = { ...order };
+        const id = updatedOrder.id;
 
-            const allowedNextStates = validTransitions[existing.state] || [];
-            if (!allowedNextStates.includes(order.state)) {
-                this.logger?.log?.(
-                    `Error: Invalid state transition for order ${order.id}: ${existing.state} → ${order.state}. ` +
-                    `Valid next states: ${allowedNextStates.join(', ')}`,
-                    'error'
-                );
-                return;
-            }
-
-            // Record state transition for metrics
-            this._recordStateTransition(existing.state, order.state);
+        // Record state transition for metrics if state changed
+        if (existing && existing.state && updatedOrder.state && existing.state !== updatedOrder.state) {
+            this._recordStateTransition(existing.state, updatedOrder.state);
         }
 
-        // SPREAD type orders should remain in VIRTUAL state and not transition
-        if (order.type === ORDER_TYPES.SPREAD && existing && existing.type === ORDER_TYPES.SPREAD) {
-            if (order.state !== ORDER_STATES.VIRTUAL) {
-                this.logger?.log?.(
-                    `Error: SPREAD type orders must be in VIRTUAL state, not ${order.state}`,
-                    'error'
-                );
-                return;
-            }
-        }
-        if (existing) {
-            this._ordersByState[existing.state]?.delete(order.id);
-            this._ordersByType[existing.type]?.delete(order.id);
-        }
-        this._ordersByState[order.state]?.add(order.id);
-        this._ordersByType[order.type]?.add(order.id);
-        this.orders.set(order.id, order);
+        // CRITICAL: Robust index cleanup. 
+        // Remove ID from ALL state and type sets to prevent duplicates if objects 
+        // were modified in-place before this call. This ensures indices remain 
+        // strictly 1:1 with the orders Map even if state transition logic was bypassed.
+        Object.values(this._ordersByState).forEach(set => set.delete(id));
+        Object.values(this._ordersByType).forEach(set => set.delete(id));
+
+        // Add to new indices
+        this._ordersByState[updatedOrder.state]?.add(id);
+        this._ordersByType[updatedOrder.type]?.add(id);
+        this.orders.set(id, updatedOrder);
 
         // Only recalculate funds if not in batch mode (depth == 0 means all pauses resolved)
         if (this._pauseFundRecalcDepth === 0) {

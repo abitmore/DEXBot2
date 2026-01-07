@@ -270,9 +270,19 @@ class SyncEngine {
 
         for (const [chainOrderId, chainOrder] of parsedChainOrders) {
             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
-            let bestMatch = findMatchingGridOrderByOpenOrder({ orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+            let match = findMatchingGridOrderByOpenOrder(
+                { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, 
+                { 
+                    orders: mgr.orders, 
+                    assets: mgr.assets, 
+                    calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), 
+                    logger: mgr.logger,
+                    allowSmallerChainSize: true 
+                }
+            );
 
-            if (bestMatch && !matchedGridOrderIds.has(bestMatch.id)) {
+            if (match && !matchedGridOrderIds.has(match.id)) {
+                const bestMatch = { ...match }; // CLONE HERE
                 bestMatch.orderId = chainOrderId;
                 bestMatch.state = ORDER_STATES.ACTIVE;
                 matchedGridOrderIds.add(bestMatch.id);
@@ -285,7 +295,11 @@ class SyncEngine {
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
-                        bestMatch = spreadOrder;
+                        // bestMatch should not be updated further if it became a spread
+                        mgr._updateOrder(spreadOrder);
+                        updatedOrders.push(spreadOrder);
+                        chainOrderIdsOnGrid.add(chainOrderId);
+                        continue;
                     }
                 }
                 mgr._updateOrder(bestMatch);

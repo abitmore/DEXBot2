@@ -362,6 +362,31 @@ class StrategyEngine {
         }
     }
 
+    getIsDust(partials, side, budget) {
+        const mgr = this.manager;
+        const type = side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+        const allOrders = Array.from(mgr.orders.values());
+        
+        // CRITICAL: Slots must be sorted Market-to-Edge to match allocateFundsByWeights assumption
+        const slots = allOrders.filter(o => o.type === type)
+            .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+            
+        if (slots.length === 0) return false;
+        const precision = getPrecisionForSide(mgr.assets, side);
+        const sideWeight = mgr.config.weightDistribution[side];
+        
+        // Use same reverse flag as rebalanceSideRobust
+        const reverse = (type === ORDER_TYPES.BUY);
+        const idealSizes = allocateFundsByWeights(budget, slots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
+
+        return partials.some(p => {
+            const idx = slots.findIndex(s => s.id === p.id);
+            if (idx === -1) return false;
+            const dustThreshold = idealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            return p.size < dustThreshold;
+        });
+    }
+
     async processFilledOrders(filledOrders, excludeOrderIds = new Set()) {
         const mgr = this.manager;
         if (!mgr || !Array.isArray(filledOrders)) return;
@@ -468,26 +493,12 @@ class StrategyEngine {
 
                 if (buyPartials.length > 0 && sellPartials.length > 0) {
                     const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
-                    const budgetBuy = snap.allocatedBuy + (mgr.funds.cacheFunds?.buy || 0);
-                    const budgetSell = snap.allocatedSell + (mgr.funds.cacheFunds?.sell || 0);
+                    // Align budget with rebalance() logic: Total actual capital (Reality + Cache)
+                    const budgetBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
+                    const budgetSell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
-                    const getIsDust = (partials, side, budget) => {
-                        const slots = allOrders.filter(o => o.type === (side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL));
-                        if (slots.length === 0) return false;
-                        const precision = getPrecisionForSide(mgr.assets, side);
-                        const sideWeight = mgr.config.weightDistribution[side];
-                        const idealSizes = allocateFundsByWeights(budget, slots.length, sideWeight, mgr.config.incrementPercent / 100, side === "sell", 0, precision);
-
-                        return partials.some(p => {
-                            const idx = slots.findIndex(s => s.id === p.id);
-                            if (idx === -1) return false;
-                            const dustThreshold = idealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
-                            return p.size < dustThreshold;
-                        });
-                    };
-
-                    const buyHasDust = getIsDust(buyPartials, "buy", budgetBuy);
-                    const sellHasDust = getIsDust(sellPartials, "sell", budgetSell);
+                    const buyHasDust = this.getIsDust(buyPartials, "buy", budgetBuy);
+                    const sellHasDust = this.getIsDust(sellPartials, "sell", budgetSell);
 
                     if (buyHasDust && sellHasDust) {
                         mgr.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");

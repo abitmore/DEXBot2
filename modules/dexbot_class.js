@@ -878,7 +878,7 @@ class DEXBot {
                 this._log('Generating new grid and syncing with existing on-chain orders...');
                 await Grid.initializeGrid(this.manager);
                 const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-                await reconcileStartupOrders({
+                const rebalanceResult = await reconcileStartupOrders({
                     manager: this.manager,
                     config: this.config,
                     account: this.account,
@@ -887,6 +887,10 @@ class DEXBot {
                     chainOpenOrders,
                     syncResult,
                 });
+
+                if (rebalanceResult) {
+                    await this.updateOrdersOnChainBatch(rebalanceResult);
+                }
             } else {
                 // No existing orders: place initial orders on-chain
                 // placeInitialOrders() handles both Grid.initializeGrid() and broadcast
@@ -909,7 +913,7 @@ class DEXBot {
             // This ensures activeOrders changes in bots.json are applied on restart:
             // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
             // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
-            await reconcileStartupOrders({
+            const rebalanceResult = await reconcileStartupOrders({
                 manager: this.manager,
                 config: this.config,
                 account: this.account,
@@ -918,6 +922,10 @@ class DEXBot {
                 chainOpenOrders,
                 syncResult,
             });
+
+            if (rebalanceResult) {
+                await this.updateOrdersOnChainBatch(rebalanceResult);
+            }
 
             await this.manager.persistGrid();
         }
