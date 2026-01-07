@@ -67,14 +67,23 @@ async function testSequentialMultiFillProcessing() {
 
     // Initial rebalance to place orders
     console.log('\n>>> Initial Grid Setup');
-    const initial = await mgr.strategy.rebalance();
-    console.log(`    Initial ordersToPlace: ${initial.ordersToPlace.length}`);
-
-    // Simulate placing orders on-chain
-    initial.ordersToPlace.forEach(o => {
-        mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `ord-${o.id}` });
-    });
-    mgr.recalculateFunds();
+    
+    // Loop rebalance to build up grid (since strict cap limits to 1 per cycle)
+    for (let i = 0; i < 5; i++) {
+        const initial = await mgr.strategy.rebalance();
+        if (initial.ordersToPlace.length === 0) break;
+        
+        console.log(`    Cycle ${i}: Placing ${initial.ordersToPlace.length} orders`);
+        
+        // Simulate placing orders on-chain
+        initial.ordersToPlace.forEach(o => {
+            mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `ord-${o.id}` });
+        });
+        mgr.recalculateFunds();
+        
+        const activeCount = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).length;
+        if (activeCount >= 2) break;
+    }
 
     // Get current state
     const activeBuys = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)

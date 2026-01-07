@@ -279,12 +279,11 @@ class StrategyEngine {
         // STEP 3: ROTATIONS (Refill Inner Gaps)
         // ════════════════════════════════════════════════════════════════════════════════
         // Move furthest active orders to fill inner gaps (closest to market).
-        const innerShortages = [...shortages].sort((a, b) => type === ORDER_TYPES.BUY ? allSlots[b].price - allSlots[a].price : allSlots[a].price - allSlots[b].price);
-        
-        const pairCount = Math.min(surpluses.length, innerShortages.length, budgetRemaining);
-        for (let i = 0; i < pairCount; i++) {
+        // Note: shortages is derived from sortedSideSlots, so it is already sorted Closest First.
+        const rotationCount = Math.min(surpluses.length, shortages.length, budgetRemaining);
+        for (let i = 0; i < rotationCount; i++) {
             const surplus = surpluses[i];
-            const shortageIdx = innerShortages[i];
+            const shortageIdx = shortages[i];
             const shortageSlot = allSlots[shortageIdx];
             const size = finalIdealSizes[shortageIdx];
 
@@ -299,8 +298,9 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // Use remaining budget to place new orders at the edge of the grid window.
         if (budgetRemaining > 0) {
-            const outerShortages = shortages.filter(idx => !ordersToRotate.some(r => r.newGridId === allSlots[idx].id))
-                .sort((a, b) => type === ORDER_TYPES.BUY ? allSlots[a].price - allSlots[b].price : allSlots[b].price - allSlots[a].price); // furthest first
+            // Remaining shortages are those not covered by rotations.
+            // Reverse them to target Furthest First (Outer Edges).
+            const outerShortages = shortages.slice(rotationCount).reverse();
             
             const placeCount = Math.min(outerShortages.length, budgetRemaining);
             for (let i = 0; i < placeCount; i++) {
