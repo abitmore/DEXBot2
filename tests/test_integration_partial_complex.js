@@ -339,6 +339,65 @@ async function testEdgeBoundGridWithPartial() {
 }
 
 // ============================================================================
+// TEST 6: Dual-Side Dust at Startup
+// ============================================================================
+async function testStartupDualDustTrigger() {
+    console.log('TEST 6: Dual-Side Dust at Startup');
+
+    const mgr = new OrderManager({
+        assetA: 'IOB.XRP', assetB: 'BTS', startPrice: 1800,
+        botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 }
+    });
+
+    mgr.assets = {
+        assetA: { id: '1.3.5537', symbol: 'IOB.XRP', precision: 5 },
+        assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
+    };
+
+    // Setup: Dust partials on both sides
+    // Ideal size will be roughly 500 per order (1000 budget / 2 orders)
+    // 5% of 500 = 25. So < 25 is dust.
+    
+    mgr._updateOrder({
+        id: 'sell-0', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL,
+        price: 1900, size: 1, orderId: '1.7.100' // tiny dust
+    });
+
+    mgr._updateOrder({
+        id: 'buy-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL,
+        price: 1700, size: 5, orderId: '1.7.200' // tiny dust
+    });
+
+    // Mock reconcileStartupOrders logic (simplified)
+    const { reconcileStartupOrders } = require('../modules/order/startup_reconcile');
+    
+    // We need to mock getChainFundsSnapshot for the dust check
+    mgr.getChainFundsSnapshot = () => ({
+        chainFreeBuy: 1000, chainFreeSell: 1000,
+        committedChainBuy: 5, committedChainSell: 1
+    });
+
+    let rebalanceCalled = false;
+    const originalRebalance = mgr.strategy.rebalance;
+    mgr.strategy.rebalance = async () => {
+        rebalanceCalled = true;
+        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], partialMoves: [] };
+    };
+
+    // Run reconcile (partially mocked inputs)
+    await reconcileStartupOrders({
+        manager: mgr,
+        config: mgr.config,
+        syncResult: { unmatchedChainOrders: [] }
+    });
+
+    assert.strictEqual(rebalanceCalled, true, 'Should have triggered full rebalance for dual-side dust at startup');
+    console.log(`  ✓ Dual-side dust at startup correctly triggered rebalance\n`);
+    
+    mgr.strategy.rebalance = originalRebalance;
+}
+
+// ============================================================================
 // RUN ALL TESTS
 // ============================================================================
 (async () => {
@@ -348,6 +407,7 @@ async function testEdgeBoundGridWithPartial() {
         await testRebalancingWithExistingPartial();
         await testGridNavigationWithPartials();
         await testEdgeBoundGridWithPartial();
+        await testStartupDualDustTrigger();
 
         console.log('═══════════════════════════════════════════════════');
         console.log('✓ All Integration Tests PASSED');

@@ -51,13 +51,10 @@ class StrategyEngine {
         const mgr = this.manager;
         mgr.logger.log("[BOUNDARY] Starting robust boundary-crawl rebalance.", "info");
 
-        // Sort all grid slots by index (Master Rail order)
+        // Sort all grid slots by price (Master Rail order)
         const allSlots = Array.from(mgr.orders.values())
-            .sort((a, b) => {
-                const idxA = parseInt(a.id.split('-')[1]);
-                const idxB = parseInt(b.id.split('-')[1]);
-                return idxA - idxB;
-            });
+            .filter(o => o.price != null)
+            .sort((a, b) => a.price - b.price);
 
         if (allSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], hadRotation: false, partialMoves: [] };
 
@@ -477,7 +474,7 @@ class StrategyEngine {
 
             if (hasBtsPair && fillsToSettle > 0) {
                 const btsFeeData = getAssetFees("BTS", 0);
-                mgr.funds.btsFeesOwed += fillsToSettle * btsFeeData.total;
+                mgr.funds.btsFeesOwed += fillsToSettle * btsFeeData.makerNetFee;
                 await mgr.accountant.deductBtsFees();
             }
 
