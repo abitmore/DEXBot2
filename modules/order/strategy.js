@@ -174,9 +174,13 @@ class StrategyEngine {
         const availablePoolBuy = (mgr.funds.available?.buy || 0) + (mgr.funds.cacheFunds?.buy || 0);
         const availablePoolSell = (mgr.funds.available?.sell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
-        // Reaction Cap: Limit how many orders we rotate per cycle
+        // Reaction Cap: Limit how many orders we rotate per cycle (TOTAL across both sides)
         // Prevents excessive churn; scales with number of fills
-        const reactionCap = Math.max(1, fills.length);
+        // CRITICAL: This is a SHARED budget between sides, not independent!
+        // Each side gets reactionCap / 2 (rounded up for buy, down for sell to share evenly)
+        const totalReactionCap = Math.max(1, fills.length);
+        const buyRotationCap = Math.ceil(totalReactionCap / 2);
+        const sellRotationCap = Math.floor(totalReactionCap / 2);
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
@@ -184,19 +188,18 @@ class StrategyEngine {
         // Rebalance each side independently using the Greedy Crawl algorithm.
         // See rebalanceSideRobust() for detailed algorithm documentation.
 
-        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCap);
-        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCap);
+        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, buyRotationCap);
+        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, sellRotationCap);
 
         // Apply all state updates to manager
         const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates];
         allUpdates.forEach(upd => {
-            const existing = mgr.orders.get(upd.id);
-            if (existing) {
-                // IMPORTANT: Optimistically update chainFree usage.
-                // If we are growing an ACTIVE order, we must deduce from chainFree immediately
-                // so that 'available' funds reflects this commitment.
-                mgr.accountant.updateOptimisticFreeBalance(existing, upd, 'rebalance-apply');
-            }
+            // Fix: If order doesn't exist yet (new slot), treat as VIRTUAL/Empty for transition logic
+            const existing = mgr.orders.get(upd.id) || { state: ORDER_STATES.VIRTUAL, size: 0, type: upd.type };
+
+            // Allow optimistic update even if 'existing' was mock
+            mgr.accountant.updateOptimisticFreeBalance(existing, upd, 'rebalance-apply');
+
             mgr._updateOrder(upd);
         });
 
@@ -538,7 +541,18 @@ class StrategyEngine {
                 const isPartial = filledOrder.isPartial === true;
                 if (!isPartial || filledOrder.isDelayedRotationTrigger) {
                     fillsToSettle++;
-                    mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, orderId: null });
+
+                    // CRITICAL FIX: Only update slot to VIRTUAL if it hasn't been reused!
+                    // In sequential processing, a previous fill's rebalance might have rotated 
+                    // a new order into this slot (treated as empty because it was about to fill).
+                    const currentSlot = mgr.orders.get(filledOrder.id);
+                    const slotReused = currentSlot && currentSlot.orderId && currentSlot.orderId !== filledOrder.orderId;
+
+                    if (!slotReused) {
+                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, orderId: null });
+                    } else {
+                        mgr.logger.log(`[RACE] Slot ${filledOrder.id} reused (curr=${currentSlot.orderId} != fill=${filledOrder.orderId}). Skipping VIRTUAL update.`, 'info');
+                    }
 
                     // CRITICAL: _updateOrder(VIRTUAL) treats this as a cancellation and refunds chainFree.
                     // Since this is a FILL, the funds were spent. We must re-deduct them immediately.

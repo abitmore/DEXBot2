@@ -141,7 +141,7 @@ class OrderManager {
 
     // --- Sync Delegation ---
     syncFromOpenOrders(orders, info) { return this.sync.syncFromOpenOrders(orders, info); }
-    syncFromFillHistory(op) { return this.sync.syncFromFillHistory(op); }
+    syncFromFillHistory(fill) { return this.sync.syncFromFillHistory(fill); }
     async synchronizeWithChain(data, src) { return await this.sync.synchronizeWithChain(data, src); }
     async _fetchAccountBalancesAndSetTotals() { return await this.sync.fetchAccountBalancesAndSetTotals(); }
     async _initializeAssets() { return await this.sync.initializeAssets(); }

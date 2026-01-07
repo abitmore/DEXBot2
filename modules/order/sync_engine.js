@@ -338,9 +338,13 @@ class SyncEngine {
      * - updatedOrders: The updated grid order (remaining portion)
      * - partialFill: true if fill was partial (order still on chain), false if complete
      */
-    syncFromFillHistory(fillOp) {
+    syncFromFillHistory(fill) {
         const mgr = this.manager;
-        if (!fillOp || !fillOp.order_id) return { filledOrders: [], updatedOrders: [], partialFill: false };
+        if (!fill || !fill.op || !fill.op[1]) return { filledOrders: [], updatedOrders: [], partialFill: false };
+
+        const fillOp = fill.op[1];
+        const blockNum = fill.block_num;
+        const historyId = fill.id;
 
         mgr.pauseFundRecalc();
         try {
@@ -384,13 +388,23 @@ class SyncEngine {
             const filledOrders = [];
             const updatedOrders = [];
             if (newSizeInt <= 0) {
-                const filledOrder = { ...matchedGridOrder };
+                const filledOrder = { 
+                    ...matchedGridOrder, 
+                    blockNum: blockNum, 
+                    historyId: historyId 
+                };
                 const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
                 mgr._updateOrder(spreadOrder);
                 filledOrders.push(filledOrder);
                 return { filledOrders, updatedOrders, partialFill: false };
             } else {
-                const filledPortion = { ...matchedGridOrder, size: filledAmount, isPartial: true };
+                const filledPortion = { 
+                    ...matchedGridOrder, 
+                    size: filledAmount, 
+                    isPartial: true,
+                    blockNum: blockNum,
+                    historyId: historyId
+                };
                 const updatedOrder = { ...matchedGridOrder };
                 updatedOrder.state = ORDER_STATES.PARTIAL;
                 applyChainSizeToGridOrder(mgr, updatedOrder, newSize);

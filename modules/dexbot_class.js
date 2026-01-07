@@ -144,7 +144,7 @@ class DEXBot {
                     for (const fill of allFills) {
                         if (fill && fill.op && fill.op[0] === 4) {
                             const fillOp = fill.op[1];
-                            
+
                             // Process all fills for our account (Maker and Taker)
                             // Skipping taker fills causes accounting drift if price crosses our order instantly.
 
@@ -201,8 +201,7 @@ class DEXBot {
                         if (fillMode === 'history') {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
                             for (const fill of fillsToSync) {
-                                const fillOp = fill.op[1];
-                                const result = this.manager.syncFromFillHistory(fillOp);
+                                const result = this.manager.syncFromFillHistory(fill);
                                 if (result.filledOrders) resolvedOrders.push(...result.filledOrders);
                             }
                         } else {
@@ -227,42 +226,67 @@ class DEXBot {
 
                     // 5. Sequential Rebalance Loop (Interruptible)
                     if (allFilledOrders.length > 0) {
-                        this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders sequentially...`, 'info');
+                        this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders...`, 'info');
 
                         let anyRotations = false;
 
                         let i = 0;
                         while (i < allFilledOrders.length) {
-                            const filledOrder = allFilledOrders[i];
+                            const firstFill = allFilledOrders[i];
+                            const currentBlock = firstFill.blockNum;
+                            
+                            // Collect all fills for the SAME block to process as a batch
+                            const currentBatch = [firstFill];
                             i++;
+                            while (i < allFilledOrders.length && allFilledOrders[i].blockNum === currentBlock && currentBlock !== undefined) {
+                                currentBatch.push(allFilledOrders[i]);
+                                i++;
+                            }
 
-                            this.manager.logger.log(`>>> Processing sequential fill for order ${filledOrder.id} (${i}/${allFilledOrders.length})`, 'info');
+                            if (currentBatch.length > 1) {
+                                this.manager.logger.log(`>>> Processing batch of ${currentBatch.length} fills from block ${currentBlock} (${i}/${allFilledOrders.length})`, 'info');
+                            } else {
+                                this.manager.logger.log(`>>> Processing sequential fill for order ${firstFill.id} (${i}/${allFilledOrders.length})`, 'info');
+                            }
 
                             // Create an exclusion set from OTHER pending fills in the worklist
-                            // to prevent the rebalancer from picking an order that is about to be processed
-                            // BUT: Do NOT exclude the current fill we're processing right now!
+                            // to prevent the rebalancer from picking an order that is about to be processed.
+                            // CRITICAL: Do NOT exclude any order ID that is part of the current batch!
                             const fullExcludeSet = new Set();
+                            const currentBatchGridIds = new Set(currentBatch.map(o => o.id));
+                            const currentBatchOrderIds = new Set(currentBatch.map(o => o.orderId).filter(Boolean));
+
                             for (const other of allFilledOrders) {
-                                // Skip the current fill - we WANT to process it
-                                if (other === filledOrder) continue;
+                                // Skip if the other fill is part of the current batch (we're processing it now)
+                                if (currentBatch.includes(other)) continue;
+                                
+                                // Skip if it refers to the same grid slot/ID as something in our batch
+                                if (currentBatchGridIds.has(other.id)) continue;
+                                if (other.orderId && currentBatchOrderIds.has(other.orderId)) continue;
+
                                 if (other.orderId) fullExcludeSet.add(other.orderId);
                                 if (other.id) fullExcludeSet.add(other.id);
                             }
 
-                            // Log funding state before processing this fill
-                            this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill ${filledOrder.id}`);
+                            // Log funding state before processing this batch
+                            if (currentBatch.length > 1) {
+                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing batch of ${currentBatch.length} fills`);
+                            } else {
+                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill ${firstFill.id}`);
+                            }
 
-                            const rebalanceResult = await this.manager.processFilledOrders([filledOrder], fullExcludeSet);
+                            const rebalanceResult = await this.manager.processFilledOrders(currentBatch, fullExcludeSet);
 
                             // Log funding state after rebalance calculation (before actual placement)
-                            this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for ${filledOrder.id} (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
+                            const logId = currentBatch.length > 1 ? `batch@${currentBlock}` : firstFill.id;
+                            this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for ${logId} (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
 
                             const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
 
                             if (batchResult.hadRotation) {
                                 anyRotations = true;
                                 // Log funding state after rotation completes
-                                this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${filledOrder.id}`);
+                                this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${logId}`);
                             }
                             await this.manager.persistGrid();
 
@@ -298,19 +322,22 @@ class DEXBot {
                             }
                         }
 
-                        // Check spread and health after sequential rotations complete
+                        // 6. Rebalance Recovery Loop (Sequential Extensions)
+                        // DISABLED FOR SEQUENTIAL: Each sequential fill already triggers a full rebalance with proper
+                        // boundary shift. An additional recovery loop with EMPTY fills causes the boundary to remain
+                        // at the last fill's position, leading to wrong operation types (updates instead of rotations)
+                        // and operations on the wrong side.
+                        //
+                        // In the future, recovery loop can be re-enabled for single fills if needed, but ONLY
+                        // if it passes the actual fills to processFilledOrders so the boundary shifts correctly.
+                        // For now: Each fill = full rebalance with boundary shift = complete correction in one pass.
+                        // CRITICAL: Do NOT run spread correction here during sequential fill processing.
+                        // The rebalance from each fill should maintain spread naturally. Running spread correction
+                        // immediately after creates new orders that may get filled by market before next cycle,
+                        // causing cascading fills and potentially SPREAD slots becoming PARTIAL (error condition).
+                        // Spread correction runs in the main loop instead.
                         if (anyRotations || allFilledOrders.length > 0) {
                             this.manager.recalculateFunds();
-
-                            const spreadResult = await this.manager.checkSpreadCondition(
-                                this.BitShares,
-                                this.updateOrdersOnChainBatch.bind(this)
-                            );
-                            if (spreadResult && spreadResult.ordersPlaced > 0) {
-                                this.manager.logger.log(`✓ Spread correction after sequential fills: ${spreadResult.ordersPlaced} order(s) placed, ` +
-                                    `${spreadResult.partialsMoved} partial(s) moved`, 'info');
-                                await this.manager.persistGrid();
-                            }
 
                             // Check grid health only if pipeline is empty (no pending fills, no pending operations)
                             if (this._incomingFillQueue.length === 0 &&
@@ -710,8 +737,8 @@ class DEXBot {
 
                         const op = await chainOrders.buildUpdateOrderOp(
                             this.account, oldOrder.orderId,
-                            { 
-                                amountToSell, 
+                            {
+                                amountToSell,
                                 minToReceive,
                                 newPrice: newPrice,
                                 orderType: type
@@ -1030,7 +1057,7 @@ class DEXBot {
 
         if (shouldRegenerate) {
             await this.manager._initializeAssets();
-            
+
             // If there are existing on-chain orders, reconcile them with the new grid
             if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                 this._log('Generating new grid and syncing with existing on-chain orders...');
@@ -1206,12 +1233,12 @@ class DEXBot {
                         const { createBotKey } = require('./account_orders');
                         const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
                         const allBotsConfig = parseJsonWithComments(content).bots || [];
-                        
+
                         // Find this bot by name or fallback to index if name changed? 
                         // Better: find by current name.
                         const myName = this.config.name;
                         const updatedBot = allBotsConfig.find(b => b.name === myName);
-                        
+
                         if (updatedBot) {
                             this._log(`Reloaded configuration for bot '${myName}'`);
                             // Keep botKey and index if they were set
@@ -1233,7 +1260,7 @@ class DEXBot {
                         privateKey: this.privateKey,
                         config: this.config,
                     });
-                    
+
                     // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
                     this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
                     this.manager.funds.btsFeesOwed = 0;
@@ -1346,11 +1373,11 @@ class DEXBot {
                             // Log and process fills discovered during periodic sync
                             if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
                                 this._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
-                                
+
                                 // Process these fills through the strategy to place replacement orders
                                 await this.manager.processFilledOrders(syncResult.filledOrders);
                             }
-                            
+
                             if (syncResult.unmatchedChainOrders && syncResult.unmatchedChainOrders.length > 0) {
                                 this._log(`Periodic sync: ${syncResult.unmatchedChainOrders.length} chain order(s) not in grid (surplus/divergence)`, 'warn');
                             }
