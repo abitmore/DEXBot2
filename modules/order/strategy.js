@@ -51,6 +51,8 @@ class StrategyEngine {
         const mgr = this.manager;
         mgr.logger.log("[BOUNDARY] Starting robust boundary-crawl rebalance.", "info");
 
+        const stateUpdates = [];
+
         // Sort all grid slots by price (Master Rail order)
         const allSlots = Array.from(mgr.orders.values())
             .filter(o => o.price != null)
@@ -127,13 +129,12 @@ class StrategyEngine {
         const spreadSlots = allSlots.slice(buyEndIdx + 1, sellStartIdx);
 
         // Update slot types (triggers state transitions if role changed)
-        buySlots.forEach(s => { if (s.type !== ORDER_TYPES.BUY) mgr._updateOrder({ ...s, type: ORDER_TYPES.BUY }); });
-        sellSlots.forEach(s => { if (s.type !== ORDER_TYPES.SELL) mgr._updateOrder({ ...s, type: ORDER_TYPES.SELL }); });
+        buySlots.forEach(s => { if (s.type !== ORDER_TYPES.BUY) stateUpdates.push({ ...s, type: ORDER_TYPES.BUY }); });
+        sellSlots.forEach(s => { if (s.type !== ORDER_TYPES.SELL) stateUpdates.push({ ...s, type: ORDER_TYPES.SELL }); });
         spreadSlots.forEach(s => { 
             // Only convert to SPREAD if it doesn't have an active order!
-            // This allows side rebalancers to see these orders as shortages for refill.
             if (s.type !== ORDER_TYPES.SPREAD && !s.orderId) {
-                mgr._updateOrder({ ...s, type: ORDER_TYPES.SPREAD }); 
+                stateUpdates.push({ ...s, type: ORDER_TYPES.SPREAD, size: 0, orderId: null }); 
             }
         });
 
@@ -171,7 +172,7 @@ class StrategyEngine {
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCap, fills);
 
         // Apply all state updates to manager
-        const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates];
+        const allUpdates = [...stateUpdates, ...buyResult.stateUpdates, ...sellResult.stateUpdates];
         allUpdates.forEach(upd => {
             // Fix: If order doesn't exist yet (new slot), treat as VIRTUAL/Empty for transition logic
             const existing = mgr.orders.get(upd.id) || { state: ORDER_STATES.VIRTUAL, size: 0, type: upd.type };
@@ -188,6 +189,7 @@ class StrategyEngine {
             ordersToRotate: [...buyResult.ordersToRotate, ...sellResult.ordersToRotate],
             ordersToUpdate: [...buyResult.ordersToUpdate, ...sellResult.ordersToUpdate],
             ordersToCancel: [...buyResult.ordersToCancel, ...sellResult.ordersToCancel],
+            stateUpdates: allUpdates,
             hadRotation: (buyResult.ordersToRotate.length > 0 || sellResult.ordersToRotate.length > 0),
             partialMoves: []
         };
@@ -278,7 +280,13 @@ class StrategyEngine {
             
             return false;
         });
-        surpluses.sort((a, b) => type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price); // furthest first
+        
+        // Prioritize PARTIAL orders for rotation, then sort by distance (furthest first)
+        surpluses.sort((a, b) => {
+            if (a.state === ORDER_STATES.PARTIAL && b.state !== ORDER_STATES.PARTIAL) return -1;
+            if (a.state !== ORDER_STATES.PARTIAL && b.state === ORDER_STATES.PARTIAL) return 1;
+            return type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price;
+        });
 
         let budgetRemaining = reactionCap;
 
@@ -295,8 +303,14 @@ class StrategyEngine {
             const size = finalIdealSizes[shortageIdx];
 
             ordersToRotate.push({ oldOrder: { ...surplus }, newPrice: shortageSlot.price, newSize: size, newGridId: shortageSlot.id, type: type });
-            stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL });
+            const vacatedUpdate = { ...surplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
+            stateUpdates.push(vacatedUpdate);
             stateUpdates.push({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
+            
+            // Also apply immediately if rotation happens inside rebalance loops
+            mgr._updateOrder(vacatedUpdate);
+            mgr._updateOrder({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
+            
             budgetRemaining--;
         }
 
