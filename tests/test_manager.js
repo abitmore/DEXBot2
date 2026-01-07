@@ -92,19 +92,34 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     // Ensure each test case starts with a fresh boundary determination
     mgr.boundaryIdx = undefined;
 
-    // Trigger rebalance: Since there are no active orders, it should try to place new ones
-    // and correctly assign SPREAD types vs BUY/SELL types.
-    const rebalanceResult = await mgr.strategy.rebalance();
+    // Trigger rebalance loop to fill the window (reactionCap=1 per cycle builds outside-in)
+    // We need 2 cycles to place both active orders per side
+    let placedBuys = [];
+    let placedSells = [];
     
-    const buyPlacements = rebalanceResult.ordersToPlace.filter(o => o.type === ORDER_TYPES.BUY).sort((a,b) => b.price - a.price);
-    const sellPlacements = rebalanceResult.ordersToPlace.filter(o => o.type === ORDER_TYPES.SELL).sort((a,b) => a.price - b.price);
+    for (let i = 0; i < 3; i++) {
+        const res = await mgr.strategy.rebalance();
+        placedBuys.push(...res.ordersToPlace.filter(o => o.type === ORDER_TYPES.BUY));
+        placedSells.push(...res.ordersToPlace.filter(o => o.type === ORDER_TYPES.SELL));
+        
+        // Simulate activation for next cycle
+        res.ordersToPlace.forEach(o => mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'mock-'+o.id }));
+        mgr.recalculateFunds(); // update available/cacheFunds
+    }
     
-    assert(buyPlacements.length > 0, 'Should place at least one buy');
-    assert(sellPlacements.length > 0, 'Should place at least one sell');
+    // Sort all placed orders
+    placedBuys.sort((a,b) => b.price - a.price); // Descending (90, 80)
+    placedSells.sort((a,b) => a.price - b.price); // Ascending (110, 120)
     
-    // The new engine picks the inward-most slot for activation
-    assert.strictEqual(buyPlacements[0].price, 90, 'BUY activation should pick closest price below pivot (90)');
-    assert.strictEqual(sellPlacements[0].price, 110, 'SELL activation should pick closest price above pivot (110)');
+    assert(placedBuys.length >= 2, 'Should place at least two buys');
+    assert(placedSells.length >= 2, 'Should place at least two sells');
+    
+    // Verify we covered the window (both Inner and Outer)
+    assert.strictEqual(placedBuys[0].price, 90, 'Should have activated Inner Buy (90)');
+    assert.strictEqual(placedBuys[1].price, 80, 'Should have activated Outer Buy (80)');
+    
+    assert.strictEqual(placedSells[0].price, 110, 'Should have activated Inner Sell (110)');
+    assert.strictEqual(placedSells[1].price, 120, 'Should have activated Outer Sell (120)');
 
     console.log('spread selection tests (via rebalance) passed');
 })();

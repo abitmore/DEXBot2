@@ -125,15 +125,19 @@ function testFillWithQuantizedOrder() {
     console.log(`  Filled amount: ${filledAmount}`);
 
     const result = mgr.syncFromFillHistory({
-        order_id: '1.7.569640154',
-        pays: {
-            amount: Math.round(filledAmount * Math.pow(10, assetBPrecision)),
-            asset_id: mgr.assets.assetB.id
-        },
-        receives: {
-            amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
-            asset_id: mgr.assets.assetA.id
-        }
+        op: [4, {
+            order_id: '1.7.569640154',
+            pays: {
+                amount: Math.round(filledAmount * Math.pow(10, assetBPrecision)),
+                asset_id: mgr.assets.assetB.id
+            },
+            receives: {
+                amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
+                asset_id: mgr.assets.assetA.id
+            }
+        }],
+        block_num: 12345,
+        id: '1.11.12345'
     });
 
     console.log(`\n  Results:`);
