@@ -491,14 +491,14 @@ class StrategyEngine {
                 const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
                 const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
 
-                if (buyPartials.length > 0 && sellPartials.length > 0) {
+                if (buyPartials.length > 0 || sellPartials.length > 0) {
                     const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
                     // Align budget with rebalance() logic: Total actual capital (Reality + Cache)
                     const budgetBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
                     const budgetSell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
-                    const buyHasDust = this.getIsDust(buyPartials, "buy", budgetBuy);
-                    const sellHasDust = this.getIsDust(sellPartials, "sell", budgetSell);
+                    const buyHasDust = buyPartials.length > 0 && this.getIsDust(buyPartials, "buy", budgetBuy);
+                    const sellHasDust = sellPartials.length > 0 && this.getIsDust(sellPartials, "sell", budgetSell);
 
                     if (buyHasDust && sellHasDust) {
                         mgr.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");

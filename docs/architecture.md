@@ -321,14 +321,10 @@ sequenceDiagram
     Sync->>Strat: processFilledOrders([fills])
     
     Strat->>Acct: Add proceeds to cacheFunds
-    Strat->>Strat: Check for dust on both sides
-    
-    alt Dust on both sides
-        Strat->>Strat: Force full rebalance
-    else Normal fill
-        Strat->>Strat: Identify shortages/surpluses
-        Strat->>Strat: Prepare rotations
-    end
+        Strat->>Strat: Check for dust on both sides
+        alt Dust on both sides
+            Strat->>Strat: Trigger Rebalance (Consolidate Dust)
+        end
     
     Strat->>Grid: Shift boundary
     Strat->>Acct: Deduct BTS fees from cache

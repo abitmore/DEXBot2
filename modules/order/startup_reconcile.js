@@ -587,7 +587,7 @@ async function reconcileStartupOrders({
         'info'
     );
 
-    // DUAL-SIDE DUST CHECK: If startup reconcile resulted in partials on both sides, 
+    // DUST CHECK: If startup reconcile resulted in partials on either side, 
     // trigger a full rebalance to consolidate them.
     const allOrders = Array.from(manager.orders.values());
     const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
@@ -598,8 +598,8 @@ async function reconcileStartupOrders({
         const budgetBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) + (manager.funds.cacheFunds?.buy || 0);
         const budgetSell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) + (manager.funds.cacheFunds?.sell || 0);
 
-        const buyHasDust = manager.strategy.getIsDust(buyPartials, "buy", budgetBuy);
-        const sellHasDust = manager.strategy.getIsDust(sellPartials, "sell", budgetSell);
+        const buyHasDust = buyPartials.length > 0 && manager.strategy.getIsDust(buyPartials, "buy", budgetBuy);
+        const sellHasDust = sellPartials.length > 0 && manager.strategy.getIsDust(sellPartials, "sell", budgetSell);
 
         if (buyHasDust && sellHasDust) {
             logger && logger.log && logger.log("[STARTUP] Dual-side dust partials detected. Triggering full rebalance.", "info");

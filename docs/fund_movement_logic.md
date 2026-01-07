@@ -123,7 +123,8 @@ The system uses a hardcoded threshold to distinguish between "significant" parti
 ### Dual-Side Dust Consolidation
 A unique safeguard in `processFilledOrders` triggers a mandatory rebalance if dust exists on both sides:
 - If **Buy Side has Dust** AND **Sell Side has Dust**:
-- The bot forces a full rebalance cycle. This "cleans the rail" by cancelling the tiny fragments and merging them into the next round of placements.
+- The strategy will prioritize canceling the dust and merging it into a new, target-sized order.
+- This ensures capital doesn't remain "fragmented" in tiny partials that are too small to be meaningful.
 
 ### Moving Partial Orders
 During rotations, a `PARTIAL` order can be moved to a new slot:
