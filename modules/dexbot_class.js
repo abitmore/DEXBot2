@@ -146,8 +146,12 @@ class DEXBot {
                         if (fill && fill.op && fill.op[0] === 4) {
                             const fillOp = fill.op[1];
 
-                            // Process all fills for our account (Maker and Taker)
-                            // Skipping taker fills causes accounting drift if price crosses our order instantly.
+                            // Only process maker fills (our orders that were matched)
+                            // Skip taker fills to avoid double-counting when two of our orders match each other
+                            if (fillOp.is_maker === false) {
+                                this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
+                                continue;
+                            }
 
                             const fillKey = `${fillOp.order_id}:${fill.block_num}:${fill.id || ''}`;
                             const now = Date.now();

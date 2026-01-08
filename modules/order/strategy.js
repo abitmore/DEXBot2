@@ -630,30 +630,37 @@ class StrategyEngine {
                 const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
 
                 if (buyPartials.length > 0 || sellPartials.length > 0) {
-                    // Budget for dust detection = available + cacheFunds (same capital available for dust rebuilds as new placements)
-                    let budgetBuy = (mgr.funds.available?.buy || 0) + (mgr.funds.cacheFunds?.buy || 0);
-                    let budgetSell = (mgr.funds.available?.sell || 0) + (mgr.funds.cacheFunds?.sell || 0);
+                    // Get current chain funds snapshot for dust detection (same as rebalance())
+                    const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
 
-                    // Apply BTS fee reservations to match rebalance() logic (required for consistent dust detection)
+                    // Calculate BTS fee reservations (same as rebalance())
+                    let btsFeeReservationBuy = 0;
+                    let btsFeeReservationSell = 0;
+
                     const hasBtsPair = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
                     if (hasBtsPair && mgr.config.activeOrders) {
                         const targetBuy = Math.max(0, mgr.config.activeOrders.buy || 0);
                         const targetSell = Math.max(0, mgr.config.activeOrders.sell || 0);
                         const totalTargetOrders = targetBuy + targetSell;
+
                         if (totalTargetOrders > 0) {
                             try {
                                 const btsFeeData = getAssetFees('BTS', 1);
                                 const totalBtsReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
                                 if (mgr.config.assetB === "BTS") {
-                                    budgetBuy = Math.max(0, budgetBuy - totalBtsReservation);
+                                    btsFeeReservationBuy = totalBtsReservation;
                                 } else if (mgr.config.assetA === "BTS") {
-                                    budgetSell = Math.max(0, budgetSell - totalBtsReservation);
+                                    btsFeeReservationSell = totalBtsReservation;
                                 }
                             } catch (err) {
                                 mgr.logger.log(`Warning: Could not calculate BTS fees for dust detection: ${err.message}`, "warn");
                             }
                         }
                     }
+
+                    // Use same budget calculation as rebalance() (chainFree + committed - btsFeeReservation)
+                    const budgetBuy = Math.max(0, (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) - btsFeeReservationBuy);
+                    const budgetSell = Math.max(0, (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) - btsFeeReservationSell);
 
                     const buyHasDust = buyPartials.length > 0 && this.getIsDust(buyPartials, "buy", budgetBuy);
                     const sellHasDust = sellPartials.length > 0 && this.getIsDust(sellPartials, "sell", budgetSell);
