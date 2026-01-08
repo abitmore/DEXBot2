@@ -25,7 +25,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { ORDER_STATES } = require('./constants');
+const { ORDER_TYPES, ORDER_STATES } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 
 function ensureDirExists(filePath) {
@@ -593,15 +593,15 @@ class AccountOrders {
 
     for (const o of grid) {
       const size = Number(o && o.size) || 0;
-      const state = o && o.state ? String(o.state).toLowerCase() : '';
-      const typ = o && o.type ? String(o.type).toLowerCase() : '';
+      const state = o && o.state || '';
+      const typ = o && o.type || '';
 
-      if (typ === 'sell') {
-        if (state === 'active') sums.assetA.active += size;
-        else if (state === 'virtual') sums.assetA.virtual += size;
-      } else if (typ === 'buy') {
-        if (state === 'active') sums.assetB.active += size;
-        else if (state === 'virtual') sums.assetB.virtual += size;
+      if (typ === ORDER_TYPES.SELL) {
+        if (state === ORDER_STATES.ACTIVE || state === ORDER_STATES.PARTIAL) sums.assetA.active += size;
+        else if (state === ORDER_STATES.VIRTUAL) sums.assetA.virtual += size;
+      } else if (typ === ORDER_TYPES.BUY) {
+        if (state === ORDER_STATES.ACTIVE || state === ORDER_STATES.PARTIAL) sums.assetB.active += size;
+        else if (state === ORDER_STATES.VIRTUAL) sums.assetB.virtual += size;
       }
     }
 
