@@ -588,9 +588,9 @@ class StrategyEngine {
                     }
                 }
 
-                mgr.logger.log(`[FILL] ${orderType} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");
+                mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");
 
-                if (orderType === ORDER_TYPES.SELL) {
+                if (filledOrder.type === ORDER_TYPES.SELL) {
                     const oldCache = mgr.funds.cacheFunds.buy || 0;
                     mgr.funds.cacheFunds.buy = oldCache + netProceeds;
                     mgr.logger.log(`[FUNDS] cacheFunds.buy updated: ${oldCache.toFixed(5)} -> ${mgr.funds.cacheFunds.buy.toFixed(5)}`, "debug");
