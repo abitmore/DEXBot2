@@ -139,27 +139,56 @@ class StrategyEngine {
         });
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 4: BUDGET CALCULATION (Target vs Reality)
+        // STEP 4: BUDGET CALCULATION (Total Capital with BTS Fee Deduction)
         // ════════════════════════════════════════════════════════════════════════════════
-        // Calculate how much capital to allocate to each side of the grid.
-        // 
-        // TWO BUDGET SOURCES:
-        // 1. Target Budget: What the config says we should use (botFunds allocation)
-        // 2. Reality Budget: What we actually have on-chain (total wallet balance)
-        // 
-        // We use the MINIMUM of these to prevent over-allocation.
-        // cacheFunds (fill proceeds) are added to target to enable reinvestment.
+        // Total Side Budget = (ChainFree + Committed) - BTS_Fees (if asset is BTS)
+        // This is the ACTUAL capital we have to work with after accounting for fee reserves.
+        //
+        // FORMULA:
+        // budgetBuy = chainFreeBuy + committedChainBuy - (btsFees if assetB=="BTS" else 0)
+        // budgetSell = chainFreeSell + committedChainSell - (btsFees if assetA=="BTS" else 0)
+        //
+        // Available Pool = funds.available (already has BTS fees subtracted) + cacheFunds
 
         const snap = mgr.getChainFundsSnapshot();
 
-        // Total Side Budget: All capital on this side (Free + Committed + Cache)
-        // This represents the total "pie" to be distributed across the zone.
-        const budgetBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
-        const budgetSell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
+        const hasBtsPair = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
 
-        // Available Pool: Liquid funds for net capital increases (ChainFree + Cache)
-        const availablePoolBuy = (snap.chainFreeBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
-        const availablePoolSell = (snap.chainFreeSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
+        // Calculate BTS fee reservation that applies to each side
+        let btsFeeReservationBuy = 0;
+        let btsFeeReservationSell = 0;
+
+        if (hasBtsPair && mgr.config.activeOrders) {
+            const targetBuy = Math.max(0, mgr.config.activeOrders.buy || 0);
+            const targetSell = Math.max(0, mgr.config.activeOrders.sell || 0);
+            const totalTargetOrders = targetBuy + targetSell;
+
+            if (totalTargetOrders > 0) {
+                const btsFeeData = getAssetFees('BTS', 1);
+                const totalBtsReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
+
+                // Distribute BTS fee reservation to the side that holds BTS
+                if (mgr.config.assetB === "BTS") {
+                    btsFeeReservationBuy = totalBtsReservation;
+                } else if (mgr.config.assetA === "BTS") {
+                    btsFeeReservationSell = totalBtsReservation;
+                }
+            }
+        }
+
+        // Total Side Budget: (Free + Committed) with BTS fees deducted
+        const budgetBuy = Math.max(0, (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) - btsFeeReservationBuy);
+        const budgetSell = Math.max(0, (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) - btsFeeReservationSell);
+
+        // Available Pool: Liquid funds for net capital increases
+        // funds.available already has BTS fees and other reserves subtracted
+        const availablePoolBuy = (mgr.funds.available?.buy || 0) + (mgr.funds.cacheFunds?.buy || 0);
+        const availablePoolSell = (mgr.funds.available?.sell || 0) + (mgr.funds.cacheFunds?.sell || 0);
+
+        if (mgr.logger.level === 'debug') {
+            mgr.logger.log(`[BUDGET] Buy: total=${budgetBuy.toFixed(8)}, available=${availablePoolBuy.toFixed(8)}, btsFeeReserved=${btsFeeReservationBuy.toFixed(8)}`, 'debug');
+            mgr.logger.log(`[BUDGET] Sell: total=${budgetSell.toFixed(8)}, available=${availablePoolSell.toFixed(8)}, btsFeeReserved=${btsFeeReservationSell.toFixed(8)}`, 'debug');
+        }
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
         const reactionCap = Math.max(1, fills.length);
@@ -174,12 +203,6 @@ class StrategyEngine {
         // Apply all state updates to manager
         const allUpdates = [...stateUpdates, ...buyResult.stateUpdates, ...sellResult.stateUpdates];
         allUpdates.forEach(upd => {
-            // Fix: If order doesn't exist yet (new slot), treat as VIRTUAL/Empty for transition logic
-            const existing = mgr.orders.get(upd.id) || { state: ORDER_STATES.VIRTUAL, size: 0, type: upd.type };
-
-            // Allow optimistic update even if 'existing' was mock
-            mgr.accountant.updateOptimisticFreeBalance(existing, upd, 'rebalance-apply');
-
             mgr._updateOrder(upd);
         });
 
