@@ -566,8 +566,8 @@ class StrategyEngine {
 
                 let rawProceeds = 0;
                 let assetForFee = null;
-                // Use uppercase for type matching (all ORDER_TYPES are uppercase)
-                const orderType = String(filledOrder.type).toUpperCase();
+                // Match against lowercase ORDER_TYPES constants
+                const orderType = String(filledOrder.type).toLowerCase();
 
                 if (orderType === ORDER_TYPES.SELL) {
                     rawProceeds = filledOrder.size * filledOrder.price;
