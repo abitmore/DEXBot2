@@ -104,12 +104,19 @@ class DEXBot {
     }
 
     /**
-     * Consume fills from the incoming queue in a loop.
+     * Consume and process the fill queue with deduplication and sequential rebalancing.
      * Protected by AsyncLock to ensure single consumer.
-     * Interruptible: checks queue between steps to merge new work.
      *
-     * Uses lock state to atomically prevent multiple consumers from queuing up.
-     * If lock is already acquired or has waiters, this call returns immediately.
+     * FLOW:
+     * 1. Deduplicates fills using fillKey tracking and time window
+     * 2. Syncs filled orders from history or open orders mode
+     * 3. Handles price mismatches via correctAllPriceMismatches
+     * 4. Processes fills sequentially with interruptible rebalancing (merges new work between fills)
+     * 5. Periodically cleans old fill records to prevent memory leaks
+     *
+     * Atomic lock behavior: If already processing or has waiters, returns immediately (no double-queuing)
+     * @param {Object} chainOrders - Chain orders module for blockchain operations
+     * @private
      */
     async _consumeFillQueue(chainOrders) {
         // Prevent stacking of consumer calls by checking lock state atomically
@@ -201,15 +208,15 @@ class DEXBot {
                         if (fillMode === 'history') {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
                             for (const fill of fillsToSync) {
-                                const result = this.manager.syncFromFillHistory(fill);
-                                if (result.filledOrders) resolvedOrders.push(...result.filledOrders);
+                                const resultHistory = this.manager.syncFromFillHistory(fill);
+                                if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
                             }
                         } else {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
                             const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
-                            const result = this.manager.syncFromOpenOrders(chainOpenOrders, fillsToSync[0].op[1]);
-                            if (result.filledOrders) resolvedOrders.push(...result.filledOrders);
-                            if (result.ordersNeedingCorrection) ordersNeedingCorrection.push(...result.ordersNeedingCorrection);
+                            const resultOpenOrders = this.manager.syncFromOpenOrders(chainOpenOrders, fillsToSync[0].op[1]);
+                            if (resultOpenOrders.filledOrders) resolvedOrders.push(...resultOpenOrders.filledOrders);
+                            if (resultOpenOrders.ordersNeedingCorrection) ordersNeedingCorrection.push(...resultOpenOrders.ordersNeedingCorrection);
                         }
                         return resolvedOrders;
                     };
@@ -518,13 +525,12 @@ class DEXBot {
     }
 
     async updateOrdersOnChainBatch(rebalanceResult) {
-        let { ordersToPlace, ordersToRotate = [], partialMoves = [], ordersToUpdate = [] } = rebalanceResult;
+        let { ordersToPlace, ordersToRotate = [], ordersToUpdate = [] } = rebalanceResult;
 
         if (this.config.dryRun) {
-            if (ordersToPlace?.length > 0) this.manager.logger.log(`Dry run: would place ${ordersToPlace.length} new orders`, 'info');
-            if (ordersToRotate?.length > 0) this.manager.logger.log(`Dry run: would update ${ordersToRotate.length} orders`, 'info');
-            if (partialMoves?.length > 0) this.manager.logger.log(`Dry run: would move ${partialMoves.length} partials`, 'info');
-            if (ordersToUpdate?.length > 0) this.manager.logger.log(`Dry run: would update size of ${ordersToUpdate.length} orders`, 'info');
+            if (ordersToPlace && ordersToPlace.length > 0) this.manager.logger.log(`Dry run: would place ${ordersToPlace.length} new orders`, 'info');
+            if (ordersToRotate && ordersToRotate.length > 0) this.manager.logger.log(`Dry run: would update ${ordersToRotate.length} orders`, 'info');
+            if (ordersToUpdate && ordersToUpdate.length > 0) this.manager.logger.log(`Dry run: would update size of ${ordersToUpdate.length} orders`, 'info');
             return;
         }
 
@@ -534,10 +540,28 @@ class DEXBot {
 
         // Collect IDs to lock (shadow)
         const idsToLock = new Set();
-        ordersToPlace?.forEach(o => idsToLock.add(o.id));
-        ordersToRotate?.forEach(r => { idsToLock.add(r.oldOrder?.orderId); idsToLock.add(r.newGridId); });
-        partialMoves?.forEach(m => { idsToLock.add(m.partialOrder?.orderId); idsToLock.add(m.newGridId); });
-        ordersToUpdate?.forEach(u => idsToLock.add(u.partialOrder?.orderId));
+
+        // Add placement order IDs
+        if (ordersToPlace && Array.isArray(ordersToPlace)) {
+            ordersToPlace.forEach(o => {
+                if (o && o.id) idsToLock.add(o.id);
+            });
+        }
+
+        // Add rotation order IDs (both old and new grid IDs)
+        if (ordersToRotate && Array.isArray(ordersToRotate)) {
+            ordersToRotate.forEach(r => {
+                if (r && r.oldOrder && r.oldOrder.orderId) idsToLock.add(r.oldOrder.orderId);
+                if (r && r.newGridId) idsToLock.add(r.newGridId);
+            });
+        }
+
+        // Add update order IDs
+        if (ordersToUpdate && Array.isArray(ordersToUpdate)) {
+            ordersToUpdate.forEach(u => {
+                if (u && u.partialOrder && u.partialOrder.orderId) idsToLock.add(u.partialOrder.orderId);
+            });
+        }
 
         this.manager.lockOrders(idsToLock);
 
@@ -545,7 +569,6 @@ class DEXBot {
             // 1. Build Operations
             await this._buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts);
             await this._buildSizeUpdateOps(ordersToUpdate, operations, opContexts);
-            await this._buildPartialMoveOps(partialMoves, operations, opContexts);
 
             // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
             const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts);
@@ -586,6 +609,15 @@ class DEXBot {
         }
     }
 
+    /**
+     * Build create order operations for new placements.
+     * @param {Array} ordersToPlace - Grid orders to place
+     * @param {Object} assetA - Asset A metadata
+     * @param {Object} assetB - Asset B metadata
+     * @param {Array} operations - Operations array to append to
+     * @param {Array} opContexts - Operation contexts array to append to
+     * @private
+     */
     async _buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts) {
         if (!ordersToPlace || ordersToPlace.length === 0) return;
         for (const order of ordersToPlace) {
@@ -603,6 +635,14 @@ class DEXBot {
         }
     }
 
+    /**
+     * Build size update operations for partial order consolidation.
+     * Used when dust partials need to be updated to their target size.
+     * @param {Array} ordersToUpdate - Partial orders needing size updates
+     * @param {Array} operations - Operations array to append to
+     * @param {Array} opContexts - Operation contexts array to append to
+     * @private
+     */
     async _buildSizeUpdateOps(ordersToUpdate, operations, opContexts) {
         if (!ordersToUpdate || ordersToUpdate.length === 0) return;
         this.manager.logger.log(`[SPLIT UPDATE] Processing ${ordersToUpdate.length} size update(s)`, 'info');
@@ -632,28 +672,18 @@ class DEXBot {
         }
     }
 
-    async _buildPartialMoveOps(partialMoves, operations, opContexts) {
-        if (!partialMoves || partialMoves.length === 0) return;
-        for (const moveInfo of partialMoves) {
-            try {
-                const { partialOrder, newPrice, newSize } = moveInfo;
-                if (!partialOrder.orderId) continue;
 
-                const op = await chainOrders.buildUpdateOrderOp(
-                    this.account, partialOrder.orderId,
-                    { newPrice, amountToSell: newSize, orderType: partialOrder.type }
-                );
-
-                if (op) {
-                    operations.push(op);
-                    opContexts.push({ kind: 'partial-move', moveInfo });
-                }
-            } catch (err) {
-                this.manager.logger.log(`Failed to prepare partial move op: ${err.message}`, 'error');
-            }
-        }
-    }
-
+    /**
+     * Build rotation operations for moving orders to new prices.
+     * Tracks unmet rotations (orders missing on-chain) for fallback to creation.
+     * @param {Array} ordersToRotate - Orders with rotation targets
+     * @param {Object} assetA - Asset A metadata
+     * @param {Object} assetB - Asset B metadata
+     * @param {Array} operations - Operations array to append to
+     * @param {Array} opContexts - Operation contexts array to append to
+     * @returns {Array} Unmet rotations (fallback to placements)
+     * @private
+     */
     async _buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts) {
         if (!ordersToRotate || ordersToRotate.length === 0) return [];
 
@@ -694,12 +724,27 @@ class DEXBot {
         return unmetRotations;
     }
 
+    /**
+     * Process results from batch transaction execution.
+     * Updates order state, synchronizes with chain, and deducts BTS fees.
+     * @param {Object} result - Transaction result from executeBatch
+     * @param {Array} opContexts - Operation context array with operation metadata
+     * @param {Array} ordersToPlace - Original placement orders (for context)
+     * @param {Array} ordersToRotate - Original rotation orders (for context)
+     * @returns {Object} Result with { executed: boolean, hadRotation: boolean }
+     * @private
+     */
     async _processBatchResults(result, opContexts, ordersToPlace, ordersToRotate) {
         const results = (result && result[0] && result[0].trx && result[0].trx.operation_results) || [];
         const { getAssetFees } = require('./order/utils');
         const btsFeeData = getAssetFees('BTS', 1);
         let hadRotation = false;
         let updateOperationCount = 0;
+
+        // CRITICAL: Check divergence lock BEFORE processing rotations
+        // If divergence correction is active or queued, skip rotation processing entirely
+        // This prevents interference with divergence correction logic
+        const divergenceActive = this._divergenceLock && (this._divergenceLock.isLocked() || this._divergenceLock.getQueueLength() > 0);
 
         for (let i = 0; i < opContexts.length; i++) {
             const ctx = opContexts[i];
@@ -710,7 +755,7 @@ class DEXBot {
                 if (ord) this.manager._updateOrder({ ...ord, size: ctx.updateInfo.newSize });
                 this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
                 updateOperationCount++;
-            } 
+            }
             else if (ctx.kind === 'create') {
                 const chainOrderId = res && res[1];
                 if (chainOrderId) {
@@ -720,16 +765,13 @@ class DEXBot {
                     this.manager.logger.log(`Placed ${ctx.order.type} order ${ctx.order.id} -> ${chainOrderId}`, 'info');
                 }
             }
-            else if (ctx.kind === 'partial-move') {
-                this.manager.completePartialOrderMove(ctx.moveInfo);
-                await this.manager.synchronizeWithChain({
-                    gridOrderId: ctx.moveInfo.newGridId, chainOrderId: ctx.moveInfo.partialOrder.orderId, fee: btsFeeData.updateFee
-                }, 'createOrder');
-                updateOperationCount++;
-            }
             else if (ctx.kind === 'rotation') {
-                if (this._divergenceLock?.isLocked() || this._divergenceLock?.getQueueLength() > 0) continue;
-                
+                // Skip rotation processing if divergence correction is active
+                if (divergenceActive) {
+                    this.manager.logger.log(`Skipping rotation completion: divergence correction in progress`, 'debug');
+                    continue;
+                }
+
                 hadRotation = true;
                 const { rotation } = ctx;
                 const { oldOrder, newPrice, newGridId, newSize, type } = rotation;
@@ -1032,13 +1074,14 @@ class DEXBot {
                 // During startup, funds may be in inconsistent state until recalculated
                 this.manager.recalculateFunds();
 
+                // spreadResult: { ordersPlaced: number, didCorrect: boolean }
+                // Returned by checkSpreadCondition with count of orders placed during spread correction
                 const spreadResult = await this.manager.checkSpreadCondition(
                     this.BitShares,
                     this.updateOrdersOnChainBatch.bind(this)
                 );
-                if (spreadResult.ordersPlaced > 0) {
-                    this._log(`✓ Spread correction at startup: ${spreadResult.ordersPlaced} order(s) placed, ` +
-                        `${spreadResult.partialsMoved} partial(s) moved`);
+                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                    this._log(`✓ Spread correction at startup: ${spreadResult.ordersPlaced} order(s) placed`);
                     await this.manager.persistGrid();
                 }
 
@@ -1260,13 +1303,14 @@ class DEXBot {
                         // CRITICAL: Recalculate funds before spread correction to ensure accurate state
                         this.manager.recalculateFunds();
 
+                        // spreadResult: { ordersPlaced: number, didCorrect: boolean }
+                        // Returned by checkSpreadCondition with count of orders placed during spread correction
                         const spreadResult = await this.manager.checkSpreadCondition(
                             this.BitShares,
                             this.updateOrdersOnChainBatch.bind(this)
                         );
-                        if (spreadResult.ordersPlaced > 0) {
-                            this._log(`✓ Spread correction at 4h fetch: ${spreadResult.ordersPlaced} order(s) placed, ` +
-                                `${spreadResult.partialsMoved} partial(s) moved`);
+                        if (spreadResult && spreadResult.ordersPlaced > 0) {
+                            this._log(`✓ Spread correction at 4h fetch: ${spreadResult.ordersPlaced} order(s) placed`);
                             await this.manager.persistGrid();
                         }
 
