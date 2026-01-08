@@ -566,10 +566,7 @@ class StrategyEngine {
 
                 let rawProceeds = 0;
                 let assetForFee = null;
-                // Match against lowercase ORDER_TYPES constants
-                const orderType = String(filledOrder.type).toLowerCase();
-
-                if (orderType === ORDER_TYPES.SELL) {
+                if (filledOrder.type === ORDER_TYPES.SELL) {
                     rawProceeds = filledOrder.size * filledOrder.price;
                     assetForFee = mgr.config.assetB;
                 } else {
