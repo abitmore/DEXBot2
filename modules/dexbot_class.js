@@ -528,6 +528,94 @@ class DEXBot {
         await this.manager.persistGrid();
     }
 
+    /**
+     * Validate that operations can be executed with available funds before broadcasting.
+     * Prevents "Insufficient Balance" errors by checking operation sizes against chain balances.
+     * @param {Array} operations - Operations to validate
+     * @param {Object} assetA - Asset A metadata (id, precision, symbol)
+     * @param {Object} assetB - Asset B metadata (id, precision, symbol)
+     * @returns {Object} { isValid: boolean, summary: string }
+     * @private
+     */
+    _validateOperationFunds(operations, assetA, assetB) {
+        if (!operations || operations.length === 0) {
+            return { isValid: true, summary: 'No operations to validate' };
+        }
+
+        const snap = this.manager.getChainFundsSnapshot();
+        const availableFunds = {
+            [assetA.id]: snap.chainFreeSell || 0,   // Asset A is sold (SELL orders)
+            [assetB.id]: snap.chainFreeBuy || 0    // Asset B is bought (BUY orders)
+        };
+
+        const requiredFunds = {
+            [assetA.id]: 0,
+            [assetB.id]: 0
+        };
+
+        // Sum amounts required by each operation
+        for (const op of operations) {
+            if (!op || !op.op_data) continue;
+
+            if (op.op_name === 'limit_order_create') {
+                // Create operation: amount_to_sell is the asset being sold
+                const sellAssetId = op.op_data.amount_to_sell?.asset_id;
+                const sellAmount = op.op_data.amount_to_sell?.amount;
+
+                if (sellAssetId && sellAmount) {
+                    requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + sellAmount;
+                }
+            } else if (op.op_name === 'limit_order_update') {
+                // Update operation: new_price.base is the new amount_to_sell (total, not delta)
+                // For updates, we can only estimate the additional funds needed
+                // Since it's a replacement, the net delta could be positive or negative
+                // For safety, we estimate based on the new base amount
+                const baseAssetId = op.op_data.new_price?.base?.asset_id;
+                const baseAmount = op.op_data.new_price?.base?.amount;
+
+                if (baseAssetId && baseAmount) {
+                    // For updates: conservatively check if new amount needs additional funds
+                    // The actual delta depends on current order size (which we don't track here)
+                    // So we just warn about large updates
+                    requiredFunds[baseAssetId] = (requiredFunds[baseAssetId] || 0) + baseAmount;
+                }
+            }
+        }
+
+        // Validate funds for each asset
+        const violations = [];
+        for (const assetId in requiredFunds) {
+            const required = requiredFunds[assetId];
+            const available = availableFunds[assetId] || 0;
+
+            if (required > available) {
+                const assetName = assetId === assetA.id ? assetA.symbol : assetB.symbol;
+                violations.push({
+                    asset: assetName,
+                    assetId: assetId,
+                    required: required,
+                    available: available,
+                    deficit: required - available
+                });
+            }
+        }
+
+        if (violations.length > 0) {
+            let summary = `[VALIDATION] Fund validation FAILED:\n`;
+            for (const v of violations) {
+                summary += `  ${v.asset}: required=${v.required.toFixed(8)}, available=${v.available.toFixed(8)}, deficit=${v.deficit.toFixed(8)}\n`;
+            }
+            return { isValid: false, summary: summary.trim(), violations };
+        }
+
+        // Log successful validation
+        const summary = `[VALIDATION] Fund validation PASSED: ${operations.length} operations ready. ` +
+            `Available: ${assetA.symbol}=${availableFunds[assetA.id].toFixed(8)}, ` +
+            `${assetB.symbol}=${availableFunds[assetB.id].toFixed(8)}`;
+
+        return { isValid: true, summary };
+    }
+
     async updateOrdersOnChainBatch(rebalanceResult) {
         let { ordersToPlace, ordersToRotate = [], ordersToUpdate = [] } = rebalanceResult;
 
@@ -592,11 +680,20 @@ class DEXBot {
 
             if (operations.length === 0) return { executed: false, hadRotation: false };
 
-            // 2. Execute Batch
+            // 2. Validate Funds Before Broadcasting
+            const validation = this._validateOperationFunds(operations, assetA, assetB);
+            this.manager.logger.log(validation.summary, validation.isValid ? 'info' : 'warn');
+
+            if (!validation.isValid) {
+                this.manager.logger.log(`Skipping batch broadcast: ${validation.violations.length} fund violation(s) detected`, 'warn');
+                return { executed: false, hadRotation: false };
+            }
+
+            // 3. Execute Batch
             this.manager.logger.log(`Broadcasting batch with ${operations.length} operations...`, 'info');
             const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
 
-            // 3. Process Results
+            // 4. Process Results
             const batchResult = await this._processBatchResults(result, opContexts, ordersToPlace, ordersToRotate);
 
             this.manager.recalculateFunds();
