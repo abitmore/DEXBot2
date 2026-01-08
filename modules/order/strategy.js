@@ -58,7 +58,7 @@ class StrategyEngine {
             .filter(o => o.price != null)
             .sort((a, b) => a.price - b.price);
 
-        if (allSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], hadRotation: false, partialMoves: [] };
+        if (allSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], hadRotation: false };
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 1: BOUNDARY DETERMINATION (Initial or Recovery)
@@ -201,7 +201,9 @@ class StrategyEngine {
         }
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
-        const reactionCap = Math.max(1, fills.length);
+        // NOTE: Only count FULL fills - partial fills don't spend capital, so they shouldn't count toward budget.
+        const fullFills = fills.filter(f => !f.isPartial).length;
+        const reactionCap = Math.max(1, fullFills);
  
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
@@ -239,8 +241,7 @@ class StrategyEngine {
             ordersToUpdate: [...buyResult.ordersToUpdate, ...sellResult.ordersToUpdate],
             ordersToCancel: [...buyResult.ordersToCancel, ...sellResult.ordersToCancel],
             stateUpdates: allUpdates,
-            hadRotation: (buyResult.ordersToRotate.length > 0 || sellResult.ordersToRotate.length > 0),
-            partialMoves: []
+            hadRotation: (buyResult.ordersToRotate.length > 0 || sellResult.ordersToRotate.length > 0)
         };
 
         mgr.logger.log(`[BOUNDARY] Sequence complete: ${result.ordersToPlace.length} place, ${result.ordersToRotate.length} rotate. Gap size: ${gapSlots} slots.`, "info");
@@ -317,16 +318,21 @@ class StrategyEngine {
             return false;
         });
 
+        // SURPLUSES include TWO categories:
+        // 1. Hard Surpluses: Orders outside the target window (need to be cancelled or rotated)
+        // 2. Dust Surpluses: Orders inside window but with dust-sized positions (need to be updated or rotated)
+        // NOTE: After STEP 2.5, PARTIAL orders in-window are handled separately and filtered out
+        // so they don't get rotated away. See filteredSurpluses below.
         const surpluses = activeThisSide.filter(s => {
             const idx = allSlots.findIndex(o => o.id === s.id);
             // Hard Surplus: Outside window
             if (!targetSet.has(idx)) return true;
-            
+
             // Dust Surplus: Inside window but dust (needs to be moved/updated)
             const idealSize = finalIdealSizes[idx];
             const threshold = idealSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
             if (s.size < threshold) return true;
-            
+
             return false;
         });
         
@@ -342,9 +348,18 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 2.5: PARTIAL ORDER HANDLING (Update In-Place Before Rotations/Placements)
         // ════════════════════════════════════════════════════════════════════════════════
-        // CRITICAL: When a PARTIAL order is in the target window, update it in-place
-        // instead of placing new orders that skip past it.
-        // This handles both merging (dust) and splitting (non-dust) scenarios.
+        // CRITICAL: When a PARTIAL order exists in the target window (result of recent fill),
+        // handle it IN-PLACE instead of placing new orders that would skip past it.
+        //
+        // This prevents grid gaps when newly rotated/placed orders fill immediately:
+        // - OLD BEHAVIOR: Skip the partial, place new orders at outer edges → gap at partial's position
+        // - NEW BEHAVIOR: Handle partial in-place, then fill remaining budget
+        //
+        // HANDLING LOGIC:
+        // - Dust partial (size < dustThreshold): Update to full target size (merge/consolidate)
+        // - Non-dust partial (size >= dustThreshold): Keep as-is (already fills the position)
+        //
+        // After processing, filtered out from surpluses so they aren't rotated away.
         const handledPartialIds = new Set();
         const partialOrdersInWindow = allSlots.filter(s =>
             s.type === type &&
@@ -366,8 +381,7 @@ class StrategyEngine {
             const isDust = partial.size < threshold;
 
             if (isDust) {
-                // Dust partial: Keep it in place but mark it to combine with a neighbouring order
-                // or update to merge into the slot size
+                // Dust partial: Update to full target size (consolidate the position)
                 mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to merge.`, 'info');
                 ordersToUpdate.push({
                     partialOrder: { ...partial },
@@ -375,8 +389,8 @@ class StrategyEngine {
                 });
                 stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
             } else {
-                // Non-dust partial: Keep current size as-is (it will be treated as active)
-                // The partial already fills this slot's position at its current size
+                // Non-dust partial: Keep at current size (it already fills this position)
+                // State updated to ACTIVE since it was a fill and is now stable
                 mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Keeping as-is.`, 'info');
                 stateUpdates.push({ ...partial, state: ORDER_STATES.ACTIVE });
             }
@@ -384,7 +398,7 @@ class StrategyEngine {
             handledPartialIds.add(partial.id);
         }
 
-        // Remove handled partials from surpluses so they aren't rotated away
+        // Remove handled partials from surpluses so they aren't rotated to other slots
         const filteredSurpluses = surpluses.filter(s => !handledPartialIds.has(s.id));
 
         // ════════════════════════════════════════════════════════════════════════════════
@@ -656,7 +670,7 @@ class StrategyEngine {
 
             if (!shouldRebalance) {
                 mgr.logger.log("[BOUNDARY] Skipping rebalance: No full fills and no dual-side dust partials.", "info");
-                return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], partialMoves: [] };
+                return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
             }
 
             // Log detailed fund state before entering rebalance
@@ -681,78 +695,6 @@ class StrategyEngine {
         }
     }
 
-    preparePartialOrderMove(partialOrder, gridSlotsToMove, reservedGridIds = new Set()) {
-        const mgr = this.manager;
-        if (!partialOrder || gridSlotsToMove < 0) return null;
-        if (!partialOrder.orderId) return null;
-
-        const allSlots = Array.from(mgr.orders.values())
-            .filter(o => o.price != null)
-            .sort((a, b) => b.price - a.price);
-
-        const currentIndex = allSlots.findIndex(o => o.id === partialOrder.id);
-        if (currentIndex === -1) return null;
-
-        const direction = partialOrder.type === ORDER_TYPES.SELL ? 1 : -1;
-        const targetIndex = currentIndex + (direction * gridSlotsToMove);
-
-        if (targetIndex < 0 || targetIndex >= allSlots.length) return null;
-
-        const targetGridOrder = allSlots[targetIndex];
-        const newGridId = targetGridOrder.id;
-
-        if (reservedGridIds.has(newGridId)) return null;
-        if (gridSlotsToMove > 0 && targetGridOrder.state !== ORDER_STATES.VIRTUAL) return null;
-
-        const newPrice = targetGridOrder.price;
-        let newMinToReceive;
-
-        if (partialOrder.type === ORDER_TYPES.SELL) {
-            const rawMin = partialOrder.size * newPrice;
-            const prec = mgr.assets?.assetB?.precision || 8;
-            newMinToReceive = blockchainToFloat(floatToBlockchainInt(rawMin, prec), prec);
-        } else {
-            const rawMin = partialOrder.size / newPrice;
-            const prec = mgr.assets?.assetA?.precision || 8;
-            newMinToReceive = blockchainToFloat(floatToBlockchainInt(rawMin, prec), prec);
-        }
-
-        return {
-            partialOrder: { id: partialOrder.id, orderId: partialOrder.orderId, type: partialOrder.type, price: partialOrder.price, size: partialOrder.size, state: partialOrder.state },
-            newGridId, newPrice, newMinToReceive, targetGridOrder,
-            vacatedGridId: gridSlotsToMove > 0 ? partialOrder.id : null,
-            vacatedPrice: gridSlotsToMove > 0 ? partialOrder.price : null
-        };
-    }
-
-    completePartialOrderMove(moveInfo) {
-        const mgr = this.manager;
-        const { partialOrder, newGridId, newPrice } = moveInfo;
-
-        const oldGridOrder = mgr.orders.get(partialOrder.id);
-        if (oldGridOrder && (!oldGridOrder.orderId || oldGridOrder.orderId === partialOrder.orderId)) {
-            const updatedOld = { ...oldGridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
-            mgr.accountant.updateOptimisticFreeBalance(oldGridOrder, updatedOld, "move-vacate", 0);
-            mgr._updateOrder(updatedOld);
-        }
-
-        const targetGridOrder = mgr.orders.get(newGridId);
-        if (targetGridOrder) {
-            const precision = (partialOrder.type === ORDER_TYPES.SELL)
-                ? mgr.assets?.assetA?.precision
-                : mgr.assets?.assetB?.precision;
-            const partialInt = floatToBlockchainInt(partialOrder.size, precision);
-            const idealInt = floatToBlockchainInt(targetGridOrder.size || 0, precision);
-            const newState = partialInt >= idealInt ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
-
-            const updatedNew = {
-                ...targetGridOrder, ...partialOrder, type: partialOrder.type,
-                state: newState, orderId: partialOrder.orderId, size: partialOrder.size, price: newPrice
-            };
-            mgr.accountant.updateOptimisticFreeBalance(targetGridOrder, updatedNew, "move-occupy", 0);
-            mgr._updateOrder(updatedNew);
-        }
-    }
 }
 
 module.exports = StrategyEngine;
