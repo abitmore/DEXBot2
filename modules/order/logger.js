@@ -120,48 +120,84 @@ class Logger {
 
     /**
      * Print a summary of fund status for diagnostics with optional context.
-     * Displays the complete fund structure from manager.funds:
-     * - available: Free funds for new orders (chainFree - virtual - cacheFunds - btsFeesOwed)
-     * - total.chain: Total on-chain balance (chainFree + committed.chain)
-     * - total.grid: Total grid allocation (committed.grid + virtual)
-     * - virtual: VIRTUAL order sizes (reserved for future on-chain placement)
-     * - committed.grid: ACTIVE order sizes (internal grid tracking)
-     * - committed.chain: ACTIVE orders with orderId (confirmed on blockchain)
-     * - cacheFunds: Fill proceeds and rotation surplus
-     * - btsFeesOwed: Pending BTS transaction fees
+     *
+     * BEHAVIOR:
+     * - Always shows: Simple one-liner with available buy/sell
+     * - In debug + critical events: Shows detailed breakdown
+     *
+     * Critical events (trigger detailed output):
+     * - 'order_filled', 'order_created', 'anomaly', 'violation'
+     * - Explicit detailed flag
+     *
+     * Routine operations (simple output only):
+     * - Recalculation, rebalancing, grid checks
      *
      * @param {OrderManager} manager - OrderManager instance to read funds from
-     * @param {string} context - Optional context string describing when this is called (e.g., "AFTER fill", "BEFORE rotation")
+     * @param {string} context - Optional context string (e.g., "AFTER fill", "BEFORE rotation")
+     * @param {boolean} forceDetailed - Force detailed output even for non-critical events
      */
-    logFundsStatus(manager, context = '') {
+    logFundsStatus(manager, context = '', forceDetailed = false) {
         if (!manager) return;
-        // Show detailed fund logging in debug mode
-        const isDebugMode = manager.logger?.level === 'debug';
 
+        const isDebugMode = manager.logger?.level === 'debug';
         const buyName = manager.config?.assetB || 'quote';
         const sellName = manager.config?.assetA || 'base';
-
-        // Build header with context
         const headerContext = context ? ` [${context}]` : '';
 
-        // Use new nested structure
+        // Available funds
         const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? manager.funds.available.buy.toFixed(8) : 'N/A';
         const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? manager.funds.available.sell.toFixed(8) : 'N/A';
 
+        const c = this.colors;
+        const buy = c.buy;
+        const sell = c.sell;
+        const reset = c.reset;
+
+        // ALWAYS show simple one-liner
+        this.log(`Funds${headerContext}: ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`, 'info');
+
+        // Check if this is a critical event requiring detailed output
+        const isCriticalEvent = forceDetailed ||
+            context.includes('fill') ||
+            context.includes('order_created') ||
+            context.includes('order_cancelled') ||
+            context.includes('anomaly') ||
+            context.includes('violation') ||
+            context.includes('ERROR');
+
+        // Only show detailed breakdown in debug mode on critical events
+        if (isDebugMode && isCriticalEvent) {
+            this._logDetailedFunds(manager, headerContext);
+        }
+    }
+
+    /**
+     * Log detailed fund breakdown (called only on critical events in debug mode).
+     * Shows complete fund structure:
+     * - available: Free funds for new orders
+     * - total.chain: Total on-chain balance
+     * - total.grid: Total grid allocation
+     * - virtual: VIRTUAL order sizes (reserved)
+     * - committed.grid: ACTIVE order sizes
+     * - committed.chain: ACTIVE orders on blockchain
+     * - cacheFunds: Fill proceeds and rotation surplus
+     * - btsFeesOwed: Pending BTS transaction fees
+     *
+     * @private
+     */
+    _logDetailedFunds(manager, headerContext = '') {
+        const buyName = manager.config?.assetB || 'quote';
+        const sellName = manager.config?.assetA || 'base';
         const c = this.colors;
         const debug = c.debug;
         const reset = c.reset;
         const buy = c.buy;
         const sell = c.sell;
 
-        if (!isDebugMode) {
-            this.log(`Funds Status${headerContext}: ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`, 'info');
-            return;
-        }
+        const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? manager.funds.available.buy.toFixed(8) : 'N/A';
+        const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? manager.funds.available.sell.toFixed(8) : 'N/A';
 
-        console.log(`\n===== FUNDS STATUS${headerContext} =====`);
-
-        // Chain balances (from accountTotals)
+        // Chain balances
         const chainFreeBuy = manager.accountTotals?.buyFree ?? 0;
         const chainFreeSell = manager.accountTotals?.sellFree ?? 0;
         const totalChainBuy = manager.funds?.total?.chain?.buy ?? 0;
@@ -173,44 +209,35 @@ class Logger {
         const virtualBuy = manager.funds?.virtual?.buy ?? 0;
         const virtualSell = manager.funds?.virtual?.sell ?? 0;
 
-        // Cache
+        // Cache & Committed
         const cacheBuy = manager.funds?.cacheFunds?.buy ?? 0;
         const cacheSell = manager.funds?.cacheFunds?.sell ?? 0;
-
-        // Committed
         const committedGridBuy = manager.funds?.committed?.grid?.buy ?? 0;
         const committedGridSell = manager.funds?.committed?.grid?.sell ?? 0;
         const committedChainBuy = manager.funds?.committed?.chain?.buy ?? 0;
         const committedChainSell = manager.funds?.committed?.chain?.sell ?? 0;
-
-        // BTS fees
         const btsFeesOwed = manager.funds?.btsFeesOwed ?? 0;
-        const btsSide = (manager.config?.assetA === 'BTS') ? 'sell' : (manager.config?.assetB === 'BTS') ? 'buy' : null;
 
-        console.log(`\n${debug}=== AVAILABLE CALCULATION ===${reset}`);
-        console.log(`funds.available: ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`);
+        console.log(`\n${debug}═══ DETAILED FUNDS STATUS${headerContext} ═══${reset}`);
 
-        console.log(`\n${debug}=== CHAIN BALANCES (from blockchain) ===${reset}`);
-        console.log(`chainFree: ${buy}Buy ${chainFreeBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${chainFreeSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`total.chain: ${buy}Buy ${totalChainBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${totalChainSell.toFixed(8)}${reset} ${sellName}`);
+        console.log(`${debug}AVAILABLE:${reset}`);
+        console.log(`  ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`);
 
-        console.log(`\n${debug}=== GRID ALLOCATIONS (locked in orders) ===${reset}`);
-        console.log(`total.grid: ${buy}Buy ${totalGridBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${totalGridSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`committed.grid: ${buy}Buy ${committedGridBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${committedGridSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`virtual (reserved): ${buy}Buy ${virtualBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${virtualSell.toFixed(8)}${reset} ${sellName}`);
+        console.log(`\n${debug}CHAIN BALANCES:${reset}`);
+        console.log(`  chainFree: ${buy}Buy ${chainFreeBuy.toFixed(8)}${reset} | ${sell}Sell ${chainFreeSell.toFixed(8)}${reset}`);
+        console.log(`  total.chain: ${buy}Buy ${totalChainBuy.toFixed(8)}${reset} | ${sell}Sell ${totalChainSell.toFixed(8)}${reset}`);
 
-        console.log(`\n${debug}=== COMMITTED ON-CHAIN ===${reset}`);
-        console.log(`committed.chain: ${buy}Buy ${committedChainBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${committedChainSell.toFixed(8)}${reset} ${sellName}`);
+        console.log(`\n${debug}GRID ALLOCATIONS:${reset}`);
+        console.log(`  total.grid: ${buy}Buy ${totalGridBuy.toFixed(8)}${reset} | ${sell}Sell ${totalGridSell.toFixed(8)}${reset}`);
+        console.log(`  committed.grid: ${buy}Buy ${committedGridBuy.toFixed(8)}${reset} | ${sell}Sell ${committedGridSell.toFixed(8)}${reset}`);
+        console.log(`  virtual (reserved): ${buy}Buy ${virtualBuy.toFixed(8)}${reset} | ${sell}Sell ${virtualSell.toFixed(8)}${reset}`);
 
-        console.log(`\n${debug}=== DEDUCTIONS & PENDING ===${reset}`);
-        console.log(`cacheFunds: ${buy}Buy ${cacheBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${cacheSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`btsFeesOwed (all): ${btsFeesOwed.toFixed(8)} BTS`);
+        console.log(`\n${debug}COMMITTED ON-CHAIN:${reset}`);
+        console.log(`  ${buy}Buy ${committedChainBuy.toFixed(8)}${reset} | ${sell}Sell ${committedChainSell.toFixed(8)}${reset}`);
 
-        // Only show formula and notes in debug mode
-        if (isDebugMode) {
-            console.log(`\n${debug}=== FORMULA: available = max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation) ===${reset}`);
-            console.log(`${debug}Note: cacheFunds is kept separate and added to available for rebalancing decisions${reset}`);
-        }
+        console.log(`\n${debug}DEDUCTIONS & PENDING:${reset}`);
+        console.log(`  cacheFunds: ${buy}Buy ${cacheBuy.toFixed(8)}${reset} | ${sell}Sell ${cacheSell.toFixed(8)}${reset}`);
+        console.log(`  btsFeesOwed: ${btsFeesOwed.toFixed(8)} BTS${reset}\n`);
     }
 
     // Print a comprehensive status summary using manager state.
@@ -337,6 +364,80 @@ class Logger {
         } else {
             console.log(`  ${virtual}BUY:  (none)${reset}`);
         }
+    }
+
+    /**
+     * Capture and log a fund snapshot at critical points in the trading cycle.
+     * This is lightweight and should be called frequently for comprehensive history.
+     *
+     * @param {OrderManager} manager - OrderManager instance
+     * @param {string} eventType - Type of event ('fill_detected', 'order_created', 'recalc', etc.)
+     * @param {string|null} eventId - ID of the triggering event (orderId, fillId, etc.)
+     * @param {Object} extraContext - Additional context to include in snapshot
+     * @returns {FundSnapshot} The captured snapshot
+     */
+    captureSnapshot(manager, eventType, eventId = null, extraContext = {}) {
+        try {
+            const { FundSnapshot } = require('./fund_snapshot');
+            const snapshot = FundSnapshot.capture(manager, eventType, eventId, extraContext);
+
+            // Add to manager's history if it exists
+            if (manager._snapshotHistory) {
+                manager._snapshotHistory.add(snapshot);
+            }
+
+            return snapshot;
+        } catch (err) {
+            this.log(`Warning: Failed to capture fund snapshot: ${err.message}`, 'warn');
+            return null;
+        }
+    }
+
+    /**
+     * Log a fund snapshot with optional detail level
+     */
+    logSnapshot(snapshot, detailed = false) {
+        if (!snapshot) return;
+        console.log(snapshot.toString(detailed));
+    }
+
+    /**
+     * Log a detailed comparison between two snapshots
+     */
+    logSnapshotComparison(snapshot1, snapshot2) {
+        if (!snapshot1 || !snapshot2) return;
+
+        const { FundSnapshotHistory } = require('./fund_snapshot');
+        const diff = FundSnapshotHistory.getDifference(snapshot1, snapshot2);
+
+        const c = this.colors;
+        const reset = c.reset;
+        const buy = c.buy;
+        const sell = c.sell;
+
+        const ts1 = new Date(diff.timestamp1).toISOString();
+        const ts2 = new Date(diff.timestamp2).toISOString();
+
+        console.log(`\n${buy}═══ SNAPSHOT COMPARISON ═══${reset}`);
+        console.log(`From: ${ts1}`);
+        console.log(`To:   ${ts2}`);
+        console.log(`Delta: ${diff.timeDeltaMs}ms`);
+
+        console.log(`\n${buy}Available Change:${reset}`);
+        console.log(`  Buy:  ${diff.availableChange.buy >= 0 ? '+' : ''}${diff.availableChange.buy.toFixed(8)}`);
+        console.log(`  Sell: ${diff.availableChange.sell >= 0 ? '+' : ''}${diff.availableChange.sell.toFixed(8)}`);
+
+        console.log(`\n${buy}ChainTotal Change:${reset}`);
+        console.log(`  Buy:  ${diff.chainTotalChange.buy >= 0 ? '+' : ''}${diff.chainTotalChange.buy.toFixed(8)}`);
+        console.log(`  Sell: ${diff.chainTotalChange.sell >= 0 ? '+' : ''}${diff.chainTotalChange.sell.toFixed(8)}`);
+
+        console.log(`\n${buy}ChainCommitted Change:${reset}`);
+        console.log(`  Buy:  ${diff.chainCommittedChange.buy >= 0 ? '+' : ''}${diff.chainCommittedChange.buy.toFixed(8)}`);
+        console.log(`  Sell: ${diff.chainCommittedChange.sell >= 0 ? '+' : ''}${diff.chainCommittedChange.sell.toFixed(8)}`);
+
+        console.log(`\n${buy}CacheFunds Change:${reset}`);
+        console.log(`  Buy:  ${diff.cacheFundsChange.buy >= 0 ? '+' : ''}${diff.cacheFundsChange.buy.toFixed(8)}`);
+        console.log(`  Sell: ${diff.cacheFundsChange.sell >= 0 ? '+' : ''}${diff.cacheFundsChange.sell.toFixed(8)}`);
     }
 }
 

@@ -249,6 +249,16 @@ class SyncEngine {
                             updatedOrder.state = ORDER_STATES.PARTIAL;
                         }
                     } else {
+                        // Capture snapshot before converting filled order to SPREAD
+                        try {
+                            mgr.logger?.captureSnapshot(mgr, 'order_filled', gridOrder.orderId, {
+                                gridId: gridOrder.id,
+                                type: gridOrder.type,
+                                size: gridOrder.size,
+                                filledAt: 'syncFromOpenOrders'
+                            });
+                        } catch (err) { /* ignore */ }
+
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         mgr._updateOrder(spreadOrder);
                         filledOrders.push({ ...gridOrder });
@@ -402,10 +412,22 @@ class SyncEngine {
             const filledOrders = [];
             const updatedOrders = [];
             if (newSizeInt <= 0) {
-                const filledOrder = { 
-                    ...matchedGridOrder, 
-                    blockNum: blockNum, 
-                    historyId: historyId 
+                // Capture snapshot before converting filled order to SPREAD
+                try {
+                    mgr.logger?.captureSnapshot(mgr, 'order_filled_history', orderId, {
+                        gridId: matchedGridOrder.id,
+                        type: orderType,
+                        filledAmount: filledAmount,
+                        filledAt: 'syncFromFillHistory',
+                        blockNum: blockNum,
+                        historyId: historyId
+                    });
+                } catch (err) { /* ignore */ }
+
+                const filledOrder = {
+                    ...matchedGridOrder,
+                    blockNum: blockNum,
+                    historyId: historyId
                 };
                 const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
                 mgr._updateOrder(spreadOrder);
@@ -515,6 +537,17 @@ class SyncEngine {
                 try {
                     const gridOrder = mgr.orders.get(gridOrderId);
                     if (gridOrder) {
+                        // Capture snapshot before order activation
+                        try {
+                            mgr.logger?.captureSnapshot(mgr, 'order_created', chainOrderId, {
+                                gridId: gridOrderId,
+                                type: gridOrder.type,
+                                size: gridOrder.size,
+                                price: gridOrder.price,
+                                fee: fee
+                            });
+                        } catch (err) { /* ignore */ }
+
                         const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
                         const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
                         mgr.accountant.updateOptimisticFreeBalance(gridOrder, updatedOrder, 'createOrder', fee);

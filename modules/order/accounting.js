@@ -55,6 +55,8 @@ class Accountant {
      * This is THE MASTER FUND CALCULATION and must be called after any state change.
      * Called automatically by _updateOrder(), but can be manually triggered to verify consistency.
      *
+     * Also captures a fund snapshot for audit trail (if snapshot logging enabled).
+     *
      * @returns {void}
      *
      * FUND CATEGORIES:
@@ -176,6 +178,18 @@ class Accountant {
         // Verify fund invariants to catch leaks early - but only if not in a batch update
         if (mgr._pauseFundRecalcDepth === 0) {
             this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
+
+            // Capture fund snapshot for audit trail (non-intrusive, only in batch-completion mode)
+            try {
+                if (mgr.logger?.level === 'debug' && mgr._snapshotHistory) {
+                    mgr.logger.captureSnapshot(mgr, 'fund_recalc_complete', null, {
+                        gridSize: mgr.orders?.size || 0,
+                        activeCount: mgr._ordersByState?.[require('../constants').ORDER_STATES.ACTIVE]?.size || 0
+                    });
+                }
+            } catch (err) {
+                // Silently ignore snapshot errors - they shouldn't break core logic
+            }
         }
     }
 

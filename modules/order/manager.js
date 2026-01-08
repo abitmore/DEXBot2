@@ -100,6 +100,10 @@ class OrderManager {
             metricsStartTime: Date.now()
         };
 
+        // Fund snapshot history for detailed auditing
+        const { FundSnapshotHistory } = require('./fund_snapshot');
+        this._snapshotHistory = new FundSnapshotHistory(1000);  // Keep last 1000 snapshots
+
         // Clean up any stale locks from previous process crash on startup
         this._cleanExpiredLocks();
     }
