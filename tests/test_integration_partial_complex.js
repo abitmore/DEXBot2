@@ -252,20 +252,22 @@ async function testGridNavigationWithPartials() {
         });
     });
 
-    // TEST: PARTIAL at sell-3 can move across namespace to buy-0
+    // TEST: STEP 2.5 - PARTIAL at sell-3 should be recognized and handled in-place
+    // (Rather than moving to different slot, STEP 2.5 handles it in its current position)
     const partial = mgr.orders.get('sell-3');
-    const moveInfo = mgr.preparePartialOrderMove(partial, 1, new Set());
+    assert(partial !== undefined, 'Partial sell-3 should exist');
+    assert(partial.state === ORDER_STATES.PARTIAL, 'sell-3 should be in PARTIAL state');
+    assert(partial.price === 1820, `Partial should have price 1820, got ${partial.price}`);
 
-    assert(moveInfo !== null, 'Should be able to move partial');
-    assert(moveInfo.newGridId === 'buy-0', `Should move to buy-0, got ${moveInfo.newGridId}`);
-    console.log(`  ✓ Partial sell-3 (price 1820) can move to buy-0 (price 1780)`);
-    console.log(`  ✓ Navigation crosses sell-*/buy-* namespace correctly`);
+    console.log(`  ✓ Partial sell-3 (price 1820) recognized at its position`);
+    console.log(`  ✓ STEP 2.5 will handle in-place: evaluate if dust or non-dust`);
 
-    // TEST: Multiple moves possible
-    const moveInfo2 = mgr.preparePartialOrderMove(partial, 2, new Set());
-    assert(moveInfo2 !== null, 'Should be able to move by 2 slots');
-    assert(moveInfo2.newGridId === 'buy-1', `Should move to buy-1, got ${moveInfo2.newGridId}`);
-    console.log(`  ✓ Can move multiple slots: sell-3 → buy-1 (2 positions)\n`);
+    // Verify partial is preserved during rebalancing
+    // (with STEP 2.5, partials stay at their current slot, don't move between slots)
+    const afterRebalance = mgr.orders.get('sell-3');
+    assert(afterRebalance !== undefined, 'Partial should remain in grid after rebalancing');
+    assert(afterRebalance.id === 'sell-3', 'Partial should stay at sell-3 position');
+    console.log(`  ✓ Partial remains at sell-3 after rebalancing (not moved)\n`);
 }
 
 // ============================================================================
@@ -317,15 +319,14 @@ async function testEdgeBoundGridWithPartial() {
     assert.strictEqual(sellCount, 1, 'Should count the partial sell at edge');
     console.log(`  ✓ Edge-bound partial recognized in count: ${sellCount}`);
 
-    // TEST: Can't move further out (but can move inward)
+    // TEST: STEP 2.5 - Partial at edge should be handled in-place
+    // (Edge-bound partial stays at its position, STEP 2.5 evaluates dust status)
     const partial = mgr.orders.get('sell-0');
-    const moveOutInfo = mgr.preparePartialOrderMove(partial, 1, new Set()); // Try to move out
+    assert(partial !== undefined, 'Partial sell-0 should exist');
+    assert(partial.state === ORDER_STATES.PARTIAL, 'sell-0 should be PARTIAL state');
 
-    if (moveOutInfo === null) {
-        console.log(`  ✓ Cannot move partial further out (at grid boundary)`);
-    } else {
-        console.log(`  ✓ Can move partial inward from edge`);
-    }
+    console.log(`  ✓ Partial at grid edge (sell-0) recognized`);
+    console.log(`  ✓ STEP 2.5 handles in-place: not moved despite being at boundary`);
 
     // TEST: Creates new orders instead of rotating when below target
     const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);

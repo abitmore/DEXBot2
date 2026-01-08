@@ -136,8 +136,6 @@ class OrderManager {
     // --- Strategy Delegation ---
     async processFilledOrders(orders, excl) { return await this.strategy.processFilledOrders(orders, excl); }
     completeOrderRotation(oldInfo) { return this.strategy.completeOrderRotation(oldInfo); }
-    preparePartialOrderMove(p, dist, excl) { return this.strategy.preparePartialOrderMove(p, dist, excl); }
-    completePartialOrderMove(move) { return this.strategy.completePartialOrderMove(move); }
 
     // --- Sync Delegation ---
     syncFromOpenOrders(orders, info) { return this.sync.syncFromOpenOrders(orders, info); }
