@@ -92,13 +92,23 @@ class StrategyEngine {
         // The boundary shifts incrementally as orders fill:
         // - BUY fill: Market moved down → shift boundary LEFT (boundaryIdx--)
         // - SELL fill: Market moved up → shift boundary RIGHT (boundaryIdx++)
-        // 
+        //
         // This creates the "crawl" effect where orders follow price movement.
 
         for (const fill of fills) {
             if (fill.isPartial) continue;
+
+            // Validate fill.type is present and valid
+            if (!fill.type) {
+                mgr.logger.log(`[BOUNDARY] Skipping invalid fill: missing type. Fill: ${JSON.stringify(fill)}`, "warn");
+                continue;
+            }
+
             if (fill.type === ORDER_TYPES.SELL) mgr.boundaryIdx++;
             else if (fill.type === ORDER_TYPES.BUY) mgr.boundaryIdx--;
+            else {
+                mgr.logger.log(`[BOUNDARY] Skipping fill with unknown type: ${fill.type}. Expected BUY or SELL.`, "warn");
+            }
         }
 
         // Clamp boundary to valid range
@@ -200,11 +210,27 @@ class StrategyEngine {
         const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCap, fills);
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCap, fills);
 
-        // Apply all state updates to manager
+        // Apply all state updates to manager with batched fund recalculation
+        mgr.pauseFundRecalc();
         const allUpdates = [...stateUpdates, ...buyResult.stateUpdates, ...sellResult.stateUpdates];
         allUpdates.forEach(upd => {
             mgr._updateOrder(upd);
         });
+
+        // Deduct cacheFunds AFTER state updates are applied (atomic with state transitions)
+        if (buyResult.totalNewPlacementSize > 0) {
+            const oldCache = mgr.funds.cacheFunds.buy || 0;
+            mgr.funds.cacheFunds.buy = Math.max(0, oldCache - buyResult.totalNewPlacementSize);
+            mgr.logger.log(`[CACHEFUNDS] buy: ${oldCache.toFixed(8)} - ${buyResult.totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds.buy.toFixed(8)}`, 'debug');
+        }
+        if (sellResult.totalNewPlacementSize > 0) {
+            const oldCache = mgr.funds.cacheFunds.sell || 0;
+            mgr.funds.cacheFunds.sell = Math.max(0, oldCache - sellResult.totalNewPlacementSize);
+            mgr.logger.log(`[CACHEFUNDS] sell: ${oldCache.toFixed(8)} - ${sellResult.totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds.sell.toFixed(8)}`, 'debug');
+        }
+
+        mgr.recalculateFunds();
+        mgr.resumeFundRecalc();
 
         // Combine results from both sides
         const result = {
@@ -325,15 +351,21 @@ class StrategyEngine {
             const shortageSlot = allSlots[shortageIdx];
             const size = finalIdealSizes[shortageIdx];
 
+            // Validate shortage slot exists and has required fields
+            if (!shortageSlot || !shortageSlot.id || !shortageSlot.price) {
+                mgr.logger.log(`[ROTATION] Skipping rotation: invalid shortage slot at index ${shortageIdx}: ${JSON.stringify(shortageSlot)}`, "warn");
+                continue;
+            }
+
+            // ATOMIC ROTATION: Both old→VIRTUAL and new→ACTIVE are pushed to stateUpdates,
+            // ensuring they are applied together within pauseFundRecalc block in rebalance().
+            // This prevents crash window between marking old as VIRTUAL and new as ACTIVE.
             ordersToRotate.push({ oldOrder: { ...surplus }, newPrice: shortageSlot.price, newSize: size, newGridId: shortageSlot.id, type: type });
             const vacatedUpdate = { ...surplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
             stateUpdates.push(vacatedUpdate);
             stateUpdates.push({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-            
-            // Also apply immediately if rotation happens inside rebalance loops
-            mgr._updateOrder(vacatedUpdate);
-            mgr._updateOrder({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-            
+            mgr.logger.log(`[ROTATION] Atomic rotation: ${surplus.id} (${surplus.price}) → VIRTUAL, ${shortageSlot.id} (${shortageSlot.price}) → ACTIVE`, 'debug');
+
             budgetRemaining--;
         }
 
@@ -353,6 +385,13 @@ class StrategyEngine {
                 const idx = outerShortages[i];
                 const slot = allSlots[idx];
                 const size = finalIdealSizes[idx];
+
+                // Validate slot exists and has required fields
+                if (!slot || !slot.id || !slot.price) {
+                    mgr.logger.log(`[PLACEMENT] Skipping invalid slot at index ${idx}: ${JSON.stringify(slot)}`, "warn");
+                    continue;
+                }
+
                 if (size > 0) {
                     ordersToPlace.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
                     stateUpdates.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
@@ -374,21 +413,13 @@ class StrategyEngine {
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 6: UPDATE CACHEFUNDS (Track Surplus Allocation)
+        // STEP 6: DEFER CACHEFUNDS DEDUCTION (Track Surplus Allocation)
         // ════════════════════════════════════════════════════════════════════════════════
-        // CacheFunds tracks accumulated surplus from fills/rotations.
-        // ONLY deduct when new placements consume those proceeds.
-        // DO NOT recalculate from scratch (that loses the accumulated proceeds).
-        //
-        // Rotation operations (STEP 3) don't consume new capital - they redistribute existing orders.
-        // Only new placements (STEP 4) consume fresh proceeds, so deduct only that amount.
-        if (totalNewPlacementSize > 0) {
-            const oldCache = mgr.funds.cacheFunds[side] || 0;
-            mgr.funds.cacheFunds[side] = Math.max(0, oldCache - totalNewPlacementSize);
-            mgr.logger.log(`[CACHEFUNDS] ${side}: ${oldCache.toFixed(8)} - ${totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds[side].toFixed(8)}`, 'debug');
-        }
+        // CacheFunds deduction is DEFERRED until after state updates are applied.
+        // This ensures fund invariants are maintained atomically with state transitions.
+        // Return totalNewPlacementSize so rebalance() can apply deduction after state updates.
 
-        return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates };
+        return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates, totalNewPlacementSize };
     }
 
     completeOrderRotation(oldOrderInfo) {
@@ -438,6 +469,11 @@ class StrategyEngine {
 
         try {
             const hasBtsPair = (mgr.config?.assetA === "BTS" || mgr.config?.assetB === "BTS");
+
+            // CRITICAL: Snapshot budget BEFORE processing fills, since fills will modify cacheFunds.
+            // This ensures dust detection uses the PRE-FILL budget that matches grid sizing.
+            const preFillBudgetSnap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
+
             let fillsToSettle = 0;
 
             for (const filledOrder of filledOrders) {
@@ -467,8 +503,8 @@ class StrategyEngine {
 
                 let rawProceeds = 0;
                 let assetForFee = null;
-                // Normalize type to ensure case-insensitive matching
-                const orderType = String(filledOrder.type).toLowerCase();
+                // Use uppercase for type matching (all ORDER_TYPES are uppercase)
+                const orderType = String(filledOrder.type).toUpperCase();
 
                 if (orderType === ORDER_TYPES.SELL) {
                     rawProceeds = filledOrder.size * filledOrder.price;
@@ -492,7 +528,7 @@ class StrategyEngine {
                     }
                 }
 
-                mgr.logger.log(`[FILL] ${orderType.toUpperCase()} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");
+                mgr.logger.log(`[FILL] ${orderType} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");
 
                 if (orderType === ORDER_TYPES.SELL) {
                     const oldCache = mgr.funds.cacheFunds.buy || 0;
@@ -534,10 +570,10 @@ class StrategyEngine {
                 const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
 
                 if (buyPartials.length > 0 || sellPartials.length > 0) {
-                    const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
+                    // Use PRE-FILL budget snapshot to match grid sizing (not the post-fill snapshot)
                     // Align budget with rebalance() logic: Total actual capital (Reality + Cache)
-                    const budgetBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
-                    const budgetSell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
+                    const budgetBuy = (preFillBudgetSnap.chainFreeBuy || 0) + (preFillBudgetSnap.committedChainBuy || 0) + (mgr.funds.cacheFunds?.buy || 0);
+                    const budgetSell = (preFillBudgetSnap.chainFreeSell || 0) + (preFillBudgetSnap.committedChainSell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
                     const buyHasDust = buyPartials.length > 0 && this.getIsDust(buyPartials, "buy", budgetBuy);
                     const sellHasDust = sellPartials.length > 0 && this.getIsDust(sellPartials, "sell", budgetSell);
