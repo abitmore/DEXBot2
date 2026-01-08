@@ -340,13 +340,61 @@ class StrategyEngine {
         let budgetRemaining = reactionCap;
 
         // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 2.5: PARTIAL ORDER HANDLING (Update In-Place Before Rotations/Placements)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // CRITICAL: When a PARTIAL order is in the target window, update it in-place
+        // instead of placing new orders that skip past it.
+        // This handles both merging (dust) and splitting (non-dust) scenarios.
+        const handledPartialIds = new Set();
+        const partialOrdersInWindow = allSlots.filter(s =>
+            s.type === type &&
+            s.state === ORDER_STATES.PARTIAL &&
+            targetSet.has(allSlots.findIndex(o => o.id === s.id)) &&
+            !excludeIds.has(s.id)
+        );
+
+        for (const partial of partialOrdersInWindow) {
+            const partialIdx = allSlots.findIndex(o => o.id === partial.id);
+            const targetSize = finalIdealSizes[partialIdx];
+
+            if (targetSize <= 0) {
+                mgr.logger.log(`[PARTIAL] Slot ${partial.id} has no target size, skipping`, 'debug');
+                continue;
+            }
+
+            const threshold = targetSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            const isDust = partial.size < threshold;
+
+            if (isDust) {
+                // Dust partial: Keep it in place but mark it to combine with a neighbouring order
+                // or update to merge into the slot size
+                mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to merge.`, 'info');
+                ordersToUpdate.push({
+                    partialOrder: { ...partial },
+                    newSize: targetSize
+                });
+                stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
+            } else {
+                // Non-dust partial: Keep current size as-is (it will be treated as active)
+                // The partial already fills this slot's position at its current size
+                mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Keeping as-is.`, 'info');
+                stateUpdates.push({ ...partial, state: ORDER_STATES.ACTIVE });
+            }
+
+            handledPartialIds.add(partial.id);
+        }
+
+        // Remove handled partials from surpluses so they aren't rotated away
+        const filteredSurpluses = surpluses.filter(s => !handledPartialIds.has(s.id));
+
+        // ════════════════════════════════════════════════════════════════════════════════
         // STEP 3: ROTATIONS (Refill Inner Gaps)
         // ════════════════════════════════════════════════════════════════════════════════
         // Move furthest active orders to fill inner gaps (closest to market).
         // Note: shortages is derived from sortedSideSlots, so it is already sorted Closest First.
-        const rotationCount = Math.min(surpluses.length, shortages.length, budgetRemaining);
+        const rotationCount = Math.min(filteredSurpluses.length, shortages.length, budgetRemaining);
         for (let i = 0; i < rotationCount; i++) {
-            const surplus = surpluses[i];
+            const surplus = filteredSurpluses[i];
             const shortageIdx = shortages[i];
             const shortageSlot = allSlots[shortageIdx];
             const size = finalIdealSizes[shortageIdx];
@@ -405,12 +453,13 @@ class StrategyEngine {
         // STEP 5: CANCEL REMAINING SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
         const rotatedOldIds = new Set(ordersToRotate.map(r => r.oldOrder.id));
-        for (const surplus of surpluses) {
+        for (const surplus of filteredSurpluses) {
             if (!rotatedOldIds.has(surplus.id)) {
                 ordersToCancel.push({ ...surplus });
                 stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL, orderId: null });
             }
         }
+        // Handled partials are NOT cancelled - they're updated in-place (STEP 2.5)
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 6: DEFER CACHEFUNDS DEDUCTION (Track Surplus Allocation)

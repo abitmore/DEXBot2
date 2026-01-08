@@ -518,7 +518,7 @@ class DEXBot {
     }
 
     async updateOrdersOnChainBatch(rebalanceResult) {
-        const { ordersToPlace, ordersToRotate = [], partialMoves = [], ordersToUpdate = [] } = rebalanceResult;
+        let { ordersToPlace, ordersToRotate = [], partialMoves = [], ordersToUpdate = [] } = rebalanceResult;
 
         if (this.config.dryRun) {
             if (ordersToPlace?.length > 0) this.manager.logger.log(`Dry run: would place ${ordersToPlace.length} new orders`, 'info');
@@ -546,7 +546,22 @@ class DEXBot {
             await this._buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts);
             await this._buildSizeUpdateOps(ordersToUpdate, operations, opContexts);
             await this._buildPartialMoveOps(partialMoves, operations, opContexts);
-            await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts);
+
+            // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
+            const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts);
+
+            // Convert unmet rotations to placements so we still fill the grid gaps
+            if (unmetRotations.length > 0) {
+                this.manager.logger.log(`Converting ${unmetRotations.length} unmet rotations to new placements`, 'info');
+                const fallbackPlacements = unmetRotations.map(r => ({
+                    id: r.newGridId,
+                    price: r.newPrice,
+                    size: r.newSize,
+                    type: r.type,
+                    state: ORDER_STATES.ACTIVE
+                }));
+                await this._buildCreateOps(fallbackPlacements, assetA, assetB, operations, opContexts);
+            }
 
             if (operations.length === 0) return { executed: false, hadRotation: false };
 
@@ -556,7 +571,7 @@ class DEXBot {
 
             // 3. Process Results
             const batchResult = await this._processBatchResults(result, opContexts, ordersToPlace, ordersToRotate);
-            
+
             this.manager.recalculateFunds();
             this.manager.logger.logFundsStatus(this.manager, `AFTER updateOrdersOnChainBatch (placed=${ordersToPlace?.length || 0}, rotated=${ordersToRotate?.length || 0})`);
 
@@ -640,18 +655,21 @@ class DEXBot {
     }
 
     async _buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts) {
-        if (!ordersToRotate || ordersToRotate.length === 0) return;
-        
+        if (!ordersToRotate || ordersToRotate.length === 0) return [];
+
         const seenOrderIds = new Set();
         const openOrders = await chainOrders.readOpenOrders(this.accountId);
+        const unmetRotations = [];  // Track rotations that couldn't be executed
 
         for (const rotation of ordersToRotate) {
-            const { oldOrder, newPrice, newSize, type } = rotation;
+            const { oldOrder, newPrice, newSize, type, newGridId } = rotation;
             if (!oldOrder.orderId || seenOrderIds.has(oldOrder.orderId)) continue;
             seenOrderIds.add(oldOrder.orderId);
 
             if (!openOrders.find(o => o.id === oldOrder.orderId)) {
-                this.manager.logger.log(`Skipping rotation: Order ${oldOrder.orderId} missing on-chain`, 'warn');
+                this.manager.logger.log(`Rotation fallback to creation: Order ${oldOrder.orderId} missing on-chain (was filled or cancelled)`, 'warn');
+                // Track this as an unmet rotation so we can create the new order as a placement instead
+                unmetRotations.push({ newGridId, newPrice, newSize, type });
                 continue;
             }
 
@@ -672,6 +690,8 @@ class DEXBot {
                 this.manager.logger.log(`Failed to prepare rotation op: ${err.message}`, 'error');
             }
         }
+
+        return unmetRotations;
     }
 
     async _processBatchResults(result, opContexts, ordersToPlace, ordersToRotate) {
