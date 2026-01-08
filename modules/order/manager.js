@@ -83,6 +83,8 @@ class OrderManager {
         this.shadowOrderIds = new Map();
         this._correctionsLock = new AsyncLock();
         this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
+        this._fillProcessingLock = new AsyncLock();  // Prevents concurrent fill processing
+        this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
         this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = [];
         this._pauseFundRecalcDepth = 0;  // Counter for safe nested pausing (not boolean)
@@ -620,6 +622,31 @@ class OrderManager {
 
     async checkGridHealth(batchCb) {
         return await Grid.checkGridHealth(this, batchCb);
+    }
+
+    /**
+     * Check if the processing pipeline is empty (no pending fills, corrections, or grid updates).
+     * Used to determine if it's safe to run non-urgent operations like grid health checks.
+     * @param {number} [incomingFillQueueLength=0] - Length of incoming fill queue (from dexbot)
+     * @returns {Object} { isEmpty: boolean, reasons: string[] }
+     */
+    isPipelineEmpty(incomingFillQueueLength = 0) {
+        const reasons = [];
+
+        if (incomingFillQueueLength > 0) {
+            reasons.push(`${incomingFillQueueLength} fills queued`);
+        }
+        if (this.ordersNeedingPriceCorrection.length > 0) {
+            reasons.push(`${this.ordersNeedingPriceCorrection.length} corrections pending`);
+        }
+        if (this._gridSidesUpdated && this._gridSidesUpdated.length > 0) {
+            reasons.push('grid divergence corrections pending');
+        }
+
+        return {
+            isEmpty: reasons.length === 0,
+            reasons
+        };
     }
 
     calculateCurrentSpread() {
