@@ -341,11 +341,13 @@ class StrategyEngine {
         // STEP 4: PLACEMENTS (Activate Outer Edges)
         // ════════════════════════════════════════════════════════════════════════════════
         // Use remaining budget to place new orders at the edge of the grid window.
+        // Track total capital allocated to new placements for cacheFunds deduction.
+        let totalNewPlacementSize = 0;
         if (budgetRemaining > 0) {
             // Remaining shortages are those not covered by rotations.
             // Reverse them to target Furthest First (Outer Edges).
             const outerShortages = shortages.slice(rotationCount).reverse();
-            
+
             const placeCount = Math.min(outerShortages.length, budgetRemaining);
             for (let i = 0; i < placeCount; i++) {
                 const idx = outerShortages[i];
@@ -354,6 +356,7 @@ class StrategyEngine {
                 if (size > 0) {
                     ordersToPlace.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
                     stateUpdates.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
+                    totalNewPlacementSize += size;  // Track capital allocated to new placements
                     budgetRemaining--;
                 }
             }
@@ -370,15 +373,20 @@ class StrategyEngine {
             }
         }
 
-        // Update cacheFunds
-        const finalStateMap = new Map();
-        stateUpdates.forEach(s => finalStateMap.set(s.id, s));
-        const totalAllocated = sideSlots.reduce((sum, slot) => {
-            const updated = finalStateMap.get(slot.id);
-            const size = updated ? (Number(updated.size) || 0) : (Number(slot.size) || 0);
-            return sum + size;
-        }, 0);
-        mgr.funds.cacheFunds[side] = Math.max(0, totalSideBudget - totalAllocated - btsFees);
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 6: UPDATE CACHEFUNDS (Track Surplus Allocation)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // CacheFunds tracks accumulated surplus from fills/rotations.
+        // ONLY deduct when new placements consume those proceeds.
+        // DO NOT recalculate from scratch (that loses the accumulated proceeds).
+        //
+        // Rotation operations (STEP 3) don't consume new capital - they redistribute existing orders.
+        // Only new placements (STEP 4) consume fresh proceeds, so deduct only that amount.
+        if (totalNewPlacementSize > 0) {
+            const oldCache = mgr.funds.cacheFunds[side] || 0;
+            mgr.funds.cacheFunds[side] = Math.max(0, oldCache - totalNewPlacementSize);
+            mgr.logger.log(`[CACHEFUNDS] ${side}: ${oldCache.toFixed(8)} - ${totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds[side].toFixed(8)}`, 'debug');
+        }
 
         return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates };
     }
