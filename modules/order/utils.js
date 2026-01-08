@@ -750,12 +750,12 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
         let chosen = null;
 
-        // 1. Direct lookup
-        if (typeof BitShares.db?.get_liquidity_pool_by_asset_ids === 'function') {
-            try {
-                chosen = await BitShares.db.get_liquidity_pool_by_asset_ids(aMeta.id, bMeta.id);
-            } catch (e) { console.warn(`[utils.js] derivePoolPrice direct lookup failed for ${symA}/${symB}:`, e.message); }
-        }
+        // 1. Direct lookup (disabled - method not found in API)
+        // if (typeof BitShares.db?.get_liquidity_pool_by_asset_ids === 'function') {
+        //     try {
+        //         chosen = await BitShares.db.get_liquidity_pool_by_asset_ids(aMeta.id, bMeta.id);
+        //     } catch (e) { console.warn(`[utils.js] derivePoolPrice direct lookup failed for ${symA}/${symB}:`, e.message); }
+        // }
 
         // 2. Scan if not found
         if (!chosen && typeof BitShares.db?.list_liquidity_pools === 'function') {
