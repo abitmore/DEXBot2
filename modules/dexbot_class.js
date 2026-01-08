@@ -297,6 +297,17 @@ class DEXBot {
                                 if (healthResult.buyDust && healthResult.sellDust) {
                                     await this.manager.persistGrid();
                                 }
+
+                                // Check spread condition after fill processing completes
+                                // PROACTIVE: immediately corrects spread if needed
+                                const spreadResult = await this.manager.checkSpreadCondition(
+                                    BitShares,
+                                    this.updateOrdersOnChainBatch.bind(this)
+                                );
+                                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                                    this._log(`✓ Spread correction after fill: ${spreadResult.ordersPlaced} order(s) placed`);
+                                    await this.manager.persistGrid();
+                                }
                             } else {
                                 this.manager.logger.log(`Deferring grid health check: ${pipelineStatus.reasons.join(', ')}`, 'debug');
                             }

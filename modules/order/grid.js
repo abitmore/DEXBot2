@@ -600,6 +600,10 @@ class Grid {
         else if (buyRatio >= 1) side = ORDER_TYPES.BUY;
         else if (sellRatio >= 1) side = ORDER_TYPES.SELL;
 
+        if (!side) {
+            manager.logger.log(`Spread correction skipped: insufficient funds for either side (buy ratio: ${buyRatio.toFixed(2)}, sell ratio: ${sellRatio.toFixed(2)}). Required: buy=${reqBuy?.toFixed(8) || 'N/A'}, sell=${reqSell?.toFixed(8) || 'N/A'}`, 'warn');
+        }
+
         return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
     }
 
@@ -634,10 +638,22 @@ class Grid {
 
         if (candidate) {
             const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
-            if (size && size <= manager.funds.available[railType === ORDER_TYPES.BUY ? 'buy' : 'sell']) {
-                const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
-                ordersToPlace.push(activated);
-                manager._updateOrder(activated);
+            const availableFund = manager.funds.available[railType === ORDER_TYPES.BUY ? 'buy' : 'sell'];
+
+            if (size && size <= availableFund) {
+                // Check if available funds would create a dust-sized order (below dust threshold of ideal size)
+                const dustThresholdPercent = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
+                const orderSizeRatio = (availableFund / size) * 100;
+
+                if (orderSizeRatio < dustThresholdPercent) {
+                    manager.logger.log(`Spread correction order skipped: available funds would create dust order (${orderSizeRatio.toFixed(2)}% of ideal size ${size.toFixed(8)}, below ${dustThresholdPercent}% threshold)`, 'warn');
+                } else {
+                    const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
+                    ordersToPlace.push(activated);
+                    manager._updateOrder(activated);
+                }
+            } else if (size) {
+                manager.logger.log(`Spread correction order skipped: calculated size (${size.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)})`, 'warn');
             }
         }
         return { ordersToPlace, partialMoves: [] };
