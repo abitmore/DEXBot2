@@ -81,7 +81,7 @@ async function runOrderManagerCalculation() {
             const symA = runtimeConfig.assetA; const symB = runtimeConfig.assetB;
             // Use centralized derivePrice as a final fallback (which may prefer pool->market->limit-orders)
             // Pass an explicit runtime preference (runtimeConfig.priceMode or env PRICE_MODE) if present
-            const runtimeMode = (runtimeConfig && runtimeConfig.priceMode) ? String(runtimeConfig.priceMode).toLowerCase() : (process && process.env && process.env.PRICE_MODE ? String(process.env.PRICE_MODE).toLowerCase() : 'auto');
+            const runtimeMode = (runtimeConfig && runtimeConfig.priceMode) ? String(runtimeConfig.priceMode) : (process && process.env && process.env.PRICE_MODE ? String(process.env.PRICE_MODE) : 'auto');
             const m = await derivePrice(BitShares, symA, symB, runtimeMode);
             if (m !== null) { runtimeConfig.startPrice = m; console.log('Derived startPrice from on-chain (derivePrice)', runtimeConfig.assetA + '/' + runtimeConfig.assetB, m); }
         } catch (err) { console.warn('Failed to auto-derive startPrice from chain (derivePrice):', err && err.message ? err.message : err); }
