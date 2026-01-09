@@ -550,6 +550,7 @@ class DEXBot {
             return { isValid: true, summary: 'No operations to validate' };
         }
 
+        const { blockchainToFloat } = require('./order/utils');
         const snap = this.manager.getChainFundsSnapshot();
         const availableFunds = {
             [assetA.id]: snap.chainFreeSell || 0,   // Asset A is sold (SELL orders)
@@ -571,21 +572,22 @@ class DEXBot {
                 const sellAmount = op.op_data.amount_to_sell?.amount;
 
                 if (sellAssetId && sellAmount) {
-                    requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + sellAmount;
+                    // Convert blockchain integer to float using asset precision
+                    const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
+                    const floatAmount = blockchainToFloat(sellAmount, precision);
+                    requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatAmount;
                 }
             } else if (op.op_name === 'limit_order_update') {
-                // Update operation: new_price.base is the new amount_to_sell (total, not delta)
-                // For updates, we can only estimate the additional funds needed
-                // Since it's a replacement, the net delta could be positive or negative
-                // For safety, we estimate based on the new base amount
-                const baseAssetId = op.op_data.new_price?.base?.asset_id;
-                const baseAmount = op.op_data.new_price?.base?.amount;
+                // Update operation: delta_amount_to_sell is the actual capital change (positive or negative)
+                // Only count positive deltas (capital increases) - negative deltas free up funds
+                const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
+                const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
 
-                if (baseAssetId && baseAmount) {
-                    // For updates: conservatively check if new amount needs additional funds
-                    // The actual delta depends on current order size (which we don't track here)
-                    // So we just warn about large updates
-                    requiredFunds[baseAssetId] = (requiredFunds[baseAssetId] || 0) + baseAmount;
+                if (deltaAssetId && deltaSellInt !== undefined && deltaSellInt !== null && deltaSellInt > 0) {
+                    // Convert blockchain integer to float using asset precision
+                    const precision = (deltaAssetId === assetA.id) ? assetA.precision : assetB.precision;
+                    const floatDelta = blockchainToFloat(deltaSellInt, precision);
+                    requiredFunds[deltaAssetId] = (requiredFunds[deltaAssetId] || 0) + floatDelta;
                 }
             }
         }
