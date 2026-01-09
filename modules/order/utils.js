@@ -1871,7 +1871,12 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
 
     if (metric > rmsThreshold) {
         console.debug(`\nDEBUG [${sideName}] Divergence Breakdown: RMS=${(metric * 100).toFixed(2)}% (Threshold: ${(rmsThreshold * 100).toFixed(1)}%) Matches: ${matchCount} Unmatched: ${unmatchedCount}`);
-        if (largeDeviations.length) console.debug(`  Large deviations (>10%): ${largeDeviations.length}`);
+        if (largeDeviations.length) {
+            console.debug(`  Large deviations (>10%): ${largeDeviations.length}`);
+            largeDeviations.forEach(dev => {
+                console.debug(`    Order ${dev.id}: Current=${dev.persSize}, Ideal=${dev.calcSize}, Deviation=${dev.percentDiff}%`);
+            });
+        }
     }
 
     return metric;

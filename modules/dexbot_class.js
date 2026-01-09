@@ -852,11 +852,6 @@ class DEXBot {
         let hadRotation = false;
         let updateOperationCount = 0;
 
-        // CRITICAL: Check divergence lock BEFORE processing rotations
-        // If divergence correction is active or queued, skip rotation processing entirely
-        // This prevents interference with divergence correction logic
-        const divergenceActive = this.manager._divergenceLock && (this.manager._divergenceLock.isLocked() || this.manager._divergenceLock.getQueueLength() > 0);
-
         for (let i = 0; i < opContexts.length; i++) {
             const ctx = opContexts[i];
             const res = results[i];
@@ -877,10 +872,12 @@ class DEXBot {
                 }
             }
             else if (ctx.kind === 'rotation') {
-                // Skip rotation processing if divergence correction is active
-                if (divergenceActive) {
-                    this.manager.logger.log(`Skipping rotation completion: divergence correction in progress`, 'debug');
-                    continue;
+                // Wait for divergence lock to be released before processing rotation
+                // This ensures rotation state is updated after divergence correction completes
+                if (this.manager._divergenceLock) {
+                    await this.manager._divergenceLock.acquire(async () => {
+                        // Lock ensures we only process rotation after divergence work is done
+                    });
                 }
 
                 hadRotation = true;
