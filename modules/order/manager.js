@@ -104,8 +104,18 @@ class OrderManager {
         const { FundSnapshotHistory } = require('./fund_snapshot');
         this._snapshotHistory = new FundSnapshotHistory(1000);  // Keep last 1000 snapshots
 
+        // Bootstrap flag to suppress warnings during initial grid build
+        this.isBootstrapping = true;
+
         // Clean up any stale locks from previous process crash on startup
         this._cleanExpiredLocks();
+    }
+
+    finishBootstrap() {
+        if (this.isBootstrapping) {
+            this.isBootstrapping = false;
+            this.logger.log("Bootstrap phase complete. Grid health monitoring active.", "info");
+        }
     }
 
     // --- Accounting Delegation ---

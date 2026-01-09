@@ -335,6 +335,7 @@ class Grid {
         manager.logger.log(`Initialized grid with ${orders.length} orders.`, 'info');
         manager.logger?.logFundsStatus?.(manager);
         manager.logger?.logOrderGrid?.(Array.from(manager.orders.values()), manager.config.startPrice);
+        manager.finishBootstrap();
     }
 
     /**
@@ -579,6 +580,10 @@ class Grid {
      */
     static async checkGridHealth(manager, updateOrdersOnChainBatch = null) {
         if (!manager) return;
+        
+        // Skip health checks during bootstrap to prevent spamming warnings while grid is building
+        if (manager.isBootstrapping) return { buyDust: false, sellDust: false };
+
         const allOrders = Array.from(manager.orders.values());
         const sells = allOrders.filter(o => o.type === ORDER_TYPES.SELL).sort((a, b) => a.price - b.price);
         const buys = allOrders.filter(o => o.type === ORDER_TYPES.BUY).sort((a, b) => b.price - a.price);
@@ -604,8 +609,13 @@ class Grid {
     static determineOrderSideByFunds(manager, currentMarketPrice) {
         const reqBuy = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.BUY);
         const reqSell = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.SELL);
-        const buyRatio = reqBuy ? (manager.funds.available.buy / reqBuy) : 0;
-        const sellRatio = reqSell ? (manager.funds.available.sell / reqSell) : 0;
+        
+        // Use available + cacheFunds to allow checking against total liquid capital
+        const buyAvailable = (manager.funds.available.buy || 0) + (manager.funds.cacheFunds.buy || 0);
+        const sellAvailable = (manager.funds.available.sell || 0) + (manager.funds.cacheFunds.sell || 0);
+
+        const buyRatio = reqBuy ? (buyAvailable / reqBuy) : 0;
+        const sellRatio = reqSell ? (sellAvailable / reqSell) : 0;
 
         let side = null;
         if (buyRatio >= 1 && sellRatio >= 1) side = buyRatio > sellRatio ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
@@ -650,7 +660,9 @@ class Grid {
 
         if (candidate) {
             const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
-            const availableFund = manager.funds.available[railType === ORDER_TYPES.BUY ? 'buy' : 'sell'];
+            const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+            // Include cacheFunds in availability check
+            const availableFund = (manager.funds.available[sideName] || 0) + (manager.funds.cacheFunds[sideName] || 0);
 
             if (size && size <= availableFund) {
                 // Check if available funds would create a dust-sized order (below dust threshold of ideal size)

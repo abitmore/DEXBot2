@@ -84,9 +84,11 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     ];
     spreads.forEach(s => mgr._updateOrder(s));
 
-    // Ensure funds are large enough
-    mgr.funds.available.buy = 1000;
-    mgr.funds.available.sell = 1000;
+    // Ensure funds are large enough (update source of truth, not derived prop)
+    mgr.accountTotals.buyFree = 1000;
+    mgr.accountTotals.sellFree = 1000;
+    mgr.accountTotals.buy = 1000;
+    mgr.accountTotals.sell = 1000;
     mgr.recalculateFunds();
 
     // Ensure each test case starts with a fresh boundary determination
