@@ -1226,7 +1226,7 @@ async function runGridComparisons(manager, accountOrders, botKey) {
 
     try {
         const Grid = require('./grid');
-        const persistedGrid = accountOrders.loadBotGrid(botKey) || [];
+        const persistedGrid = accountOrders.loadBotGrid(botKey, true) || [];
         const calculatedGrid = Array.from(manager.orders.values());
 
         manager.logger?.log?.(

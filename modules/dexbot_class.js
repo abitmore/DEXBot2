@@ -1138,7 +1138,7 @@ class DEXBot {
                 // Detects structural mismatch between calculated and persisted grid
                 if (!gridCheckResult.buyUpdated && !gridCheckResult.sellUpdated) {
                     try {
-                        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey) || [];
+                        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
                         const calculatedGrid = Array.from(this.manager.orders.values());
                         const comparisonResult = Grid.compareGrids(calculatedGrid, persistedGrid, this.manager, this.manager.funds.cacheFunds);
 
