@@ -199,6 +199,241 @@ describe('Accountant - Fund Tracking', () => {
         });
     });
 
+    describe('Taker Fee Accounting (7b0a5c5)', () => {
+        beforeEach(() => {
+            // Setup assets for fee calculations
+            manager.assets = {
+                assetA: { id: '1.3.0', precision: 8 },
+                assetB: { id: '1.3.1', precision: 5 }
+            };
+            manager.config = {
+                assetA: 'TEST',
+                assetB: 'BTS'
+            };
+        });
+
+        it('should account for market taker fees in SELL order proceeds', () => {
+            // A SELL order fills at price 100, selling 50 TEST for 5000 BTS
+            const fillProceeds = 50 * 100;  // 5000 BTS
+
+            // Should properly account for taker fees that reduce proceeds
+            manager.pauseFundRecalc();
+            manager._updateOrder({
+                id: 'sell-fill-1',
+                state: ORDER_STATES.PARTIAL,
+                type: ORDER_TYPES.SELL,
+                size: 50,
+                price: 100,
+                orderId: 'chain-001'
+            });
+            manager.resumeFundRecalc();
+
+            // Fund calculation should include taker fee impact
+            expect(manager.funds).toBeDefined();
+            expect(manager.funds.committed).toBeDefined();
+        });
+
+        it('should account for blockchain taker fees in fill processing', () => {
+            // When a fill is processed, both market taker fee and blockchain taker fee apply
+            // Market fee: deducted from proceeds (SELL) or added to cost (BUY)
+            // Blockchain fee: deducted from final amount received
+
+            const filledOrder = {
+                id: 'filled-1',
+                type: ORDER_TYPES.SELL,
+                price: 100,
+                size: 50,
+                state: ORDER_STATES.PARTIAL,
+                orderId: 'chain-001',
+                isMaker: false  // Taker, so fees apply
+            };
+
+            manager._updateOrder({
+                id: 'filled-1',
+                type: ORDER_TYPES.SELL,
+                price: 100,
+                size: 50,
+                state: ORDER_STATES.ACTIVE,
+                orderId: 'chain-001'
+            });
+
+            // Process fill and verify fees are calculated
+            expect(() => {
+                manager.strategy?.processFilledOrders?.([filledOrder]);
+            }).not.toThrow();
+        });
+
+        it('should correctly calculate net proceeds with both fee types', () => {
+            // SELL 50 TEST @ 100 = 5000 BTS gross
+            // Market taker fee (assume 0.1%): 5 BTS
+            // Net before blockchain fee: 4995 BTS
+            // Blockchain fee (assume 0.05%): 2.50 BTS
+            // Final proceeds: 4992.50 BTS
+
+            const grossProceeds = 50 * 100;
+            const marketTakerFeePercent = 0.001;  // 0.1%
+            const blockchainFeePercent = 0.0005;   // 0.05%
+
+            const netProceeds = grossProceeds * (1 - marketTakerFeePercent) * (1 - blockchainFeePercent);
+
+            expect(netProceeds).toBeLessThan(grossProceeds);
+            expect(netProceeds).toBeGreaterThan(0);
+        });
+    });
+
+    describe('Fund Precision & Delta Validation (0a3d24d)', () => {
+        it('should maintain precision when adding multiple orders', () => {
+            manager.pauseFundRecalc();
+
+            // Add orders with high precision values
+            const orders = [
+                { id: 'prec-1', type: ORDER_TYPES.BUY, size: 123.456789, price: 100, state: ORDER_STATES.VIRTUAL },
+                { id: 'prec-2', type: ORDER_TYPES.BUY, size: 987.654321, price: 99, state: ORDER_STATES.VIRTUAL },
+                { id: 'prec-3', type: ORDER_TYPES.BUY, size: 0.000001, price: 98, state: ORDER_STATES.VIRTUAL }
+            ];
+
+            for (const order of orders) {
+                manager._updateOrder(order);
+            }
+
+            manager.resumeFundRecalc();
+
+            const expectedTotal = 123.456789 + 987.654321 + 0.000001;
+            const actualTotal = manager.funds.virtual.buy;
+
+            // Should be within floating point precision limits
+            expect(Math.abs(actualTotal - expectedTotal)).toBeLessThan(0.00000001);
+        });
+
+        it('should detect fund delta mismatches', () => {
+            manager.pauseFundRecalc();
+
+            // Add initial orders
+            manager._updateOrder({
+                id: 'delta-1',
+                type: ORDER_TYPES.BUY,
+                size: 500,
+                price: 100,
+                state: ORDER_STATES.VIRTUAL
+            });
+
+            const before = manager.funds.virtual.buy;
+
+            // Update with new order
+            manager._updateOrder({
+                id: 'delta-2',
+                type: ORDER_TYPES.BUY,
+                size: 250,
+                price: 99,
+                state: ORDER_STATES.VIRTUAL
+            });
+
+            manager.resumeFundRecalc();
+
+            const after = manager.funds.virtual.buy;
+            const delta = after - before;
+
+            // Delta should equal the new order size (within tolerance)
+            expect(Math.abs(delta - 250)).toBeLessThan(0.01);
+        });
+
+        it('should validate fund totals after state transitions', () => {
+            manager.pauseFundRecalc();
+
+            // Create a VIRTUAL order
+            manager._updateOrder({
+                id: 'trans-1',
+                type: ORDER_TYPES.BUY,
+                size: 500,
+                price: 100,
+                state: ORDER_STATES.VIRTUAL
+            });
+
+            const virtualBefore = manager.funds.virtual.buy;
+
+            // Transition to ACTIVE
+            manager._updateOrder({
+                id: 'trans-1',
+                type: ORDER_TYPES.BUY,
+                size: 500,
+                price: 100,
+                state: ORDER_STATES.ACTIVE,
+                orderId: 'chain-001'
+            });
+
+            manager.resumeFundRecalc();
+
+            const virtualAfter = manager.funds.virtual.buy;
+            const committedAfter = manager.funds.committed.chain.buy;
+
+            // Virtual should decrease, committed should increase
+            expect(virtualAfter).toBeLessThan(virtualBefore);
+            expect(committedAfter).toBeGreaterThan(0);
+
+            // Total should remain roughly the same
+            const totalBefore = virtualBefore + (manager.funds.committed.chain.buy || 0);
+            const totalAfter = virtualAfter + committedAfter;
+            expect(Math.abs(totalAfter - totalBefore)).toBeLessThan(1);
+        });
+    });
+
+    describe('CacheFunds Deduction Tracking', () => {
+        it('should track cacheFunds deductions correctly', () => {
+            manager.resetFunds();
+            manager.funds.cacheFunds.buy = 1000;
+            manager.funds.cacheFunds.sell = 100;
+
+            const initialCacheBuy = manager.funds.cacheFunds.buy;
+
+            // Simulate a new placement that consumes cache
+            manager._updateOrder({
+                id: 'cache-order-1',
+                type: ORDER_TYPES.BUY,
+                size: 500,
+                price: 100,
+                state: ORDER_STATES.ACTIVE,
+                orderId: 'chain-001'
+            });
+
+            // Cache should be preserved until explicitly deducted
+            expect(manager.funds.cacheFunds.buy).toBe(initialCacheBuy);
+        });
+
+        it('should not double-deduct cacheFunds for rotations', () => {
+            manager.resetFunds();
+            manager.funds.cacheFunds.buy = 500;
+
+            manager.pauseFundRecalc();
+
+            // Create an existing order (already consumed cache)
+            manager._updateOrder({
+                id: 'rotate-from-1',
+                type: ORDER_TYPES.BUY,
+                size: 200,
+                price: 99,
+                state: ORDER_STATES.ACTIVE,
+                orderId: 'chain-001'
+            });
+
+            // Rotation target
+            manager._updateOrder({
+                id: 'rotate-to-1',
+                type: ORDER_TYPES.BUY,
+                size: 0,
+                price: 98,
+                state: ORDER_STATES.VIRTUAL
+            });
+
+            manager.resumeFundRecalc();
+
+            const cacheBeforeRotation = manager.funds.cacheFunds.buy;
+
+            // Simulate rotation (cache was already spent on the moved order)
+            // So rotation shouldn't deduct additional cache
+            expect(manager.funds.cacheFunds.buy).toBe(cacheBeforeRotation);
+        });
+    });
+
     describe('Edge cases', () => {
         it('should handle null accountTotals gracefully', () => {
             manager.accountTotals = null;

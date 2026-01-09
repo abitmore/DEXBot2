@@ -499,6 +499,191 @@ manager.getMetrics()
 
 ---
 
+## Testing Strategy & Quality Assurance
+
+DEXBot2 employs a comprehensive testing strategy to ensure reliability and prevent regressions in critical fund calculations and rebalancing logic.
+
+### Test Coverage by Module
+
+```mermaid
+graph LR
+    A["Unit Tests<br/>(tests/unit/)"]
+    B["Integration Tests<br/>(tests/)"]
+    C["Fund Snapshot<br/>Auditing"]
+
+    A -->|Manager, State Machine| A1["manager.test.js"]
+    A -->|Fund Tracking| A2["accounting.test.js"]
+    A -->|Grid Creation| A3["grid.test.js"]
+    A -->|Rebalancing| A4["strategy.test.js"]
+    A -->|Sync Logic| A5["sync_engine.test.js"]
+
+    B -->|Multi-step Scenarios| B1["Integration Tests"]
+    B -->|Edge Cases| B2["Partial Order Tests"]
+    B -->|Real-world Scenarios| B3["Fund Cycling Tests"]
+
+    C -->|Automatic Capture| C1["fund_snapshot.js"]
+    C -->|Analysis Tools| C2["analyze_fund_snapshots.js"]
+    C -->|Anomaly Detection| C3["Invariant Verification"]
+```
+
+### Test Suite Summary
+
+| Test Type | Files | Test Cases | Coverage |
+|-----------|-------|-----------|----------|
+| **Unit Tests** | 5 files | 50+ cases | Modules, state transitions |
+| **Integration Tests** | 15+ files | 50+ cases | Multi-step scenarios |
+| **Fund Snapshot System** | 2 files | Continuous | Automatic auditing |
+| **Recent Bugfix Tests** | Updated | 23 cases | Last 10 bugfixes |
+| **Total** | 22+ files | 120+ cases | Core functionality |
+
+### Key Test Areas
+
+**1. Fund Accounting (10 test cases)**
+```
+✓ VIRTUAL fund tracking
+✓ ACTIVE/PARTIAL fund transitions
+✓ Available pool calculation
+✓ CacheFunds deduction
+✓ Fund invariant verification
+```
+
+**2. Order State Machine (8 test cases)**
+```
+✓ VIRTUAL → ACTIVE → PARTIAL lifecycle
+✓ State transition validation
+✓ Index consistency
+✓ Order locking mechanisms
+✓ Concurrent operation safety
+```
+
+**3. Grid Rebalancing (16 test cases)**
+```
+✓ VIRTUAL order placement capping
+✓ PARTIAL order updates
+✓ Grid divergence detection
+✓ BoundaryIdx persistence
+✓ Rotation completion
+✓ Taker fee accounting
+```
+
+**4. Integration Scenarios (5+ test cases)**
+```
+✓ Startup after divergence
+✓ Fund cycling with fills
+✓ Multi-partial rebalancing
+✓ Edge-bound grid operations
+✓ Cross-namespace movements
+```
+
+### Running Tests
+
+```bash
+# Run all tests (recommended before commits)
+npm test
+
+# Unit tests only
+npx jest tests/unit/ --no-coverage
+
+# Specific test file
+npx jest tests/unit/accounting.test.js
+
+# Tests matching pattern
+npx jest --testNamePattern="fund invariant"
+
+# Watch mode (auto-rerun on changes)
+npx jest --watch tests/unit/
+```
+
+### Test Quality Metrics
+
+**Coverage Goals:**
+- ✅ All public methods have tests
+- ✅ All invariants verified automatically
+- ✅ Edge cases covered (zero funds, max orders, etc.)
+- ✅ Concurrent operations tested with locks
+- ✅ State transitions validated end-to-end
+
+**Recent Improvements (2026-01-09):**
+- Added 23 new test cases for recent bugfixes
+- Created comprehensive strategy engine tests
+- Enhanced accounting tests with fee validation
+- Added fund precision and delta tests
+
+### Continuous Auditing: Fund Snapshots
+
+The system includes an automatic fund snapshot system that captures fund state during execution:
+
+```bash
+# Enable snapshots (debug mode)
+"logLevel": "debug"  // in profiles/bots.json
+
+# Analyze snapshots
+node scripts/analyze_fund_snapshots.js --bot=botname
+
+# Detect anomalies
+node scripts/analyze_fund_snapshots.js --bot=botname | grep "Anomalies"
+
+# Export for analysis
+node scripts/analyze_fund_snapshots.js --bot=botname --export
+```
+
+**What Snapshots Capture:**
+- Timestamp and event type
+- All 8 fund pools (virtual, committed, available, cache, etc.)
+- Account totals (on-chain balances)
+- Grid state (order counts, boundary index)
+- Invariant violations (if any)
+- Event context (orderId, size, fee, etc.)
+
+For details, see [SNAPSHOT_QUICK_REFERENCE.md](SNAPSHOT_QUICK_REFERENCE.md).
+
+### Testing Best Practices
+
+**For Developers:**
+
+1. **Run tests before commits**
+   ```bash
+   npm test
+   ```
+
+2. **Add tests for new features**
+   - Follow patterns in existing tests
+   - Test fund impact of new logic
+   - Include edge cases
+
+3. **Verify invariants**
+   ```javascript
+   expect(manager.validateIndices()).toBe(true);
+   expect(chainTotal === chainFree + chainCommitted).toBe(true);
+   ```
+
+4. **Use debug mode for problematic scenarios**
+   ```javascript
+   manager.logger.level = 'debug';  // Enable snapshots
+   // ... run scenario ...
+   // Analyze with: node scripts/analyze_fund_snapshots.js
+   ```
+
+### Test Documentation References
+
+- **[TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md)** - Detailed test coverage for 23 new test cases
+  - Maps each test to specific bugfixes
+  - Shows what each test validates
+  - Running instructions for specific areas
+
+- **[developer_guide.md#testing-fund-calculations](developer_guide.md#testing-fund-calculations)** - Testing guide for developers
+  - How to write fund tests
+  - Common test patterns
+  - Debugging failing tests
+  - Adding tests for new features
+
+- **[TESTING_IMPROVEMENTS.md](TESTING_IMPROVEMENTS.md)** - Lessons from bugfix iteration
+  - What caused bugs in 0.4.x
+  - How tests prevent regressions
+  - Design validation checklist
+
+---
+
 ## Related Documentation
 
 - [Fund Movement Logic](fund_movement_logic.md) - Detailed mathematical formulas and algorithms

@@ -781,6 +781,258 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 
 ---
 
+## Testing Fund Calculations
+
+Fund calculations are critical to system stability. This section covers how the test suite validates fund logic and how to add tests for new features.
+
+### What Gets Tested
+
+The test suite validates the following fund-related behaviors:
+
+**Order State Transitions:**
+```javascript
+✓ VIRTUAL → ACTIVE → PARTIAL lifecycle
+✓ Fund movement between pools during transitions
+✓ Index consistency during state changes
+✓ Invariant preservation during transitions
+```
+
+**Fund Pool Integrity:**
+```javascript
+✓ virtual.buy + virtual.sell = sum of all VIRTUAL orders
+✓ committed.chain.buy = sum of ACTIVE orders with orderId
+✓ committed.grid.buy = sum of ACTIVE + PARTIAL orders
+✓ available.buy = max(0, chainFree - virtual - cache - fees)
+```
+
+**Critical Invariants:**
+```javascript
+✓ Invariant 1: chainTotal = chainFree + chainCommitted
+✓ Invariant 2: available ≤ chainFree
+✓ Invariant 3: gridCommitted ≤ chainTotal
+```
+
+**Edge Cases:**
+```javascript
+✓ Zero-size orders
+✓ Very large orders (precision handling)
+✓ Multiple concurrent state changes (atomicity)
+✓ Fund deductions and additions
+```
+
+### Running Tests
+
+```bash
+# All tests
+npm test
+
+# Unit tests only
+npx jest tests/unit/ --no-coverage
+
+# Strategy tests (rebalancing & placement)
+npx jest tests/unit/strategy.test.js
+
+# Accounting tests (fund tracking)
+npx jest tests/unit/accounting.test.js
+
+# Grid tests (grid creation)
+npx jest tests/unit/grid.test.js
+
+# Manager tests (state machine)
+npx jest tests/unit/manager.test.js
+```
+
+### Understanding Test Structure
+
+Tests use a consistent pattern for fund validation:
+
+```javascript
+describe('Fund Tracking - Fund Updates', () => {
+    let manager;
+
+    beforeEach(() => {
+        // Setup manager with known initial state
+        manager = new OrderManager(config);
+        manager.setAccountTotals({
+            buy: 10000,
+            sell: 100
+        });
+        manager.resetFunds();
+    });
+
+    it('should calculate virtual funds from VIRTUAL orders', () => {
+        // Add VIRTUAL order
+        manager._updateOrder({
+            id: 'virtual-1',
+            state: ORDER_STATES.VIRTUAL,
+            type: ORDER_TYPES.BUY,
+            size: 500
+        });
+
+        // Assert fund pool updated
+        expect(manager.funds.virtual.buy).toBe(500);
+        expect(manager.funds.total.grid.buy).toBeGreaterThanOrEqual(500);
+    });
+});
+```
+
+### Key Test Files
+
+| File | Purpose | Test Count |
+|------|---------|-----------|
+| `tests/unit/strategy.test.js` | Rebalancing, placement, rotation | 16 |
+| `tests/unit/accounting.test.js` | Fund tracking, fees, precision | 10 |
+| `tests/unit/grid.test.js` | Grid creation, sizing | 8 |
+| `tests/unit/manager.test.js` | State machine, indexing | 8 |
+| `tests/unit/sync_engine.test.js` | Blockchain reconciliation | 6 |
+
+### Adding Tests for Fund-Related Features
+
+When adding features that affect funds, follow this checklist:
+
+**1. Identify Fund Impact**
+```javascript
+// What fund pools are affected?
+// - virtual (VIRTUAL orders)
+// - committed.chain (ACTIVE orders with orderId)
+// - committed.grid (ACTIVE + PARTIAL orders)
+// - available (available pool)
+// - cacheFunds (fill proceeds)
+```
+
+**2. Create Test Case**
+```javascript
+it('should [action] and update [fund pool]', () => {
+    // Setup
+    const initialFunds = manager.funds[poolName][side];
+
+    // Action
+    performAction();
+
+    // Assert
+    const finalFunds = manager.funds[poolName][side];
+    expect(finalFunds).toBe(expectedValue);
+    expect(manager.validateIndices()).toBe(true);  // Indices OK?
+});
+```
+
+**3. Verify Invariants**
+```javascript
+// After your action, verify invariants
+expect(
+    manager.funds.total.chain.buy ===
+    manager.funds.total.chain.buy + manager.funds.committed.chain.buy
+).toBe(true);
+```
+
+**4. Test Edge Cases**
+```javascript
+// Test with:
+✓ Zero funds available
+✓ Very large orders (precision)
+✓ Multiple concurrent updates
+✓ State transitions
+```
+
+### Common Test Patterns
+
+**Pattern 1: Batch Fund Updates**
+```javascript
+manager.pauseFundRecalc();  // Batch mode
+manager._updateOrder(order1);
+manager._updateOrder(order2);
+manager._updateOrder(order3);
+manager.resumeFundRecalc();  // Recalc once
+
+// Verify final state
+expect(manager.funds.total.grid.buy).toBe(order1.size + order2.size + order3.size);
+```
+
+**Pattern 2: Fund Transitions**
+```javascript
+// VIRTUAL → ACTIVE
+manager._updateOrder({
+    id: 'order-1',
+    state: ORDER_STATES.VIRTUAL,
+    size: 500
+});
+
+const virtualBefore = manager.funds.virtual.buy;
+
+manager._updateOrder({
+    id: 'order-1',
+    state: ORDER_STATES.ACTIVE,
+    orderId: 'chain-001',
+    size: 500
+});
+
+// Verify movement
+expect(manager.funds.virtual.buy).toBeLessThan(virtualBefore);
+expect(manager.funds.committed.chain.buy).toBeGreaterThan(0);
+```
+
+**Pattern 3: Atomicity Check**
+```javascript
+// Verify operation is atomic (no partial state)
+manager.lockOrders(['order-1']);
+try {
+    // Perform operation
+    await fundDependentOperation();
+    // Check state consistency
+    expect(manager.validateIndices()).toBe(true);
+} finally {
+    manager.unlockOrders(['order-1']);
+}
+```
+
+### Recent Test Coverage Improvements
+
+The test suite was recently enhanced with 23 new test cases covering the last 10 bugfixes:
+
+**Key Areas:**
+- ✅ VIRTUAL order placement with zero available pool
+- ✅ PARTIAL order updates during rebalancing
+- ✅ Grid divergence detection with stale cache
+- ✅ BoundaryIdx persistence and recovery
+- ✅ BUY side geometric weighting
+- ✅ CacheFunds integration and deduction
+- ✅ Rotation completion and skip prevention
+- ✅ Fee calculation with isMaker parameter
+- ✅ Market and blockchain taker fees
+- ✅ Fund precision and delta validation
+
+See [TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md) for detailed coverage.
+
+### Debugging Fund Issues in Tests
+
+If a test fails due to fund calculation issues:
+
+```javascript
+// 1. Print fund state
+console.log('Fund state:', JSON.stringify(manager.funds, null, 2));
+
+// 2. Check invariants
+console.log('Invariants valid?', manager._verifyFundInvariants(
+    manager,
+    ...values
+));
+
+// 3. Trace order state
+manager.orders.forEach(order => {
+    console.log(`Order ${order.id}: state=${order.state}, size=${order.size}`);
+});
+
+// 4. Check index consistency
+console.log('Indices valid?', manager.validateIndices());
+
+// 5. Examine specific fund pool
+console.log('Virtual buy:', manager.funds.virtual.buy);
+console.log('Committed buy:', manager.funds.committed.grid.buy);
+console.log('Available buy:', manager.funds.available.buy);
+```
+
+---
+
 ## Getting Help
 
 ### Common Questions

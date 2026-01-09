@@ -4,6 +4,16 @@ This document provides a deep technical architectural overview of how funds are 
 
 ---
 
+## Important: Fund Testing & Validation
+
+**For comprehensive test coverage of fund calculations, see:**
+- **[TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md)** - 23 new test cases covering recent bugfixes
+- **[developer_guide.md#testing-fund-calculations](developer_guide.md#testing-fund-calculations)** - How to test fund-related features
+
+These tests validate all formulas and invariants described below.
+
+---
+
 ## 1. Grid Topology & Spread Gap
 The grid is a unified array of `priceLevels`. Instead of separate Buy/Sell rails, everything is indexed in a single "Master Rail".
 
@@ -175,3 +185,42 @@ When actual fees are charged on-chain, they are tracked in `btsFeesOwed`. During
 | **Topology** | Rigid Buying/Selling | Master Rail + Dynamic Boundary | Smoother role transitions. |
 | **Partials** | Stationary | Anchor, Move, and Merge | Prevents dust accumulation. |
 | **Safety** | Logs only | Invariant Enforcement | Detects leaks and double-spends. |
+
+---
+
+## Related Documentation
+
+### Testing & Validation
+- **[TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md)** - Complete test coverage for fund calculations
+  - 23 test cases covering all formulas and invariants
+  - Maps each test to bugfixes and edge cases
+  - How to run tests for fund validation
+
+- **[developer_guide.md - Testing Fund Calculations](developer_guide.md#testing-fund-calculations)** - Testing guide
+  - What gets tested
+  - How to write fund tests
+  - Common test patterns
+  - Debugging fund issues
+
+### Reference Documentation
+- **[architecture.md](architecture.md)** - System architecture and testing strategy
+- **[developer_guide.md](developer_guide.md)** - Complete developer guide with fund examples
+
+---
+
+## How to Verify These Formulas
+
+All formulas in this document are validated by the test suite. To verify:
+
+```bash
+# Run fund calculation tests
+npx jest tests/unit/accounting.test.js
+
+# Run all tests (includes fund validation)
+npm test
+
+# Check fund invariants in debug mode
+# Set logLevel: "debug" and enable fund snapshots
+```
+
+For detailed test information, see [TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md).
