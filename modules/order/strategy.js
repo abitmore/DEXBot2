@@ -305,11 +305,10 @@ class StrategyEngine {
         // Do NOT subtract them again here - that was causing double fee deduction.
         // The budget passed to this function is the effective budget after all fee reservations.
         const effectiveTotalSideBudget = totalSideBudget;
-        
-        // Note: Both BUY and SELL sortedSideSlots are sorted Market-to-Edge.
-        // For BUY: b.price - a.price (DESC) -> [1.0, 0.9, 0.8] (1.0 is market)
-        // For SELL: a.price - b.price (ASC) -> [1.1, 1.2, 1.3] (1.1 is market)
-        // So we always want reverse=false to give largest weight to index 0 (Market).
+
+        // CRITICAL: Slots are always sorted Market-to-Edge (highest price first for BUY, lowest for SELL)
+        // This ensures allocateFundsByWeights puts maximum weight at index 0 (the market)
+        // No need for reverse parameter - the sorting handles direction.
         const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, false, 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
@@ -524,16 +523,16 @@ class StrategyEngine {
         const allOrders = Array.from(mgr.orders.values());
         
         // CRITICAL: Slots must be sorted Market-to-Edge to match allocateFundsByWeights assumption
+        // This sorting ensures index 0 always points to the market-closest order
         const slots = allOrders.filter(o => o.type === type)
             .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-            
+
         if (slots.length === 0) return false;
         const precision = getPrecisionForSide(mgr.assets, side);
         const sideWeight = mgr.config.weightDistribution[side];
-        
-        // Use same reverse flag as rebalanceSideRobust (false because slots is sorted Market-to-Edge)
-        const reverse = false;
-        const idealSizes = allocateFundsByWeights(budget, slots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
+
+        // Slots are pre-sorted Market-to-Edge, so allocateFundsByWeights puts maximum weight at index 0
+        const idealSizes = allocateFundsByWeights(budget, slots.length, sideWeight, mgr.config.incrementPercent / 100, false, 0, precision);
 
         return partials.some(p => {
             const idx = slots.findIndex(s => s.id === p.id);

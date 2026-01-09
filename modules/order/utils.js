@@ -1736,14 +1736,16 @@ function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 
     const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
     const incrementFactor = incrementPercent / 100;
 
-    // Grid order for SELL: [Market, ..., Edge]
+    // Input orders are in natural grid order (NOT pre-sorted for allocateFundsByWeights)
+    // SELL orders: [Market, ..., Edge] -> index 0 is market
+    // BUY orders: [Edge, ..., Market] -> last index is market
     const sellOrders = orders.filter(o => o.type === ORDER_TYPES.SELL);
-    // Grid order for BUY: [Edge, ..., Market]
     const buyOrders = orders.filter(o => o.type === ORDER_TYPES.BUY);
 
-    // Mountain at Market (using base < 1 math):
-    // SELL: reverse=false -> Largest at index 0 (Market)
-    // BUY: reverse=true -> Largest at last index (Market)
+    // Apply reverse flag to compensate for different array orientations:
+    // SELL (market-to-edge): reverse=false -> weight[0] = maximum (correct, index 0 is market)
+    // BUY (edge-to-market): reverse=true -> weight[n-1] = maximum (correct, last index is market)
+    // NOTE: strategy.js does explicit sorting instead, so it always uses reverse=false
     const sellSizes = allocateFundsByWeights(sellFunds, sellOrders.length, sellWeight, incrementFactor, false, minSellSize, precisionA);
     const buySizes = allocateFundsByWeights(buyFunds, buyOrders.length, buyWeight, incrementFactor, true, minBuySize, precisionB);
 
@@ -1794,9 +1796,11 @@ function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderC
     // Select weight distribution based on side (buy or sell)
     const weight = (orderType === ORDER_TYPES.SELL) ? weightDistribution.sell : weightDistribution.buy;
 
-    // Mountain at Market Alignment:
-    // SELL (market-to-edge): reverse=false -> largest at market (index 0)
-    // BUY (edge-to-market): reverse=true -> largest at market (last index)
+    // IMPORTANT: Input arrays from grid.js are sorted ASC by price, creating different orientations:
+    // SELL orders: sorted [1.0, 1.1, 1.2, ...] = [market-to-edge] -> reverse=false (largest weight at index 0)
+    // BUY orders: sorted [0.5, 0.6, 0.7, ...] = [edge-to-market] -> reverse=true (largest weight at last index)
+    // This uses the reverse flag to align maximum weight with the market-closest order.
+    // NOTE: strategy.js explicitly pre-sorts to Market-to-Edge, so it always uses reverse=false
     const reverse = (orderType === ORDER_TYPES.BUY);
 
     // Allocate total funds using geometric weighting
