@@ -429,15 +429,19 @@ class StrategyEngine {
         // Remove handled partials from surpluses so they aren't rotated to other slots
         const filteredSurpluses = surpluses.filter(s => !handledPartialIds.has(s.id));
 
+        // Remove handled partial slots from shortages so they aren't targeted for rotation or placement
+        // (they're already being updated in-place via ordersToUpdate)
+        const filteredShortages = shortages.filter(idx => !handledPartialIds.has(allSlots[idx].id));
+
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 3: ROTATIONS (Refill Inner Gaps)
         // ════════════════════════════════════════════════════════════════════════════════
         // Move furthest active orders to fill inner gaps (closest to market).
         // Note: shortages is derived from sortedSideSlots, so it is already sorted Closest First.
-        const rotationCount = Math.min(filteredSurpluses.length, shortages.length, budgetRemaining);
+        const rotationCount = Math.min(filteredSurpluses.length, filteredShortages.length, budgetRemaining);
         for (let i = 0; i < rotationCount; i++) {
             const surplus = filteredSurpluses[i];
-            const shortageIdx = shortages[i];
+            const shortageIdx = filteredShortages[i];
             const shortageSlot = allSlots[shortageIdx];
             const size = finalIdealSizes[shortageIdx];
 
@@ -470,7 +474,7 @@ class StrategyEngine {
         if (budgetRemaining > 0) {
             // Remaining shortages are those not covered by rotations.
             // Reverse them to target Furthest First (Outer Edges).
-            const outerShortages = shortages.slice(rotationCount).reverse();
+            const outerShortages = filteredShortages.slice(rotationCount).reverse();
 
             // Track remaining available funds for placements (only needed if increasing size)
             let remainingAvailable = availablePool;

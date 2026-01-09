@@ -703,8 +703,23 @@ class DEXBot {
             await this._buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts);
             await this._buildSizeUpdateOps(ordersToUpdate, operations, opContexts);
 
+            // Create virtual state snapshot for rotation ops: apply pending size updates to open orders
+            // This prevents false "unmet" rotations when rotation targets conflict with update slots
+            let virtualOpenOrders = null;
+            if (ordersToUpdate && ordersToUpdate.length > 0) {
+                const currentOpenOrders = await chainOrders.readOpenOrders(this.accountId);
+                virtualOpenOrders = currentOpenOrders.map(order => {
+                    const update = ordersToUpdate.find(u => u.partialOrder.orderId === order.id);
+                    if (update) {
+                        return { ...order, size: update.newSize };
+                    }
+                    return order;
+                });
+                this.manager.logger.log(`[ROTATION] Using virtual state with ${ordersToUpdate.length} pending size update(s)`, 'debug');
+            }
+
             // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
-            const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts);
+            const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts, virtualOpenOrders);
 
             // Convert unmet rotations to placements so we still fill the grid gaps
             if (unmetRotations.length > 0) {
@@ -823,14 +838,16 @@ class DEXBot {
      * @param {Object} assetB - Asset B metadata
      * @param {Array} operations - Operations array to append to
      * @param {Array} opContexts - Operation contexts array to append to
+     * @param {Array} virtualOpenOrders - Optional: virtual state of open orders (with pending updates applied)
      * @returns {Array} Unmet rotations (fallback to placements)
      * @private
      */
-    async _buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts) {
+    async _buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts, virtualOpenOrders = null) {
         if (!ordersToRotate || ordersToRotate.length === 0) return [];
 
         const seenOrderIds = new Set();
-        const openOrders = await chainOrders.readOpenOrders(this.accountId);
+        // Use virtual state if provided (reflects pending size updates), otherwise read current state from chain
+        const openOrders = virtualOpenOrders || await chainOrders.readOpenOrders(this.accountId);
         const unmetRotations = [];  // Track rotations that couldn't be executed
 
         for (const rotation of ordersToRotate) {
