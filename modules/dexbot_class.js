@@ -146,12 +146,20 @@ class DEXBot {
                         if (fill && fill.op && fill.op[0] === 4) {
                             const fillOp = fill.op[1];
 
-                            // Only process maker fills (our orders that were matched)
-                            // Skip taker fills to avoid double-counting when two of our orders match each other
-                            if (fillOp.is_maker === false) {
-                                this.manager.logger.log(`Skipping taker fill (is_maker=false)`, 'debug');
+                            // ACCOUNT VALIDATION: Verify the filled order belongs to this bot's account/grid
+                            // Only process fills for orders we actually manage
+                            const gridOrder = this.manager.orders.get(fillOp.order_id) ||
+                                            Array.from(this.manager.orders.values()).find(o => o.orderId === fillOp.order_id);
+                            if (!gridOrder) {
+                                this.manager.logger.log(`Skipping fill for unknown order ${fillOp.order_id} (not in grid)`, 'debug');
                                 continue;
                             }
+
+                            // Process both maker and taker fills for our grid orders
+                            // Grid validation ensures we only process fills belonging to our account
+                            // Taker fills are included because the bot may execute market orders or act as taker
+                            const roleStr = fillOp.is_maker ? 'maker' : 'taker';
+                            this.manager.logger.log(`Processing ${roleStr} fill for order ${fillOp.order_id}`, 'debug');
 
                             const fillKey = `${fillOp.order_id}:${fill.block_num}:${fill.id || ''}`;
                             const now = Date.now();

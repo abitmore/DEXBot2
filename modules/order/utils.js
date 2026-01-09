@@ -985,7 +985,7 @@ function getCachedFees(assetSymbol) {
  *     - createFee: the full limit order creation fee
  *   For market assets: total fee amount (number)
  */
-function getAssetFees(assetSymbol, assetAmount) {
+function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
     const cachedFees = feeCache[assetSymbol];
 
     if (!cachedFees) {
@@ -1001,21 +1001,31 @@ function getAssetFees(assetSymbol, assetAmount) {
     if (assetSymbol === 'BTS') {
         const orderCreationFee = cachedFees.limitOrderCreate.bts;
         const orderUpdateFee = cachedFees.limitOrderUpdate.bts;
-        const makerNetFee = orderCreationFee * 0.1; // 10% of creation fee after 90% refund
+        // For makers: 90% refund, so net fee = 10% of creation fee
+        // For takers: no refund, so net fee = full creation fee
+        const makerNetFee = orderCreationFee * 0.1;
+        const takerNetFee = orderCreationFee; // Taker pays full fee with no refund
+        const netFee = isMaker ? makerNetFee : takerNetFee;
         return {
-            total: makerNetFee + orderUpdateFee,
+            total: netFee + orderUpdateFee,
             createFee: orderCreationFee,
             updateFee: orderUpdateFee,
-            makerNetFee: makerNetFee
+            makerNetFee: makerNetFee,
+            takerNetFee: takerNetFee,
+            netFee: netFee,
+            isMaker: isMaker
         };
     }
 
-    // Handle regular assets - deduct market fee from the amount received
-    const marketFeePercent = cachedFees.marketFee?.percent || 0;
-    const marketFeeAmount = (assetAmount * marketFeePercent) / 100;
+    // Handle regular assets - deduct market or taker fee from the amount received
+    // Takers pay higher fee if configured, otherwise use market fee
+    const feePercent = isMaker
+        ? (cachedFees.marketFee?.percent || 0)
+        : (cachedFees.takerFee?.percent || cachedFees.marketFee?.percent || 0);
+    const feeAmount = (assetAmount * feePercent) / 100;
 
-    // Return amount after market fees are deducted
-    return assetAmount - marketFeeAmount;
+    // Return amount after fees are deducted
+    return assetAmount - feeAmount;
 }
 
 /**

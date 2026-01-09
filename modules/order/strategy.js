@@ -538,6 +538,8 @@ class StrategyEngine {
             const preFillBudgetSnap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
 
             let fillsToSettle = 0;
+            let makerFillCount = 0;
+            let takerFillCount = 0;
 
             for (const filledOrder of filledOrders) {
                 if (excludeOrderIds?.has?.(filledOrder.id)) continue;
@@ -545,6 +547,12 @@ class StrategyEngine {
                 const isPartial = filledOrder.isPartial === true;
                 if (!isPartial || filledOrder.isDelayedRotationTrigger) {
                     fillsToSettle++;
+                    // Track maker vs taker fills for accurate blockchain fee calculation
+                    if (filledOrder.isMaker !== false) {
+                        makerFillCount++;
+                    } else {
+                        takerFillCount++;
+                    }
 
                     // CRITICAL FIX: Only update slot to VIRTUAL if it hasn't been reused!
                     // In sequential processing, a previous fill's rebalance might have rotated 
@@ -577,14 +585,14 @@ class StrategyEngine {
                 let netProceeds = rawProceeds;
                 if (assetForFee !== "BTS") {
                     try {
-                        const feeInfo = getAssetFees(assetForFee, rawProceeds);
+                        // Pass isMaker flag to apply correct fee (market fee for makers, taker fee for takers)
+                        const isMaker = filledOrder.isMaker !== false;  // Default to maker if not specified
+                        const feeInfo = getAssetFees(assetForFee, rawProceeds, isMaker);
                         netProceeds = (typeof feeInfo === 'object') ? feeInfo.total : feeInfo; // Handle both object and number returns
-                        // If utils.js returns full amount minus fee, use that. 
-                        // Note: getAssetFees implementation returns (amount - fee) for non-BTS, or object for BTS.
-                        // Let's verify utils.js: "return assetAmount - marketFeeAmount;" for non-BTS. 
-                        // So netProceeds is already correct.
+                        const feeType = isMaker ? 'market' : 'taker';
+                        mgr.logger.log(`[FILL-FEE] ${filledOrder.type} fill: applied ${feeType} fee for ${assetForFee}`, 'debug');
                     } catch (e) {
-                        mgr.logger.log(`Warning: Could not calculate market fees for ${assetForFee}: ${e.message}`, "warn");
+                        mgr.logger.log(`Warning: Could not calculate fees for ${assetForFee}: ${e.message}`, "warn");
                     }
                 }
 
@@ -614,8 +622,21 @@ class StrategyEngine {
             }
 
             if (hasBtsPair && fillsToSettle > 0) {
-                const btsFeeData = getAssetFees("BTS", 0);
-                mgr.funds.btsFeesOwed += fillsToSettle * btsFeeData.makerNetFee;
+                // Apply correct blockchain fees based on maker vs taker fills
+                // Maker fills: get 90% refund (pay makerNetFee = 10% of creation fee)
+                // Taker fills: no refund (pay full creation fee)
+                const btsFeeDataMaker = getAssetFees("BTS", 0, true);
+                const btsFeeDataTaker = getAssetFees("BTS", 0, false);
+                const makerFeesOwed = makerFillCount * btsFeeDataMaker.netFee;
+                const takerFeesOwed = takerFillCount * btsFeeDataTaker.netFee;
+                mgr.funds.btsFeesOwed += makerFeesOwed + takerFeesOwed;
+                if (makerFillCount > 0 || takerFillCount > 0) {
+                    mgr.logger.log(
+                        `[FEES] BTS fees calculated: ${makerFillCount} maker fills @ ${btsFeeDataMaker.netFee.toFixed(8)} BTS = ${makerFeesOwed.toFixed(8)} BTS, ` +
+                        `${takerFillCount} taker fills @ ${btsFeeDataTaker.netFee.toFixed(8)} BTS = ${takerFeesOwed.toFixed(8)} BTS (total owed: ${mgr.funds.btsFeesOwed.toFixed(8)} BTS)`,
+                        'info'
+                    );
+                }
                 await mgr.accountant.deductBtsFees();
             }
 

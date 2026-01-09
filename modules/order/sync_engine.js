@@ -369,6 +369,7 @@ class SyncEngine {
         const fillOp = fill.op[1];
         const blockNum = fill.block_num;
         const historyId = fill.id;
+        const isMaker = fillOp.is_maker === true;  // Preserve maker/taker flag for fee calculation
 
         mgr.pauseFundRecalc();
         try {
@@ -427,19 +428,21 @@ class SyncEngine {
                 const filledOrder = {
                     ...matchedGridOrder,
                     blockNum: blockNum,
-                    historyId: historyId
+                    historyId: historyId,
+                    isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
                 };
                 const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
                 mgr._updateOrder(spreadOrder);
                 filledOrders.push(filledOrder);
                 return { filledOrders, updatedOrders, partialFill: false };
             } else {
-                const filledPortion = { 
-                    ...matchedGridOrder, 
-                    size: filledAmount, 
+                const filledPortion = {
+                    ...matchedGridOrder,
+                    size: filledAmount,
                     isPartial: true,
                     blockNum: blockNum,
-                    historyId: historyId
+                    historyId: historyId,
+                    isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
                 };
                 const updatedOrder = { ...matchedGridOrder };
                 updatedOrder.state = ORDER_STATES.PARTIAL;
