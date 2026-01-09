@@ -23,6 +23,46 @@ class StrategyEngine {
     }
 
     /**
+     * Calculate the spread gap size (number of empty slots between BUY and SELL zones).
+     * Used during boundary initialization and role assignment.
+     */
+    calculateGapSlots(incrementPercent, targetSpreadPercent) {
+        const step = 1 + (incrementPercent / 100);
+        const minSpreadPercent = (incrementPercent || 0.5) * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
+        const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
+        const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
+        return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+    }
+
+    /**
+     * Calculate BTS fee reservations for BUY and SELL sides (if asset is BTS).
+     * Returns object with btsFeeReservationBuy and btsFeeReservationSell.
+     */
+    calculateBtsFeeReservations(hasBtsPair, config) {
+        let btsFeeReservationBuy = 0;
+        let btsFeeReservationSell = 0;
+
+        if (hasBtsPair && config.activeOrders) {
+            const targetBuy = Math.max(0, config.activeOrders.buy || 0);
+            const targetSell = Math.max(0, config.activeOrders.sell || 0);
+            const totalTargetOrders = targetBuy + targetSell;
+
+            if (totalTargetOrders > 0) {
+                const btsFeeData = getAssetFees('BTS', 1);
+                const totalBtsReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
+
+                if (config.assetB === "BTS") {
+                    btsFeeReservationBuy = totalBtsReservation;
+                } else if (config.assetA === "BTS") {
+                    btsFeeReservationSell = totalBtsReservation;
+                }
+            }
+        }
+
+        return { btsFeeReservationBuy, btsFeeReservationSell };
+    }
+
+    /**
      * Unified rebalancing entry point.
      * 
      * ALGORITHM: Boundary-Crawl Rebalancing
@@ -83,16 +123,9 @@ class StrategyEngine {
             } else {
                 // 2. Fallback to startPrice-based initialization (Initial or Recovery)
                 const referencePrice = mgr.config.startPrice;
-                const step = 1 + (mgr.config.incrementPercent / 100);
-
                 mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
 
-                // Calculate spread gap size (same formula as Grid.js)
-                // Enforce MIN_SPREAD_FACTOR to prevent spread from being too narrow
-                const minSpreadPercent = (mgr.config.incrementPercent || 0.5) * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
-                const targetSpreadPercent = Math.max(mgr.config.targetSpreadPercent || 0, minSpreadPercent);
-                const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(step));
-                const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+                const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
 
                 // Find the first slot at or above startPrice (this becomes the spread zone)
                 let splitIdx = allSlots.findIndex(s => s.price >= referencePrice);
@@ -137,16 +170,11 @@ class StrategyEngine {
         // STEP 3: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
         // ════════════════════════════════════════════════════════════════════════════════
         // Assign each slot to a role based on its position relative to the boundary:
-        // 
         // [0 ... boundaryIdx] = BUY zone
         // [boundaryIdx+1 ... boundaryIdx+gapSlots] = SPREAD zone (empty buffer)
         // [boundaryIdx+gapSlots+1 ... N] = SELL zone
 
-        const step = 1 + (mgr.config.incrementPercent / 100);
-        const minSpreadPercent = (mgr.config.incrementPercent || 0.5) * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
-        const targetSpreadPercent = Math.max(mgr.config.targetSpreadPercent || 0, minSpreadPercent);
-        const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(step));
-        const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+        const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
 
         const buyEndIdx = boundaryIdx;
         const sellStartIdx = boundaryIdx + gapSlots + 1;
@@ -170,39 +198,11 @@ class StrategyEngine {
         // STEP 4: BUDGET CALCULATION (Total Capital with BTS Fee Deduction)
         // ════════════════════════════════════════════════════════════════════════════════
         // Total Side Budget = (ChainFree + Committed) - BTS_Fees (if asset is BTS)
-        // This is the ACTUAL capital we have to work with after accounting for fee reserves.
-        //
-        // FORMULA:
-        // budgetBuy = chainFreeBuy + committedChainBuy - (btsFees if assetB=="BTS" else 0)
-        // budgetSell = chainFreeSell + committedChainSell - (btsFees if assetA=="BTS" else 0)
-        //
-        // Available Pool = funds.available (already has BTS fees subtracted) + cacheFunds
+        // Available Pool = funds.available + cacheFunds
 
         const snap = mgr.getChainFundsSnapshot();
-
         const hasBtsPair = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
-
-        // Calculate BTS fee reservation that applies to each side
-        let btsFeeReservationBuy = 0;
-        let btsFeeReservationSell = 0;
-
-        if (hasBtsPair && mgr.config.activeOrders) {
-            const targetBuy = Math.max(0, mgr.config.activeOrders.buy || 0);
-            const targetSell = Math.max(0, mgr.config.activeOrders.sell || 0);
-            const totalTargetOrders = targetBuy + targetSell;
-
-            if (totalTargetOrders > 0) {
-                const btsFeeData = getAssetFees('BTS', 1);
-                const totalBtsReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
-
-                // Distribute BTS fee reservation to the side that holds BTS
-                if (mgr.config.assetB === "BTS") {
-                    btsFeeReservationBuy = totalBtsReservation;
-                } else if (mgr.config.assetA === "BTS") {
-                    btsFeeReservationSell = totalBtsReservation;
-                }
-            }
-        }
+        const { btsFeeReservationBuy, btsFeeReservationSell } = this.calculateBtsFeeReservations(hasBtsPair, mgr.config);
 
         // Total Side Budget: (Free + Committed) with BTS fees deducted
         const budgetBuy = Math.max(0, (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) - btsFeeReservationBuy);
@@ -238,12 +238,22 @@ class StrategyEngine {
         });
 
         // Deduct cacheFunds AFTER state updates are applied (atomic with state transitions)
-        if (buyResult.totalNewPlacementSize > 0) {
+        // CRITICAL: Only deduct from cacheFunds for the side that USES the fill proceeds
+        // - SELL fills → proceeds in BTS → cacheFunds.buy → deduct for BUY placements
+        // - BUY fills → proceeds in XRP → cacheFunds.sell → deduct for SELL placements
+        // The opposite side placements are just VIRTUAL → ACTIVE conversions (no deduction needed)
+
+        const hasSellFills = fills.some(f => f.type === ORDER_TYPES.SELL && !f.isPartial);
+        const hasBuyFills = fills.some(f => f.type === ORDER_TYPES.BUY && !f.isPartial);
+
+        // BUY placements: Deduct from cacheFunds.buy only if SELL fills occurred (they populate cacheFunds.buy)
+        if (buyResult.totalNewPlacementSize > 0 && hasSellFills) {
             const oldCache = mgr.funds.cacheFunds.buy || 0;
             mgr.funds.cacheFunds.buy = Math.max(0, oldCache - buyResult.totalNewPlacementSize);
             mgr.logger.log(`[CACHEFUNDS] buy: ${oldCache.toFixed(8)} - ${buyResult.totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds.buy.toFixed(8)}`, 'debug');
         }
-        if (sellResult.totalNewPlacementSize > 0) {
+        // SELL placements: Deduct from cacheFunds.sell only if BUY fills occurred (they populate cacheFunds.sell)
+        if (sellResult.totalNewPlacementSize > 0 && hasBuyFills) {
             const oldCache = mgr.funds.cacheFunds.sell || 0;
             mgr.funds.cacheFunds.sell = Math.max(0, oldCache - sellResult.totalNewPlacementSize);
             mgr.logger.log(`[CACHEFUNDS] sell: ${oldCache.toFixed(8)} - ${sellResult.totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds.sell.toFixed(8)}`, 'debug');
@@ -370,18 +380,10 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 2.5: PARTIAL ORDER HANDLING (Update In-Place Before Rotations/Placements)
         // ════════════════════════════════════════════════════════════════════════════════
-        // CRITICAL: When a PARTIAL order exists in the target window (result of recent fill),
-        // handle it IN-PLACE instead of placing new orders that would skip past it.
-        //
-        // This prevents grid gaps when newly rotated/placed orders fill immediately:
-        // - OLD BEHAVIOR: Skip the partial, place new orders at outer edges → gap at partial's position
-        // - NEW BEHAVIOR: Handle partial in-place, then fill remaining budget
-        //
-        // HANDLING LOGIC:
-        // - Dust partial (size < dustThreshold): Update to full target size (merge/consolidate)
-        // - Non-dust partial (size >= dustThreshold): Keep as-is (already fills the position)
-        //
-        // After processing, filtered out from surpluses so they aren't rotated away.
+        // Handle PARTIAL orders in target window before rotations/placements to prevent grid gaps.
+        // - Dust partial: Update to full target size
+        // - Non-dust partial: Keep as-is (already adequately filled)
+        // These are then filtered from surpluses to prevent unwanted rotation.
         const handledPartialIds = new Set();
         const partialOrdersInWindow = allSlots.filter(s =>
             s.type === type &&
@@ -457,18 +459,23 @@ class StrategyEngine {
         // STEP 4: PLACEMENTS (Activate Outer Edges)
         // ════════════════════════════════════════════════════════════════════════════════
         // Use remaining budget to place new orders at the edge of the grid window.
-        // Track total capital allocated to new placements for cacheFunds deduction.
+        // CRITICAL: Cap placement sizes to respect availablePool (liquid funds only).
+        // Ideal sizes are calculated from totalSideBudget (distributed across all slots),
+        // but actual placements can only use available liquid funds.
         let totalNewPlacementSize = 0;
         if (budgetRemaining > 0) {
             // Remaining shortages are those not covered by rotations.
             // Reverse them to target Furthest First (Outer Edges).
             const outerShortages = shortages.slice(rotationCount).reverse();
 
+            // Track remaining available funds for placements (respects multiple orders in pipeline)
+            let remainingAvailable = availablePool;
+
             const placeCount = Math.min(outerShortages.length, budgetRemaining);
             for (let i = 0; i < placeCount; i++) {
                 const idx = outerShortages[i];
                 const slot = allSlots[idx];
-                const size = finalIdealSizes[idx];
+                const idealSize = finalIdealSizes[idx];
 
                 // Validate slot exists and has required fields
                 if (!slot || !slot.id || !slot.price) {
@@ -476,10 +483,17 @@ class StrategyEngine {
                     continue;
                 }
 
-                if (size > 0) {
-                    ordersToPlace.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-                    stateUpdates.push({ ...slot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-                    totalNewPlacementSize += size;  // Track capital allocated to new placements
+                if (idealSize <= 0) continue;
+
+                // CAP: Don't exceed remaining available funds
+                const remainingOrders = placeCount - i;
+                const cappedSize = Math.min(idealSize, remainingAvailable / remainingOrders);
+
+                if (cappedSize > 0) {
+                    ordersToPlace.push({ ...slot, type: type, size: cappedSize, state: ORDER_STATES.ACTIVE });
+                    stateUpdates.push({ ...slot, type: type, size: cappedSize, state: ORDER_STATES.ACTIVE });
+                    totalNewPlacementSize += cappedSize;  // Track capital allocated to new placements
+                    remainingAvailable -= cappedSize;
                     budgetRemaining--;
                 }
             }
@@ -505,19 +519,6 @@ class StrategyEngine {
         // Return totalNewPlacementSize so rebalance() can apply deduction after state updates.
 
         return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates, totalNewPlacementSize };
-    }
-
-    completeOrderRotation(oldOrderInfo) {
-        const mgr = this.manager;
-        const oldGridOrder = mgr.orders.get(oldOrderInfo.id);
-        if (oldGridOrder && oldGridOrder.orderId === oldOrderInfo.orderId) {
-            const size = oldGridOrder.size || 0;
-            mgr.accountant.addToChainFree(oldGridOrder.type, size, 'rotation');
-
-            const updatedOld = { ...oldGridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
-            mgr._updateOrder(updatedOld);
-            mgr.logger.log(`Rotated order ${oldOrderInfo.id} -> VIRTUAL (capital preserved).`, "info");
-        }
     }
 
     getIsDust(partials, side, budget) {
@@ -673,32 +674,17 @@ class StrategyEngine {
                 const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
 
                 if (buyPartials.length > 0 || sellPartials.length > 0) {
-                    // Get current chain funds snapshot for dust detection (same as rebalance())
                     const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
+                    const hasBtsPair = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
 
-                    // Calculate BTS fee reservations (same as rebalance())
                     let btsFeeReservationBuy = 0;
                     let btsFeeReservationSell = 0;
-
-                    const hasBtsPair = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
-                    if (hasBtsPair && mgr.config.activeOrders) {
-                        const targetBuy = Math.max(0, mgr.config.activeOrders.buy || 0);
-                        const targetSell = Math.max(0, mgr.config.activeOrders.sell || 0);
-                        const totalTargetOrders = targetBuy + targetSell;
-
-                        if (totalTargetOrders > 0) {
-                            try {
-                                const btsFeeData = getAssetFees('BTS', 1);
-                                const totalBtsReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
-                                if (mgr.config.assetB === "BTS") {
-                                    btsFeeReservationBuy = totalBtsReservation;
-                                } else if (mgr.config.assetA === "BTS") {
-                                    btsFeeReservationSell = totalBtsReservation;
-                                }
-                            } catch (err) {
-                                mgr.logger.log(`Warning: Could not calculate BTS fees for dust detection: ${err.message}`, "warn");
-                            }
-                        }
+                    try {
+                        const reservations = this.calculateBtsFeeReservations(hasBtsPair, mgr.config);
+                        btsFeeReservationBuy = reservations.btsFeeReservationBuy;
+                        btsFeeReservationSell = reservations.btsFeeReservationSell;
+                    } catch (err) {
+                        mgr.logger.log(`Warning: Could not calculate BTS fees for dust detection: ${err.message}`, "warn");
                     }
 
                     // Use same budget calculation as rebalance() (chainFree + committed - btsFeeReservation)
