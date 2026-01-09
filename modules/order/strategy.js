@@ -306,10 +306,13 @@ class StrategyEngine {
         // The budget passed to this function is the effective budget after all fee reservations.
         const effectiveTotalSideBudget = totalSideBudget;
 
-        // CRITICAL: Slots are always sorted Market-to-Edge (highest price first for BUY, lowest for SELL)
-        // This ensures allocateFundsByWeights puts maximum weight at index 0 (the market)
-        // No need for reverse parameter - the sorting handles direction.
-        const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, false, 0, precision);
+        // CRITICAL: Sort order differs between sides:
+        // - BUY (line 295): descending (b.price - a.price) = highest first = EDGE to MARKET (reversed)
+        // - SELL (line 295): ascending (a.price - b.price) = lowest first = MARKET to EDGE (normal)
+        // Use reverse=true for BUY to flip weight distribution so market (index n-1) gets max weight.
+        // Use reverse=false for SELL so market (index 0) gets max weight.
+        const reverse = (type === ORDER_TYPES.BUY);
+        const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
         sideSlots.forEach((slot, i) => {
