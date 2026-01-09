@@ -229,7 +229,7 @@ class Grid {
     /**
      * Restore a persisted grid snapshot onto a manager instance.
      */
-    static async loadGrid(manager, grid) {
+    static async loadGrid(manager, grid, boundaryIdx = null) {
         if (!Array.isArray(grid)) return;
         try {
             await manager._initializeAssets();
@@ -247,6 +247,12 @@ class Grid {
         manager.resetFunds();
         manager.funds.cacheFunds = savedCacheFunds;
         manager.funds.btsFeesOwed = savedBtsFeesOwed;
+
+        // Restore boundary index for StrategyEngine
+        if (typeof boundaryIdx === 'number') {
+            manager.boundaryIdx = boundaryIdx;
+            manager.logger.log(`Restored boundary index: ${boundaryIdx}`, 'info');
+        }
 
         grid.forEach(order => manager._updateOrder(order));
         manager.logger.log(`Loaded ${manager.orders.size} orders from persisted grid.`, 'info');
@@ -397,7 +403,9 @@ class Grid {
         const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
         const allocatedFunds = isBuy ? snap.chainTotalBuy : snap.chainTotalSell;
 
-        const orders = Array.from(manager.orders.values()).filter(o => o.type === orderType);
+        const orders = Array.from(manager.orders.values())
+            .filter(o => o.type === orderType)
+            .sort((a, b) => a.price - b.price); // Must be sorted ASC for calculateRotationOrderSizes
         if (orders.length === 0) return;
 
         const precision = getPrecisionByOrderType(manager.assets, orderType);
@@ -454,7 +462,11 @@ class Grid {
 
         // Filter to PARTIAL orders only (excludes ACTIVE/SPREAD which have exact sizes)
         // PARTIAL orders are where divergence matters most (they indicate partial fills)
-        const filterForRms = (orders, type) => filterOrdersByTypeAndState(orders, type, ORDER_STATES.PARTIAL).filter(o => !o.isDoubleOrder);
+        // Must be sorted ASC for calculateRotationOrderSizes to match geometric weight distribution
+        const filterForRms = (orders, type) => filterOrdersByTypeAndState(orders, type, ORDER_STATES.PARTIAL)
+            .filter(o => !o.isDoubleOrder)
+            .sort((a, b) => a.price - b.price);
+        
         const calculatedBuys = filterForRms(calculatedGrid, ORDER_TYPES.BUY);
         const calculatedSells = filterForRms(calculatedGrid, ORDER_TYPES.SELL);
         const persistedBuys = filterForRms(persistedGrid, ORDER_TYPES.BUY);

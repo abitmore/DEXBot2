@@ -990,6 +990,7 @@ class DEXBot {
         const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
         const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
         const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
+        const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
 
         // Restore and consolidate cacheFunds
         this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
@@ -1071,7 +1072,7 @@ class DEXBot {
             await this.manager.persistGrid();
         } else {
             this._log('Found active session. Loading and syncing existing grid.');
-            await Grid.loadGrid(this.manager, persistedGrid);
+            await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
             const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
             // Process fills discovered during startup sync (happened while bot was offline)

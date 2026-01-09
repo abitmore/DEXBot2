@@ -67,23 +67,41 @@ class StrategyEngine {
         // based on startPrice. This centers the spread zone around the market price.
 
         if (mgr.boundaryIdx === undefined) {
-            const referencePrice = mgr.config.startPrice;
-            const step = 1 + (mgr.config.incrementPercent / 100);
+            // 1. Try to recover boundary index from existing grid roles (if any)
+            // This prevents jumps if startPrice derived from chain is far from the old grid
+            let lastBuyIdx = -1;
+            for (let i = allSlots.length - 1; i >= 0; i--) {
+                if (allSlots[i].type === ORDER_TYPES.BUY) {
+                    lastBuyIdx = i;
+                    break;
+                }
+            }
 
-            // Calculate spread gap size (same formula as Grid.js)
-            // Enforce MIN_SPREAD_FACTOR to prevent spread from being too narrow
-            const minSpreadPercent = (mgr.config.incrementPercent || 0.5) * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
-            const targetSpreadPercent = Math.max(mgr.config.targetSpreadPercent || 0, minSpreadPercent);
-            const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(step));
-            const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+            if (lastBuyIdx !== -1) {
+                mgr.boundaryIdx = lastBuyIdx;
+                mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from existing BUY orders.`, "info");
+            } else {
+                // 2. Fallback to startPrice-based initialization (Initial or Recovery)
+                const referencePrice = mgr.config.startPrice;
+                const step = 1 + (mgr.config.incrementPercent / 100);
 
-            // Find the first slot at or above startPrice (this becomes the spread zone)
-            let splitIdx = allSlots.findIndex(s => s.price >= referencePrice);
-            if (splitIdx === -1) splitIdx = allSlots.length;
+                mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
 
-            // Position boundary so spread gap is centered around startPrice
-            const buySpread = Math.floor(gapSlots / 2);
-            mgr.boundaryIdx = splitIdx - buySpread - 1;
+                // Calculate spread gap size (same formula as Grid.js)
+                // Enforce MIN_SPREAD_FACTOR to prevent spread from being too narrow
+                const minSpreadPercent = (mgr.config.incrementPercent || 0.5) * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
+                const targetSpreadPercent = Math.max(mgr.config.targetSpreadPercent || 0, minSpreadPercent);
+                const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(step));
+                const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+
+                // Find the first slot at or above startPrice (this becomes the spread zone)
+                let splitIdx = allSlots.findIndex(s => s.price >= referencePrice);
+                if (splitIdx === -1) splitIdx = allSlots.length;
+
+                // Position boundary so spread gap is centered around startPrice
+                const buySpread = Math.floor(gapSlots / 2);
+                mgr.boundaryIdx = splitIdx - buySpread - 1;
+            }
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
@@ -288,9 +306,11 @@ class StrategyEngine {
         // The budget passed to this function is the effective budget after all fee reservations.
         const effectiveTotalSideBudget = totalSideBudget;
         
-        // Calculate ideal sizes by distributing the total budget across ALL slots currently in the zone.
-        // This denominator naturally increases/decreases as the boundary shifts.
-        const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, (type === ORDER_TYPES.BUY), 0, precision);
+        // Note: Both BUY and SELL sortedSideSlots are sorted Market-to-Edge.
+        // For BUY: b.price - a.price (DESC) -> [1.0, 0.9, 0.8] (1.0 is market)
+        // For SELL: a.price - b.price (ASC) -> [1.1, 1.2, 1.3] (1.1 is market)
+        // So we always want reverse=false to give largest weight to index 0 (Market).
+        const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, false, 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
         sideSlots.forEach((slot, i) => {
@@ -511,8 +531,8 @@ class StrategyEngine {
         const precision = getPrecisionForSide(mgr.assets, side);
         const sideWeight = mgr.config.weightDistribution[side];
         
-        // Use same reverse flag as rebalanceSideRobust
-        const reverse = (type === ORDER_TYPES.BUY);
+        // Use same reverse flag as rebalanceSideRobust (false because slots is sorted Market-to-Edge)
+        const reverse = false;
         const idealSizes = allocateFundsByWeights(budget, slots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
 
         return partials.some(p => {

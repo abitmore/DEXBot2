@@ -6,13 +6,21 @@
 
 // MOCK UTILS BEFORE ANYTHING ELSE
 const utils = require('../modules/order/utils');
-utils.getAssetFees = (asset, amount) => {
+utils.getAssetFees = (asset, amount, isMaker = true) => {
     if (asset === 'BTS') {
+        const createFee = 0.01;
+        const updateFee = 0.0001;
+        const makerNetFee = createFee * 0.1;
+        const takerNetFee = createFee;
+        const netFee = isMaker ? makerNetFee : takerNetFee;
         return {
-            total: 0.0011, // 0.001 (net create) + 0.0001 (update)
-            createFee: 0.01,
-            updateFee: 0.0001,
-            makerNetFee: 0.001
+            total: netFee + updateFee,
+            createFee: createFee,
+            updateFee: updateFee,
+            makerNetFee: makerNetFee,
+            takerNetFee: takerNetFee,
+            netFee: netFee,
+            isMaker: isMaker
         };
     }
     if (asset === 'USD') return amount;

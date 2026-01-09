@@ -250,8 +250,9 @@ class AccountOrders {
    * @param {Array} orders - Array of order objects from OrderManager
   * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
   * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
+  * @param {number} boundaryIdx - Optional master boundary index for StrategyEngine
   */
-  async storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null) {
+  async storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null, boundaryIdx = null) {
     if (!botKey) return;
 
     // Use AsyncLock to serialize read-modify-write operations (fixes Issue #1, #5)
@@ -270,6 +271,7 @@ class AccountOrders {
           grid: snapshot,
           cacheFunds: cacheFunds || { buy: 0, sell: 0 },
           btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
+          boundaryIdx: Number.isFinite(boundaryIdx) ? boundaryIdx : null,
           processedFills: {},
           createdAt: meta.createdAt,
           lastUpdated: meta.updatedAt
@@ -283,6 +285,11 @@ class AccountOrders {
         if (Number.isFinite(btsFeesOwed)) {
           this.data.bots[botKey].btsFeesOwed = btsFeesOwed;
         }
+
+        if (Number.isFinite(boundaryIdx)) {
+          this.data.bots[botKey].boundaryIdx = boundaryIdx;
+        }
+
         // Initialize processedFills if missing (backward compat)
         if (!this.data.bots[botKey].processedFills) {
           this.data.bots[botKey].processedFills = {};
@@ -335,6 +342,27 @@ class AccountOrders {
       }
     }
     return { buy: 0, sell: 0 };
+  }
+
+  /**
+   * Load the master boundary index for a bot.
+   * @param {string} botKey - Bot identifier key
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {number|null} Boundary index or null if not found
+   */
+  loadBoundaryIdx(botKey, forceReload = false) {
+    if (forceReload) {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+    }
+
+    if (this.data && this.data.bots && this.data.bots[botKey]) {
+      const botData = this.data.bots[botKey];
+      const idx = botData.boundaryIdx;
+      if (typeof idx === 'number' && Number.isFinite(idx)) {
+        return idx;
+      }
+    }
+    return null;
   }
 
   /**

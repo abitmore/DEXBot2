@@ -1145,7 +1145,8 @@ async function persistGridSnapshot(manager, accountOrders, botKey) {
             botKey,
             Array.from(manager.orders.values()),
             manager.funds.cacheFunds,
-            manager.funds.btsFeesOwed
+            manager.funds.btsFeesOwed,
+            manager.boundaryIdx
         );
 
         // Also try to persist fees component for redundancy
