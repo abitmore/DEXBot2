@@ -537,8 +537,32 @@ class DEXBot {
     }
 
     /**
+     * Get the maximum allowed order size based on the largest grid order.
+     * Max size = biggest order × 1.1 (allows 10% buffer above largest order)
+     * @returns {number} Maximum allowed order size in float amount
+     * @private
+     */
+    _getMaxOrderSize() {
+        const { GRID_LIMITS } = require('./constants');
+        const dustThresholdPercent = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5) / 100;
+        const maxMultiplier = 1 + (2 * dustThresholdPercent); // 1 + 2*5% = 1.1
+
+        // Get all orders and find the biggest by size
+        const allOrders = Array.from(this.manager.orders.values());
+        if (allOrders.length === 0) {
+            return Infinity; // No orders yet, no constraint
+        }
+
+        const biggestOrder = allOrders.reduce((max, order) =>
+            (order.size > max.size) ? order : max
+        );
+
+        return biggestOrder.size * maxMultiplier;
+    }
+
+    /**
      * Validate that operations can be executed with available funds before broadcasting.
-     * Prevents "Insufficient Balance" errors by checking operation sizes against chain balances.
+     * Checks: (1) sufficient available funds, (2) individual orders don't exceed max size limit
      * @param {Array} operations - Operations to validate
      * @param {Object} assetA - Asset A metadata (id, precision, symbol)
      * @param {Object} assetB - Asset B metadata (id, precision, symbol)
@@ -552,39 +576,45 @@ class DEXBot {
 
         const { blockchainToFloat } = require('./order/utils');
         const snap = this.manager.getChainFundsSnapshot();
+        const maxOrderSize = this._getMaxOrderSize();
+
         const availableFunds = {
-            [assetA.id]: snap.chainFreeSell || 0,   // Asset A is sold (SELL orders)
-            [assetB.id]: snap.chainFreeBuy || 0    // Asset B is bought (BUY orders)
+            [assetA.id]: snap.chainFreeSell || 0,
+            [assetB.id]: snap.chainFreeBuy || 0
         };
 
-        const requiredFunds = {
-            [assetA.id]: 0,
-            [assetB.id]: 0
-        };
+        const requiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+        const orderSizeViolations = [];
 
-        // Sum amounts required by each operation
+        // Sum amounts and check individual order sizes
         for (const op of operations) {
-            if (!op || !op.op_data) continue;
+            if (!op?.op_data) continue;
 
-            if (op.op_name === 'limit_order_create') {
-                // Create operation: amount_to_sell is the asset being sold
-                const sellAssetId = op.op_data.amount_to_sell?.asset_id;
-                const sellAmount = op.op_data.amount_to_sell?.amount;
+            const sellAssetId = op.op_data.amount_to_sell?.asset_id;
+            const sellAmount = op.op_data.amount_to_sell?.amount;
 
-                if (sellAssetId && sellAmount) {
-                    // Convert blockchain integer to float using asset precision
-                    const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
-                    const floatAmount = blockchainToFloat(sellAmount, precision);
-                    requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatAmount;
+            if (sellAssetId && sellAmount) {
+                const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
+                const floatAmount = blockchainToFloat(sellAmount, precision);
+
+                // Check order size limit
+                if (floatAmount > maxOrderSize) {
+                    orderSizeViolations.push({
+                        asset: sellAssetId === assetA.id ? assetA.symbol : assetB.symbol,
+                        size: floatAmount,
+                        max: maxOrderSize
+                    });
                 }
-            } else if (op.op_name === 'limit_order_update') {
-                // Update operation: delta_amount_to_sell is the actual capital change (positive or negative)
-                // Only count positive deltas (capital increases) - negative deltas free up funds
+
+                requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatAmount;
+            }
+
+            // For updates, only count positive deltas (capital increases)
+            if (op.op_name === 'limit_order_update') {
                 const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
                 const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
 
-                if (deltaAssetId && deltaSellInt !== undefined && deltaSellInt !== null && deltaSellInt > 0) {
-                    // Convert blockchain integer to float using asset precision
+                if (deltaAssetId && deltaSellInt > 0) {
                     const precision = (deltaAssetId === assetA.id) ? assetA.precision : assetB.precision;
                     const floatDelta = blockchainToFloat(deltaSellInt, precision);
                     requiredFunds[deltaAssetId] = (requiredFunds[deltaAssetId] || 0) + floatDelta;
@@ -592,37 +622,38 @@ class DEXBot {
             }
         }
 
-        // Validate funds for each asset
-        const violations = [];
+        // Check for order size violations
+        if (orderSizeViolations.length > 0) {
+            let summary = `[VALIDATION] Order size limit FAILED:\n`;
+            for (const v of orderSizeViolations) {
+                summary += `  ${v.asset}: size=${v.size.toFixed(8)}, max=${v.max.toFixed(8)}\n`;
+            }
+            return { isValid: false, summary: summary.trim(), violations: orderSizeViolations };
+        }
+
+        // Check for fund violations
+        const fundViolations = [];
         for (const assetId in requiredFunds) {
             const required = requiredFunds[assetId];
             const available = availableFunds[assetId] || 0;
 
             if (required > available) {
-                const assetName = assetId === assetA.id ? assetA.symbol : assetB.symbol;
-                violations.push({
-                    asset: assetName,
-                    assetId: assetId,
-                    required: required,
-                    available: available,
-                    deficit: required - available
+                fundViolations.push({
+                    asset: assetId === assetA.id ? assetA.symbol : assetB.symbol,
+                    required, available, deficit: required - available
                 });
             }
         }
 
-        if (violations.length > 0) {
+        if (fundViolations.length > 0) {
             let summary = `[VALIDATION] Fund validation FAILED:\n`;
-            for (const v of violations) {
+            for (const v of fundViolations) {
                 summary += `  ${v.asset}: required=${v.required.toFixed(8)}, available=${v.available.toFixed(8)}, deficit=${v.deficit.toFixed(8)}\n`;
             }
-            return { isValid: false, summary: summary.trim(), violations };
+            return { isValid: false, summary: summary.trim(), violations: fundViolations };
         }
 
-        // Log successful validation
-        const summary = `[VALIDATION] Fund validation PASSED: ${operations.length} operations ready. ` +
-            `Available: ${assetA.symbol}=${availableFunds[assetA.id].toFixed(8)}, ` +
-            `${assetB.symbol}=${availableFunds[assetB.id].toFixed(8)}`;
-
+        const summary = `[VALIDATION] PASSED: ${operations.length} operations, max order=${maxOrderSize.toFixed(8)}`;
         return { isValid: true, summary };
     }
 
