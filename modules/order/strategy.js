@@ -412,14 +412,18 @@ class StrategyEngine {
                     newSize: targetSize
                 });
                 stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
+                handledPartialIds.add(partial.id);
             } else {
-                // Non-dust partial: Keep at current size (it already fills this position)
-                // State updated to ACTIVE since it was a fill and is now stable
-                mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Keeping as-is.`, 'info');
-                stateUpdates.push({ ...partial, state: ORDER_STATES.ACTIVE });
+                // Non-dust partial: Update to ideal size and move one slot towards market
+                // This rebalances the position to proper grid alignment
+                mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to rebalance.`, 'info');
+                ordersToUpdate.push({
+                    partialOrder: { ...partial },
+                    newSize: targetSize
+                });
+                stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
+                handledPartialIds.add(partial.id);
             }
-
-            handledPartialIds.add(partial.id);
         }
 
         // Remove handled partials from surpluses so they aren't rotated to other slots
@@ -468,7 +472,7 @@ class StrategyEngine {
             // Reverse them to target Furthest First (Outer Edges).
             const outerShortages = shortages.slice(rotationCount).reverse();
 
-            // Track remaining available funds for placements (respects multiple orders in pipeline)
+            // Track remaining available funds for placements (only needed if increasing size)
             let remainingAvailable = availablePool;
 
             const placeCount = Math.min(outerShortages.length, budgetRemaining);
@@ -485,16 +489,33 @@ class StrategyEngine {
 
                 if (idealSize <= 0) continue;
 
-                // CAP: Don't exceed remaining available funds
-                const remainingOrders = placeCount - i;
-                const cappedSize = Math.min(idealSize, remainingAvailable / remainingOrders);
+                // CRITICAL: VIRTUAL orders already have capital allocated in idealSize.
+                // Only cap if we're INCREASING the size beyond what was allocated.
+                // If slot has no size (truly empty), it needs capital from availablePool.
+                // If slot already has size allocated (VIRTUAL), use the full idealSize.
+                const currentSize = slot.size || 0;
+                const sizeIncrease = Math.max(0, idealSize - currentSize);
 
-                if (cappedSize > 0) {
-                    ordersToPlace.push({ ...slot, type: type, size: cappedSize, state: ORDER_STATES.ACTIVE });
-                    stateUpdates.push({ ...slot, type: type, size: cappedSize, state: ORDER_STATES.ACTIVE });
-                    totalNewPlacementSize += cappedSize;  // Track capital allocated to new placements
-                    remainingAvailable -= cappedSize;
-                    budgetRemaining--;
+                if (sizeIncrease > 0) {
+                    // Only cap the INCREASE, not the full order
+                    const remainingOrders = placeCount - i;
+                    const cappedIncrease = Math.min(sizeIncrease, remainingAvailable / remainingOrders);
+                    const finalSize = currentSize + cappedIncrease;
+
+                    if (finalSize > 0) {
+                        ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
+                        stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
+                        totalNewPlacementSize += cappedIncrease;  // Track capital allocated to new placements
+                        remainingAvailable -= cappedIncrease;
+                        budgetRemaining--;
+                    }
+                } else {
+                    // No size increase needed, just activate at current size
+                    if (idealSize > 0) {
+                        ordersToPlace.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
+                        stateUpdates.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
+                        budgetRemaining--;
+                    }
                 }
             }
         }
@@ -726,6 +747,18 @@ class StrategyEngine {
         } finally {
             mgr.resumeFundRecalc();
         }
+    }
+
+    /**
+     * Callback when a rotation transaction completes successfully.
+     * Used to finalize state or trigger follow-up actions.
+     */
+    completeOrderRotation(oldInfo) {
+        if (this.manager.logger.level === 'debug') {
+            this.manager.logger.log(`[STRATEGY] Rotation completed for ${oldInfo.id || 'unknown'}`, 'debug');
+        }
+        // No specific state change needed here as rebalance() already handles
+        // the atomic transition to VIRTUAL/ACTIVE.
     }
 
 }
