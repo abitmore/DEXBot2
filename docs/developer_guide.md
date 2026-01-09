@@ -421,7 +421,7 @@ console.log('Recently rotated?', manager._recentlyRotatedOrderIds.has(order.id))
 manager.logger.logGridDiagnostics(manager, 'ROTATION CHECK');
 
 // 4. Check if dust
-const isDust = manager.strategy.getIsDust([order], order.type, budget);
+const isDust = manager.strategy.hasAnyDust([order], order.type, budget);
 console.log('Is dust?', isDust);
 ```
 

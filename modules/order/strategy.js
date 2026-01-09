@@ -5,16 +5,13 @@
  * Maintains contiguous physical rails using a master boundary anchor.
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS, PRECISION_DEFAULTS } = require("../constants");
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS } = require("../constants");
 const {
     getPrecisionForSide,
     getAssetFees,
     allocateFundsByWeights,
-    calculateOrderCreationFees,
     floatToBlockchainInt,
-    blockchainToFloat,
-    calculateAvailableFundsValue,
-    getMinOrderSize
+    blockchainToFloat
 } = require("./utils");
 
 class StrategyEngine {
@@ -22,13 +19,24 @@ class StrategyEngine {
         this.manager = manager;
     }
 
+    /** Check if a slot should be excluded based on id or orderId */
+    isExcluded(slot, excludeIds) {
+        return excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId));
+    }
+
+    /** Create empty result object for early returns */
+    emptyResult() {
+        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
+    }
+
     /**
      * Calculate the spread gap size (number of empty slots between BUY and SELL zones).
      * Used during boundary initialization and role assignment.
      */
     calculateGapSlots(incrementPercent, targetSpreadPercent) {
-        const step = 1 + (incrementPercent / 100);
-        const minSpreadPercent = (incrementPercent || 0.5) * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
+        const safeIncrement = incrementPercent || 0.5;
+        const step = 1 + (safeIncrement / 100);
+        const minSpreadPercent = safeIncrement * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
         const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
         const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
         return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
@@ -98,7 +106,7 @@ class StrategyEngine {
             .filter(o => o.price != null)
             .sort((a, b) => a.price - b.price);
 
-        if (allSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], hadRotation: false };
+        if (allSlots.length === 0) return this.emptyResult();
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 1: BOUNDARY DETERMINATION (Initial or Recovery)
@@ -287,7 +295,7 @@ class StrategyEngine {
      * 3. Naturally results in 'Refill at Spread' and 'Activate at Edge' reactions.
      */
     async rebalanceSideRobust(type, allSlots, sideSlots, direction, totalSideBudget, availablePool, excludeIds, reactionCap, fills = []) {
-        if (sideSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+        if (sideSlots.length === 0) return this.emptyResult();
 
         const mgr = this.manager;
         const side = type === ORDER_TYPES.BUY ? "buy" : "sell";
@@ -311,10 +319,8 @@ class StrategyEngine {
         const sideWeight = mgr.config.weightDistribution[side];
         const precision = getPrecisionForSide(mgr.assets, side);
 
-        // NOTE: BTS fees are already deducted from totalSideBudget in rebalance() at line 190-191.
+        // NOTE: BTS fees are already deducted from totalSideBudget in rebalance().
         // Do NOT subtract them again here - that was causing double fee deduction.
-        // The budget passed to this function is the effective budget after all fee reservations.
-        const effectiveTotalSideBudget = totalSideBudget;
 
         // CRITICAL: Sort order differs between sides:
         // - BUY (line 295): descending (b.price - a.price) = highest first = EDGE to MARKET (reversed)
@@ -322,7 +328,7 @@ class StrategyEngine {
         // Use reverse=true for BUY to flip weight distribution so market (index n-1) gets max weight.
         // Use reverse=false for SELL so market (index 0) gets max weight.
         const reverse = (type === ORDER_TYPES.BUY);
-        const sideIdealSizes = allocateFundsByWeights(effectiveTotalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
+        const sideIdealSizes = allocateFundsByWeights(totalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
         sideSlots.forEach((slot, i) => {
@@ -333,17 +339,17 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 2: IDENTIFY SHORTAGES AND SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
-        const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !excludeIds.has(s.id));
+        const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !this.isExcluded(s, excludeIds));
         const activeThisSide = activeOnChain.filter(s => s.type === type);
 
         const shortages = targetIndices.filter(idx => {
             const slot = allSlots[idx];
-            const isExcluded = excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId));
-            if (!slot.orderId && !isExcluded && finalIdealSizes[idx] > 0) return true;
+            if (this.isExcluded(slot, excludeIds)) return false;
+            if (!slot.orderId && finalIdealSizes[idx] > 0) return true;
 
             // Dust detection: Treat slot as shortage if it has a dust order
             // This allows the strategy to "refill" it (either by rotation or update)
-            if (slot.orderId && !isExcluded && finalIdealSizes[idx] > 0) {
+            if (slot.orderId && finalIdealSizes[idx] > 0) {
                 const threshold = finalIdealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
                 if (slot.size < threshold) return true;
             }
@@ -382,14 +388,14 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // Handle PARTIAL orders in target window before rotations/placements to prevent grid gaps.
         // - Dust partial: Update to full target size
-        // - Non-dust partial: Keep as-is (already adequately filled)
+        // - Non-dust partial: Update to ideal size for proper grid alignment
         // These are then filtered from surpluses to prevent unwanted rotation.
         const handledPartialIds = new Set();
         const partialOrdersInWindow = allSlots.filter(s =>
             s.type === type &&
             s.state === ORDER_STATES.PARTIAL &&
             targetSet.has(allSlots.findIndex(o => o.id === s.id)) &&
-            !excludeIds.has(s.id)
+            !this.isExcluded(s, excludeIds)
         );
 
         for (const partial of partialOrdersInWindow) {
@@ -405,23 +411,26 @@ class StrategyEngine {
             const isDust = partial.size < threshold;
 
             if (isDust) {
-                // Dust partial: Update to full target size (consolidate the position)
-                mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to merge.`, 'info');
-                ordersToUpdate.push({
-                    partialOrder: { ...partial },
-                    newSize: targetSize
-                });
-                stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
+                // Dust partial: Consolidate by updating to ideal size + dust size
+                const consolidatedSize = targetSize + partial.size;
+                mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to merge: ${consolidatedSize.toFixed(8)}.`, 'info');
+                ordersToUpdate.push({ partialOrder: { ...partial }, newSize: consolidatedSize });
+                stateUpdates.push({ ...partial, size: consolidatedSize, state: ORDER_STATES.ACTIVE });
                 handledPartialIds.add(partial.id);
             } else {
-                // Non-dust partial: Update to ideal size and move one slot towards market
-                // This rebalances the position to proper grid alignment
-                mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to rebalance.`, 'info');
-                ordersToUpdate.push({
-                    partialOrder: { ...partial },
-                    newSize: targetSize
-                });
+                // Non-dust partial: Update to ideal size and place new order with old partial size
+                const oldSize = partial.size;
+                mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${oldSize.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to rebalance and placing new order.`, 'info');
+                ordersToUpdate.push({ partialOrder: { ...partial }, newSize: targetSize });
                 stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
+
+                // Place new order with old partial size at next available slot
+                const nextSlotIdx = partialIdx + (type === ORDER_TYPES.BUY ? -1 : 1);
+                if (nextSlotIdx >= 0 && nextSlotIdx < allSlots.length) {
+                    const nextSlot = allSlots[nextSlotIdx];
+                    ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+                    stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+                }
                 handledPartialIds.add(partial.id);
             }
         }
@@ -546,7 +555,7 @@ class StrategyEngine {
         return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates, totalNewPlacementSize };
     }
 
-    getIsDust(partials, side, budget) {
+    hasAnyDust(partials, side, budget) {
         const mgr = this.manager;
         const type = side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
         const allOrders = Array.from(mgr.orders.values());
@@ -580,10 +589,6 @@ class StrategyEngine {
 
         try {
             const hasBtsPair = (mgr.config?.assetA === "BTS" || mgr.config?.assetB === "BTS");
-
-            // CRITICAL: Snapshot budget BEFORE processing fills, since fills will modify cacheFunds.
-            // This ensures dust detection uses the PRE-FILL budget that matches grid sizing.
-            const preFillBudgetSnap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
 
             let fillsToSettle = 0;
             let makerFillCount = 0;
@@ -646,26 +651,20 @@ class StrategyEngine {
 
                 mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");
 
-                if (filledOrder.type === ORDER_TYPES.SELL) {
-                    const oldCache = mgr.funds.cacheFunds.buy || 0;
-                    mgr.funds.cacheFunds.buy = oldCache + netProceeds;
-                    mgr.logger.log(`[FUNDS] cacheFunds.buy updated: ${oldCache.toFixed(5)} -> ${mgr.funds.cacheFunds.buy.toFixed(5)}`, "debug");
-                    // Optimistic update to wallet balances
-                    mgr.accountant.addToChainFree(ORDER_TYPES.BUY, netProceeds, 'fill-proceeds');
-                    if (mgr.accountTotals) {
-                        mgr.accountTotals.buy = (mgr.accountTotals.buy || 0) + netProceeds;
-                        mgr.accountTotals.sell = (mgr.accountTotals.sell || 0) - filledOrder.size;
-                    }
-                } else {
-                    const oldCache = mgr.funds.cacheFunds.sell || 0;
-                    mgr.funds.cacheFunds.sell = oldCache + netProceeds;
-                    mgr.logger.log(`[FUNDS] cacheFunds.sell updated: ${oldCache.toFixed(5)} -> ${mgr.funds.cacheFunds.sell.toFixed(5)}`, "debug");
-                    // Optimistic update to wallet balances
-                    mgr.accountant.addToChainFree(ORDER_TYPES.SELL, netProceeds, 'fill-proceeds');
-                    if (mgr.accountTotals) {
-                        mgr.accountTotals.sell = (mgr.accountTotals.sell || 0) + netProceeds;
-                        mgr.accountTotals.buy = (mgr.accountTotals.buy || 0) - filledOrder.size;
-                    }
+                // SELL fills → proceeds go to buy side; BUY fills → proceeds go to sell side
+                const isSell = filledOrder.type === ORDER_TYPES.SELL;
+                const receiveSide = isSell ? 'buy' : 'sell';
+                const spendSide = isSell ? 'sell' : 'buy';
+                const receiveType = isSell ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+
+                const oldCache = mgr.funds.cacheFunds[receiveSide] || 0;
+                mgr.funds.cacheFunds[receiveSide] = oldCache + netProceeds;
+                mgr.logger.log(`[FUNDS] cacheFunds.${receiveSide} updated: ${oldCache.toFixed(5)} -> ${mgr.funds.cacheFunds[receiveSide].toFixed(5)}`, "debug");
+
+                mgr.accountant.addToChainFree(receiveType, netProceeds, 'fill-proceeds');
+                if (mgr.accountTotals) {
+                    mgr.accountTotals[receiveSide] = (mgr.accountTotals[receiveSide] || 0) + netProceeds;
+                    mgr.accountTotals[spendSide] = (mgr.accountTotals[spendSide] || 0) - filledOrder.size;
                 }
             }
 
@@ -700,7 +699,6 @@ class StrategyEngine {
 
                 if (buyPartials.length > 0 || sellPartials.length > 0) {
                     const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
-                    const hasBtsPair = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
 
                     let btsFeeReservationBuy = 0;
                     let btsFeeReservationSell = 0;
@@ -716,8 +714,8 @@ class StrategyEngine {
                     const budgetBuy = Math.max(0, (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) - btsFeeReservationBuy);
                     const budgetSell = Math.max(0, (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) - btsFeeReservationSell);
 
-                    const buyHasDust = buyPartials.length > 0 && this.getIsDust(buyPartials, "buy", budgetBuy);
-                    const sellHasDust = sellPartials.length > 0 && this.getIsDust(sellPartials, "sell", budgetSell);
+                    const buyHasDust = buyPartials.length > 0 && this.hasAnyDust(buyPartials, "buy", budgetBuy);
+                    const sellHasDust = sellPartials.length > 0 && this.hasAnyDust(sellPartials, "sell", budgetSell);
 
                     if (buyHasDust && sellHasDust) {
                         mgr.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");
@@ -728,7 +726,7 @@ class StrategyEngine {
 
             if (!shouldRebalance) {
                 mgr.logger.log("[BOUNDARY] Skipping rebalance: No full fills and no dual-side dust partials.", "info");
-                return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+                return this.emptyResult();
             }
 
             // Log detailed fund state before entering rebalance

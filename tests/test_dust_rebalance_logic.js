@@ -62,8 +62,8 @@ async function testDustTrigger() {
         orderId: '1.7.1'
     });
     
-    // We need to make sure getIsDust returns true.
-    // getIsDust uses budget to calculate idealSize.
+    // We need to make sure hasAnyDust returns true.
+    // hasAnyDust uses budget to calculate idealSize.
     
     result = await manager.strategy.processFilledOrders([]);
     assert.strictEqual(result.ordersToPlace.length, 0, 'Should still skip rebalance for single-side dust');
