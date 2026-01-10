@@ -64,10 +64,19 @@ class SyncEngine {
      * 4. Size updates are applied via applyChainSizeToGridOrder() which handles
      *    precision conversion and may adjust sizes slightly for blockchain granularity
      *
-     * RETURNS: { filledOrders, updatedOrders, ordersNeedingCorrection }
-     * - filledOrders: Orders that completed (now SPREAD placeholders)
-     * - updatedOrders: All orders modified during sync (state changes, size updates)
-     * - ordersNeedingCorrection: Orders with price slippage requiring correction
+      * PRICE TOLERANCE CALCULATION:
+      * calculatePriceTolerance() can return null in these cases:
+      *   1. assets parameter is null/missing
+      *   2. gridPrice is 0 or null (invalid price)
+      *   3. orderSize is 0 or null (invalid size - orders should not sync with 0 size)
+      *   4. assetA or assetB precision is undefined (asset metadata not loaded)
+      * When tolerance is null, we treat it as 0 (strict: any price difference flagged).
+      * This is safe because null signals a configuration/data issue, not a real order.
+      *
+      * RETURNS: { filledOrders, updatedOrders, ordersNeedingCorrection }
+      * - filledOrders: Orders that completed (now SPREAD placeholders)
+      * - updatedOrders: All orders modified during sync (state changes, size updates)
+      * - ordersNeedingCorrection: Orders with price slippage requiring correction
      *
      * EDGE CASES HANDLED:
      * - Orphan chain orders (placed but grid lost track due to race condition)
@@ -192,14 +201,20 @@ class SyncEngine {
         // Lock orders before reconciliation
         mgr.lockOrders([...orderIdsToLock]);
 
-        // Set up lock refresh mechanism to prevent timeout during long reconciliation
-        // Refreshes every LOCK_TIMEOUT_MS/2 to keep locks alive
-        //
-        // DESIGN NOTE: The refresh mechanism ensures that long-running reconciliations
-        // don't lose their locks mid-operation. If reconciliation completes normally,
-        // clearInterval() in the finally block stops the refresh. If the process crashes
-        // before finally executes, the locks will eventually expire after LOCK_TIMEOUT_MS,
-        // allowing orders to be unlocked and traded again in the next bot instance.
+         // Set up lock refresh mechanism to prevent timeout during long reconciliation
+         // Refreshes every LOCK_TIMEOUT_MS/2 to keep locks alive
+         //
+         // DESIGN NOTE: The refresh mechanism ensures that long-running reconciliations
+         // don't lose their locks mid-operation. If reconciliation completes normally,
+         // clearInterval() in the finally block stops the refresh. If the process crashes
+         // before finally executes, the locks will eventually expire after LOCK_TIMEOUT_MS,
+         // allowing orders to be unlocked and traded again in the next bot instance.
+         //
+         // RACE WINDOW: There is a small theoretical race between clearing the interval
+         // and unlocking (if another thread reads shadowOrderIds in that window). This is
+         // acceptable because: (1) it's microseconds-long, (2) worst case is a lock held
+         // slightly too long (safe), not released too early (unsafe), and (3) only matters
+         // on path to process crash which already breaks invariants.
         const lockRefreshInterval = setInterval(() => {
             const now = Date.now();
             for (const id of orderIdsToLock) {
@@ -242,10 +257,15 @@ class SyncEngine {
                 chainOrderIdsOnGrid.add(gridOrder.orderId);
                 matchedGridOrderIds.add(gridOrder.id);
 
-                const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets) || 0;
-                if (priceTolerance !== null && Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
-                    ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
-                }
+                 // Calculate price tolerance for comparison
+                 // Returns null if: assets missing, gridPrice is 0/null, orderSize is 0/null, or precision is undefined
+                 // In those cases, we assume tolerance of 0 (strict price matching required)
+                 const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets) ?? 0;
+                 
+                 // Flag order if chain price exceeds the tolerance threshold
+                 if (Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
+                     ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
+                 }
 
                 const precision = (gridOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const currentSizeInt = floatToBlockchainInt(gridOrder.size, precision);
@@ -280,34 +300,40 @@ class SyncEngine {
                 }
                 mgr._updateOrder(updatedOrder);
                 updatedOrders.push(updatedOrder);
-            } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
-                if (gridOrder.orderId && !parsedChainOrders.has(gridOrder.orderId)) {
-                    const filledOrder = { ...gridOrder };
-                    const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                    mgr._updateOrder(spreadOrder);
-                    filledOrders.push(filledOrder);
-                }
-            }
+             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
+                 // CRITICAL: Re-verify orderId after lock is held to prevent TOCTOU race
+                 // Another thread could have cleared orderId between the loop check and execution
+                 const currentGridOrder = mgr.orders.get(gridOrder.id);
+                 if (currentGridOrder?.orderId && !parsedChainOrders.has(currentGridOrder.orderId)) {
+                     const filledOrder = { ...currentGridOrder };
+                     const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
+                     mgr._updateOrder(spreadOrder);
+                     filledOrders.push(filledOrder);
+                 }
+             }
         }
 
-        for (const [chainOrderId, chainOrder] of parsedChainOrders) {
-            if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
-            let match = findMatchingGridOrderByOpenOrder(
-                { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, 
-                { 
-                    orders: mgr.orders, 
-                    assets: mgr.assets, 
-                    calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), 
-                    logger: mgr.logger,
-                    allowSmallerChainSize: true 
-                }
-            );
+         for (const [chainOrderId, chainOrder] of parsedChainOrders) {
+             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
+             
+             let match = findMatchingGridOrderByOpenOrder(
+                 { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, 
+                 { 
+                     orders: mgr.orders, 
+                     assets: mgr.assets, 
+                     calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), 
+                     logger: mgr.logger,
+                     allowSmallerChainSize: true 
+                 }
+             );
 
-            if (match && !matchedGridOrderIds.has(match.id)) {
-                const bestMatch = { ...match }; // CLONE HERE
-                bestMatch.orderId = chainOrderId;
-                bestMatch.state = ORDER_STATES.ACTIVE;
-                matchedGridOrderIds.add(bestMatch.id);
+             // CRITICAL: Check matchedGridOrderIds BEFORE assigning to prevent double-processing
+             // If another chain order already claimed this grid order, skip silently but log
+             if (match && !matchedGridOrderIds.has(match.id)) {
+                 const bestMatch = { ...match }; // CLONE HERE
+                 bestMatch.orderId = chainOrderId;
+                 bestMatch.state = ORDER_STATES.ACTIVE;
+                 matchedGridOrderIds.add(bestMatch.id);
 
                 const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 if (floatToBlockchainInt(bestMatch.size, precision) !== floatToBlockchainInt(chainOrder.size, precision)) {
@@ -324,12 +350,20 @@ class SyncEngine {
                         continue;
                     }
                 }
-                mgr._updateOrder(bestMatch);
-                updatedOrders.push(bestMatch);
-                chainOrderIdsOnGrid.add(chainOrderId);
-            }
-        }
-    }
+                 mgr._updateOrder(bestMatch);
+                 updatedOrders.push(bestMatch);
+                 chainOrderIdsOnGrid.add(chainOrderId);
+             } else if (match) {
+                 // Chain order found a grid match, but another chain order already claimed it
+                 // This indicates potential data corruption or race condition in blockchain state
+                 mgr.logger?.log?.(
+                     `Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, ` +
+                     `but grid order was already matched to another chain order. Skipping to prevent double-assignment.`,
+                     'warn'
+                 );
+             }
+         }
+     }
 
     /**
      * Process a single fill history operation (incremental update).
@@ -375,17 +409,22 @@ class SyncEngine {
      * - partialFill: true if fill was partial (order still on chain), false if complete
      */
     syncFromFillHistory(fill) {
-        const mgr = this.manager;
-        if (!fill || !fill.op || !fill.op[1]) return { filledOrders: [], updatedOrders: [], partialFill: false };
+         const mgr = this.manager;
+         if (!fill || !fill.op || !fill.op[1]) return { filledOrders: [], updatedOrders: [], partialFill: false };
 
-        const fillOp = fill.op[1];
-        const blockNum = fill.block_num;
-        const historyId = fill.id;
-        const isMaker = fillOp.is_maker === true;  // Preserve maker/taker flag for fee calculation
+         const fillOp = fill.op[1];
+         const blockNum = fill.block_num;
+         const historyId = fill.id;
+         const isMaker = fillOp.is_maker === true;  // Preserve maker/taker flag for fee calculation
+         const orderId = fillOp.order_id;
 
-        mgr.pauseFundRecalc();
-        try {
-            const orderId = fillOp.order_id;
+         // Lock the order to prevent concurrent modifications from createOrder/cancelOrder/sync
+         // This is critical to prevent TOCTOU races where fill processing updates a stale order
+         const orderIdsToLock = new Set([orderId]);
+         mgr.lockOrders([...orderIdsToLock]);
+
+         mgr.pauseFundRecalc();
+         try {
             const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
             const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
 
@@ -460,40 +499,48 @@ class SyncEngine {
                 updatedOrder.state = ORDER_STATES.PARTIAL;
                 applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
 
-                if (updatedOrder.isDoubleOrder && updatedOrder.mergedDustSize) {
-                    updatedOrder.filledSinceRefill = (Number(updatedOrder.filledSinceRefill) || 0) + filledAmount;
-                    const mergedDustSize = Number(updatedOrder.mergedDustSize);
+                 if (updatedOrder.isDoubleOrder && updatedOrder.mergedDustSize) {
+                     const mergedDustSize = Number(updatedOrder.mergedDustSize);
+                     const priorFilledSinceRefill = Number(updatedOrder.filledSinceRefill) || 0;
+                     const newFilledSinceRefill = priorFilledSinceRefill + filledAmount;
+                     
+                     // CRITICAL: Cap filledSinceRefill to prevent unbounded accumulation
+                     // Cannot exceed mergedDustSize, so we clamp to that maximum
+                     updatedOrder.filledSinceRefill = Math.min(newFilledSinceRefill, mergedDustSize);
 
-                    // Double order stays ACTIVE while size >= original core size (before dust merged)
-                    // Once it drops below original core size, it becomes PARTIAL
-                    const originalCoreSize = (Number(matchedGridOrder.size) || 0) - mergedDustSize;
-                    const currentSize = Number(updatedOrder.size) || 0;
+                     // Double order stays ACTIVE while size >= original core size (before dust merged)
+                     // Once it drops below original core size, it becomes PARTIAL
+                     const originalCoreSize = (Number(matchedGridOrder.size) || 0) - mergedDustSize;
+                     const currentSize = Number(updatedOrder.size) || 0;
 
-                    if (currentSize < originalCoreSize) {
-                        // Order has filled below the original core size - become PARTIAL
-                        updatedOrder.state = ORDER_STATES.PARTIAL;
-                    } else {
-                        // Still at or above original core size - stay ACTIVE
-                        updatedOrder.state = ORDER_STATES.ACTIVE;
-                    }
+                     if (currentSize < originalCoreSize) {
+                         // Order has filled below the original core size - become PARTIAL
+                         updatedOrder.state = ORDER_STATES.PARTIAL;
+                     } else {
+                         // Still at or above original core size - stay ACTIVE
+                         updatedOrder.state = ORDER_STATES.ACTIVE;
+                     }
 
-                    // When accumulated fills reach mergedDustSize, trigger delayed rotation
-                    if (updatedOrder.filledSinceRefill >= mergedDustSize) {
-                        filledPortion.isDelayedRotationTrigger = true;
-                        updatedOrder.isDoubleOrder = false;
-                        updatedOrder.pendingRotation = false;
-                        updatedOrder.filledSinceRefill = 0;
-                    }
-                }
+                     // When accumulated fills reach mergedDustSize, trigger delayed rotation
+                     // Note: With the cap above, filledSinceRefill will never exceed mergedDustSize
+                     // so this comparison is safe from overflow
+                     if (updatedOrder.filledSinceRefill >= mergedDustSize) {
+                         filledPortion.isDelayedRotationTrigger = true;
+                         updatedOrder.isDoubleOrder = false;
+                         updatedOrder.pendingRotation = false;
+                         updatedOrder.filledSinceRefill = 0;
+                     }
+                 }
                 mgr._updateOrder(updatedOrder);
                 updatedOrders.push(updatedOrder);
                 filledOrders.push(filledPortion);
                 return { filledOrders, updatedOrders, partialFill: true };
-            }
-        } finally {
-            mgr.resumeFundRecalc();
-        }
-    }
+             }
+         } finally {
+             mgr.resumeFundRecalc();
+             mgr.unlockOrders([...orderIdsToLock]);
+         }
+     }
 
     /**
      * High-level dispatcher for different blockchain synchronization sources.
