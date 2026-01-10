@@ -19,7 +19,6 @@
  *
  * SECTION 1: PARSING & VALIDATION (lines 22-95)
  *   - isPercentageString, parsePercentageString
- *   - isRelativeMultiplierString, parseRelativeMultiplierString
  *   - resolveRelativePrice, toFiniteNumber, isValidNumber
  *   Purpose: Parse and validate configuration strings
  *
@@ -165,21 +164,29 @@ function parsePercentageString(v) {
     return Number.isNaN(num) ? null : num / 100.0;
 }
 
-function isRelativeMultiplierString(value) {
-    return typeof value === 'string' && /^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value);
-}
-
-function parseRelativeMultiplierString(value) {
-    if (!isRelativeMultiplierString(value)) return null;
-    const numeric = parseFloat(value.trim().toLowerCase().slice(0, -1));
-    return Number.isNaN(numeric) ? null : numeric;
-}
-
+/**
+ * Resolve a price value that may be relative (e.g., "2.5x") or absolute.
+ * Relative multipliers apply to a start price based on mode.
+ * @param {*} value - Raw config value (string like "2.5x", number, etc)
+ * @param {number} startPrice - Market price for relative calculations
+ * @param {string} mode - Relative resolution mode ('min' divides, 'max' multiplies)
+ * @returns {number|null} Resolved price or null if invalid
+ */
 function resolveRelativePrice(value, startPrice, mode = 'min') {
-    const multiplier = parseRelativeMultiplierString(value);
-    if (multiplier === null || !Number.isFinite(startPrice) || multiplier === 0) return null;
-    if (mode === 'min') return startPrice / multiplier;
-    if (mode === 'max') return startPrice * multiplier;
+    // Check if value is a relative multiplier string like "2.5x"
+    if (typeof value === 'string') {
+        // Validate format: optional whitespace, number, "x", optional whitespace
+        if (/^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value)) {
+            // Parse the numeric part before the 'x'
+            const multiplier = parseFloat(value.trim().toLowerCase().slice(0, -1));
+            
+            // Validate multiplier and start price
+            if (!Number.isNaN(multiplier) && Number.isFinite(startPrice) && multiplier !== 0) {
+                return mode === 'min' ? startPrice / multiplier : startPrice * multiplier;
+            }
+        }
+    }
+    
     return null;
 }
 
@@ -2132,8 +2139,6 @@ module.exports = {
     // Parsing
     isPercentageString,
     parsePercentageString,
-    isRelativeMultiplierString,
-    parseRelativeMultiplierString,
     resolveRelativePrice,
 
     // Fund calculations
