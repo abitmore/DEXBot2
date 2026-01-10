@@ -2,6 +2,8 @@
 
 This document provides a high-level overview of the DEXBot2 architecture, module relationships, and key data flows.
 
+> **For practical development guidance**, see [developer_guide.md](developer_guide.md) for quick start, glossary, module deep dive, and common development tasks.
+
 ---
 
 ## System Overview

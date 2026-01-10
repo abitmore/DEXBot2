@@ -2,6 +2,8 @@
 
 Welcome to DEXBot2! This guide will help you understand the codebase, navigate key concepts, and contribute effectively.
 
+> **For system design overview**, see [architecture.md](architecture.md) which provides high-level module relationships and data flows.
+
 ---
 
 ## Quick Start: Where to Begin

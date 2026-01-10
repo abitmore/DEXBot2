@@ -82,5 +82,8 @@ git checkout main && git pull && git merge --no-ff dev && git push
 ## Documentation
 - `README.md` - Full documentation
 - `docs/WORKFLOW.md` - Branch workflow
-- `docs/TESTING_IMPROVEMENTS.md` - Testing guidelines
+- `docs/architecture.md` - System architecture and module relationships
+- `docs/developer_guide.md` - Developer quick start and glossary
+- `docs/FUND_SNAPSHOT_GUIDE.md` - Fund snapshot logging system
+- `docs/TEST_UPDATES_SUMMARY.md` - Recent test coverage improvements
 - `CHANGELOG.md` - Version history

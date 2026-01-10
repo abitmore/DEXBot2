@@ -1,5 +1,28 @@
 # Fund Snapshot Logging System - Complete Guide
 
+## Quick Reference
+
+**Enable snapshots in config:**
+```json
+{ "logLevel": "debug" }
+```
+
+**Analyze snapshots:**
+```bash
+node scripts/analyze_fund_snapshots.js --bot=botname
+node scripts/analyze_fund_snapshots.js --bot=bot1 --compare=bot2
+node scripts/analyze_fund_snapshots.js --bot=botname --export  # CSV
+```
+
+**From code:**
+```javascript
+const snapshot = manager.logger.captureSnapshot(manager, 'event_type', eventId, {extraData});
+const recent = manager._snapshotHistory.getLast(10);
+const anomalies = manager._snapshotHistory.detectAnomalies();
+```
+
+---
+
 ## Overview
 
 The Fund Snapshot System provides detailed, timestamped snapshots of your trading bot's fund state at critical points during operation. This enables post-mortem analysis of fund discrepancies, detection of accounting anomalies, and verification of fund invariants.
