@@ -1404,23 +1404,61 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             return;
         }
 
+        // Load persisted grid to compare sizes for selective filtering
+        let persistedGrid = [];
+        try {
+            if (accountOrders && botKey) {
+                persistedGrid = await accountOrders.getGrid(botKey) || [];
+            }
+        } catch (err) {
+            manager?.logger?.log?.(`Warning: Could not load persisted grid for divergence filtering: ${err.message}`, 'warn');
+        }
+
         for (const orderType of manager._gridSidesUpdated) {
             const ordersOnSide = Array.from(manager.orders.values())
                 .filter(o => o.type === orderType && o.orderId && o.state === ORDER_STATES.ACTIVE);
 
             for (const order of ordersOnSide) {
-                // Mark for size correction (sizeChanged=true means we won't price-correct, just size)
-                manager.ordersNeedingPriceCorrection.push({
-                    gridOrder: { ...order },
-                    chainOrderId: order.orderId,
-                    rawChainOrder: null,
-                    expectedPrice: order.price,
-                    actualPrice: order.price,
-                    expectedSize: order.size,
-                    size: order.size,
-                    type: order.type,
-                    sizeChanged: true
-                });
+                // SELECTIVE FILTERING: Only update orders with size change >= GRID_REGENERATION_PERCENTAGE (3%)
+                // This minimizes on-chain updates while ensuring no fund leaks
+                const persistedOrder = persistedGrid.find(po => po.id === order.id);
+                
+                // If no persisted order found, it's a new order - mark for correction
+                if (!persistedOrder) {
+                    manager.ordersNeedingPriceCorrection.push({
+                        gridOrder: { ...order },
+                        chainOrderId: order.orderId,
+                        rawChainOrder: null,
+                        expectedPrice: order.price,
+                        actualPrice: order.price,
+                        expectedSize: order.size,
+                        size: order.size,
+                        type: order.type,
+                        sizeChanged: true
+                    });
+                    continue;
+                }
+
+                // Check if size change is significant (>= 3%)
+                if (hasSignificantSizeChange(persistedOrder.size, order.size)) {
+                    // Mark for size correction (sizeChanged=true means we won't price-correct, just size)
+                    manager.ordersNeedingPriceCorrection.push({
+                        gridOrder: { ...order },
+                        chainOrderId: order.orderId,
+                        rawChainOrder: null,
+                        expectedPrice: order.price,
+                        actualPrice: order.price,
+                        expectedSize: order.size,
+                        size: order.size,
+                        type: order.type,
+                        sizeChanged: true
+                    });
+                } else {
+                    manager?.logger?.log?.(
+                        `[DIVERGENCE] Skipping size update for order ${order.id}: change ${((Math.abs(order.size - persistedOrder.size) / persistedOrder.size) * 100).toFixed(2)}% is below threshold`,
+                        'debug'
+                    );
+                }
             }
         }
 
@@ -2091,6 +2129,31 @@ function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
     };
 }
 
+/**
+ * Check if a size change is significant for divergence correction purposes.
+ * Used in divergence correction flow to filter which slots get updated.
+ * Only updates slots with size change >= GRID_REGENERATION_PERCENTAGE to minimize on-chain updates.
+ * 
+ * @param {number} currentSize - Current order size (in human-readable units)
+ * @param {number} newSize - Proposed new size (in human-readable units)
+ * @param {number} thresholdPercent - Minimum change percentage (default: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE or 3%)
+ * @returns {boolean} true if change is significant, false otherwise
+ */
+function hasSignificantSizeChange(currentSize, newSize, thresholdPercent) {
+    const threshold = toFiniteNumber(thresholdPercent, GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 3);
+    const current = toFiniteNumber(currentSize);
+    const proposed = toFiniteNumber(newSize);
+    
+    if (current <= 0) {
+        // If current is 0, any positive new size is significant
+        return proposed > 0;
+    }
+    
+    const diff = Math.abs(proposed - current);
+    const percentChange = (diff / current) * 100;
+    return percentChange >= threshold;
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -2169,6 +2232,8 @@ module.exports = {
     // Size validation helpers
     checkSizesBeforeMinimum,
     checkSizesNearMinimum,
+    isSignificantSizeChange,
+    hasSignificantSizeChange,
 
     // Fee helpers
     calculateOrderCreationFees,
