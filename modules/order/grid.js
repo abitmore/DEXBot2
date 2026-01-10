@@ -352,7 +352,7 @@ class Grid {
         manager.logger.log('Starting full resync...', 'info');
 
         await manager._initializeAssets();
-        await manager.updateAccountTotals();
+        await manager.fetchAccountTotals();
 
         const chainOpenOrders = await readOpenOrdersFn();
         if (!Array.isArray(chainOpenOrders)) return;
