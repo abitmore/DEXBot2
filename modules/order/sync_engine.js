@@ -164,8 +164,8 @@ class SyncEngine {
                 const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const size = blockchainToFloat(order.for_sale, precision);
                 const price = (type === ORDER_TYPES.SELL)
-                    ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetBPrecision - assetAPrecision)
-                    : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetBPrecision - assetAPrecision);
+                    ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetAPrecision - assetBPrecision)
+                    : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetAPrecision - assetBPrecision);
 
                 // Store parsed (converted) data in parsedChainOrders
                 parsedChainOrders.set(order.id, { id: order.id, type, size, price });
