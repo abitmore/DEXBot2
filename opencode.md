@@ -1,15 +1,22 @@
 # Opencode Development Context - DEXBot2
 
 ## Branch Strategy
-**Pipeline: `test` → `dev` → `main`**
+**Pipeline: `test` → `dev` → `main`** (ONE DIRECTION ONLY!)
 
-See `docs/WORKFLOW.md` for detailed workflow.
+- **test**: Primary development branch (where work happens)
+- **dev**: Integration/staging (merged from test)
+- **main**: Production-ready (merged from dev)
+
+⚠️ **KEY RULE**: Always merge **test → dev**, NEVER dev → test
+
+See `docs/WORKFLOW.md` for detailed workflow guide.
 
 ## Current Status
-| Branch | Commit | Status |
-|--------|--------|--------|
-| test | c468f35 | Synced with origin/test |
-| dev | c468f35 | Synced with origin/dev |
+| Branch | Commits Ahead | Status |
+|--------|---|--------|
+| test | 100 | ✓ Synced with origin/test |
+| dev | 100 | ✓ Synced with origin/dev |
+| Both | Equal | ✓ Fully synchronized |
 
 ## Key Modules
 - `dexbot.js` - Entry point
