@@ -519,15 +519,15 @@ async function promptBotData(base = {}) {
     let cancelled = false;
 
     while (!finished) {
-        console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
-        console.log(`\x1b[36m1) Pair:\x1b[0m       \x1b[32m${data.assetA || '?'} / ${data.assetB || '?'} \x1b[0m`);
-        console.log(`\x1b[36m2) Identity:\x1b[0m   \x1b[33mName:\x1b[0m ${data.name || '?'} , \x1b[33mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[33mActive:\x1b[0m ${data.active}, \x1b[33mDryRun:\x1b[0m ${data.dryRun}`);
-        console.log(`\x1b[36m3) Price:\x1b[0m      \x1b[33mRange:\x1b[0m [${data.minPrice} - ${data.maxPrice}], \x1b[33mStart:\x1b[0m ${data.startPrice}`);
-        console.log(`\x1b[36m4) Grid:\x1b[0m       \x1b[33mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[33mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[33mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
-        console.log(`\x1b[36m5) Funding:\x1b[0m    \x1b[33mSell:\x1b[0m ${data.botFunds.sell}, \x1b[33mBuy:\x1b[0m ${data.botFunds.buy} | \x1b[33mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
-        console.log('--------------------------------------------------');
-        console.log('\x1b[32mS) Save & Exit\x1b[0m');
-        console.log('\x1b[31mC) Cancel (Discard changes)\x1b[0m');
+         console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
+         console.log(`\x1b[1;33m1) Pair:\x1b[0m       \x1b[1;31m${data.assetA || '?'} / ${data.assetB || '?'} \x1b[0m`);
+         console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[1;31mName:\x1b[0m ${data.name || '?'} , \x1b[1;31mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[1;31mActive:\x1b[0m ${data.active}, \x1b[1;31mDryRun:\x1b[0m ${data.dryRun}`);
+         console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[1;31mRange:\x1b[0m [${data.minPrice} - ${data.maxPrice}], \x1b[1;31mStart:\x1b[0m ${data.startPrice}`);
+         console.log(`\x1b[1;33m4) Grid:\x1b[0m       \x1b[1;31mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[1;31mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[1;31mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
+         console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[1;31mSell:\x1b[0m ${data.botFunds.sell}, \x1b[1;31mBuy:\x1b[0m ${data.botFunds.buy} | \x1b[1;31mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
+         console.log('--------------------------------------------------');
+         console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
+         console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
 
         const choice = (await readInput('\nSelect section to edit or action: ')).trim().toLowerCase();
 
