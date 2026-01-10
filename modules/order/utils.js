@@ -1376,8 +1376,20 @@ async function runGridComparisons(manager, accountOrders, botKey) {
 // Grid divergence corrections
 // ---------------------------------------------------------------------------
 /**
- * Apply order corrections for sides marked by grid comparisons.
- * Marks orders on divergence-detected sides for size correction and executes batch update.
+ * Apply order corrections for sides marked by grid comparisons (RMS divergence).
+ * FULL REGENERATION STRATEGY: When RMS divergence is detected (>14.3%), recalculate the entire
+ * grid for affected sides and apply ALL order updates on-chain.
+ *
+ * WHY FULL REGENERATION (not selective)?
+ * Selective updates would create a "Frankenstein grid" - some slots at new-calculated sizes,
+ * others at old-calculated sizes. This breaks geometric weight distribution and can cause leaks.
+ * Full regeneration ensures all slots reflect current market conditions coherently.
+ *
+ * FLOW:
+ * 1. Caller detects RMS divergence (Grid.compareGrids) and sets _gridSidesUpdated flag
+ * 2. Caller recalculates grid sizes (Grid.updateGridFromBlockchainSnapshot) and resets cacheFunds
+ * 3. This function applies ALL recalculated sizes on-chain (rotation operations)
+ * 4. Grid is re-persisted with new state, cacheFunds = 0, cycle restarts
  *
  * @param {Object} manager - The OrderManager instance
  * @param {Object} accountOrders - AccountOrders instance for persistence
@@ -1394,7 +1406,8 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
     const Grid = require('./grid');
 
     // NOTE: Grid recalculation is already done by the caller (Grid.updateGridFromBlockchainSnapshot)
-    // This function only applies the corrections on-chain, no need to recalculate again
+    // Caller has already set new optimal sizes in memory and reset cacheFunds to 0
+    // This function only applies the full set of corrected orders on-chain
 
     // Build array of orders needing correction from sides marked by grid comparisons
     // Use correction lock to protect all mutations AND the _gridSidesUpdated check (fixes TOCTOU)
@@ -1404,74 +1417,40 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             return;
         }
 
-        // Load persisted grid to compare sizes for selective filtering
-        let persistedGrid = [];
-        try {
-            if (accountOrders && botKey) {
-                persistedGrid = await accountOrders.getGrid(botKey) || [];
-            }
-        } catch (err) {
-            manager?.logger?.log?.(`Warning: Could not load persisted grid for divergence filtering: ${err.message}`, 'warn');
-        }
-
         for (const orderType of manager._gridSidesUpdated) {
             const ordersOnSide = Array.from(manager.orders.values())
                 .filter(o => o.type === orderType && o.orderId && o.state === ORDER_STATES.ACTIVE);
 
             for (const order of ordersOnSide) {
-                // SELECTIVE FILTERING: Only update orders with size change >= GRID_REGENERATION_PERCENTAGE (3%)
-                // This minimizes on-chain updates while ensuring no fund leaks
-                const persistedOrder = persistedGrid.find(po => po.id === order.id);
-                
-                // If no persisted order found, it's a new order - mark for correction
-                if (!persistedOrder) {
-                    manager.ordersNeedingPriceCorrection.push({
-                        gridOrder: { ...order },
-                        chainOrderId: order.orderId,
-                        rawChainOrder: null,
-                        expectedPrice: order.price,
-                        actualPrice: order.price,
-                        expectedSize: order.size,
-                        size: order.size,
-                        type: order.type,
-                        sizeChanged: true
-                    });
-                    continue;
-                }
-
-                // Check if size change is significant (>= 3%)
-                if (hasSignificantSizeChange(persistedOrder.size, order.size)) {
-                    // Mark for size correction (sizeChanged=true means we won't price-correct, just size)
-                    manager.ordersNeedingPriceCorrection.push({
-                        gridOrder: { ...order },
-                        chainOrderId: order.orderId,
-                        rawChainOrder: null,
-                        expectedPrice: order.price,
-                        actualPrice: order.price,
-                        expectedSize: order.size,
-                        size: order.size,
-                        type: order.type,
-                        sizeChanged: true
-                    });
-                } else {
-                    manager?.logger?.log?.(
-                        `[DIVERGENCE] Skipping size update for order ${order.id}: change ${((Math.abs(order.size - persistedOrder.size) / persistedOrder.size) * 100).toFixed(2)}% is below threshold`,
-                        'debug'
-                    );
-                }
+                // FULL REGENERATION: Apply ALL orders after grid recalculation
+                // The caller (updateGridFromBlockchainSnapshot) already recalculated optimal sizes
+                // and reset cacheFunds. We apply ALL changes to maintain coherent grid distribution.
+                // NOT selective - doing selective updates would create a "Frankenstein grid"
+                // where some slots are new-calculated and others are stale-old.
+                manager.ordersNeedingPriceCorrection.push({
+                    gridOrder: { ...order },
+                    chainOrderId: order.orderId,
+                    rawChainOrder: null,
+                    expectedPrice: order.price,
+                    actualPrice: order.price,
+                    expectedSize: order.size,
+                    size: order.size,
+                    type: order.type,
+                    sizeChanged: true
+                });
             }
         }
 
         if (manager.ordersNeedingPriceCorrection.length > 0) {
             manager.logger?.log?.(
-                `DEBUG: Marked ${manager.ordersNeedingPriceCorrection.length} orders for size correction after grid divergence detection (sides: ${manager._gridSidesUpdated.join(', ')})`,
+                `[DIVERGENCE] Full grid regeneration: applying ${manager.ordersNeedingPriceCorrection.length} recalculated orders for sides: ${manager._gridSidesUpdated.join(', ')}. Reason: RMS divergence exceeded 14.3% threshold.`,
                 'info'
             );
 
             // Log specific orders being corrected
             manager.ordersNeedingPriceCorrection.slice(0, 3).forEach(corr => {
                 manager.logger?.log?.(
-                    `  Correcting: ${corr.chainOrderId} | current size: ${corr.size.toFixed(8)} | price: ${corr.expectedPrice.toFixed(4)}`,
+                    `  [DIVERGENCE] Updating order: ${corr.chainOrderId} | new size: ${corr.size.toFixed(8)} | price: ${corr.expectedPrice.toFixed(4)}`,
                     'debug'
                 );
             });
