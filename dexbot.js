@@ -24,6 +24,7 @@ const accountBots = require('./modules/account_bots');
 const { parseJsonWithComments } = accountBots;
 const { createBotKey } = require('./modules/account_orders');
 const SharedDEXBot = require('./modules/dexbot_class');
+const { authenticateWithChainKeys } = require('./modules/dexbot_class');
 
 // Note: accountOrders is now per-bot only. Each bot has its own AccountOrders instance
 // created in DEXBot.start() (line 663). This eliminates shared-file race conditions.
@@ -201,14 +202,14 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
  */
 async function authenticateMasterPassword() {
     try {
-        return await chainKeys.authenticate();
+        return await authenticateWithChainKeys();
     } catch (err) {
         if (!accountKeysAutostarted && err && err.message && err.message.includes('No master password set')) {
             accountKeysAutostarted = true;
             console.log('no master password set');
             console.log('autostart account keys');
             await runAccountManager();
-            return await chainKeys.authenticate();
+            return await authenticateWithChainKeys();
         }
         throw err;
     }

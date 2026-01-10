@@ -25,6 +25,30 @@ const { parseJsonWithComments } = require('./account_bots');
 const PROFILES_BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 
+// ════════════════════════════════════════════════════════════════════════════════
+// Shared utility functions used by bot.js and dexbot.js
+// ════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Authenticate with BitShares chain keys (core logic without error handling variants)
+ * @returns {Promise<string>} Master password
+ * @throws {Error} If authentication fails
+ */
+async function authenticateWithChainKeys() {
+    return await chainKeys.authenticate();
+}
+
+/**
+ * Normalize bot entry with metadata (active flag and botKey)
+ * @param {Object} entry - Bot configuration entry from bots.json
+ * @param {number} index - Index in bots array
+ * @returns {Object} Normalized entry with active, botIndex, and botKey fields
+ */
+function normalizeBotEntry(entry, index = 0) {
+    const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
+    return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
+}
+
 class DEXBot {
     /**
      * Create a new DEXBot instance
@@ -1011,16 +1035,11 @@ class DEXBot {
             this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
         }
 
-        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
-        const normalizeBotEntry = (entry, index = 0) => {
-            const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
-            return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
-        };
-
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
-        const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
+         // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
+         const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+         const allActiveBots = allBotsConfig
+             .filter(b => b.active !== false)
+             .map((b, idx) => normalizeBotEntry(b, idx));
 
         await this.accountOrders.ensureBotEntries(allActiveBots);
 
@@ -1599,3 +1618,5 @@ class DEXBot {
 }
 
 module.exports = DEXBot;
+module.exports.authenticateWithChainKeys = authenticateWithChainKeys;
+module.exports.normalizeBotEntry = normalizeBotEntry;

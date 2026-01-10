@@ -57,10 +57,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const DEXBot = require('./modules/dexbot_class');
 const accountBots = require('./modules/account_bots');
 const { parseJsonWithComments } = accountBots;
 const { createBotKey } = require('./modules/account_orders');
+const DEXBot = require('./modules/dexbot_class');
+const { authenticateWithChainKeys, normalizeBotEntry } = require('./modules/dexbot_class');
 
 const PROFILES_BOTS_FILE = path.join(__dirname, 'profiles', 'bots.json');
 
@@ -106,16 +107,15 @@ function loadBotConfig(name) {
     }
 }
 
-// Authenticate master password
+// Authenticate master password with environment variable check and error handling
 async function authenticateMasterPassword() {
-    const chainKeys = require('./modules/chain_keys');
     // Check environment variable first
     if (process.env.MASTER_PASSWORD) {
         console.log('[bot.js] Master password loaded from environment');
         return process.env.MASTER_PASSWORD;
     }
 
-    // Try interactive prompt
+    // Try interactive prompt with log suppression
     try {
         console.log('[bot.js] Prompting for master password...');
 
@@ -128,7 +128,7 @@ async function authenticateMasterPassword() {
             }
         };
 
-        const masterPassword = await chainKeys.authenticate();
+        const masterPassword = await authenticateWithChainKeys();
 
         // Restore console output
         console.log = originalLog;
@@ -141,12 +141,6 @@ async function authenticateMasterPassword() {
         }
         throw err;
     }
-}
-
-// Normalize bot entry with metadata
-function normalizeBotEntry(entry, index = 0) {
-    const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
-    return { ...normalized, botIndex: index, botKey: createBotKey(normalized, index) };
 }
 
 // Main entry point
