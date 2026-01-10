@@ -13,8 +13,7 @@ const {
     findMatchingGridOrderByOpenOrder, 
     applyChainSizeToGridOrder, 
     convertToSpreadPlaceholder,
-    hasValidAccountTotals,
-    tagAsBlockchainInt
+    hasValidAccountTotals
 } = require('./utils');
 
 class SyncEngine {
@@ -131,7 +130,11 @@ class SyncEngine {
         const assetAPrecision = mgr.assets.assetA.precision;
         const assetBPrecision = mgr.assets.assetB.precision;
 
+        // Use separate maps: parsed (floats) and raw (blockchain integers)
+        // This eliminates type confusion - each map has a single, clear purpose
         const parsedChainOrders = new Map();
+        const rawChainOrders = new Map();
+
         for (const order of chainOrders) {
             // Validate order structure before processing
             if (!order || !order.id || !order.sell_price || !order.for_sale) {
@@ -150,14 +153,15 @@ class SyncEngine {
 
                 const type = (sellAssetId === mgr.assets.assetA.id) ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
                 const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                const size = blockchainToFloat(order.for_sale, precision, true); // tag=true for type safety
+                const size = blockchainToFloat(order.for_sale, precision);
                 const price = (type === ORDER_TYPES.SELL)
                     ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetBPrecision - assetAPrecision)
                     : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetBPrecision - assetAPrecision);
-                // IMPORTANT: Store ONLY typed values in parsedChainOrders to prevent accidental mixing
-                // of floats and blockchain integers. Never store untagged raw data.
-                const rawBlockchainInt = tagAsBlockchainInt(order.for_sale, `chainOrder.${order.id}.for_sale`);
-                parsedChainOrders.set(order.id, { id: order.id, type, size, price, rawBlockchainInt });
+
+                // Store parsed (converted) data in parsedChainOrders
+                parsedChainOrders.set(order.id, { id: order.id, type, size, price });
+                // Store raw blockchain data in separate map - clean separation of concerns
+                rawChainOrders.set(order.id, order);
             } catch (e) {
                 mgr.logger?.log?.(`Warning: Error parsing chain order ${order.id}: ${e.message}`, 'warn');
                 continue;
@@ -207,7 +211,7 @@ class SyncEngine {
         try {
             mgr.pauseFundRecalc();
             // Reconciliation logic moved below in the try block
-            this._performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders,
+            this._performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
                                             chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection);
         } finally {
             mgr.resumeFundRecalc();
@@ -223,8 +227,12 @@ class SyncEngine {
     /**
      * Internal helper that performs the actual reconciliation logic.
      * Called with locks held to prevent concurrent modifications.
+     * 
+     * Uses two separate maps:
+     * - parsedChainOrders: Converted values (floats) - use for logic
+     * - rawChainOrders: Raw blockchain data - keep for reference
      */
-    _performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders,
+    _performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
                                chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection) {
 
         for (const gridOrder of mgr.orders.values()) {
