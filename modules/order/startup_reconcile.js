@@ -273,8 +273,8 @@ async function decideStartupGridAction({
         return { shouldRegenerate: true, hasActiveMatch: false, resumedByPrice: false, matchedCount: 0 };
     }
 
-    const chainOrderIds = new Set(chain.map(o => o && o.id).filter(Boolean));
-    const hasActiveMatch = persisted.some(order => order && order.state === 'active' && order.orderId && chainOrderIds.has(order.orderId));
+     const chainOrderIds = new Set(chain.map(o => o && o.id).filter(Boolean));
+     const hasActiveMatch = persisted.some(order => order && order.state === ORDER_STATES.ACTIVE && order.orderId && chainOrderIds.has(order.orderId));
     if (hasActiveMatch) {
         return { shouldRegenerate: false, hasActiveMatch: true, resumedByPrice: false, matchedCount: 0 };
     }
@@ -299,16 +299,30 @@ async function decideStartupGridAction({
  * from current on-chain open orders.
  */
 async function reconcileStartupOrders({
-    manager,
-    config,
-    account,
-    privateKey,
-    chainOrders,
-    chainOpenOrders,
-    syncResult,
-}) {
-    const logger = manager && manager.logger;
-    const dryRun = !!(config && config.dryRun);
+     manager,
+     config,
+     account,
+     privateKey,
+     chainOrders,
+     chainOpenOrders,
+     syncResult,
+ }) {
+     // Parameter validation
+     if (!manager || typeof manager.synchronizeWithChain !== 'function') {
+         throw new Error('reconcileStartupOrders: manager must be provided with synchronizeWithChain method');
+     }
+     if (typeof manager.getOrdersByTypeAndState !== 'function') {
+         throw new Error('reconcileStartupOrders: manager.getOrdersByTypeAndState method not found');
+     }
+     if (!account || !privateKey) {
+         throw new Error('reconcileStartupOrders: account and privateKey are required');
+     }
+     if (!chainOrders || typeof chainOrders.updateOrder !== 'function' || typeof chainOrders.cancelOrder !== 'function' || typeof chainOrders.createOrder !== 'function') {
+         throw new Error('reconcileStartupOrders: chainOrders must provide updateOrder, cancelOrder, and createOrder methods');
+     }
+     
+     const logger = manager && manager.logger;
+     const dryRun = !!(config && config.dryRun);
 
     const parsedChain = (chainOpenOrders || [])
         .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
@@ -363,43 +377,44 @@ async function reconcileStartupOrders({
         }
     }
 
-    // PHASE 2: Update remaining unmatched orders to their target sizes
-    for (let i = 0; i < sellUpdates; i++) {
-        // Skip the cancelled order's slot - will be handled in Phase 3
-        if (cancelledSellIndex !== null && i === cancelledSellIndex) {
-            continue;
-        }
-        const chainOrder = sortedUnmatchedSells[i];
-        const gridOrder = desiredSellSlots[i];
-        logger && logger.log && logger.log(
-            `Startup: Updating chain SELL ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
-            'info'
-        );
-        try {
-            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
-        } catch (err) {
-            logger && logger.log && logger.log(`Startup: Failed to update SELL ${chainOrder.id}: ${err.message}`, 'error');
-        }
-    }
+     // PHASE 2: Update remaining unmatched orders to their target sizes
+     for (let i = 0; i < sellUpdates; i++) {
+         // Skip the cancelled order's slot - will be handled in Phase 3
+         if (cancelledSellIndex !== null && i === cancelledSellIndex) {
+             continue;
+         }
+         const chainOrder = sortedUnmatchedSells[i];
+         const gridOrder = desiredSellSlots[i];
+         logger && logger.log && logger.log(
+             `Startup: Updating chain SELL ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
+             'info'
+         );
+         try {
+             await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
+         } catch (err) {
+             logger && logger.log && logger.log(`Startup: Failed to update SELL ${chainOrder.id}: ${err.message}`, 'error');
+         }
+     }
 
-    // PHASE 3: Create new order for the grid slot that had the cancelled order
-    if (cancelledSellIndex !== null && !dryRun) {
-        const targetGridOrder = desiredSellSlots[cancelledSellIndex];
-        if (targetGridOrder) {
-            logger && logger.log && logger.log(
-                `Startup: Creating new SELL for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
-                'info'
-            );
-            try {
-                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
-            } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to create SELL for cancelled slot: ${err.message}`, 'error');
-            }
-        }
-    }
+     // PHASE 3: Create new order for the grid slot that had the cancelled order
+     if (cancelledSellIndex !== null && !dryRun) {
+         const targetGridOrder = desiredSellSlots[cancelledSellIndex];
+         if (targetGridOrder) {
+             logger && logger.log && logger.log(
+                 `Startup: Creating new SELL for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
+                 'info'
+             );
+             try {
+                 await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
+             } catch (err) {
+                 logger && logger.log && logger.log(`Startup: Failed to create SELL for cancelled slot: ${err.message}`, 'error');
+             }
+         }
+     }
 
-    // Remove processed orders from the unmatched list
-    unmatchedSells = sortedUnmatchedSells.slice(sellUpdates);
+     // Remove processed orders from the unmatched list (account for cancelled order if present)
+     const sellProcessedCount = sellUpdates + (cancelledSellIndex !== null ? 1 : 0);
+     unmatchedSells = sortedUnmatchedSells.slice(sellProcessedCount);
 
     const chainSellCount = chainSells.length;
     const sellCreateCount = Math.max(0, targetSell - chainSellCount);
@@ -489,43 +504,44 @@ async function reconcileStartupOrders({
         }
     }
 
-    // PHASE 2: Update remaining unmatched orders to their target sizes
-    for (let i = 0; i < buyUpdates; i++) {
-        // Skip the cancelled order's slot - will be handled in Phase 3
-        if (cancelledBuyIndex !== null && i === cancelledBuyIndex) {
-            continue;
-        }
-        const chainOrder = sortedUnmatchedBuys[i];
-        const gridOrder = desiredBuySlots[i];
-        logger && logger.log && logger.log(
-            `Startup: Updating chain BUY ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
-            'info'
-        );
-        try {
-            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
-        } catch (err) {
-            logger && logger.log && logger.log(`Startup: Failed to update BUY ${chainOrder.id}: ${err.message}`, 'error');
-        }
-    }
+     // PHASE 2: Update remaining unmatched orders to their target sizes
+     for (let i = 0; i < buyUpdates; i++) {
+         // Skip the cancelled order's slot - will be handled in Phase 3
+         if (cancelledBuyIndex !== null && i === cancelledBuyIndex) {
+             continue;
+         }
+         const chainOrder = sortedUnmatchedBuys[i];
+         const gridOrder = desiredBuySlots[i];
+         logger && logger.log && logger.log(
+             `Startup: Updating chain BUY ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
+             'info'
+         );
+         try {
+             await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
+         } catch (err) {
+             logger && logger.log && logger.log(`Startup: Failed to update BUY ${chainOrder.id}: ${err.message}`, 'error');
+         }
+     }
 
-    // PHASE 3: Create new order for the grid slot that had the cancelled order
-    if (cancelledBuyIndex !== null && !dryRun) {
-        const targetGridOrder = desiredBuySlots[cancelledBuyIndex];
-        if (targetGridOrder) {
-            logger && logger.log && logger.log(
-                `Startup: Creating new BUY for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
-                'info'
-            );
-            try {
-                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
-            } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to create BUY for cancelled slot: ${err.message}`, 'error');
-            }
-        }
-    }
+     // PHASE 3: Create new order for the grid slot that had the cancelled order
+     if (cancelledBuyIndex !== null && !dryRun) {
+         const targetGridOrder = desiredBuySlots[cancelledBuyIndex];
+         if (targetGridOrder) {
+             logger && logger.log && logger.log(
+                 `Startup: Creating new BUY for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
+                 'info'
+             );
+             try {
+                 await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
+             } catch (err) {
+                 logger && logger.log && logger.log(`Startup: Failed to create BUY for cancelled slot: ${err.message}`, 'error');
+             }
+         }
+     }
 
-    // Remove processed orders from the unmatched list
-    unmatchedBuys = sortedUnmatchedBuys.slice(buyUpdates);
+     // Remove processed orders from the unmatched list (account for cancelled order if present)
+     const buyProcessedCount = buyUpdates + (cancelledBuyIndex !== null ? 1 : 0);
+     unmatchedBuys = sortedUnmatchedBuys.slice(buyProcessedCount);
 
     const chainBuyCount = chainBuys.length;
     const buyCreateCount = Math.max(0, targetBuy - chainBuyCount);
