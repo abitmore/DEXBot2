@@ -71,7 +71,7 @@
  * SECTION 10: FILTERING & ANALYSIS (lines 1525-1750)
  *   - filterOrdersByType, filterOrdersByTypeAndState
  *   - sumOrderSizes, countOrdersByType
- *   - checkSizesBeforeMinimum, checkSizesNearMinimum
+ *   - checkSizesBeforeMinimum
  *   - shouldFlagOutOfSpread
  *   Purpose: Filter, count, and analyze orders
  *
@@ -1615,18 +1615,6 @@ function checkSizesBeforeMinimum(sizes, minSize, precision) {
 }
 
 /**
- * Check if any order sizes fall near a warning threshold.
- * Uses precision-aware integer comparison when available.
- * @param {Array<number>} sizes - Order sizes to check
- * @param {number} warningSize - Warning threshold size
- * @param {number|null} precision - Blockchain precision for integer comparison
- * @returns {boolean} True if any size is near/below warning threshold
- */
-function checkSizesNearMinimum(sizes, warningSize, precision) {
-    return checkSizeThreshold(sizes, warningSize, precision, false);
-}
-
-/**
  * Calculate BTS fees needed for creating target orders (with FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER buffer for rotations).
  * Returns 0 if pair doesn't include BTS, or FEE_PARAMETERS.BTS_FALLBACK_FEE as fallback if calculation fails.
  * @param {string} assetA - First asset symbol
@@ -2121,8 +2109,8 @@ module.exports = {
     getPrecisionsForManager,
 
     // Size validation helpers
+    checkSizeThreshold,
     checkSizesBeforeMinimum,
-    checkSizesNearMinimum,
     isSignificantSizeChange,
     hasSignificantSizeChange,
 
