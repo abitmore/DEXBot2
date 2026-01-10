@@ -19,11 +19,6 @@ class StrategyEngine {
         this.manager = manager;
     }
 
-    /** Create empty result object for early returns */
-    emptyResult() {
-        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
-    }
-
     /**
      * Calculate the spread gap size (number of empty slots between BUY and SELL zones).
      * Used during boundary initialization and role assignment.
@@ -101,7 +96,7 @@ class StrategyEngine {
             .filter(o => o.price != null)
             .sort((a, b) => a.price - b.price);
 
-        if (allSlots.length === 0) return this.emptyResult();
+        if (allSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
 
         // Calculate gap slots once for use throughout the rebalance
         const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
@@ -298,7 +293,7 @@ class StrategyEngine {
      * 3. Naturally results in 'Refill at Spread' and 'Activate at Edge' reactions.
      */
     async rebalanceSideRobust(type, allSlots, sideSlots, direction, totalSideBudget, availablePool, excludeIds, reactionCap, fills = []) {
-        if (sideSlots.length === 0) return this.emptyResult();
+        if (sideSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
 
         const mgr = this.manager;
         const side = type === ORDER_TYPES.BUY ? "buy" : "sell";
@@ -796,7 +791,7 @@ class StrategyEngine {
 
             if (!shouldRebalance) {
                 mgr.logger.log("[BOUNDARY] Skipping rebalance: No full fills and no dual-side dust partials.", "info");
-                return this.emptyResult();
+                return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
             }
 
             // Log detailed fund state before entering rebalance
