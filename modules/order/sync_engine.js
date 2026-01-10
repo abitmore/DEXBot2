@@ -13,7 +13,8 @@ const {
     findMatchingGridOrderByOpenOrder, 
     applyChainSizeToGridOrder, 
     convertToSpreadPlaceholder,
-    hasValidAccountTotals
+    hasValidAccountTotals,
+    tagAsBlockchainInt
 } = require('./utils');
 
 class SyncEngine {
@@ -153,7 +154,10 @@ class SyncEngine {
                 const price = (type === ORDER_TYPES.SELL)
                     ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetBPrecision - assetAPrecision)
                     : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetBPrecision - assetAPrecision);
-                parsedChainOrders.set(order.id, { id: order.id, type, size, price, raw: order });
+                // IMPORTANT: Store ONLY typed values in parsedChainOrders to prevent accidental mixing
+                // of floats and blockchain integers. Never store untagged raw data.
+                const rawBlockchainInt = tagAsBlockchainInt(order.for_sale, `chainOrder.${order.id}.for_sale`);
+                parsedChainOrders.set(order.id, { id: order.id, type, size, price, rawBlockchainInt });
             } catch (e) {
                 mgr.logger?.log?.(`Warning: Error parsing chain order ${order.id}: ${e.message}`, 'warn');
                 continue;

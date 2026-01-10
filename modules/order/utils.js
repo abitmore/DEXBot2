@@ -544,13 +544,15 @@ function parseChainOrder(chainOrder, assets) {
             if (type === ORDER_TYPES.SELL) {
                 // For SELL: for_sale is in assetA (base asset)
                 const prec = assets?.assetA?.precision ?? 0;
-                size = blockchainToFloat(Number(chainOrder.for_sale), prec, true); // tag=true for type safety
+                // NOTE: Return plain number here. Tagging happens at higher-level boundaries
+                // (e.g., in sync_engine) to avoid mixing typed and untyped values.
+                size = blockchainToFloat(Number(chainOrder.for_sale), prec);
             } else {
                 // For BUY: for_sale is in assetB (quote asset we're selling)
                 // IMPORTANT: grid BUY sizes are tracked in assetB units (see ORDER_STATES docs).
                 // So we keep size in assetB units here.
                 const bPrec = assets?.assetB?.precision ?? 0;
-                size = blockchainToFloat(Number(chainOrder.for_sale), bPrec, true); // tag=true for type safety
+                size = blockchainToFloat(Number(chainOrder.for_sale), bPrec);
             }
         }
     } catch (e) { size = null; }
