@@ -58,8 +58,6 @@ async function waitForConnected(timeoutMs = 30000) {
     }
 }
 
-function onConnected(cb) { connectedCallbacks.add(cb); return () => connectedCallbacks.delete(cb); }
-
 /**
  * Create a per-account client for signing and broadcasting transactions.
  * Each account needs its own client instance with the private key.
@@ -76,7 +74,6 @@ module.exports = {
     BitShares: BitSharesLib,
     createAccountClient,
     waitForConnected,
-    onConnected,
     setSuppressConnectionLog,
     _internal: { get connected() { return connected; } }
 };
