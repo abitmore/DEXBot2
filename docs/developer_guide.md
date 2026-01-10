@@ -338,130 +338,6 @@ fetchAccountBalancesAndSetTotals()
 
 ---
 
-## Common Debugging Workflows
-
-### 1. **Fund Leak Investigation**
-
-**Symptom**: `available` funds don't match expected value
-
-**Debug Steps**:
-```javascript
-// 1. Enable debug logging
-manager.logger.level = 'debug';
-
-// 2. Check fund status
-manager.logger.logFundsStatus(manager, 'BEFORE operation');
-
-// 3. Perform operation
-await operation();
-
-// 4. Check fund status again
-manager.logger.logFundsStatus(manager, 'AFTER operation');
-
-// 5. Verify invariants
-manager.accountant._verifyFundInvariants(...);
-
-// 6. Check for index corruption
-manager.validateIndices();
-```
-
-**Common Causes**:
-- Order state transition without calling `_updateOrder()`
-- Direct modification of `orders` Map
-- Missing `recalculateFunds()` call
-- Concurrent modifications without locking
-
----
-
-### 2. **Order Stuck in Wrong State**
-
-**Symptom**: Order should be ACTIVE but shows as VIRTUAL
-
-**Debug Steps**:
-```javascript
-// 1. Check order state
-const order = manager.orders.get(orderId);
-console.log('Order state:', order.state);
-console.log('Order has orderId?', !!order.orderId);
-
-// 2. Check indices
-const inActiveIndex = manager._ordersByState[ORDER_STATES.ACTIVE].has(orderId);
-const inVirtualIndex = manager._ordersByState[ORDER_STATES.VIRTUAL].has(orderId);
-console.log('In ACTIVE index:', inActiveIndex);
-console.log('In VIRTUAL index:', inVirtualIndex);
-
-// 3. Validate all indices
-manager.validateIndices();
-
-// 4. Repair if needed
-manager._repairIndices();
-```
-
-**Common Causes**:
-- Invalid state transition attempted
-- Index corruption from direct Map modification
-- Missing `_updateOrder()` call after state change
-
----
-
-### 3. **Partial Order Not Rotating**
-
-**Symptom**: PARTIAL order should move but stays in place
-
-**Debug Steps**:
-```javascript
-// 1. Check if order is locked
-console.log('Is locked?', manager.isOrderLocked(order.id));
-console.log('Is orderId locked?', manager.isOrderLocked(order.orderId));
-
-// 2. Check if order is in rotation exclusion list
-console.log('Recently rotated?', manager._recentlyRotatedOrderIds.has(order.id));
-
-// 3. Check grid diagnostics
-manager.logger.logGridDiagnostics(manager, 'ROTATION CHECK');
-
-// 4. Check if dust
-const isDust = manager.strategy.hasAnyDust([order], order.type, budget);
-console.log('Is dust?', isDust);
-```
-
-**Common Causes**:
-- Order locked by concurrent operation
-- Order in exclusion list
-- Order size below dust threshold (5%)
-- No shortage slots available
-
----
-
-### 4. **Grid Not Rebalancing**
-
-**Symptom**: Grid sizes don't update after fills
-
-**Debug Steps**:
-```javascript
-// 1. Check divergence
-const { metric, updated } = Grid.compareGrids(calculatedGrid, persistedGrid, manager, cacheFunds);
-console.log('RMS divergence:', metric);
-console.log('Should update?', updated);
-
-// 2. Check if rebalance is paused
-console.log('Pause depth:', manager._pauseFundRecalcDepth);
-
-// 3. Check available funds
-console.log('Available buy:', manager.funds.available.buy);
-console.log('Available sell:', manager.funds.available.sell);
-
-// 4. Check cache funds
-console.log('Cache buy:', manager.funds.cacheFunds.buy);
-console.log('Cache sell:', manager.funds.cacheFunds.sell);
-```
-
-**Common Causes**:
-- Divergence below threshold
-- Fund recalculation paused
-- Insufficient available funds
-- Cache funds not being consumed
-
 ---
 
 ## How to Add New Features
@@ -985,11 +861,11 @@ try {
 }
 ```
 
-### Recent Test Coverage Improvements
+### Recent Test Coverage
 
-The test suite was recently enhanced with 23 new test cases covering the last 10 bugfixes:
+The test suite provides comprehensive coverage of fund calculations and rebalancing logic:
 
-**Key Areas:**
+**Key Areas Tested:**
 - ✅ VIRTUAL order placement with zero available pool
 - ✅ PARTIAL order updates during rebalancing
 - ✅ Grid divergence detection with stale cache
@@ -1000,6 +876,21 @@ The test suite was recently enhanced with 23 new test cases covering the last 10
 - ✅ Fee calculation with isMaker parameter
 - ✅ Market and blockchain taker fees
 - ✅ Fund precision and delta validation
+
+**Running Tests**:
+```bash
+# Test strategy rebalancing
+npx jest tests/unit/strategy.test.js
+
+# Test grid divergence
+npx jest tests/unit/grid.test.js
+
+# Test accounting precision
+npx jest tests/unit/accounting.test.js
+
+# Test all funds-related
+npx jest --testNamePattern="fund"
+```
 
 See [TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md) for detailed coverage.
 

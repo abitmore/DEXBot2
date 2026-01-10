@@ -1,4 +1,4 @@
-# Claude Development Context - DEXBot2
+# Opencode Development Context - DEXBot2
 
 ## Branch Strategy
 **Pipeline: `test` → `dev` → `main`**

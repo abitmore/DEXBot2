@@ -356,10 +356,13 @@ graph TB
 
 ### 3. Grid Divergence Detection
 
+The grid divergence system monitors and corrects misalignment between ideal grid state and persistent blockchain state.
+
 ```mermaid
 graph TB
     START[Grid Update Triggered] --> CALC[Calculate Ideal Grid<br/>Based on current funds]
-    CALC --> COMPARE[Compare to Persisted Grid]
+    CALC --> RELOAD["Force Reload Persisted Grid<br/>Ensure fresh blockchain state"]
+    RELOAD --> COMPARE[Compare to Persisted Grid]
     COMPARE --> RMS[Calculate RMS Divergence<br/>For PARTIAL orders only]
     
     RMS --> CHECK{RMS > Threshold?}
@@ -370,6 +373,8 @@ graph TB
     PERSIST --> DONE[Complete]
     SKIP --> DONE
 ```
+
+**Key Improvement (v0.6.1)**: Force reload mechanism now ensures fresh persisted grid data before comparison, preventing stale cache from causing false divergence detections.
 
 ---
 
@@ -684,7 +689,54 @@ For details, see [SNAPSHOT_QUICK_REFERENCE.md](SNAPSHOT_QUICK_REFERENCE.md).
 
 ---
 
-## Related Documentation
+## Recent Improvements
+
+### Grid Rebalancing Robustness
+
+The strategy engine has been significantly strengthened with improvements to fund validation, dust handling, and order constraints:
+
+**1. Pre-Flight Fund Validation**
+- Before executing batch order placements, available funds are validated
+- Prevents insufficient fund errors during large rotation cycles
+- Uses atomic check-and-deduct pattern for safety
+- Located in: `modules/order/strategy.js` - `rebalanceSideRobust()`
+
+**2. Dust Partial Prevention**
+- Improved dust detection algorithm prevents false positives
+- Double-creation of dust partials eliminated
+- Dust consolidation now happens in single operation
+- Detects dust as `< 5% of ideal order size`
+
+**3. Strict Order Size Constraints**
+- Orders validated to not exceed available funds
+- Maximum order size enforced during both placement and rotation
+- Prevents oversized orders that fail on-chain
+- Atomic validation with placement ensures consistency
+
+**4. Boundary Index Persistence**
+- BoundaryIdx (spread zone pivot) now correctly persisted across bot restarts
+- Ensures grid rotation continues seamlessly after divergence correction
+- Fixes grid instability from incorrect boundary tracking
+
+**5. Taker Fee Accounting**
+- Both market and blockchain taker fees now accounted for correctly
+- Fee deduction uses proper `isMaker` parameter
+- Prevents fund leaks from missing fee calculations
+- Located in: `modules/order/strategy.js` - `processFilledOrders()`
+
+**6. Rotation Completion Logic**
+- Rotation now correctly skips over insufficient slots
+- Continues to next candidate instead of stalling
+- Prevents partial rotations from leaving grid incomplete
+- Ensures all eligible orders are rotated per cycle
+
+### Related Documentation
+
+For detailed fund calculations and test coverage, see:
+- [developer_guide.md#testing-fund-calculations](developer_guide.md#testing-fund-calculations) - How fund calculations are tested
+- [TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md) - Detailed coverage of recent bugfix tests
+
+---
 
 - [Fund Movement Logic](fund_movement_logic.md) - Detailed mathematical formulas and algorithms
 - [Developer Guide](developer_guide.md) - Code navigation and onboarding

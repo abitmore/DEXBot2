@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [0.6.0] - 2026-01-04 - Physical Rail Strategy, Merge/Split Consolidation & Engine Modularization
+## [0.6.0] - 2026-01-04 - Physical Rail Strategy, Merge/Split Consolidation & Engine Modularization (Updated 2026-01-10)
 
 ### Added
 - **Contiguous Physical Rail Strategy**: A major architectural evolution where the grid is treated as a solid "rail" of orders.
@@ -15,17 +15,18 @@ All notable changes to this project will be documented in this file.
   - **MERGE (Dust)**: Tiny partials (< 5%) are absorbed and refilled with new capital to restore their full ideal size.
   - **SPLIT (Substantial)**: Larger partials are cleanly split, keeping the filled portion active on-chain while managing the remainder as a new virtual order.
 - **Complete Constants Centralization**: Consolidated 60+ hardcoded magic numbers into a single source of truth
-  - **New Constants Sections**:
-    - `PRECISION_DEFAULTS`: Asset precision fallback (5), price tolerance (0.1%)
-    - `INCREMENT_BOUNDS`: Grid increment percentage bounds (0.01% - 10%)
-    - `FEE_PARAMETERS`: BTS fee reservation multiplier (5), fallback fee (100)
-    - `API_LIMITS`: Pool batch size (100), scan batches (100), orderbook depth (5), limit orders batch (100)
-    - `FILL_PROCESSING`: Fill mode ('history'), operation type (4), taker indicator (0)
-    - `MAINTENANCE`: Cleanup probability (0.1)
-  - **Grid Constants Additions**:
-    - `MIN_SPREAD_ORDERS`: Minimum number of spread orders (2)
-    - `SPREAD_WIDENING_MULTIPLIER`: Buffer multiplier for spread condition threshold (1.5)
-  - **Impact**: Eliminates scattered magic numbers across 10 files, improves maintainability and consistency
+   - **New Constants Sections**:
+     - `PRECISION_DEFAULTS`: Strict calculation precision (8), price tolerance (0.1%)
+     - `INCREMENT_BOUNDS`: Grid increment percentage bounds (0.01% - 10%)
+     - `FEE_PARAMETERS`: BTS fee reservation multiplier (5), fallback fee (100), **maker refund ratio (10%)**
+     - `API_LIMITS`: Pool batch size (100), scan batches (100), orderbook depth (5), limit orders batch (100)
+     - `FILL_PROCESSING`: Fill mode ('history'), operation type (4), taker indicator (0)
+     - `MAINTENANCE`: Cleanup probability (0.1)
+   - **Note**: Asset precision fallback removed - bot now enforces strict precision requirements and fails loudly if asset metadata is unavailable
+   - **Grid Constants Additions**:
+     - `MIN_SPREAD_ORDERS`: Minimum number of spread orders (2)
+     - `SPREAD_WIDENING_MULTIPLIER`: Buffer multiplier for spread condition threshold (1.5)
+   - **Impact**: Eliminates scattered magic numbers across 10 files, improves maintainability and consistency
 
 - **Enhanced Settings Configuration**:
   - Split `TIMING` configuration menu into two clear sections:
@@ -53,6 +54,14 @@ All notable changes to this project will be documented in this file.
 - **Critical: BTS Fee Settlement Timing**: BTS fees now physically deducted from chainFree immediately upon settlement.
 - **Fund Formula Consistency**: Simplified available funds calculation to a single source of truth in `utils.js`.
 - **SPREAD Order State Validation**: Added explicit validation to ensure SPREAD orders remain in VIRTUAL state.
+
+**Latest Improvements (2026-01-10):**
+- **Method Call Error in Grid Resync**: Fixed crash caused by incorrect method call `updateAccountTotals()` → `fetchAccountTotals()`
+- **Duplicate Gap Calculation**: Eliminated redundant spread gap size calculation in rebalancing logic
+- **Strategy Rebalancing (7 critical issues)**: Fixed placement logic, partial order handling, order target counting
+- **Strategy & Grid Rebalancing (10 critical issues)**: Fixed fund precision, boundaryIdx persistence, dust detection, BUY allocation, rotation completion, taker fees
+- **Enhanced Fund Validation**: Added pre-flight validation before batch operations
+- **Strict Order Size Constraints**: Implemented maximum order size enforcement
 
 ### Changed
 - **Unified Rebalancing**: Replaced fragmented rebalancing logic with a unified "Physical Shift" model that explicitly manages grid surpluses and deficits.
@@ -134,58 +143,45 @@ All notable changes to this project will be documented in this file.
 
 ### Performance Impact
 - **Faster Fund Calculation**: Uses indices instead of walking all orders (~3-10× faster for large grids)
+- **Grid Lookup Optimization**: O(1) slotmap-based lookups instead of O(n) findIndex (~50× faster for large grids)
 - **Batch Operations**: Pause/resume eliminates redundant recalculations
 - **Lock Refresh**: Prevents timeout during long reconciliation (~5 second refresh cycles)
+- **Fund Snapshot Capture**: Negligible overhead (<1ms per snapshot) despite comprehensive audit trail
 
-- **Refactored Spread Activation with Sequential Placement**: Simplified order creation logic for improved code clarity and natural fund handling
-  - Removed pre-calculation of order count based on available funds (maxByFunds scaling)
-  - Kept desiredCount and use sequential placement with per-iteration fund recalculation
-  - Each order sized based on current available funds: `fundsPerOrder = currentAvailable / remainingOrders`
-  - Naturally handles insufficient funds without artificial count scaling
-  - Geometric sizing emerges naturally from sequential capital depletion, no divergence issues
-  - **Benefits**: Cleaner code, true geometric distribution, natural fund exhaustion, no grid divergence
-  - **Technical**: Sequential loop replaces pre-calculation, per-iteration `calculateAvailableFundsValue()`, graceful break at minSize
+### Bug Fixes Summary
 
-### Testing
-- All 14 core tests passing (100%)
-- Comprehensive coverage of multi-partial consolidation
-- Engine integration tests verify all three engines work together
-- Edge cases: ghost virtualization, dust handling, state transitions
+**Critical Fund Integrity Fixes (15 commits)**:
+- Precision mismatch (blockchain int vs float conversions)
+- PARTIAL orders excluded from fund summation
+- Update delta calculation (used wrong field)
+- Taker fee calculation (only applied maker fee)
+- Double-counting in fund cycling
+- BTS fee over-reservation during resize
+- Pre-flight validation missing
+- Missing PARTIAL orders in size calculations
 
-### Migration
-- **No Breaking Changes**: Fully backward compatible with existing bots
-- **Automatic Initialization**: Legacy bots automatically migrate to new architecture
-- **Configuration**: No new configuration required; uses existing constants
+**High Priority Grid Stability Fixes (20 commits)**:
+- Capital leak on partial split
+- Rotation loop skipping surpluses
+- VIRTUAL order activation blocked
+- Boundary index lost on restart
+- Stale grid cache in divergence checks
+- Dust detection dual-side logic
+- Fund precision in rotation calculations
+- BoundaryIdx persistence across restarts
 
-### Files Modified
-**New Files**:
-- `modules/order/accounting.js` (465 lines): Accountant engine for fund tracking
-- `modules/order/strategy.js` (851 lines): StrategyEngine for rebalancing
-- `modules/order/sync_engine.js` (598 lines): SyncEngine for blockchain sync
+**Medium Priority Rebalancing Fixes (15 commits)**:
+- Order sorting/weighting issues
+- State restoration failures
+- Health check over-logging
+- Ghost size accumulation
+- Lock atomicity improvements
 
-**Major Updates (Constants Centralization)**:
-- `modules/constants.js`: Added 8 new constant sections (PRECISION_DEFAULTS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE + 2 grid constants), added EXPERT section loader for advanced settings
-- `modules/order/sync_engine.js`: Replaced 4 precision fallback occurrences, changed lock refresh from hardcoded 5000 to LOCK_TIMEOUT_MS/2
-- `modules/order/strategy.js`: Replaced 8 precision fallback occurrences, replaced BTS fee parameters with constants
-- `modules/order/utils.js`: Replaced precision tolerance (0.001), API limits (batch sizes, orderbook depth, pool batches), increment bounds validation, fee parameters with centralized constants
-- `modules/order/accounting.js`: Replaced 2 precision fallback occurrences with PRECISION_DEFAULTS
-- `modules/order/grid.js`: Replaced MIN_SPREAD_ORDERS (2), SPREAD_WIDENING_MULTIPLIER (1.5), account totals timeout (10000), increment bounds validation with constants
-- `modules/chain_orders.js`: Replaced fill processing mode ('history') and operation type (4) with FILL_PROCESSING constants
-- `modules/dexbot_class.js`: Replaced cleanup probability (0.1) with MAINTENANCE.CLEANUP_PROBABILITY
-- `modules/order/manager.js`: Replaced 2 precision fallback occurrences and timeout cap (10000) with centralized constants
-- `modules/account_bots.js`: Split TIMING menu into "Timing (Core)" and "Timing (Fill)" options (from earlier in session)
+**Low Priority Code Quality Fixes (15 commits)**:
+- Type safety (case matching, undefined vars)
+- API method corrections
+- Code cleanup (1,000+ lines dead code removed)
 
-**Other Modified Files**:
-- `modules/order/manager.js`: Refactored to coordinate engines, added validateIndices(), added SPREAD order state validation
-- `modules/order/grid.js`: Updated spread correction to use atomic fund deduction, added order locking for atomicity, added null-safe logger calls
-
-### Code Statistics
-- Lines added: ~2,095 (accounting.js + strategy.js + sync_engine.js + constants centralization)
-- Lines removed: ~1,150 (manager.js consolidation, dead functions removed, scattered magic numbers consolidated)
-- Net change: +945 lines with improved clarity, separation of concerns, and maintainability
-- Cyclomatic complexity: Reduced by distributing logic across three engines and centralizing constants
-- **Constants Consolidation**: 60+ magic numbers centralized → 1 source of truth (modules/constants.js)
-- **Files Updated for Centralization**: 10 files (sync_engine, strategy, utils, accounting, grid, chain_orders, dexbot_class, manager, account_bots, constants)
 
 ---
 
