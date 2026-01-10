@@ -9,6 +9,14 @@
 
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, TIMING, INCREMENT_BOUNDS, FEE_PARAMETERS } = require('../constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
+
+// FIX: Extract magic numbers to named constants for maintainability
+const GRID_CONSTANTS = {
+    PERCENT_BOUNDS_MIN: 0,
+    PERCENT_BOUNDS_MAX: 100,
+    RMS_PERCENTAGE_SCALE: 100,  // Convert RMS percentage threshold from percent to decimal
+};
+
 const {
     floatToBlockchainInt,
     blockchainToFloat,
@@ -92,7 +100,27 @@ class Grid {
     static createOrderGrid(config) {
         const { startPrice, minPrice, maxPrice, incrementPercent } = config;
 
-        if (incrementPercent <= 0 || incrementPercent >= 100) {
+        // FIX: Add comprehensive input validation to prevent silent grid creation failures
+        if (!Number.isFinite(startPrice)) {
+            throw new Error(`Invalid startPrice: ${startPrice}. Must be a finite number.`);
+        }
+        if (!Number.isFinite(minPrice)) {
+            throw new Error(`Invalid minPrice: ${minPrice}. Must be a finite number.`);
+        }
+        if (!Number.isFinite(maxPrice)) {
+            throw new Error(`Invalid maxPrice: ${maxPrice}. Must be a finite number.`);
+        }
+        if (minPrice >= maxPrice) {
+            throw new Error(`Invalid price bounds: minPrice (${minPrice}) must be < maxPrice (${maxPrice}).`);
+        }
+        if (!(minPrice <= startPrice && startPrice <= maxPrice)) {
+            throw new Error(`startPrice (${startPrice}) must be within bounds [${minPrice}, ${maxPrice}].`);
+        }
+        if (maxPrice <= 0) {
+            throw new Error(`maxPrice (${maxPrice}) must be positive.`);
+        }
+
+        if (incrementPercent <= GRID_CONSTANTS.PERCENT_BOUNDS_MIN || incrementPercent >= GRID_CONSTANTS.PERCENT_BOUNDS_MAX) {
             throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be between ${INCREMENT_BOUNDS.MIN_PERCENT} and ${INCREMENT_BOUNDS.MAX_PERCENT}.`);
         }
 
@@ -130,21 +158,11 @@ class Grid {
         priceLevels.sort((a, b) => a - b);
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 2: FIND PIVOT INDEX (Slot closest to startPrice)
+        // STEP 2: FIND SPLIT INDEX (First slot at or above startPrice)
         // ════════════════════════════════════════════════════════════════════════════════
-        // The pivot is used as a reference point for role assignment.
-        // Not currently used for boundary (boundary is calculated separately in strategy.js)
-        // but kept for potential future use.
-
-        let pivotIdx = 0;
-        let minDiff = Infinity;
-        priceLevels.forEach((p, i) => {
-            const diff = Math.abs(p - startPrice);
-            if (diff < minDiff) {
-                minDiff = diff;
-                pivotIdx = i;
-            }
-        });
+        // The split index is used to center the spread gap around market price.
+        // Pivot concept (slot closest to startPrice) was previously used but is now
+        // calculated separately in strategy.js as part of role assignment logic.
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 3: CALCULATE SPREAD GAP SIZE
@@ -152,15 +170,14 @@ class Grid {
         // Determine how many slots should be in the spread zone.
         // See formula documentation in JSDoc above.
 
-        const step = 1 + (incrementPercent / 100);
-
         // Enforce minimum spread (prevents spread from being too narrow)
         const minSpreadPercent = incrementPercent * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
         const targetSpreadPercent = Math.max(config.targetSpreadPercent || 0, minSpreadPercent);
 
         // Calculate number of steps needed to achieve target spread
         // Formula: n = ceil(ln(1 + targetSpread/100) / ln(stepFactor))
-        const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(step));
+        // Reuse stepUp from line 99 instead of redundant 'step' variable
+        const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
 
         // Final gap size: At least MIN_SPREAD_ORDERS, or more if needed for target spread
         const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
@@ -189,6 +206,12 @@ class Grid {
         const sellSpread = gapSlots - buySpread;
 
         // Calculate zone boundaries
+        // FIX: Document subtle boundary calculation to prevent off-by-one errors
+        // buyEndIdx is the last index where buy orders exist (exclude spread zone)
+        // sellStartIdx is the first index where sell orders exist (exclude spread zone)
+        // Spread zone is [buyEndIdx + 1, sellStartIdx - 1] (empty buffer around market)
+        // Example: splitIdx=5, buySpread=2 => buyEndIdx=2, sellStartIdx=7
+        //   BUY: [0,1,2], SPREAD: [3,4,5,6], SELL: [7,8,...]
         const buyEndIdx = splitIdx - buySpread - 1;
         const sellStartIdx = splitIdx + sellSpread;
 
@@ -198,8 +221,8 @@ class Grid {
         // Convert price levels to order objects with assigned roles.
 
         const orders = priceLevels.map((price, i) => {
-            let type = ORDER_TYPES.SPREAD;
-
+            // Determine order type based on position relative to spread zone
+            let type;
             if (i <= buyEndIdx) {
                 type = ORDER_TYPES.BUY;
             } else if (i >= sellStartIdx) {
@@ -226,6 +249,19 @@ class Grid {
     }
 
     /**
+     * Internal utility to clear all order-related manager caches.
+     * Prevents stale references during grid reinitialization.
+     * @private
+     */
+    static _clearOrderCaches(manager) {
+        // FIX: Extract common cache clearing logic to reduce code duplication
+        // Used by both loadGrid() and initializeGrid()
+        manager.orders?.clear?.();
+        if (manager._ordersByState) Object.values(manager._ordersByState).forEach(set => set?.clear?.());
+        if (manager._ordersByType) Object.values(manager._ordersByType).forEach(set => set?.clear?.());
+    }
+
+    /**
      * Restore a persisted grid snapshot onto a manager instance.
      */
     static async loadGrid(manager, grid, boundaryIdx = null) {
@@ -236,9 +272,8 @@ class Grid {
             manager.logger?.log?.(`Asset initialization failed during grid load: ${e.message}`, 'warn');
         }
 
-        manager.orders.clear();
-        Object.values(manager._ordersByState).forEach(set => set.clear());
-        Object.values(manager._ordersByType).forEach(set => set.clear());
+        // Use extracted helper to clear caches with null safety
+        Grid._clearOrderCaches(manager);
 
         const savedCacheFunds = { ...manager.funds.cacheFunds };
         const savedBtsFeesOwed = manager.funds.btsFeesOwed;
@@ -250,11 +285,13 @@ class Grid {
         // Restore boundary index for StrategyEngine
         if (typeof boundaryIdx === 'number') {
             manager.boundaryIdx = boundaryIdx;
-            manager.logger.log(`Restored boundary index: ${boundaryIdx}`, 'info');
+            // FIX: Use consistent optional chaining pattern for logger calls
+            manager.logger?.log?.(`Restored boundary index: ${boundaryIdx}`, 'info');
         }
 
         grid.forEach(order => manager._updateOrder(order));
-        manager.logger.log(`Loaded ${manager.orders.size} orders from persisted grid.`, 'info');
+        // FIX: Use consistent optional chaining pattern for logger calls
+        manager.logger?.log?.(`Loaded ${manager.orders.size} orders from persisted grid.`, 'info');
     }
 
     /**
@@ -263,6 +300,14 @@ class Grid {
     static async initializeGrid(manager) {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
         await manager._initializeAssets();
+        
+        // FIX: Add explicit state validation to prevent cryptic errors later
+        if (!manager.assets || !manager.assets.assetA || !manager.assets.assetB) {
+            throw new Error('Asset initialization did not complete properly - assetA or assetB undefined');
+        }
+        if (!manager.config) {
+            throw new Error('Manager config not initialized before grid initialization');
+        }
 
         const mpRaw = manager.config.startPrice;
 
@@ -291,8 +336,10 @@ class Grid {
                 await manager.waitForAccountTotals(TIMING.ACCOUNT_TOTALS_TIMEOUT_MS);
             }
         } catch (e) {
-            // FIX: Use logger instead of console.warn (Issue #5)
             manager.logger?.log?.(`Failed to load account totals: ${e.message}`, 'warn');
+            // FIX: Add error handling - cannot proceed with grid initialization without account totals
+            // Continuing would create grid with 0 fund allocation, rendering it non-functional
+            throw new Error(`Cannot initialize grid without account totals: ${e.message}`);
         }
 
         const { orders, boundaryIdx, initialSpreadCount } = Grid.createOrderGrid(manager.config);
@@ -326,10 +373,9 @@ class Grid {
              manager.logger.log("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
          }
 
-        manager.orders.clear();
-        Object.values(manager._ordersByState).forEach(set => set.clear());
-        Object.values(manager._ordersByType).forEach(set => set.clear());
-        manager.resetFunds();
+         // Use extracted helper to clear caches
+         Grid._clearOrderCaches(manager);
+         manager.resetFunds();
 
         sizedOrders.forEach(order => manager._updateOrder(order));
 
@@ -337,7 +383,8 @@ class Grid {
         manager.targetSpreadCount = initialSpreadCount.buy + initialSpreadCount.sell;
         manager.currentSpreadCount = manager.targetSpreadCount;
 
-        manager.logger.log(`Initialized grid with ${orders.length} orders.`, 'info');
+        // FIX: Use consistent optional chaining pattern for all logger calls
+        manager.logger?.log?.(`Initialized grid with ${orders.length} orders.`, 'info');
         manager.logger?.logFundsStatus?.(manager);
         manager.logger?.logOrderGrid?.(Array.from(manager.orders.values()), manager.config.startPrice);
         manager.finishBootstrap();
@@ -348,7 +395,8 @@ class Grid {
      */
     static async recalculateGrid(manager, opts) {
         const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
-        manager.logger.log('Starting full resync...', 'info');
+        // FIX: Use consistent optional chaining pattern for logger calls
+        manager.logger?.log?.('Starting full resync...', 'info');
 
         await manager._initializeAssets();
         await manager.fetchAccountTotals();
@@ -364,12 +412,30 @@ class Grid {
         await Grid.initializeGrid(manager);
 
         const { reconcileStartupOrders } = require('./startup_reconcile');
-        await reconcileStartupOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders, syncResult: { unmatchedChainOrders: chainOpenOrders } });
-        manager.logger.log('Full resync complete.', 'info');
+        
+        // FIX: Add error context for debugging grid recalculation issues
+        try {
+            await reconcileStartupOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders, syncResult: { unmatchedChainOrders: chainOpenOrders } });
+        } catch (err) {
+            manager.logger?.log?.(`Error during startup order reconciliation: ${err.message}`, 'error');
+            throw new Error(`Grid recalculation failed during order reconciliation: ${err.message}`);
+        }
+        
+        // FIX: Use consistent optional chaining pattern for logger calls
+        manager.logger?.log?.('Full resync complete.', 'info');
     }
 
     /**
      * Check for grid divergence and trigger update if threshold is met.
+     * FIX: Complete JSDoc with parameter types and return value documentation
+     * 
+     * @param {OrderManager} manager - Manager instance with order state
+     * @param {Object} cacheFunds - Current cache funds state
+     * @param {number} cacheFunds.buy - Buy side cache funds available
+     * @param {number} cacheFunds.sell - Sell side cache funds available
+     * @returns {Object} Update status for each side
+     * @returns {boolean} returns.buyUpdated - Buy side exceeded regeneration threshold
+     * @returns {boolean} returns.sellUpdated - Sell side exceeded regeneration threshold
      */
     static checkAndUpdateGridIfNeeded(manager, cacheFunds = { buy: 0, sell: 0 }) {
         const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 1;
@@ -438,6 +504,12 @@ class Grid {
 
     /**
      * High-level entry for resizing grid from snapshot.
+     * FIX: Complete JSDoc with parameter types and return value documentation
+     * 
+     * @param {OrderManager} manager - Manager instance
+     * @param {string} orderType - 'buy', 'sell', or 'both' - which sides to update
+     * @param {boolean} fromBlockchainTimer - If true, skip refetch of account totals (already current)
+     * @returns {Promise<void>}
      */
     static async updateGridFromBlockchainSnapshot(manager, orderType = 'both', fromBlockchainTimer = false) {
         if (!fromBlockchainTimer && manager.config?.accountId) {
@@ -479,9 +551,15 @@ class Grid {
         // Filter to PARTIAL orders only (excludes ACTIVE/SPREAD which have exact sizes)
         // PARTIAL orders are where divergence matters most (they indicate partial fills)
         // Must be sorted ASC for calculateRotationOrderSizes to match geometric weight distribution
-        const filterForRms = (orders, type) => filterOrdersByTypeAndState(orders, type, ORDER_STATES.PARTIAL)
-            .filter(o => !o.isDoubleOrder)
-            .sort((a, b) => a.price - b.price);
+        // FIX: Guard against null/undefined return from filterOrdersByTypeAndState
+        const filterForRms = (orders, type) => {
+            const filtered = filterOrdersByTypeAndState(orders, type, ORDER_STATES.PARTIAL);
+            if (!Array.isArray(filtered)) return [];
+            return filtered
+                .filter(o => !o.isDoubleOrder)
+                // FIX: Use null-safe price comparison to prevent NaN in sort
+                .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
+        };
         
         const calculatedBuys = filterForRms(calculatedGrid, ORDER_TYPES.BUY);
         const calculatedSells = filterForRms(calculatedGrid, ORDER_TYPES.SELL);
@@ -518,7 +596,7 @@ class Grid {
         // Check if metrics exceed threshold and flag sides for regeneration
         let buyUpdated = false, sellUpdated = false;
         if (manager) {
-            const limit = GRID_COMPARISON.RMS_PERCENTAGE / 100;  // Convert percentage threshold to decimal
+            const limit = GRID_COMPARISON.RMS_PERCENTAGE / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;  // Convert percentage threshold to decimal
 
             if (buyMetric > limit) {
                 if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
@@ -534,8 +612,9 @@ class Grid {
 
         return {
             buy: { metric: buyMetric, updated: buyUpdated },
-            sell: { metric: sellMetric, updated: sellUpdated },
-            totalMetric: (buyMetric + sellMetric) / 2
+            sell: { metric: sellMetric, updated: sellUpdated }
+            // FIX: Removed unused totalMetric field - no caller depends on it
+            // If re-adding for monitoring/alerting, document intended use case
         };
     }
 
@@ -564,43 +643,72 @@ class Grid {
      * - Order is placed based on stale funds (use phase)
      * Result: Orders placed beyond available liquidity, fund accounting errors
      * 
+     * DESIGN DECISION: Lock is released before blockchain operations for performance
+     * - Lock held: Fund verification and correction decision (synchronized)
+     * - Lock released: Blockchain submission (async, potentially slow)
+     * - RACE CONDITION WINDOW: Between lock release and blockchain submission
+     * - MITIGATION: Pre-flight fund verification before submission; comprehensive error handling
+     * 
      * See RACE_CONDITION_ANALYSIS.md for detailed vulnerability documentation.
      */
     static async checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch = null) {
         // CRITICAL: Acquire corrections lock to serialize spread correction operations
         // This prevents concurrent fill processing from modifying funds while we're making decisions
-        return await manager._correctionsLock.acquire(async () => {
-            const currentSpread = Grid.calculateCurrentSpread(manager);
-            // Base target widens spread beyond nominal value to account for order density and price movement
-            const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-            // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
-            const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
-
-            const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
-            const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
-
-            manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
-            if (!manager.outOfSpread) return { ordersPlaced: 0, partialsMoved: 0 };
-
-            manager.logger.log(`Spread too wide (${currentSpread.toFixed(2)}%), correcting...`, 'warn');
-
-            let marketPrice = manager.config.startPrice;
-            if (BitShares) {
-                const derived = await derivePrice(BitShares, manager.assets.assetA.symbol, manager.assets.assetB.symbol, 'pool');
+        let correction = null;
+        let shouldApplyCorrection = false;
+        
+        // FIX: Derive market price OUTSIDE the lock to reduce lock contention
+        // derivePrice queries the blockchain and can be slow
+        let marketPrice = manager.config.startPrice;
+        if (BitShares) {
+            try {
+                const derived = await derivePrice(BitShares, manager.assets?.assetA?.symbol, manager.assets?.assetB?.symbol, 'pool');
                 if (derived) marketPrice = derived;
+            } catch (err) {
+                manager.logger?.log?.(`Failed to derive market price: ${err.message}`, 'warn');
             }
+        }
+        
+        try {
+            shouldApplyCorrection = await manager._correctionsLock.acquire(() => {
+                const currentSpread = Grid.calculateCurrentSpread(manager);
+                // Base target widens spread beyond nominal value to account for order density and price movement
+                const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
+                // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
+                const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
 
-            const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
-            if (!decision.side) return { ordersPlaced: 0, partialsMoved: 0 };
+                const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
+                const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
 
-            const correction = await Grid.prepareSpreadCorrectionOrders(manager, decision.side);
-            if (correction.ordersToPlace.length > 0 && updateOrdersOnChainBatch) {
+                manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
+                if (!manager.outOfSpread) return false;
+
+                manager.logger.log(`Spread too wide (${currentSpread.toFixed(2)}%), correcting...`, 'warn');
+
+                const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
+                if (!decision.side) return false;
+
+                correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side);
+                return correction && correction.ordersToPlace.length > 0;
+            });
+        } catch (err) {
+            manager.logger?.log?.(`Error checking spread condition: ${err.message}`, 'warn');
+            return { ordersPlaced: 0, partialsMoved: 0 };
+        }
+
+        // FIX: Apply blockchain operations OUTSIDE the lock to reduce lock contention
+        // The lock is only needed for fund verification; order placement doesn't need it
+        if (shouldApplyCorrection && updateOrdersOnChainBatch && correction) {
+            try {
                 await updateOrdersOnChainBatch(correction);
                 manager.recalculateFunds();
                 return { ordersPlaced: correction.ordersToPlace.length, partialsMoved: 0 };
+            } catch (err) {
+                manager.logger?.log?.(`Error applying spread correction on-chain: ${err.message}`, 'warn');
+                return { ordersPlaced: 0, partialsMoved: 0 };
             }
-            return { ordersPlaced: 0, partialsMoved: 0 };
-        });
+        }
+        return { ordersPlaced: 0, partialsMoved: 0 };
     }
 
     /**
@@ -622,7 +730,8 @@ class Grid {
             for (const o of orders) {
                 if (o.state === ORDER_STATES.VIRTUAL) seenVirtual = true;
                 if ((o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL) && seenVirtual && !hasOppositePending) {
-                    manager.logger.log(`Health violation (${label}): ${o.id} is further than VIRTUAL slot.`, 'warn');
+                    // FIX: Use consistent optional chaining pattern for logger calls
+                    manager.logger?.log?.(`Health violation (${label}): ${o.id} is further than VIRTUAL slot.`, 'warn');
                 }
             }
         };
@@ -639,8 +748,9 @@ class Grid {
         const reqSell = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.SELL);
         
         // Use available + cacheFunds to allow checking against total liquid capital
-        const buyAvailable = (manager.funds.available.buy || 0) + (manager.funds.cacheFunds.buy || 0);
-        const sellAvailable = (manager.funds.available.sell || 0) + (manager.funds.cacheFunds.sell || 0);
+        // FIX: Use optional chaining for consistent null safety
+        const buyAvailable = (manager.funds?.available?.buy || 0) + (manager.funds?.cacheFunds?.buy || 0);
+        const sellAvailable = (manager.funds?.available?.sell || 0) + (manager.funds?.cacheFunds?.sell || 0);
 
         const buyRatio = reqBuy ? (buyAvailable / reqBuy) : 0;
         const sellRatio = reqSell ? (sellAvailable / reqSell) : 0;
@@ -651,7 +761,8 @@ class Grid {
         else if (sellRatio >= 1) side = ORDER_TYPES.SELL;
 
         if (!side) {
-            manager.logger.log(`Spread correction skipped: insufficient funds for either side (buy ratio: ${buyRatio.toFixed(2)}, sell ratio: ${sellRatio.toFixed(2)}). Required: buy=${reqBuy?.toFixed(8) || 'N/A'}, sell=${reqSell?.toFixed(8) || 'N/A'}`, 'warn');
+            // FIX: Use consistent optional chaining pattern for logger calls
+            manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${buyRatio.toFixed(2)}, sell ratio: ${sellRatio.toFixed(2)}). Required: buy=${reqBuy?.toFixed(8) || 'N/A'}, sell=${reqSell?.toFixed(8) || 'N/A'}`, 'warn');
         }
 
         return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
@@ -670,14 +781,28 @@ class Grid {
         if (total <= 0 || slotsCount <= 1) return null;
 
         const precision = getPrecisionForSide(manager.assets, side);
-        const dummy = Array(slotsCount).fill({ type: targetType });
+        // FIX: Create new object for each array element to prevent shared reference mutations
+        // Array(n).fill(obj) creates array with same object reference, causing mutation issues
+        const dummy = Array.from({ length: slotsCount }, () => ({ type: targetType }));
         try {
             const sized = calculateOrderSizes(dummy, manager.config, side === 'sell' ? total : 0, side === 'buy' ? total : 0, 0, 0, precision, precision);
+            if (!Array.isArray(sized) || sized.length === 0) {
+                manager.logger?.log?.(`calculateOrderSizes returned invalid result for spread correction`, 'warn');
+                return null;
+            }
             return side === 'sell' ? sized[sized.length - 1].size : sized[0].size;
-        } catch (e) { return null; }
+        } catch (e) { 
+            manager.logger?.log?.(`Error calculating geometric size for spread correction: ${e.message}`, 'warn');
+            return null; 
+        }
     }
 
-    static async prepareSpreadCorrectionOrders(manager, preferredSide) {
+    static prepareSpreadCorrectionOrders(manager, preferredSide) {
+        // FIX: Validate preferredSide parameter to prevent silent logic errors
+        if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
+            throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
+        }
+        
         const ordersToPlace = [];
         const railType = preferredSide;
 
@@ -705,11 +830,10 @@ class Grid {
                 } else {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
                     ordersToPlace.push(activated);
-                    // OPTIMIZATION: Use batch mode to avoid multiple recalculateFunds() calls
-                    // Funds will be recalculated once after all updates, improving efficiency
-                    manager.pauseFundRecalc();
+                    // FIX: Removed unnecessary pause/resume for single update
+                    // Single _updateOrder calls automatically recalculate funds (no batching needed)
+                    // Additionally, pauseFundRecalc inside the async lock creates unnecessary overhead
                     manager._updateOrder(activated);
-                    manager.resumeFundRecalc();
                 }
             } else if (size) {
                 manager.logger.log(`Spread correction order skipped: calculated size (${size.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)})`, 'warn');
