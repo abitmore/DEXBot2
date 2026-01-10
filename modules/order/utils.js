@@ -1284,23 +1284,31 @@ async function runGridComparisons(manager, accountOrders, botKey) {
             'debug'
         );
 
-        // Step 2: Quadratic comparison (if simple check didn't trigger)
-        // Detects deeper structural divergence and also populates _gridSidesUpdated
-        if (!simpleCheckResult.buyUpdated && !simpleCheckResult.sellUpdated) {
-            const comparisonResult = Grid.compareGrids(calculatedGrid, persistedGrid, manager, manager.funds.cacheFunds);
-
-            manager.logger?.log?.(
-                `Quadratic comparison complete: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}, buyUpdated=${comparisonResult.buy.updated}, sellUpdated=${comparisonResult.sell.updated}`,
-                'debug'
-            );
-
-            if (comparisonResult.buy.metric > 0 || comparisonResult.sell.metric > 0) {
-                manager.logger?.log?.(
-                    `Grid divergence detected after rotation: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`,
-                    'info'
-                );
-            }
-        } else {
+         // Step 2: Quadratic comparison (if simple check didn't trigger)
+          // Detects deeper structural divergence and also populates _gridSidesUpdated
+          if (!simpleCheckResult.buyUpdated && !simpleCheckResult.sellUpdated) {
+              const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGrid, manager, manager.funds.cacheFunds);
+ 
+             // Safety check: ensure comparisonResult has valid structure before accessing metric
+             if (comparisonResult?.buy?.metric !== undefined && comparisonResult?.sell?.metric !== undefined) {
+                 manager.logger?.log?.(
+                     `Quadratic comparison complete: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}, buyUpdated=${comparisonResult.buy.updated}, sellUpdated=${comparisonResult.sell.updated}`,
+                     'debug'
+                 );
+ 
+                 if (comparisonResult.buy.metric > 0 || comparisonResult.sell.metric > 0) {
+                     manager.logger?.log?.(
+                         `Grid divergence detected after rotation: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`,
+                         'info'
+                     );
+                 }
+             } else {
+                 manager.logger?.log?.(
+                     `Warning: Grid comparison returned invalid structure: ${JSON.stringify(comparisonResult)}`,
+                     'warn'
+                 );
+             }
+         } else {
             manager.logger?.log?.(
                 `Simple check triggered grid updates, skipping quadratic comparison`,
                 'debug'
