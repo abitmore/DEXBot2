@@ -1376,8 +1376,16 @@ async function runGridComparisons(manager, accountOrders, botKey) {
 // Grid divergence corrections
 // ---------------------------------------------------------------------------
 /**
- * Apply order corrections for sides marked by grid comparisons.
- * Marks orders on divergence-detected sides for size correction and executes batch update.
+ * Apply order corrections for sides marked by grid comparisons (RMS divergence).
+ * INDEPENDENT SIDE UPDATES: Each side (buy/sell) is checked independently.
+ * Only sides exceeding their RMS divergence threshold are updated.
+ * Non-divergent sides remain untouched, keeping their cacheFunds stable.
+ *
+ * FLOW:
+ * 1. Caller detects RMS divergence per side (Grid.compareGrids) and sets _gridSidesUpdated flag
+ * 2. Caller recalculates grid sizes (Grid.updateGridFromBlockchainSnapshot) for each divergent side
+ * 3. This function applies only the divergent sides on-chain (rotation operations)
+ * 4. Non-divergent sides skip updates entirely, preserving their cache state
  *
  * @param {Object} manager - The OrderManager instance
  * @param {Object} accountOrders - AccountOrders instance for persistence
@@ -1390,13 +1398,13 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         return;
     }
 
-    const { ORDER_STATES } = require('../constants');
+    const { ORDER_STATES, ORDER_TYPES } = require('../constants');
     const Grid = require('./grid');
 
     // NOTE: Grid recalculation is already done by the caller (Grid.updateGridFromBlockchainSnapshot)
-    // This function only applies the corrections on-chain, no need to recalculate again
+    // Caller has already set new optimal sizes in memory for divergent sides only
+    // This function only applies the corrected orders on-chain for divergent sides
 
-    // Build array of orders needing correction from sides marked by grid comparisons
     // Use correction lock to protect all mutations AND the _gridSidesUpdated check (fixes TOCTOU)
     await manager._correctionsLock.acquire(async () => {
         // Early return check INSIDE lock to prevent TOCTOU race
@@ -1404,12 +1412,16 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             return;
         }
 
+        // Process each divergent side independently
         for (const orderType of manager._gridSidesUpdated) {
             const ordersOnSide = Array.from(manager.orders.values())
                 .filter(o => o.type === orderType && o.orderId && o.state === ORDER_STATES.ACTIVE);
 
+            const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+
             for (const order of ordersOnSide) {
-                // Mark for size correction (sizeChanged=true means we won't price-correct, just size)
+                // Update only this divergent side
+                // The caller (updateGridFromBlockchainSnapshot) already recalculated sizes for this side
                 manager.ordersNeedingPriceCorrection.push({
                     gridOrder: { ...order },
                     chainOrderId: order.orderId,
@@ -1419,6 +1431,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                     expectedSize: order.size,
                     size: order.size,
                     type: order.type,
+                    sideUpdated: sideName,
                     sizeChanged: true
                 });
             }
@@ -1426,14 +1439,14 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
         if (manager.ordersNeedingPriceCorrection.length > 0) {
             manager.logger?.log?.(
-                `DEBUG: Marked ${manager.ordersNeedingPriceCorrection.length} orders for size correction after grid divergence detection (sides: ${manager._gridSidesUpdated.join(', ')})`,
+                `[DIVERGENCE] Updating divergent sides: ${manager._gridSidesUpdated.join(', ')}. Applying ${manager.ordersNeedingPriceCorrection.length} recalculated orders. Other sides remain untouched.`,
                 'info'
             );
 
             // Log specific orders being corrected
             manager.ordersNeedingPriceCorrection.slice(0, 3).forEach(corr => {
                 manager.logger?.log?.(
-                    `  Correcting: ${corr.chainOrderId} | current size: ${corr.size.toFixed(8)} | price: ${corr.expectedPrice.toFixed(4)}`,
+                    `  [DIVERGENCE] ${corr.sideUpdated} side: ${corr.chainOrderId} | new size: ${corr.size.toFixed(8)} | price: ${corr.expectedPrice.toFixed(4)}`,
                     'debug'
                 );
             });
@@ -1446,7 +1459,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 type: correction.type
             }));
 
-            // Execute a batch correction for these marked orders
+            // Execute a batch correction for divergent side orders only
             try {
                 const result = await updateOrdersOnChainBatchFn({
                     ordersToPlace: [],
@@ -1459,23 +1472,19 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
                 // CRITICAL: Only clear flags if operations were actually executed
                 // If all operations were rejected (result.executed === false), keep flags
-                // so the grid can be re-persisted without the phantom update
                 if (result && result.executed) {
                     manager._gridSidesUpdated = [];
                     // Re-persist grid after corrections are applied to keep persisted state in sync
                     persistGridSnapshot(manager, accountOrders, botKey);
                 } else {
                     manager.logger?.log?.(
-                        `All divergence corrections were rejected (precision tolerance). Clearing flags to prevent loop.`,
+                        `Divergence corrections were rejected (precision tolerance). Clearing flags to prevent loop.`,
                         'info'
                     );
-                    // Clear flags anyway to prevent infinite loop, but don't persist
-                    // The grid state in memory is correct, blockchain just doesn't need updating
                     manager._gridSidesUpdated = [];
                 }
             } catch (err) {
                 // CRITICAL: Clear corrections AND flags on error to prevent list explosion
-                // Without this, failed corrections accumulate and never get retried
                 manager.ordersNeedingPriceCorrection = [];
                 manager._gridSidesUpdated = [];
                 manager?.logger?.log?.(`Warning: Could not execute grid divergence corrections: ${err.message}`, 'warn');
@@ -2091,6 +2100,31 @@ function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
     };
 }
 
+/**
+ * Check if a size change is significant for divergence correction purposes.
+ * Used in divergence correction flow to filter which slots get updated.
+ * Only updates slots with size change >= GRID_REGENERATION_PERCENTAGE to minimize on-chain updates.
+ * 
+ * @param {number} currentSize - Current order size (in human-readable units)
+ * @param {number} newSize - Proposed new size (in human-readable units)
+ * @param {number} thresholdPercent - Minimum change percentage (default: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE or 3%)
+ * @returns {boolean} true if change is significant, false otherwise
+ */
+function hasSignificantSizeChange(currentSize, newSize, thresholdPercent) {
+    const threshold = toFiniteNumber(thresholdPercent, GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 3);
+    const current = toFiniteNumber(currentSize);
+    const proposed = toFiniteNumber(newSize);
+    
+    if (current <= 0) {
+        // If current is 0, any positive new size is significant
+        return proposed > 0;
+    }
+    
+    const diff = Math.abs(proposed - current);
+    const percentChange = (diff / current) * 100;
+    return percentChange >= threshold;
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -2169,6 +2203,8 @@ module.exports = {
     // Size validation helpers
     checkSizesBeforeMinimum,
     checkSizesNearMinimum,
+    isSignificantSizeChange,
+    hasSignificantSizeChange,
 
     // Fee helpers
     calculateOrderCreationFees,

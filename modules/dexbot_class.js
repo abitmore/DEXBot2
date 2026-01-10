@@ -834,16 +834,6 @@ class DEXBot {
                     continue;
                 }
 
-                // Check for minimum update threshold to filter out tiny adjustments (noise)
-                const precision = (partialOrder.type === ORDER_TYPES.SELL) ? (this.manager.assets?.assetA?.precision ?? 8) : (this.manager.assets?.assetB?.precision ?? 8);
-                const currentSize = blockchainToFloat(chainOrder.for_sale, precision);
-                
-                const sizeChangeCheck = isSignificantSizeChange(currentSize, newSize);
-                if (!sizeChangeCheck.isSignificant) {
-                    this.manager.logger.log(`Skipping size update for ${partialOrder.orderId}: ${sizeChangeCheck.message}`, 'info');
-                    continue;
-                }
-
                 const op = await chainOrders.buildUpdateOrderOp(
                     this.account, partialOrder.orderId,
                     { amountToSell: newSize, orderType: partialOrder.type }
@@ -891,19 +881,6 @@ class DEXBot {
                 // Track this as an unmet rotation so we can create the new order as a placement instead
                 unmetRotations.push({ newGridId, newPrice, newSize, type });
                 continue;
-            }
-
-            // Check for minimum update threshold for size-only updates (prevent tiny updates)
-            // This filters out "wrong" updates caused by startup recalculation drift or minor divergence
-            if (!newGridId) {
-                const precision = (type === ORDER_TYPES.SELL) ? (assetA?.precision ?? 8) : (assetB?.precision ?? 8);
-                const currentSize = blockchainToFloat(chainOrder.for_sale, precision);
-                
-                const sizeChangeCheck = isSignificantSizeChange(currentSize, newSize);
-                if (!sizeChangeCheck.isSignificant) {
-                    this.manager.logger.log(`Skipping size correction for ${oldOrder.orderId}: ${sizeChangeCheck.message}`, 'info');
-                    continue;
-                }
             }
 
             try {

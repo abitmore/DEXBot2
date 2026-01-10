@@ -428,6 +428,7 @@ class Grid {
         Grid._updateOrdersForSide(manager, orderType, newSizes, orders);
         manager.recalculateFunds();
 
+        // Calculate remaining cache for this side only (independent per side)
         const totalInputInt = floatToBlockchainInt(allocatedFunds, precision);
         let totalAllocatedInt = 0;
         newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, precision));
@@ -449,18 +450,27 @@ class Grid {
 
     /**
      * Compare ideal grid vs persisted grid to detect divergence.
+     * INDEPENDENT SIDE CHECKING: Buy and sell sides are evaluated independently.
+     * Each side's RMS divergence is compared against its own threshold.
+     * Only sides exceeding the threshold are marked for update.
      *
      * PURPOSE: Detect if the calculated in-memory grid has diverged significantly from the
      * persisted grid state. High divergence indicates that order fills/rotations have caused
-     * size distributions to deviate, potentially requiring a full grid regeneration.
+     * size distributions to deviate, potentially requiring grid size recalculation.
      *
      * METRIC: RMS (Root Mean Square) percentage of relative size differences
      * Formula: RMS% = sqrt(mean((calculated - persisted) / persisted)²) × 100
-     * This measures the typical relative error across all orders.
+     * This measures the typical relative error across all orders on each side.
+     *
+     * SIDE INDEPENDENCE:
+     * - Buy side RMS is checked against GRID_COMPARISON.RMS_PERCENTAGE independently
+     * - Sell side RMS is checked against GRID_COMPARISON.RMS_PERCENTAGE independently
+     * - One side can diverge while the other remains stable (no update for stable side)
+     * - CacheFunds are updated only for sides being recalculated
      *
      * @returns {Object} { buy: {metric, updated}, sell: {metric, updated}, totalMetric }
      *   - metric: RMS% divergence (higher = more divergent)
-     *   - updated: true if metric exceeds GRID_COMPARISON.RMS_PERCENTAGE threshold
+     *   - updated: true if metric exceeds GRID_COMPARISON.RMS_PERCENTAGE threshold for that side
      */
     static compareGrids(calculatedGrid, persistedGrid, manager = null, cacheFunds = null) {
         if (!Array.isArray(calculatedGrid) || !Array.isArray(persistedGrid)) {
