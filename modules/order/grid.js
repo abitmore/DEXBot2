@@ -452,7 +452,7 @@ class Grid {
          const warningSellSize = minSellSize > 0 ? getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
          const warningBuySize = minBuySize > 0 ? getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
          if (checkSizeThreshold(sells, warningSellSize, precA, false) || checkSizeThreshold(buys, warningBuySize, precB, false)) {
-             manager.logger.log("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
+             manager.logger?.log?.("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
          }
 
          // RC-2: Use atomic clear to prevent concurrent modifications
@@ -722,13 +722,15 @@ class Grid {
             const limit = GRID_COMPARISON.RMS_PERCENTAGE / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;  // Convert percentage threshold to decimal
 
             if (buyMetric > limit) {
-                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
-                manager._gridSidesUpdated.push(ORDER_TYPES.BUY);
+                // RC-3: Use Set for automatic duplicate prevention (consistent with checkAndUpdateGridIfNeeded)
+                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = new Set();
+                manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
                 buyUpdated = true;
             }
             if (sellMetric > limit) {
-                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = [];
-                manager._gridSidesUpdated.push(ORDER_TYPES.SELL);
+                // RC-3: Use Set for automatic duplicate prevention (consistent with checkAndUpdateGridIfNeeded)
+                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = new Set();
+                manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
                 sellUpdated = true;
             }
         }
@@ -792,28 +794,35 @@ class Grid {
             }
         }
         
+        // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
+        const executeSpreadCheck = () => {
+            const currentSpread = Grid.calculateCurrentSpread(manager);
+            // Base target widens spread beyond nominal value to account for order density and price movement
+            const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
+            // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
+            const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
+
+            const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
+            const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
+
+            manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
+            if (!manager.outOfSpread) return false;
+
+            manager.logger?.log?.(`Spread too wide (${currentSpread.toFixed(2)}%), correcting...`, 'warn');
+
+            const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
+            if (!decision.side) return false;
+
+            correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side);
+            return correction && correction.ordersToPlace.length > 0;
+        };
+
         try {
-            shouldApplyCorrection = await manager._correctionsLock.acquire(() => {
-                const currentSpread = Grid.calculateCurrentSpread(manager);
-                // Base target widens spread beyond nominal value to account for order density and price movement
-                const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-                // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
-                const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
-
-                const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
-                const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
-
-                manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
-                if (!manager.outOfSpread) return false;
-
-                manager.logger.log(`Spread too wide (${currentSpread.toFixed(2)}%), correcting...`, 'warn');
-
-                const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
-                if (!decision.side) return false;
-
-                correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side);
-                return correction && correction.ordersToPlace.length > 0;
-            });
+            if (manager._correctionsLock?.acquire) {
+                shouldApplyCorrection = await manager._correctionsLock.acquire(executeSpreadCheck);
+            } else {
+                shouldApplyCorrection = executeSpreadCheck();
+            }
         } catch (err) {
             manager.logger?.log?.(`Error checking spread condition: ${err.message}`, 'warn');
             return { ordersPlaced: 0, partialsMoved: 0 };
@@ -941,7 +950,8 @@ class Grid {
             const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
             const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
             // Include cacheFunds in availability check
-            const availableFund = (manager.funds.available[sideName] || 0) + (manager.funds.cacheFunds[sideName] || 0);
+            // FIX: Use optional chaining for consistent null safety
+            const availableFund = (manager.funds?.available?.[sideName] || 0) + (manager.funds?.cacheFunds?.[sideName] || 0);
 
             if (size && size <= availableFund) {
                 // Check if available funds would create a dust-sized order (below dust threshold of ideal size)
@@ -949,7 +959,7 @@ class Grid {
                 const orderSizeRatio = (availableFund / size) * 100;
 
                 if (orderSizeRatio < dustThresholdPercent) {
-                    manager.logger.log(`Spread correction order skipped: available funds would create dust order (${orderSizeRatio.toFixed(2)}% of ideal size ${size.toFixed(8)}, below ${dustThresholdPercent}% threshold)`, 'warn');
+                    manager.logger?.log?.(`Spread correction order skipped: available funds would create dust order (${orderSizeRatio.toFixed(2)}% of ideal size ${size.toFixed(8)}, below ${dustThresholdPercent}% threshold)`, 'warn');
                 } else {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
                     ordersToPlace.push(activated);
@@ -959,7 +969,7 @@ class Grid {
                     manager._updateOrder(activated);
                 }
             } else if (size) {
-                manager.logger.log(`Spread correction order skipped: calculated size (${size.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)})`, 'warn');
+                manager.logger?.log?.(`Spread correction order skipped: calculated size (${size.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)})`, 'warn');
             }
         }
         return { ordersToPlace, partialMoves: [] };
@@ -975,7 +985,11 @@ class Grid {
         ords.forEach((order, i) => {
             const newSize = newSizes[i] || 0;
             if (order.size === undefined || Math.abs(order.size - newSize) > 1e-8) {
-                manager._updateOrder({ ...order, size: newSize });
+                try {
+                    manager._updateOrder({ ...order, size: newSize });
+                } catch (err) {
+                    manager.logger?.log?.(`Error updating order ${order.id} size: ${err.message}`, 'warn');
+                }
             }
         });
     }
