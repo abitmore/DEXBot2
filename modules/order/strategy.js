@@ -117,20 +117,26 @@ class StrategyEngine {
         if (mgr.boundaryIdx === undefined) {
             // 1. Try to recover boundary index from existing grid roles (if any)
             // This prevents jumps if startPrice derived from chain is far from the old grid
-            let lastBuyIdx = -1;
-            for (let i = allSlots.length - 1; i >= 0; i--) {
+            // FIX: Find market-closest BUY order, not just any BUY (Issue #9)
+            let bestBuyIdx = -1;
+            let bestBuyDistance = Infinity;
+            const referencePrice = mgr.config.startPrice;
+
+            for (let i = 0; i < allSlots.length; i++) {
                 if (allSlots[i].type === ORDER_TYPES.BUY) {
-                    lastBuyIdx = i;
-                    break;
+                    const distance = Math.abs(allSlots[i].price - referencePrice);
+                    if (distance < bestBuyDistance) {
+                        bestBuyDistance = distance;
+                        bestBuyIdx = i;
+                    }
                 }
             }
 
-            if (lastBuyIdx !== -1) {
-                mgr.boundaryIdx = lastBuyIdx;
-                mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from existing BUY orders.`, "info");
+            if (bestBuyIdx !== -1) {
+                mgr.boundaryIdx = bestBuyIdx;
+                mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from market-closest BUY order (distance=${bestBuyDistance.toFixed(8)} from startPrice).`, "info");
             } else {
                 // 2. Fallback to startPrice-based initialization (Initial or Recovery)
-                const referencePrice = mgr.config.startPrice;
                 mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
 
                 const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
@@ -195,10 +201,12 @@ class StrategyEngine {
         // Update slot types (triggers state transitions if role changed)
         buySlots.forEach(s => { if (s.type !== ORDER_TYPES.BUY) stateUpdates.push({ ...s, type: ORDER_TYPES.BUY }); });
         sellSlots.forEach(s => { if (s.type !== ORDER_TYPES.SELL) stateUpdates.push({ ...s, type: ORDER_TYPES.SELL }); });
-        spreadSlots.forEach(s => { 
+        spreadSlots.forEach(s => {
             // Only convert to SPREAD if it doesn't have an active order!
-            if (s.type !== ORDER_TYPES.SPREAD && !s.orderId) {
-                stateUpdates.push({ ...s, type: ORDER_TYPES.SPREAD, size: 0, orderId: null }); 
+            // FIX: Verify orderId is current (not stale from previous fill) (Issue #10)
+            const hasValidOrder = s.orderId && mgr.orders.get(s.id)?.orderId === s.orderId;
+            if (s.type !== ORDER_TYPES.SPREAD && !hasValidOrder) {
+                stateUpdates.push({ ...s, type: ORDER_TYPES.SPREAD, size: 0, orderId: null });
             }
         });
 
@@ -308,12 +316,21 @@ class StrategyEngine {
         const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : sideSlots.length;
 
         // ════════════════════════════════════════════════════════════════════════════════
+        // BUILD SLOT INDEX MAP FOR O(1) LOOKUPS (FIX: O(n²) → O(n) complexity)
+        // ════════════════════════════════════════════════════════════════════════════════
+        const slotIndexMap = new Map();
+        for (let idx = 0; idx < allSlots.length; idx++) {
+            slotIndexMap.set(allSlots[idx].id, idx);
+        }
+
+        // ════════════════════════════════════════════════════════════════════════════════
         // STEP 1: CALCULATE IDEAL STATE
         // ════════════════════════════════════════════════════════════════════════════════
         const sortedSideSlots = [...sideSlots].sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
         const targetIndices = [];
         for (let i = 0; i < Math.min(targetCount, sortedSideSlots.length); i++) {
-            targetIndices.push(allSlots.findIndex(s => s.id === sortedSideSlots[i].id));
+            const idx = slotIndexMap.get(sortedSideSlots[i].id);
+            if (idx !== undefined) targetIndices.push(idx);
         }
         const targetSet = new Set(targetIndices);
         const sideWeight = mgr.config.weightDistribution[side];
@@ -333,7 +350,8 @@ class StrategyEngine {
         const finalIdealSizes = new Array(allSlots.length).fill(0);
         sideSlots.forEach((slot, i) => {
             const size = blockchainToFloat(floatToBlockchainInt(sideIdealSizes[i] || 0, precision), precision);
-            finalIdealSizes[allSlots.findIndex(s => s.id === slot.id)] = size;
+            const slotIdx = slotIndexMap.get(slot.id);
+            if (slotIdx !== undefined) finalIdealSizes[slotIdx] = size;
         });
 
         // ════════════════════════════════════════════════════════════════════════════════
@@ -362,7 +380,8 @@ class StrategyEngine {
         // NOTE: After STEP 2.5, PARTIAL orders in-window are handled separately and filtered out
         // so they don't get rotated away. See filteredSurpluses below.
         const surpluses = activeThisSide.filter(s => {
-            const idx = allSlots.findIndex(o => o.id === s.id);
+            const idx = slotIndexMap.get(s.id);
+            if (idx === undefined) return false;
             // Hard Surplus: Outside window
             if (!targetSet.has(idx)) return true;
 
@@ -394,12 +413,13 @@ class StrategyEngine {
         const partialOrdersInWindow = allSlots.filter(s =>
             s.type === type &&
             s.state === ORDER_STATES.PARTIAL &&
-            targetSet.has(allSlots.findIndex(o => o.id === s.id)) &&
+            targetSet.has(slotIndexMap.get(s.id)) &&
             !this.isExcluded(s, excludeIds)
         );
 
         for (const partial of partialOrdersInWindow) {
-            const partialIdx = allSlots.findIndex(o => o.id === partial.id);
+            const partialIdx = slotIndexMap.get(partial.id);
+            if (partialIdx === undefined) continue;
             const targetSize = finalIdealSizes[partialIdx];
 
             if (targetSize <= 0) {
@@ -417,6 +437,11 @@ class StrategyEngine {
                 ordersToUpdate.push({ partialOrder: { ...partial }, newSize: consolidatedSize });
                 stateUpdates.push({ ...partial, size: consolidatedSize, state: ORDER_STATES.ACTIVE });
                 handledPartialIds.add(partial.id);
+
+                // FIX: Consume budget only for net capital increase (targetSize)
+                // Capital already allocated: partial.size
+                // New capital needed: targetSize (from cacheFunds)
+                if (budgetRemaining > 0) budgetRemaining--;
             } else {
                 // Non-dust partial: Update to ideal size and place new order with old partial size
                 const oldSize = partial.size;
@@ -428,10 +453,22 @@ class StrategyEngine {
                 const nextSlotIdx = partialIdx + (type === ORDER_TYPES.BUY ? -1 : 1);
                 if (nextSlotIdx >= 0 && nextSlotIdx < allSlots.length) {
                     const nextSlot = allSlots[nextSlotIdx];
-                    ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
-                    stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+                    // FIX: Validate nextSlot is free (VIRTUAL) before placing (Issue #2)
+                    if (!nextSlot.orderId && nextSlot.state === ORDER_STATES.VIRTUAL) {
+                        ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+                        stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+                    } else {
+                        mgr.logger.log(`[PARTIAL] Cannot place new order at ${nextSlot.id}: slot not available (state=${nextSlot.state}, orderId=${nextSlot.orderId})`, "warn");
+                    }
                 }
                 handledPartialIds.add(partial.id);
+
+                // FIX: Consume budget only for net capital increase
+                // Slot 1 delta: targetSize - partial.size
+                // Slot 2 new: oldSize = partial.size
+                // Total capital increase: (targetSize - partial.size) + partial.size = targetSize
+                // This targetSize comes from cacheFunds (excess from previous fills)
+                if (budgetRemaining > 0) budgetRemaining--;
             }
         }
 
@@ -449,7 +486,7 @@ class StrategyEngine {
         // Note: shortages is derived from sortedSideSlots, so it is already sorted Closest First.
         const rotationCount = Math.min(filteredSurpluses.length, filteredShortages.length, budgetRemaining);
         for (let i = 0; i < rotationCount; i++) {
-            const surplus = filteredSurpluses[i];
+            let surplus = filteredSurpluses[i];
             const shortageIdx = filteredShortages[i];
             const shortageSlot = allSlots[shortageIdx];
             const size = finalIdealSizes[shortageIdx];
@@ -459,6 +496,16 @@ class StrategyEngine {
                 mgr.logger.log(`[ROTATION] Skipping rotation: invalid shortage slot at index ${shortageIdx}: ${JSON.stringify(shortageSlot)}`, "warn");
                 continue;
             }
+
+            // FIX: RE-VALIDATE SURPLUS TO PREVENT RACE CONDITION (Issue #3)
+            // STEP 2.5 may have changed surplus state (e.g., ACTIVE→VIRTUAL, or converted to SPREAD).
+            // Check current state before queuing rotation to avoid stale order references.
+            const currentSurplus = mgr.orders.get(surplus.id);
+            if (!currentSurplus || currentSurplus.state === ORDER_STATES.VIRTUAL) {
+                mgr.logger.log(`[ROTATION] Skipping: surplus ${surplus.id} is no longer valid (state: ${currentSurplus?.state})`, "warn");
+                continue;
+            }
+            surplus = currentSurplus;  // Use current state instead of stale snapshot
 
             // ATOMIC ROTATION: Both old→VIRTUAL and new→ACTIVE are pushed to stateUpdates,
             // ensuring they are applied together within pauseFundRecalc block in rebalance().
@@ -519,7 +566,8 @@ class StrategyEngine {
                         ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
                         stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
                         totalNewPlacementSize += cappedIncrease;  // Track capital allocated to new placements
-                        remainingAvailable -= cappedIncrease;
+                        // FIX: Ensure remainingAvailable stays non-negative (Issue #7)
+                        remainingAvailable = Math.max(0, remainingAvailable - cappedIncrease);
                         budgetRemaining--;
                     }
                 } else {
@@ -636,6 +684,7 @@ class StrategyEngine {
                 }
 
                 let netProceeds = rawProceeds;
+                let feeCalcFailed = false;
                 if (assetForFee !== "BTS") {
                     try {
                         // Pass isMaker flag to apply correct fee (market fee for makers, taker fee for takers)
@@ -645,8 +694,16 @@ class StrategyEngine {
                         const feeType = isMaker ? 'market' : 'taker';
                         mgr.logger.log(`[FILL-FEE] ${filledOrder.type} fill: applied ${feeType} fee for ${assetForFee}`, 'debug');
                     } catch (e) {
-                        mgr.logger.log(`Warning: Could not calculate fees for ${assetForFee}: ${e.message}`, "warn");
+                        // FIX: Mark fee calculation failure and apply conservative estimate (Issue #8)
+                        feeCalcFailed = true;
+                        mgr.logger.log(`ERROR: Fee calculation failed for ${assetForFee}: ${e.message}. Using raw proceeds (may be incorrect).`, "warn");
+                        mgr.logger.log(`[FILL] Fill ${filledOrder.id} may have funds accounting error - manual verification recommended`, "warn");
                     }
+                }
+
+                // Log warning if fee calculation failed
+                if (feeCalcFailed) {
+                    mgr.logger.log(`[FILL-WARNING] ${filledOrder.type} fill: fee calc failed, proceeds may be inaccurate (raw=${rawProceeds.toFixed(8)})`, "warn");
                 }
 
                 mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");

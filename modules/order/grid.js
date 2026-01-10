@@ -273,7 +273,10 @@ class Grid {
                 const { BitShares } = require('../bitshares_client');
                 const derived = await derivePrice(BitShares, manager.config.assetA, manager.config.assetB, manager.config.priceMode || 'auto');
                 if (derived) manager.config.startPrice = derived;
-            } catch (err) { console.warn("[grid.js] silent catch:", err.message); }
+            } catch (err) {
+                // FIX: Use logger instead of console.warn (Issue #5)
+                manager.logger?.log?.(`Failed to derive market price: ${err.message}`, 'warn');
+            }
         }
 
         const mp = Number(manager.config.startPrice);
@@ -288,7 +291,10 @@ class Grid {
             if (manager.accountId && !manager.accountTotals) {
                 await manager.waitForAccountTotals(TIMING.ACCOUNT_TOTALS_TIMEOUT_MS);
             }
-        } catch (e) { console.warn("[grid.js] silent catch:", e.message); }
+        } catch (e) {
+            // FIX: Use logger instead of console.warn (Issue #5)
+            manager.logger?.log?.(`Failed to load account totals: ${e.message}`, 'warn');
+        }
 
         const { orders, boundaryIdx, initialSpreadCount } = Grid.createOrderGrid(manager.config);
 
@@ -635,7 +641,10 @@ class Grid {
     static calculateGeometricSizeForSpreadCorrection(manager, targetType) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
-        const total = (manager.funds.available[side] || 0) + (manager.funds.virtual[side] || 0);
+        // FIX: Safely access funds.virtual (may not be initialized)
+        const availableFunds = manager.funds?.available?.[side] || 0;
+        const virtualFunds = manager.funds?.virtual?.[side] || 0;
+        const total = availableFunds + virtualFunds;
         if (total <= 0 || slotsCount <= 1) return null;
 
         const precision = getPrecisionForSide(manager.assets, side);
