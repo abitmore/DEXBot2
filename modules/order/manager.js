@@ -78,14 +78,15 @@ class OrderManager {
         this.assets = null;
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;
-        this.ordersNeedingPriceCorrection = [];
-        this.ordersPendingCancellation = [];
-        this.shadowOrderIds = new Map();
-        this._correctionsLock = new AsyncLock();
-        this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
-        this._fillProcessingLock = new AsyncLock();  // Prevents concurrent fill processing
-        this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
-        this._recentlyRotatedOrderIds = new Set();
+         this.ordersNeedingPriceCorrection = [];
+         this.ordersPendingCancellation = [];
+         this.shadowOrderIds = new Map();
+         this._correctionsLock = new AsyncLock();
+         this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
+         this._fillProcessingLock = new AsyncLock();  // Prevents concurrent fill processing
+         this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
+         this._accountTotalsLock = new AsyncLock();  // Prevents race condition in waitForAccountTotals
+         this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = [];
         this._pauseFundRecalcDepth = 0;  // Counter for safe nested pausing (not boolean)
 
@@ -334,11 +335,21 @@ class OrderManager {
         }
     }
 
-    async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
-        if (hasValidAccountTotals(this.accountTotals, false)) return;
-        if (!this._accountTotalsPromise) this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
-        await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
-    }
+     async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
+         if (hasValidAccountTotals(this.accountTotals, false)) return;
+         // CRITICAL: Use lock to prevent race condition where concurrent calls create multiple promises
+         await this._accountTotalsLock.acquireAsync();
+         try {
+             // Double-check after acquiring lock
+             if (hasValidAccountTotals(this.accountTotals, false)) return;
+             if (!this._accountTotalsPromise) {
+                 this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
+             }
+         } finally {
+             this._accountTotalsLock.release();
+         }
+         await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
+     }
 
     async fetchAccountTotals(accountId) {
         if (accountId) this.accountId = accountId;
@@ -413,11 +424,11 @@ class OrderManager {
         if (order.state === undefined) {
             this.logger.log(`Debug: Skipping order ${order.id} - state not set`, 'debug');
             return;
-        }
+         }
 
-        const existing = this.orders.get(order.id);
+         const existing = this.orders.get(order.id);
 
-        // Ensure we store a clean clone to prevent external modification races
+         // Ensure we store a clean clone to prevent external modification races
          const updatedOrder = { ...order };
          const id = updatedOrder.id;
 
