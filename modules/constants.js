@@ -143,14 +143,6 @@ let GRID_LIMITS = {
     }
 };
 
-// Precision defaults and fallbacks for asset precision calculations
-let PRECISION_DEFAULTS = {
-    // Stricter precision for price tolerance and minimum order size calculations
-    STRICT_CALCULATION: 8,
-    // Default price tolerance ratio (0.1%)
-    PRICE_TOLERANCE: 0.001
-};
-
 // Increment percentage bounds for grid configuration
 let INCREMENT_BOUNDS = {
     // Minimum increment percentage allowed (0.01%)
@@ -272,11 +264,10 @@ Object.freeze(ORDER_STATES);
 Object.freeze(TIMING);
 Object.freeze(GRID_LIMITS);
 Object.freeze(GRID_LIMITS.GRID_COMPARISON);
-Object.freeze(PRECISION_DEFAULTS);
 Object.freeze(INCREMENT_BOUNDS);
 Object.freeze(FEE_PARAMETERS);
 Object.freeze(API_LIMITS);
 Object.freeze(FILL_PROCESSING);
 Object.freeze(MAINTENANCE);
 
-module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, PRECISION_DEFAULTS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE };
+module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE };

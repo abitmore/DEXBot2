@@ -9,7 +9,7 @@
  *   - SyncEngine (sync_engine.js): Blockchain reconciliation
  */
 
-const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, PRECISION_DEFAULTS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('../constants');
 const {
     calculatePriceTolerance,
     findMatchingGridOrderByOpenOrder,

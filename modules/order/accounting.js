@@ -6,7 +6,7 @@
  * and managing BTS blockchain fees.
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, PRECISION_DEFAULTS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const {
     computeChainFundTotals,
     calculateAvailableFundsValue,

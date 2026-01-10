@@ -84,7 +84,7 @@
  * - getMinOrderSize: Calculates minimum order size based on asset precision
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS, PRECISION_DEFAULTS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS } = require('../constants');
 
 // ════════════════════════════════════════════════════════════════════════════════
 // SECTION 1: PARSING & VALIDATION
@@ -357,15 +357,18 @@ function floatToBlockchainInt(floatValue, precision) {
 // Price tolerance calculation and checking (also see Section 4 Part 2: Price derivation)
 
 function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
+    // Cannot calculate tolerance without assets - return null to signal missing precision
     if (!assets || !gridPrice || !orderSize) {
-        return gridPrice ? gridPrice * PRECISION_DEFAULTS.PRICE_TOLERANCE : 0;
+        return null;
     }
 
     const precisionA = assets.assetA?.precision;
     const precisionB = assets.assetB?.precision;
 
+    // When precision is missing/invalid, bot cannot operate safely on this pair
+    // Return null to signal caller that price tolerance cannot be calculated
     if (!isValidNumber(precisionA) || !isValidNumber(precisionB)) {
-        throw new Error(`Missing or invalid asset precision in calculatePriceTolerance: A=${precisionA}, B=${precisionB}`);
+        return null;
     }
 
     let orderSizeA, orderSizeB;

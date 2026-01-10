@@ -5,7 +5,7 @@
  * Responsible for matching chain orders to the grid and processing fill history.
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, PRECISION_DEFAULTS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');
 const { 
     blockchainToFloat, 
     floatToBlockchainInt, 
@@ -242,8 +242,8 @@ class SyncEngine {
                 chainOrderIdsOnGrid.add(gridOrder.orderId);
                 matchedGridOrderIds.add(gridOrder.id);
 
-                const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
-                if (Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
+                const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets) || 0;
+                if (priceTolerance !== null && Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
                     ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
                 }
 

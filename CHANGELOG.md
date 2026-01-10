@@ -15,13 +15,13 @@ All notable changes to this project will be documented in this file.
   - **MERGE (Dust)**: Tiny partials (< 5%) are absorbed and refilled with new capital to restore their full ideal size.
   - **SPLIT (Substantial)**: Larger partials are cleanly split, keeping the filled portion active on-chain while managing the remainder as a new virtual order.
 - **Complete Constants Centralization**: Consolidated 60+ hardcoded magic numbers into a single source of truth
-   - **New Constants Sections**:
-     - `PRECISION_DEFAULTS`: Strict calculation precision (8), price tolerance (0.1%)
-     - `INCREMENT_BOUNDS`: Grid increment percentage bounds (0.01% - 10%)
-     - `FEE_PARAMETERS`: BTS fee reservation multiplier (5), fallback fee (100), **maker refund ratio (10%)**
-     - `API_LIMITS`: Pool batch size (100), scan batches (100), orderbook depth (5), limit orders batch (100)
-     - `FILL_PROCESSING`: Fill mode ('history'), operation type (4), taker indicator (0)
-     - `MAINTENANCE`: Cleanup probability (0.1)
+    - **New Constants Sections**:
+      - `INCREMENT_BOUNDS`: Grid increment percentage bounds (0.01% - 10%)
+      - `FEE_PARAMETERS`: BTS fee reservation multiplier (5), fallback fee (100), **maker refund ratio (10%)**
+      - `API_LIMITS`: Pool batch size (100), scan batches (100), orderbook depth (5), limit orders batch (100)
+      - `FILL_PROCESSING`: Fill mode ('history'), operation type (4), taker indicator (0)
+      - `MAINTENANCE`: Cleanup probability (0.1)
+      - **Note**: Bot requires asset precision metadata for all trading pairs. Without precision, the bot cannot safely calculate order sizes and will not operate.
    - **Note**: Asset precision fallback removed - bot now enforces strict precision requirements and fails loudly if asset metadata is unavailable
    - **Grid Constants Additions**:
      - `MIN_SPREAD_ORDERS`: Minimum number of spread orders (2)
@@ -45,23 +45,7 @@ All notable changes to this project will be documented in this file.
 - **Metrics Tracking System**: Enhanced observability with `getMetrics()` for production monitoring.
 
 ### Fixed
-- **Rounding Safety**: Enhanced protection against floating-point rounding errors in grid calculations and spread counting.
-- **Market Fee Logic**: Restored and corrected market fee deduction logic in the Strategy Engine to ensure fees are paid from the correct asset side.
-- **Dust Partial Fallback**: Added fallback "SPLIT" behavior for dust partials when insufficient funds exist to "MERGE" them, preventing stalled orders.
-- **Synchronized Rotation Accounting**: Fixed a critical synchronization issue where `accountTotals` were not updated when on-chain orders were cancelled.
-- **Atomic Spread Correction**: Spread correction orders now atomically deduct from chainFree BEFORE on-chain placement.
-- **Critical: Fund Accounting Leaks in Spread Correction**: Prevented "phantom funds" by ensuring atomic deduction.
-- **Critical: BTS Fee Settlement Timing**: BTS fees now physically deducted from chainFree immediately upon settlement.
-- **Fund Formula Consistency**: Simplified available funds calculation to a single source of truth in `utils.js`.
-- **SPREAD Order State Validation**: Added explicit validation to ensure SPREAD orders remain in VIRTUAL state.
-
-**Latest Improvements (2026-01-10):**
-- **Method Call Error in Grid Resync**: Fixed crash caused by incorrect method call `updateAccountTotals()` → `fetchAccountTotals()`
-- **Duplicate Gap Calculation**: Eliminated redundant spread gap size calculation in rebalancing logic
-- **Strategy Rebalancing (7 critical issues)**: Fixed placement logic, partial order handling, order target counting
-- **Strategy & Grid Rebalancing (10 critical issues)**: Fixed fund precision, boundaryIdx persistence, dust detection, BUY allocation, rotation completion, taker fees
-- **Enhanced Fund Validation**: Added pre-flight validation before batch operations
-- **Strict Order Size Constraints**: Implemented maximum order size enforcement
+**NOTE**: Bug fixes originally documented in this section have been removed due to new bugs introduced by architectural changes to the code. These fixes will be revalidated and reintroduced when the dev branch stabilizes and the new codebase is thoroughly tested.
 
 ### Changed
 - **Unified Rebalancing**: Replaced fragmented rebalancing logic with a unified "Physical Shift" model that explicitly manages grid surpluses and deficits.
@@ -98,10 +82,11 @@ All notable changes to this project will be documented in this file.
   - Protected manager._metrics access to prevent crashes if metrics uninitialized
   - Prevents runtime errors in edge cases where logger or metrics are null
 
-- **Lock Atomicity Improvement** (grid.js)
-  - Refactored spread correction to acquire order locks BEFORE fund deduction
-  - Ensures lock is released via finally block even if fund deduction or update fails
-  - Prevents fund leaks in edge cases where _updateOrder throws after deduction
+- **Price Correction Lock Protection** (utils.js)
+  - Price correction operations now acquire AsyncLock before modifying order state
+  - Ensures lock is released via finally block even if correction operation fails
+  - Prevents concurrent mutations during price correction snapshots
+  - Note: Spread correction (grid.js) currently does not acquire locks before fund deduction - potential race condition for future improvement
 
 ### Changed
 - **Architecture**: Refactored OrderManager to delegate to specialized engines
@@ -150,37 +135,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes Summary
 
-**Critical Fund Integrity Fixes (15 commits)**:
-- Precision mismatch (blockchain int vs float conversions)
-- PARTIAL orders excluded from fund summation
-- Update delta calculation (used wrong field)
-- Taker fee calculation (only applied maker fee)
-- Double-counting in fund cycling
-- BTS fee over-reservation during resize
-- Pre-flight validation missing
-- Missing PARTIAL orders in size calculations
-
-**High Priority Grid Stability Fixes (20 commits)**:
-- Capital leak on partial split
-- Rotation loop skipping surpluses
-- VIRTUAL order activation blocked
-- Boundary index lost on restart
-- Stale grid cache in divergence checks
-- Dust detection dual-side logic
-- Fund precision in rotation calculations
-- BoundaryIdx persistence across restarts
-
-**Medium Priority Rebalancing Fixes (15 commits)**:
-- Order sorting/weighting issues
-- State restoration failures
-- Health check over-logging
-- Ghost size accumulation
-- Lock atomicity improvements
-
-**Low Priority Code Quality Fixes (15 commits)**:
-- Type safety (case matching, undefined vars)
-- API method corrections
-- Code cleanup (1,000+ lines dead code removed)
+**NOTE**: 35+ bug fixes from the dev branch have been temporarily removed from this changelog. Due to significant architectural changes in the 0.6.0 development cycle, new bugs have been introduced that overlap with these fixes. The bug fix list will be restored and validated once the codebase stabilizes and comprehensive testing confirms all fixes are still applicable and effective.
 
 
 ---
