@@ -349,81 +349,30 @@ function resolveConfigValue(value, total) {
  * @returns {number | TaggedNumber} Human-readable float, optionally tagged
  * @throws {Error} If precision is invalid
  */
-function blockchainToFloat(intValue, precision, tag = false) {
+function blockchainToFloat(intValue, precision) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for blockchainToFloat: ${precision}`);
     }
-    
-    // Handle tagged input
-    let v;
-    if (intValue && typeof intValue === 'object' && intValue.type === 'blockchain_int') {
-        v = toFiniteNumber(intValue.value);
-    } else {
-        v = toFiniteNumber(intValue);
-    }
-    
-    const result = v / Math.pow(10, Number(precision));
-    
-    // Return tagged if requested
-    if (tag) {
-        return tagAsFloat(result, 'blockchainToFloat');
-    }
-    
-    return result;
+    return toFiniteNumber(intValue) / Math.pow(10, Number(precision));
 }
 
 /**
  * Convert a human-readable float to a blockchain integer (satoshis).
  * 
- * CRITICAL: This function expects floatValue to be in human-readable units (e.g., 1.5 BTS).
- * If you accidentally pass a blockchain integer (e.g., 150000000 satoshis), the result
- * will be absurdly large (double conversion bug).
+ * IMPORTANT: This function expects floatValue to be in human-readable units (e.g., 1.5 BTS).
+ * The data structure (parsedChainOrders vs rawChainOrders) ensures type safety by design.
  * 
- * TYPE-SAFE VERSION: If floatValue is a TaggedNumber with type !== 'float', throws error.
- * This is the definitive prevention against double-conversion bugs.
- * 
- * FALLBACK HEURISTIC: For untagged numbers, uses dynamic threshold based on precision:
- * - BTS (prec 5): suspicious if value > 1e10 human units
- * - IOB.XRP (prec 8): suspicious if value > 1e7 human units
- * 
- * @param {number | TaggedNumber} floatValue - Human-readable amount (e.g., 1.5 for 1.5 BTS)
- *                                   or TaggedNumber with type='float'
+ * @param {number} floatValue - Human-readable amount (e.g., 1.5 for 1.5 BTS)
  * @param {number} precision - Asset precision (e.g., 5 for BTS, 8 for IOB.XRP)
  * @returns {number} Blockchain integer (satoshis)
- * @throws {Error} If precision is invalid, or if input is a blockchain integer instead of float
+ * @throws {Error} If precision is invalid
  */
 function floatToBlockchainInt(floatValue, precision) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for floatToBlockchainInt: ${precision}`);
     }
     const p = Number(precision);
-    
-    // TYPE-SAFE CHECK: If value is tagged, verify it's a float
-    let v;
-    if (floatValue && typeof floatValue === 'object' && floatValue.type) {
-        if (floatValue.type === 'blockchain_int') {
-            throw new Error(
-                `[floatToBlockchainInt] Type error: blockchain_int passed to floatToBlockchainInt (expected float). ` +
-                `Value: ${floatValue.value} (source: ${floatValue.source}). This is a double-conversion bug.`
-            );
-        }
-        v = toFiniteNumber(floatValue.value);
-    } else {
-        // Untagged number - apply heuristic fallback
-        v = toFiniteNumber(floatValue);
-        
-        // Check if input is suspiciously large (likely a blockchain integer)
-        const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
-        const threshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, p);
-        
-        if (Math.abs(v) > threshold) {
-            throw new Error(
-                `[floatToBlockchainInt] Suspicious magnitude: ${v} exceeds threshold ${threshold.toExponential(2)} for precision ${p}. ` +
-                `This looks like a blockchain integer, not a float.`
-            );
-        }
-    }
-    
+    const v = toFiniteNumber(floatValue);
     const scaled = Math.round(v * Math.pow(10, p));
 
     // 64-bit signed integer limits: -(2^63) to (2^63 - 1)
@@ -2076,58 +2025,6 @@ function convertToSpreadPlaceholder(order) {
 }
 
 /**
- * Tagged Number Type: Explicitly marks whether a number is a blockchain integer or human-readable float.
- * 
- * This solves the double-conversion bug by making the type explicit at the type-system level.
- * Since JavaScript `Number` doesn't distinguish between `1.0` and `1`, we wrap the value with
- * metadata about its intended use.
- * 
- * Usage:
- *   const floatSize = tagAsFloat(1.5, 'gridOrder.size');
- *   const intSize = tagAsBlockchainInt(150000000, 'chainOrder.for_sale');
- *   
- *   // When converting:
- *   if (taggedValue.type === 'blockchain_int') {
- *       throw new Error('Expected float, got blockchain integer!');
- *   }
- * 
- * @typedef {Object} TaggedNumber
- * @property {number} value - The actual numeric value
- * @property {string} type - 'float' or 'blockchain_int'
- * @property {string} source - Where this value came from (for debugging)
- */
-
-/**
- * Tag a number as a human-readable float (e.g., 1.5 BTS).
- * @param {number} value - The float value
- * @param {string} source - Where this came from (for debugging)
- * @returns {TaggedNumber} Tagged number object
- */
-function tagAsFloat(value, source = 'unknown') {
-    return {
-        value: toFiniteNumber(value),
-        type: 'float',
-        source: source
-    };
-}
-
-/**
- * Tag a number as a blockchain integer (e.g., 150000000 satoshis).
- * @param {number} value - The blockchain integer value
- * @param {string} source - Where this came from (for debugging)
- * @returns {TaggedNumber} Tagged number object
- */
-function tagAsBlockchainInt(value, source = 'unknown') {
-    return {
-        value: Math.round(toFiniteNumber(value)),
-        type: 'blockchain_int',
-        source: source
-    };
-}
-
-
-
-/**
  * Check if account totals have valid buy and sell free amounts.
  * Used for validation before using accountTotals in calculations.
  *
@@ -2255,8 +2152,6 @@ module.exports = {
     // Numeric validation helpers
     toFiniteNumber,
     isValidNumber,
-    tagAsFloat,
-    tagAsBlockchainInt,
     assertIsHumanReadableFloat,
 
     // Order filtering helpers
