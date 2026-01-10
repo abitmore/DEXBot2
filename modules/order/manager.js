@@ -95,7 +95,6 @@ class OrderManager {
             invariantViolations: { buy: 0, sell: 0 },
             lockAcquisitions: 0,
             lockContentionSkips: 0,
-            stateTransitions: {},
             lastSyncDurationMs: 0,
             metricsStartTime: Date.now()
         };
@@ -138,15 +137,6 @@ class OrderManager {
             uptimeMs: uptime,
             fundRecalcPerMinute: (this._metrics.fundRecalcCount / (uptime / 60000)).toFixed(2)
         };
-    }
-
-    /**
-     * Record state transition for metrics tracking
-     */
-    _recordStateTransition(fromState, toState) {
-        if (!fromState || !toState) return;
-        const key = `${fromState}→${toState}`;
-        this._metrics.stateTransitions[key] = (this._metrics.stateTransitions[key] || 0) + 1;
     }
 
     // --- Strategy Delegation ---
@@ -428,15 +418,10 @@ class OrderManager {
         const existing = this.orders.get(order.id);
 
         // Ensure we store a clean clone to prevent external modification races
-        const updatedOrder = { ...order };
-        const id = updatedOrder.id;
+         const updatedOrder = { ...order };
+         const id = updatedOrder.id;
 
-        // Record state transition for metrics if state changed
-        if (existing && existing.state && updatedOrder.state && existing.state !== updatedOrder.state) {
-            this._recordStateTransition(existing.state, updatedOrder.state);
-        }
-
-        // CRITICAL: Robust index cleanup. 
+         // CRITICAL: Robust index cleanup.
         // Remove ID from ALL state and type sets to prevent duplicates if objects 
         // were modified in-place before this call. This ensures indices remain 
         // strictly 1:1 with the orders Map even if state transition logic was bypassed.
