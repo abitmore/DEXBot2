@@ -207,11 +207,14 @@ class Accountant {
      * each have minor rounding differences.
      */
     _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
-        // 1. Dynamic tolerance based on asset precision (slack for rounding)
-        const buyPrecision = mgr.assets?.assetB?.precision;
-        const sellPrecision = mgr.assets?.assetA?.precision;
-        const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
-        const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
+         // 1. Dynamic tolerance based on asset precision (slack for rounding)
+         //    Since chainFree and chainCommitted are calculated independently,
+         //    each may have minor rounding differences. We allow 2 units of slack
+         //    (one from each operand). Example: asset precision 8 → slack of 2e-8
+         const buyPrecision = mgr.assets?.assetB?.precision;
+         const sellPrecision = mgr.assets?.assetA?.precision;
+         const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
+         const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
 
         // 2. Percentage-based tolerance to handle market fees and timing offsets
         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
@@ -328,19 +331,37 @@ class Accountant {
      * Add an amount back to the optimistic chainFree balance.
      */
     addToChainFree(orderType, size, operation = 'release') {
-        const mgr = this.manager;
-        const isBuy = orderType === ORDER_TYPES.BUY;
-        const key = isBuy ? 'buyFree' : 'sellFree';
+         const mgr = this.manager;
+         const isBuy = orderType === ORDER_TYPES.BUY;
+         const key = isBuy ? 'buyFree' : 'sellFree';
 
-        if (mgr.accountTotals && mgr.accountTotals[key] !== undefined) {
-            const oldFree = Number(mgr.accountTotals[key]) || 0;
-            mgr.accountTotals[key] = oldFree + size;
+         if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) {
+             mgr.logger?.log?.(
+                 `[chainFree check-and-add] ${orderType} order ${operation}: accountTotals not available`,
+                 'warn'
+             );
+             return false;
+         }
 
-            if (mgr.logger && mgr.logger.level === 'debug') {
-                mgr.logger.log(`[ACCOUNTING] ${key} +${size.toFixed(8)} (${operation}) -> ${mgr.accountTotals[key].toFixed(8)}`, 'debug');
-            }
-        }
-    }
+         const oldFree = Number(mgr.accountTotals[key]) || 0;
+         
+         // Guard against NaN
+         if (isNaN(oldFree) || isNaN(size)) {
+             mgr.logger?.log?.(
+                 `[chainFree check-and-add] ${orderType} order ${operation}: Invalid numeric values (oldFree=${oldFree}, size=${size})`,
+                 'warn'
+             );
+             return false;
+         }
+
+         mgr.accountTotals[key] = oldFree + size;
+
+         if (mgr.logger && mgr.logger.level === 'debug') {
+             mgr.logger.log(`[ACCOUNTING] ${key} +${size.toFixed(8)} (${operation}) -> ${mgr.accountTotals[key].toFixed(8)}`, 'debug');
+         }
+         
+         return true;
+     }
 
 
 
@@ -398,22 +419,28 @@ class Accountant {
                 this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
             }
         }
-        else if (oldIsActive && !newIsActive) {
-            if (oldSize > 0) {
-                this.addToChainFree(oldOrder.type, oldSize, `${context} (${oldOrder.state}->${newOrder.state})`);
-            }
-        }
-        else if (oldIsActive && newIsActive) {
-            const sizeDelta = newSize - oldSize;
-            if (sizeDelta > 0) {
-                this.tryDeductFromChainFree(newOrder.type, sizeDelta, `${context} (resize-up)`);
-            } else if (sizeDelta < 0) {
-                this.addToChainFree(newOrder.type, Math.abs(sizeDelta), `${context} (resize-down)`);
-            }
-            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
-            }
-        }
+         else if (oldIsActive && !newIsActive) {
+             if (oldSize > 0) {
+                 const released = this.addToChainFree(oldOrder.type, oldSize, `${context} (${oldOrder.state}->${newOrder.state})`);
+                 if (!released) {
+                     mgr.logger?.log?.(`WARNING: Failed to release ${oldSize} ${oldOrder.type} funds during state transition`, 'warn');
+                 }
+             }
+         }
+         else if (oldIsActive && newIsActive) {
+             const sizeDelta = newSize - oldSize;
+             if (sizeDelta > 0) {
+                 this.tryDeductFromChainFree(newOrder.type, sizeDelta, `${context} (resize-up)`);
+             } else if (sizeDelta < 0) {
+                 const released = this.addToChainFree(newOrder.type, Math.abs(sizeDelta), `${context} (resize-down)`);
+                 if (!released) {
+                     mgr.logger?.log?.(`WARNING: Failed to release ${Math.abs(sizeDelta)} ${newOrder.type} funds during resize-down`, 'warn');
+                 }
+             }
+             if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
+                 this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
+             }
+         }
     }
 
     /**
