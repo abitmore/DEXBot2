@@ -34,7 +34,7 @@
  *   Purpose: Calculate fund-related values from state
  *
  * SECTION 4: PRICE OPERATIONS (lines 275-950)
- *   - calculatePriceTolerance, checkPriceWithinTolerance
+ *   - calculatePriceTolerance
  *   - deriveMarketPrice, derivePoolPrice, derivePrice
  *   - lookupAsset (helper)
  *   Purpose: Price calculation, tolerance checking, and derivation
@@ -381,24 +381,6 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
     const termB = 1 / (orderSizeB * Math.pow(10, precisionB));
     const tolerance = (termA + termB) * gridPrice;
     return tolerance;
-}
-
-function checkPriceWithinTolerance(gridOrder, chainOrder, assets = null) {
-    const gridPrice = toFiniteNumber(gridOrder?.price);
-    const chainPrice = toFiniteNumber(chainOrder?.price);
-    const orderSize = toFiniteNumber(chainOrder?.size ?? gridOrder?.size);
-
-    const priceDiff = Math.abs(gridPrice - chainPrice);
-    const tolerance = calculatePriceTolerance(gridPrice, orderSize, gridOrder?.type, assets);
-
-    return {
-        isWithinTolerance: priceDiff <= tolerance,
-        priceDiff,
-        tolerance,
-        gridPrice,
-        chainPrice,
-        orderSize
-    };
 }
 
 /**
@@ -2110,7 +2092,6 @@ module.exports = {
 
     // Tolerance & checks
     calculatePriceTolerance,
-    checkPriceWithinTolerance,
     validateOrderAmountsWithinLimits,
 
     // Parsing + matching
