@@ -1377,19 +1377,15 @@ async function runGridComparisons(manager, accountOrders, botKey) {
 // ---------------------------------------------------------------------------
 /**
  * Apply order corrections for sides marked by grid comparisons (RMS divergence).
- * FULL REGENERATION STRATEGY: When RMS divergence is detected (>14.3%), recalculate the entire
- * grid for affected sides and apply ALL order updates on-chain.
- *
- * WHY FULL REGENERATION (not selective)?
- * Selective updates would create a "Frankenstein grid" - some slots at new-calculated sizes,
- * others at old-calculated sizes. This breaks geometric weight distribution and can cause leaks.
- * Full regeneration ensures all slots reflect current market conditions coherently.
+ * INDEPENDENT SIDE UPDATES: Each side (buy/sell) is checked independently.
+ * Only sides exceeding their RMS divergence threshold are updated.
+ * Non-divergent sides remain untouched, keeping their cacheFunds stable.
  *
  * FLOW:
- * 1. Caller detects RMS divergence (Grid.compareGrids) and sets _gridSidesUpdated flag
- * 2. Caller recalculates grid sizes (Grid.updateGridFromBlockchainSnapshot) and resets cacheFunds
- * 3. This function applies ALL recalculated sizes on-chain (rotation operations)
- * 4. Grid is re-persisted with new state, cacheFunds = 0, cycle restarts
+ * 1. Caller detects RMS divergence per side (Grid.compareGrids) and sets _gridSidesUpdated flag
+ * 2. Caller recalculates grid sizes (Grid.updateGridFromBlockchainSnapshot) for each divergent side
+ * 3. This function applies only the divergent sides on-chain (rotation operations)
+ * 4. Non-divergent sides skip updates entirely, preserving their cache state
  *
  * @param {Object} manager - The OrderManager instance
  * @param {Object} accountOrders - AccountOrders instance for persistence
@@ -1402,14 +1398,13 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         return;
     }
 
-    const { ORDER_STATES } = require('../constants');
+    const { ORDER_STATES, ORDER_TYPES } = require('../constants');
     const Grid = require('./grid');
 
     // NOTE: Grid recalculation is already done by the caller (Grid.updateGridFromBlockchainSnapshot)
-    // Caller has already set new optimal sizes in memory and reset cacheFunds to 0
-    // This function only applies the full set of corrected orders on-chain
+    // Caller has already set new optimal sizes in memory for divergent sides only
+    // This function only applies the corrected orders on-chain for divergent sides
 
-    // Build array of orders needing correction from sides marked by grid comparisons
     // Use correction lock to protect all mutations AND the _gridSidesUpdated check (fixes TOCTOU)
     await manager._correctionsLock.acquire(async () => {
         // Early return check INSIDE lock to prevent TOCTOU race
@@ -1417,16 +1412,16 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             return;
         }
 
+        // Process each divergent side independently
         for (const orderType of manager._gridSidesUpdated) {
             const ordersOnSide = Array.from(manager.orders.values())
                 .filter(o => o.type === orderType && o.orderId && o.state === ORDER_STATES.ACTIVE);
 
+            const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+
             for (const order of ordersOnSide) {
-                // FULL REGENERATION: Apply ALL orders after grid recalculation
-                // The caller (updateGridFromBlockchainSnapshot) already recalculated optimal sizes
-                // and reset cacheFunds. We apply ALL changes to maintain coherent grid distribution.
-                // NOT selective - doing selective updates would create a "Frankenstein grid"
-                // where some slots are new-calculated and others are stale-old.
+                // Update only this divergent side
+                // The caller (updateGridFromBlockchainSnapshot) already recalculated sizes for this side
                 manager.ordersNeedingPriceCorrection.push({
                     gridOrder: { ...order },
                     chainOrderId: order.orderId,
@@ -1436,6 +1431,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                     expectedSize: order.size,
                     size: order.size,
                     type: order.type,
+                    sideUpdated: sideName,
                     sizeChanged: true
                 });
             }
@@ -1443,14 +1439,14 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
         if (manager.ordersNeedingPriceCorrection.length > 0) {
             manager.logger?.log?.(
-                `[DIVERGENCE] Full grid regeneration: applying ${manager.ordersNeedingPriceCorrection.length} recalculated orders for sides: ${manager._gridSidesUpdated.join(', ')}. Reason: RMS divergence exceeded 14.3% threshold.`,
+                `[DIVERGENCE] Updating divergent sides: ${manager._gridSidesUpdated.join(', ')}. Applying ${manager.ordersNeedingPriceCorrection.length} recalculated orders. Other sides remain untouched.`,
                 'info'
             );
 
             // Log specific orders being corrected
             manager.ordersNeedingPriceCorrection.slice(0, 3).forEach(corr => {
                 manager.logger?.log?.(
-                    `  [DIVERGENCE] Updating order: ${corr.chainOrderId} | new size: ${corr.size.toFixed(8)} | price: ${corr.expectedPrice.toFixed(4)}`,
+                    `  [DIVERGENCE] ${corr.sideUpdated} side: ${corr.chainOrderId} | new size: ${corr.size.toFixed(8)} | price: ${corr.expectedPrice.toFixed(4)}`,
                     'debug'
                 );
             });
@@ -1463,7 +1459,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 type: correction.type
             }));
 
-            // Execute a batch correction for these marked orders
+            // Execute a batch correction for divergent side orders only
             try {
                 const result = await updateOrdersOnChainBatchFn({
                     ordersToPlace: [],
@@ -1476,23 +1472,19 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
                 // CRITICAL: Only clear flags if operations were actually executed
                 // If all operations were rejected (result.executed === false), keep flags
-                // so the grid can be re-persisted without the phantom update
                 if (result && result.executed) {
                     manager._gridSidesUpdated = [];
                     // Re-persist grid after corrections are applied to keep persisted state in sync
                     persistGridSnapshot(manager, accountOrders, botKey);
                 } else {
                     manager.logger?.log?.(
-                        `All divergence corrections were rejected (precision tolerance). Clearing flags to prevent loop.`,
+                        `Divergence corrections were rejected (precision tolerance). Clearing flags to prevent loop.`,
                         'info'
                     );
-                    // Clear flags anyway to prevent infinite loop, but don't persist
-                    // The grid state in memory is correct, blockchain just doesn't need updating
                     manager._gridSidesUpdated = [];
                 }
             } catch (err) {
                 // CRITICAL: Clear corrections AND flags on error to prevent list explosion
-                // Without this, failed corrections accumulate and never get retried
                 manager.ordersNeedingPriceCorrection = [];
                 manager._gridSidesUpdated = [];
                 manager?.logger?.log?.(`Warning: Could not execute grid divergence corrections: ${err.message}`, 'warn');
