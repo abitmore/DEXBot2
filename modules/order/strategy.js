@@ -19,11 +19,6 @@ class StrategyEngine {
         this.manager = manager;
     }
 
-    /** Check if a slot should be excluded based on id or orderId */
-    isExcluded(slot, excludeIds) {
-        return excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId));
-    }
-
     /** Create empty result object for early returns */
     emptyResult() {
         return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
@@ -357,12 +352,12 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 2: IDENTIFY SHORTAGES AND SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
-        const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !this.isExcluded(s, excludeIds));
+         const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId))));
         const activeThisSide = activeOnChain.filter(s => s.type === type);
 
-        const shortages = targetIndices.filter(idx => {
-            const slot = allSlots[idx];
-            if (this.isExcluded(slot, excludeIds)) return false;
+         const shortages = targetIndices.filter(idx => {
+             const slot = allSlots[idx];
+             if (excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId))) return false;
             if (!slot.orderId && finalIdealSizes[idx] > 0) return true;
 
             // Dust detection: Treat slot as shortage if it has a dust order
@@ -410,12 +405,12 @@ class StrategyEngine {
         // - Non-dust partial: Update to ideal size for proper grid alignment
         // These are then filtered from surpluses to prevent unwanted rotation.
         const handledPartialIds = new Set();
-        const partialOrdersInWindow = allSlots.filter(s =>
-            s.type === type &&
-            s.state === ORDER_STATES.PARTIAL &&
-            targetSet.has(slotIndexMap.get(s.id)) &&
-            !this.isExcluded(s, excludeIds)
-        );
+         const partialOrdersInWindow = allSlots.filter(s =>
+             s.type === type &&
+             s.state === ORDER_STATES.PARTIAL &&
+             targetSet.has(slotIndexMap.get(s.id)) &&
+             !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId)))
+         );
 
         for (const partial of partialOrdersInWindow) {
             // FIX: Check budget BEFORE processing to respect reactionCap (Issue #4 enhancement)
