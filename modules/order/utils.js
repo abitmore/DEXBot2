@@ -70,7 +70,7 @@
  *
  * SECTION 10: FILTERING & ANALYSIS (lines 1525-1750)
  *   - filterOrdersByType, filterOrdersByTypeAndState
- *   - sumOrderSizes, mapOrderSizes, countOrdersByType
+ *   - sumOrderSizes, countOrdersByType
  *   - checkSizesBeforeMinimum, checkSizesNearMinimum
  *   - shouldFlagOutOfSpread
  *   Purpose: Filter, count, and analyze orders
@@ -1506,15 +1506,6 @@ function sumOrderSizes(orders) {
 }
 
 /**
- * Extract sizes from orders as an array of numbers.
- * @param {Array<Object>} orders - Orders with size property
- * @returns {Array<number>} Sizes as numbers
- */
-function mapOrderSizes(orders) {
-    return Array.isArray(orders) ? orders.map(o => Number(o.size || 0)) : [];
-}
-
-/**
  * Count active and partial orders by type (used for target comparison).
  * Includes both ACTIVE and PARTIAL orders since both take up grid positions.
  * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
@@ -2122,7 +2113,6 @@ module.exports = {
     filterOrdersByType,
     filterOrdersByTypeAndState,
     sumOrderSizes,
-    mapOrderSizes,
     countOrdersByType,
 
     // Precision helpers

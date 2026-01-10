@@ -15,7 +15,6 @@ const {
     filterOrdersByType,
     filterOrdersByTypeAndState,
     sumOrderSizes,
-    mapOrderSizes,
     getPrecisionByOrderType,
     getPrecisionForSide,
     getPrecisionsForManager,
@@ -313,9 +312,9 @@ class Grid {
         const { A: precA, B: precB } = getPrecisionsForManager(manager.assets);
         let sizedOrders = calculateOrderSizes(orders, manager.config, sellFunds, buyFunds, minSellSize, minBuySize, precA, precB);
 
-        // Verification of sizes
-        const sells = mapOrderSizes(filterOrdersByType(sizedOrders, ORDER_TYPES.SELL));
-        const buys = mapOrderSizes(filterOrdersByType(sizedOrders, ORDER_TYPES.BUY));
+         // Verification of sizes
+         const sells = filterOrdersByType(sizedOrders, ORDER_TYPES.SELL).map(o => Number(o.size || 0));
+         const buys = filterOrdersByType(sizedOrders, ORDER_TYPES.BUY).map(o => Number(o.size || 0));
         if (checkSizesBeforeMinimum(sells, minSellSize, precA) || checkSizesBeforeMinimum(buys, minBuySize, precB)) {
             throw new Error('Calculated orders fall below minimum allowable size.');
         }
