@@ -108,6 +108,9 @@ class StrategyEngine {
 
         if (allSlots.length === 0) return this.emptyResult();
 
+        // Calculate gap slots once for use throughout the rebalance
+        const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
+
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 1: BOUNDARY DETERMINATION (Initial or Recovery)
         // ════════════════════════════════════════════════════════════════════════════════
@@ -138,8 +141,6 @@ class StrategyEngine {
             } else {
                 // 2. Fallback to startPrice-based initialization (Initial or Recovery)
                 mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
-
-                const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
 
                 // Find the first slot at or above startPrice (this becomes the spread zone)
                 let splitIdx = allSlots.findIndex(s => s.price >= referencePrice);
@@ -187,8 +188,6 @@ class StrategyEngine {
         // [0 ... boundaryIdx] = BUY zone
         // [boundaryIdx+1 ... boundaryIdx+gapSlots] = SPREAD zone (empty buffer)
         // [boundaryIdx+gapSlots+1 ... N] = SELL zone
-
-        const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
 
         const buyEndIdx = boundaryIdx;
         const sellStartIdx = boundaryIdx + gapSlots + 1;
