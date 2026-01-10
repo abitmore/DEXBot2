@@ -112,6 +112,49 @@ function isValidNumber(value) {
     return value !== null && value !== undefined && Number.isFinite(Number(value));
 }
 
+/**
+ * Assert that a value looks like a human-readable float, not a blockchain integer.
+ * Use this at boundaries where values enter the system to catch int/float mixups early.
+ * 
+ * DYNAMIC THRESHOLD: The check is based on asset precision to avoid false positives/negatives.
+ * If precision is provided, threshold = 1e15 / 10^precision (same logic as floatToBlockchainInt).
+ * If precision is omitted, uses a conservative fallback of 1e12 (good for most assets).
+ * 
+ * This catches cases where blockchain integers (satoshis) are accidentally treated as floats.
+ * 
+ * @param {number} value - Value to check
+ * @param {string} context - Description of where this check is happening (for error messages)
+ * @param {number} precision - Asset precision (e.g., 5 for BTS). If null, uses conservative fallback.
+ * @returns {boolean} True if value passes the sanity check
+ * @throws {Error} If value appears to be a blockchain integer
+ */
+function assertIsHumanReadableFloat(value, context = 'unknown', precision = null) {
+    const v = toFiniteNumber(value);
+    
+    // Compute dynamic threshold based on precision
+    // If precision provided, use it. Otherwise, use conservative fallback.
+    let threshold;
+    if (Number.isFinite(precision) && precision >= 0) {
+        const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
+        threshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, Number(precision));
+    } else {
+        // Fallback: conservative threshold that works for most assets
+        threshold = 1e12; // Good for assets with precision 0-8
+    }
+    
+    if (Math.abs(v) > threshold) {
+        const precisionStr = Number.isFinite(precision) ? ` (precision ${precision})` : '';
+        const error = new Error(
+            `[assertIsHumanReadableFloat] SUSPICIOUS VALUE in ${context}: ${v} exceeds threshold ${threshold}${precisionStr}. ` +
+            `This might be a blockchain integer (satoshis) passed as a float. ` +
+            `Expected human-readable values like 1.5, not satoshis like 150000000.`
+        );
+        console.error(error.message);
+        throw error;
+    }
+    return true;
+}
+
 function isPercentageString(v) {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
@@ -297,19 +340,91 @@ function resolveConfigValue(value, total) {
 // ════════════════════════════════════════════════════════════════════════════════
 // Handle blockchain integer/float conversions and precision calculations
 
-function blockchainToFloat(intValue, precision) {
+/**
+ * Convert a blockchain integer (satoshis) to a human-readable float.
+ * 
+ * @param {number | TaggedNumber} intValue - Blockchain integer amount
+ * @param {number} precision - Asset precision (e.g., 5 for BTS, 8 for IOB.XRP)
+ * @param {boolean} tag - If true, returns TaggedNumber with type='float' (default: false for backward compat)
+ * @returns {number | TaggedNumber} Human-readable float, optionally tagged
+ * @throws {Error} If precision is invalid
+ */
+function blockchainToFloat(intValue, precision, tag = false) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for blockchainToFloat: ${precision}`);
     }
-    return toFiniteNumber(intValue) / Math.pow(10, Number(precision));
+    
+    // Handle tagged input
+    let v;
+    if (intValue && typeof intValue === 'object' && intValue.type === 'blockchain_int') {
+        v = toFiniteNumber(intValue.value);
+    } else {
+        v = toFiniteNumber(intValue);
+    }
+    
+    const result = v / Math.pow(10, Number(precision));
+    
+    // Return tagged if requested
+    if (tag) {
+        return tagAsFloat(result, 'blockchainToFloat');
+    }
+    
+    return result;
 }
 
+/**
+ * Convert a human-readable float to a blockchain integer (satoshis).
+ * 
+ * CRITICAL: This function expects floatValue to be in human-readable units (e.g., 1.5 BTS).
+ * If you accidentally pass a blockchain integer (e.g., 150000000 satoshis), the result
+ * will be absurdly large (double conversion bug).
+ * 
+ * TYPE-SAFE VERSION: If floatValue is a TaggedNumber with type !== 'float', throws error.
+ * This is the definitive prevention against double-conversion bugs.
+ * 
+ * FALLBACK HEURISTIC: For untagged numbers, uses dynamic threshold based on precision:
+ * - BTS (prec 5): suspicious if value > 1e10 human units
+ * - IOB.XRP (prec 8): suspicious if value > 1e7 human units
+ * 
+ * @param {number | TaggedNumber} floatValue - Human-readable amount (e.g., 1.5 for 1.5 BTS)
+ *                                   or TaggedNumber with type='float'
+ * @param {number} precision - Asset precision (e.g., 5 for BTS, 8 for IOB.XRP)
+ * @returns {number} Blockchain integer (satoshis)
+ * @throws {Error} If precision is invalid, or if input is a blockchain integer instead of float
+ */
 function floatToBlockchainInt(floatValue, precision) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for floatToBlockchainInt: ${precision}`);
     }
     const p = Number(precision);
-    const scaled = Math.round(toFiniteNumber(floatValue) * Math.pow(10, p));
+    
+    // TYPE-SAFE CHECK: If value is tagged, verify it's a float
+    let v;
+    if (floatValue && typeof floatValue === 'object' && floatValue.type) {
+        if (floatValue.type === 'blockchain_int') {
+            throw new Error(
+                `[floatToBlockchainInt] Type error: blockchain_int passed to floatToBlockchainInt (expected float). ` +
+                `Value: ${floatValue.value} (source: ${floatValue.source}). This is a double-conversion bug.`
+            );
+        }
+        v = toFiniteNumber(floatValue.value);
+    } else {
+        // Untagged number - apply heuristic fallback
+        v = toFiniteNumber(floatValue);
+        
+        // Check if input is suspiciously large (likely a blockchain integer)
+        const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
+        const threshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, p);
+        
+        if (Math.abs(v) > threshold) {
+            throw new Error(
+                `[floatToBlockchainInt] Suspicious magnitude: ${v} exceeds threshold ${threshold.toExponential(2)} for precision ${p}. ` +
+                `This looks like a blockchain integer, not a float.`
+            );
+        }
+    }
+    
+    const scaled = Math.round(v * Math.pow(10, p));
 
     // 64-bit signed integer limits: -(2^63) to (2^63 - 1)
     const MAX_INT64 = 9223372036854775807;
@@ -429,13 +544,13 @@ function parseChainOrder(chainOrder, assets) {
             if (type === ORDER_TYPES.SELL) {
                 // For SELL: for_sale is in assetA (base asset)
                 const prec = assets?.assetA?.precision ?? 0;
-                size = blockchainToFloat(Number(chainOrder.for_sale), prec);
+                size = blockchainToFloat(Number(chainOrder.for_sale), prec, true); // tag=true for type safety
             } else {
                 // For BUY: for_sale is in assetB (quote asset we're selling)
                 // IMPORTANT: grid BUY sizes are tracked in assetB units (see ORDER_STATES docs).
                 // So we keep size in assetB units here.
                 const bPrec = assets?.assetB?.precision ?? 0;
-                size = blockchainToFloat(Number(chainOrder.for_sale), bPrec);
+                size = blockchainToFloat(Number(chainOrder.for_sale), bPrec, true); // tag=true for type safety
             }
         }
     } catch (e) { size = null; }
@@ -555,6 +670,17 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
     });
 }
 
+/**
+ * Apply a chain-derived size to a grid order.
+ * 
+ * IMPORTANT: chainSize MUST be a human-readable float (e.g., 1.5 BTS), NOT a blockchain integer.
+ * The caller is responsible for converting blockchain integers via blockchainToFloat() BEFORE calling.
+ * This function includes a sanity check to detect accidental int-as-float input.
+ * 
+ * @param {Object} manager - OrderManager instance
+ * @param {Object} gridOrder - Grid order to update
+ * @param {number} chainSize - Size in human-readable float units (NOT satoshis!)
+ */
 function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     if (!manager || !gridOrder) return;
     // Allow updates for ACTIVE and PARTIAL orders
@@ -562,6 +688,33 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
         manager.logger?.log?.(`Skipping chain size apply for non-ACTIVE/PARTIAL order ${gridOrder.id} (state=${gridOrder.state})`, 'debug');
         return;
     }
+    
+    // Get precision EARLY for dynamic threshold check
+    const precision = (gridOrder.type === ORDER_TYPES.SELL) ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
+    
+    // DOUBLE-CONVERSION PREVENTION: Sanity check that chainSize is a float, not an int
+    // Uses dynamic threshold based on asset precision (not a fixed value).
+    // If chainSize * 10^precision > 1e15, it's almost certainly a blockchain integer passed by mistake.
+    //
+    // Example thresholds:
+    // - BTS (prec 5): suspicious if chainSize > 1e10 (scales to 1e15)
+    // - IOB.XRP (prec 8): suspicious if chainSize > 1e7 (scales to 1e15)
+    if (Number.isFinite(precision) && Number.isFinite(Number(chainSize))) {
+        const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
+        const suspiciousThreshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, precision);
+        
+        if (Math.abs(Number(chainSize)) > suspiciousThreshold) {
+            manager.logger?.log?.(
+                `CRITICAL: applyChainSizeToGridOrder received suspicious chainSize=${chainSize} for order ${gridOrder.id}. ` +
+                `For precision ${precision}, values > ${suspiciousThreshold.toExponential(2)} are suspicious. ` +
+                `This appears to be a blockchain integer (satoshis), not a float. ` +
+                `Caller must use blockchainToFloat() before passing to this function. Rejecting update.`,
+                'error'
+            );
+            return; // Reject the update to prevent grid corruption
+        }
+    }
+    
     const oldSize = Number(gridOrder.size || 0);
     const newSize = Number.isFinite(Number(chainSize)) ? Number(chainSize) : oldSize;
 
@@ -574,7 +727,6 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     }
 
     const delta = newSize - oldSize;
-    const precision = (gridOrder.type === ORDER_TYPES.SELL) ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
     const oldInt = floatToBlockchainInt(oldSize, precision);
     const newInt = floatToBlockchainInt(newSize, precision);
     if (oldInt === newInt) { gridOrder.size = newSize; return; }
@@ -1922,6 +2074,58 @@ function convertToSpreadPlaceholder(order) {
 }
 
 /**
+ * Tagged Number Type: Explicitly marks whether a number is a blockchain integer or human-readable float.
+ * 
+ * This solves the double-conversion bug by making the type explicit at the type-system level.
+ * Since JavaScript `Number` doesn't distinguish between `1.0` and `1`, we wrap the value with
+ * metadata about its intended use.
+ * 
+ * Usage:
+ *   const floatSize = tagAsFloat(1.5, 'gridOrder.size');
+ *   const intSize = tagAsBlockchainInt(150000000, 'chainOrder.for_sale');
+ *   
+ *   // When converting:
+ *   if (taggedValue.type === 'blockchain_int') {
+ *       throw new Error('Expected float, got blockchain integer!');
+ *   }
+ * 
+ * @typedef {Object} TaggedNumber
+ * @property {number} value - The actual numeric value
+ * @property {string} type - 'float' or 'blockchain_int'
+ * @property {string} source - Where this value came from (for debugging)
+ */
+
+/**
+ * Tag a number as a human-readable float (e.g., 1.5 BTS).
+ * @param {number} value - The float value
+ * @param {string} source - Where this came from (for debugging)
+ * @returns {TaggedNumber} Tagged number object
+ */
+function tagAsFloat(value, source = 'unknown') {
+    return {
+        value: toFiniteNumber(value),
+        type: 'float',
+        source: source
+    };
+}
+
+/**
+ * Tag a number as a blockchain integer (e.g., 150000000 satoshis).
+ * @param {number} value - The blockchain integer value
+ * @param {string} source - Where this came from (for debugging)
+ * @returns {TaggedNumber} Tagged number object
+ */
+function tagAsBlockchainInt(value, source = 'unknown') {
+    return {
+        value: Math.round(toFiniteNumber(value)),
+        type: 'blockchain_int',
+        source: source
+    };
+}
+
+
+
+/**
  * Check if account totals have valid buy and sell free amounts.
  * Used for validation before using accountTotals in calculations.
  *
@@ -1936,18 +2140,56 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
     return isValidNumber(accountTotals[buyKey]) && isValidNumber(accountTotals[sellKey]);
 }
         
-        /**
-         * Determine if the spread is too wide and should be flagged for rebalancing. * Pure calculation: checks if spread exceeds threshold AND both sides have orders.
- *
- * @param {number} currentSpread - Current spread percentage
- * @param {number} targetSpread - Target spread threshold
- * @param {number} buyCount - Number of BUY orders
- * @param {number} sellCount - Number of SELL orders
- * @returns {boolean} True if spread is too wide and should be flagged
- */
+/**
+ * Determine if the spread is too wide and should be flagged for rebalancing. * Pure calculation: checks if spread exceeds threshold AND both sides have orders.
+  *
+  * @param {number} currentSpread - Current spread percentage
+  * @param {number} targetSpread - Target spread threshold
+  * @param {number} buyCount - Number of BUY orders
+  * @param {number} sellCount - Number of SELL orders
+  * @returns {boolean} True if spread is too wide and should be flagged
+  */
 function shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount) {
     const hasBothSides = buyCount > 0 && sellCount > 0;
     return hasBothSides && currentSpread > targetSpread;
+}
+
+/**
+ * Check if a size change is significant enough to warrant an update.
+ * Filters out tiny adjustments (noise) caused by startup recalculation drift or minor divergence.
+ * 
+ * USAGE: Call this before deciding to update an order size on-chain to avoid wasting fees on tiny changes.
+ * 
+ * @param {number} currentSize - Current order size (in human-readable units)
+ * @param {number} newSize - Proposed new size (in human-readable units)
+ * @param {number} thresholdPercent - Minimum change percentage (default: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE or 3%)
+ * @returns {Object} { isSignificant: boolean, percentChange: number, message: string }
+ */
+function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
+    const threshold = toFiniteNumber(thresholdPercent, GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 3);
+    const current = toFiniteNumber(currentSize);
+    const proposed = toFiniteNumber(newSize);
+    
+    if (current <= 0) {
+        // If current is 0 or invalid, any positive new size is significant
+        return {
+            isSignificant: proposed > 0,
+            percentChange: proposed > 0 ? 100 : 0,
+            message: current === 0 
+                ? `Size change from 0 to ${proposed.toFixed(8)} is significant (100%)` 
+                : `Size change with invalid current size (${current})`
+        };
+    }
+    
+    const diff = Math.abs(proposed - current);
+    const percentChange = (diff / current) * 100;
+    const isSignificant = percentChange >= threshold;
+    
+    return {
+        isSignificant,
+        percentChange,
+        message: `Size change ${percentChange.toFixed(4)}% ${isSignificant ? '>=' : '<'} threshold ${threshold}% (current: ${current.toFixed(8)}, new: ${proposed.toFixed(8)})`
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -2011,6 +2253,9 @@ module.exports = {
     // Numeric validation helpers
     toFiniteNumber,
     isValidNumber,
+    tagAsFloat,
+    tagAsBlockchainInt,
+    assertIsHumanReadableFloat,
 
     // Order filtering helpers
     filterOrdersByType,
@@ -2043,7 +2288,8 @@ module.exports = {
     // Formatting
     convertToSpreadPlaceholder,
 
-    // Validation helpers
-    hasValidAccountTotals,
-    shouldFlagOutOfSpread
-};
+     // Validation helpers
+     hasValidAccountTotals,
+     shouldFlagOutOfSpread,
+     isSignificantSizeChange
+ };

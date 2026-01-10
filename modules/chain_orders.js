@@ -398,7 +398,8 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
     let newSellFloat;
     if (newParams.amountToSell !== undefined && newParams.amountToSell !== null) {
         newSellFloat = newParams.amountToSell;
-        newSellInt = floatToBlockchainInt(newSellFloat, sellPrecision);
+         
+         newSellInt = floatToBlockchainInt(newSellFloat, sellPrecision);
     } else {
         // Keep current amount exactly as-is on-chain, bypassing float conversion
         newSellInt = currentSellInt;

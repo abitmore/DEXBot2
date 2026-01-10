@@ -16,8 +16,8 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags } = OrderUtils;
-const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE } = require('./constants');
+const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange } = OrderUtils;
+const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
 const { parseJsonWithComments } = require('./account_bots');
@@ -574,7 +574,7 @@ class DEXBot {
             return { isValid: true, summary: 'No operations to validate' };
         }
 
-        const { blockchainToFloat } = require('./order/utils');
+        const { blockchainToFloat, floatToBlockchainInt } = require('./order/utils');
         const snap = this.manager.getChainFundsSnapshot();
         const maxOrderSize = this._getMaxOrderSize();
 
@@ -590,43 +590,61 @@ class DEXBot {
         for (const op of operations) {
             if (!op?.op_data) continue;
 
-            const sellAssetId = op.op_data.amount_to_sell?.asset_id;
-            const sellAmount = op.op_data.amount_to_sell?.amount;
+            let sellAssetId = null;
+            let sellAmountInt = 0;
 
-            if (sellAssetId && sellAmount) {
-                const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
-                const floatAmount = blockchainToFloat(sellAmount, precision);
-
-                // Check order size limit
-                if (floatAmount > maxOrderSize) {
-                    orderSizeViolations.push({
-                        asset: sellAssetId === assetA.id ? assetA.symbol : assetB.symbol,
-                        size: floatAmount,
-                        max: maxOrderSize
-                    });
-                }
-
-                requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatAmount;
+            if (op.op_name === 'limit_order_create') {
+                sellAssetId = op.op_data.amount_to_sell?.asset_id;
+                sellAmountInt = op.op_data.amount_to_sell?.amount;
+            } else if (op.op_name === 'limit_order_update') {
+                // In limit_order_update, new_price.base is the amount to sell
+                sellAssetId = op.op_data.new_price?.base?.asset_id;
+                sellAmountInt = op.op_data.new_price?.base?.amount;
             }
 
-            // For updates, only count positive deltas (capital increases)
-            if (op.op_name === 'limit_order_update') {
-                const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
-                const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
+            if (sellAssetId && sellAmountInt) {
+                const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
+                const assetSymbol = (sellAssetId === assetA.id) ? assetA.symbol : assetB.symbol;
 
-                if (deltaAssetId && deltaSellInt > 0) {
-                    const precision = (deltaAssetId === assetA.id) ? assetA.precision : assetB.precision;
-                    const floatDelta = blockchainToFloat(deltaSellInt, precision);
-                    requiredFunds[deltaAssetId] = (requiredFunds[deltaAssetId] || 0) + floatDelta;
+                // CRITICAL SAFETY CHECK: Use integer comparison for max size
+                // Converts float maxOrderSize to blockchain int to avoid float issues
+                if (Number.isFinite(maxOrderSize)) {
+                    const maxOrderSizeInt = floatToBlockchainInt(maxOrderSize, precision);
+                    // Compare raw integer from operation vs computed max integer
+                    // This catches cases where input was 1000000 (int) treated as float -> 1000000 * 10^precision
+                    if (Number(sellAmountInt) > maxOrderSizeInt) {
+                        orderSizeViolations.push({
+                            asset: assetSymbol,
+                            sizeInt: sellAmountInt,
+                            maxInt: maxOrderSizeInt,
+                            sizeFloat: blockchainToFloat(sellAmountInt, precision)
+                        });
+                    }
+                }
+
+                // Accumulate required funds (using float for summation logic)
+                const floatAmount = blockchainToFloat(sellAmountInt, precision);
+                
+                // For updates, we only deduct the DELTA (increase in commitment)
+                if (op.op_name === 'limit_order_update') {
+                    const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
+                    const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
+                    if (deltaAssetId === sellAssetId && deltaSellInt > 0) {
+                        const floatDelta = blockchainToFloat(deltaSellInt, precision);
+                        requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatDelta;
+                    }
+                } else {
+                    // For creates, we deduct the full amount
+                    requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatAmount;
                 }
             }
         }
 
         // Check for order size violations
         if (orderSizeViolations.length > 0) {
-            let summary = `[VALIDATION] Order size limit FAILED:\n`;
+            let summary = `[VALIDATION] CRITICAL: Order size limit FAILED (Absurd Size Check):\n`;
             for (const v of orderSizeViolations) {
-                summary += `  ${v.asset}: size=${v.size.toFixed(8)}, max=${v.max.toFixed(8)}\n`;
+                summary += `  ${v.asset}: sizeInt=${v.sizeInt}, maxInt=${v.maxInt} (approx ${v.sizeFloat.toFixed(8)})\n`;
             }
             return { isValid: false, summary: summary.trim(), violations: orderSizeViolations };
         }
@@ -809,8 +827,20 @@ class DEXBot {
             try {
                 const { partialOrder, newSize } = updateInfo;
                 if (!partialOrder.orderId) continue;
-                if (!openOrders.find(o => o.id === partialOrder.orderId)) {
+                const chainOrder = openOrders.find(o => o.id === partialOrder.orderId);
+                
+                if (!chainOrder) {
                     this.manager.logger.log(`[SPLIT UPDATE] Skipping: Order ${partialOrder.orderId} missing on-chain`, 'warn');
+                    continue;
+                }
+
+                // Check for minimum update threshold to filter out tiny adjustments (noise)
+                const precision = (partialOrder.type === ORDER_TYPES.SELL) ? (this.manager.assets?.assetA?.precision ?? 8) : (this.manager.assets?.assetB?.precision ?? 8);
+                const currentSize = blockchainToFloat(chainOrder.for_sale, precision);
+                
+                const sizeChangeCheck = isSignificantSizeChange(currentSize, newSize);
+                if (!sizeChangeCheck.isSignificant) {
+                    this.manager.logger.log(`Skipping size update for ${partialOrder.orderId}: ${sizeChangeCheck.message}`, 'info');
                     continue;
                 }
 
@@ -855,11 +885,25 @@ class DEXBot {
             if (!oldOrder.orderId || seenOrderIds.has(oldOrder.orderId)) continue;
             seenOrderIds.add(oldOrder.orderId);
 
-            if (!openOrders.find(o => o.id === oldOrder.orderId)) {
+            const chainOrder = openOrders.find(o => o.id === oldOrder.orderId);
+            if (!chainOrder) {
                 this.manager.logger.log(`Rotation fallback to creation: Order ${oldOrder.orderId} missing on-chain (was filled or cancelled)`, 'warn');
                 // Track this as an unmet rotation so we can create the new order as a placement instead
                 unmetRotations.push({ newGridId, newPrice, newSize, type });
                 continue;
+            }
+
+            // Check for minimum update threshold for size-only updates (prevent tiny updates)
+            // This filters out "wrong" updates caused by startup recalculation drift or minor divergence
+            if (!newGridId) {
+                const precision = (type === ORDER_TYPES.SELL) ? (assetA?.precision ?? 8) : (assetB?.precision ?? 8);
+                const currentSize = blockchainToFloat(chainOrder.for_sale, precision);
+                
+                const sizeChangeCheck = isSignificantSizeChange(currentSize, newSize);
+                if (!sizeChangeCheck.isSignificant) {
+                    this.manager.logger.log(`Skipping size correction for ${oldOrder.orderId}: ${sizeChangeCheck.message}`, 'info');
+                    continue;
+                }
             }
 
             try {

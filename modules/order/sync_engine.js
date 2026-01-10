@@ -149,7 +149,7 @@ class SyncEngine {
 
                 const type = (sellAssetId === mgr.assets.assetA.id) ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
                 const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                const size = blockchainToFloat(order.for_sale, precision);
+                const size = blockchainToFloat(order.for_sale, precision, true); // tag=true for type safety
                 const price = (type === ORDER_TYPES.SELL)
                     ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetBPrecision - assetAPrecision)
                     : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetBPrecision - assetAPrecision);
@@ -240,7 +240,7 @@ class SyncEngine {
                 const chainSizeInt = floatToBlockchainInt(chainOrder.size, precision);
 
                 if (currentSizeInt !== chainSizeInt) {
-                    const newSize = blockchainToFloat(chainSizeInt, precision);
+                    const newSize = blockchainToFloat(chainSizeInt, precision, true); // tag=true for type safety
                     const newInt = floatToBlockchainInt(newSize, precision);
 
                     if (newInt > 0) {
@@ -395,20 +395,20 @@ class SyncEngine {
 
             if (!matchedGridOrder) return { filledOrders: [], updatedOrders: [], partialFill: false };
 
-            const orderType = matchedGridOrder.type;
-            const currentSize = Number(matchedGridOrder.size || 0);
-            let filledAmount = 0;
-            if (orderType === ORDER_TYPES.SELL) {
-                if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, assetAPrecision);
-            } else {
-                if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, assetBPrecision);
-            }
+             const orderType = matchedGridOrder.type;
+             const currentSize = Number(matchedGridOrder.size || 0);
+             let filledAmount = 0;
+             if (orderType === ORDER_TYPES.SELL) {
+                 if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, assetAPrecision, true); // tag=true
+             } else {
+                 if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, assetBPrecision, true); // tag=true
+             }
 
-            const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-            const currentSizeInt = floatToBlockchainInt(currentSize, precision);
-            const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
-            const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
-            const newSize = blockchainToFloat(newSizeInt, precision);
+             const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+             const currentSizeInt = floatToBlockchainInt(currentSize, precision);
+             const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
+             const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
+             const newSize = blockchainToFloat(newSizeInt, precision, true); // tag=true for type safety
 
             const filledOrders = [];
             const updatedOrders = [];
