@@ -735,7 +735,10 @@ const lookupAsset = async (BitShares, s) => {
     let cached = BitShares.assets ? BitShares.assets[sym] : null;
 
     // Only trust cached assets when they include precision; otherwise enrich via db.
-    if (cached?.id && typeof cached.precision === 'number') return cached;
+    if (cached?.id && typeof cached.precision === 'number') {
+        console.log(`[utils.js] Using cached asset ${s}: id=${cached.id}, precision=${cached.precision}`);
+        return cached;
+    }
 
     const methods = [
         () => BitShares.db.lookup_asset_symbols([s]),
@@ -746,13 +749,21 @@ const lookupAsset = async (BitShares, s) => {
         try {
             if (typeof method !== 'function') continue;
             const r = await method();
-            if (r?.[0]?.id) return { ...(cached || {}), ...r[0] };
+            if (r?.[0]?.id && typeof r[0].precision === 'number') {
+                const result = { ...(cached || {}), ...r[0] };
+                console.log(`[utils.js] Blockchain lookup for ${s}: id=${result.id}, precision=${result.precision}`);
+                return result;
+            }
         } catch (e) {
             console.warn(`[utils.js] lookupAsset ${sym} failure:`, e.message);
         }
     }
 
-    return cached?.id ? cached : null;
+    // CRITICAL: Do not return assets without precision!
+    // This is a hard failure - we must have precision from the blockchain.
+    const errorMsg = `CRITICAL: Cannot fetch asset precision for '${s}' from blockchain. Halting bot to prevent order amount errors. Cached: ${cached?.id ? `id=${cached.id}` : 'none'}`;
+    console.error(`[utils.js] ${errorMsg}`);
+    throw new Error(errorMsg);
 };
 
 const deriveMarketPrice = async (BitShares, symA, symB) => {
@@ -1459,9 +1470,22 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 function buildCreateOrderArgs(order, assetA, assetB) {
     // CRITICAL: Quantize order size to blockchain precision BEFORE placing
     // This ensures no off-by-one errors between calculated size and blockchain storage
-    const precision = (order.type === 'sell')
-        ? (assetA?.precision ?? 8)
-        : (assetB?.precision ?? 8);
+    let precision;
+    if (order.type === 'sell') {
+        if (typeof assetA?.precision !== 'number') {
+            const errorMsg = `CRITICAL: Asset precision missing for selling asset: ${assetA?.symbol || '(unknown)'}. Cannot proceed with order placement.`;
+            console.error(`[buildCreateOrderArgs] ${errorMsg}`);
+            throw new Error(errorMsg);
+        }
+        precision = assetA.precision;
+    } else {
+        if (typeof assetB?.precision !== 'number') {
+            const errorMsg = `CRITICAL: Asset precision missing for buying asset: ${assetB?.symbol || '(unknown)'}. Cannot proceed with order placement.`;
+            console.error(`[buildCreateOrderArgs] ${errorMsg}`);
+            throw new Error(errorMsg);
+        }
+        precision = assetB.precision;
+    }
 
     // Convert to blockchain int and back to ensure exact precision match
     const quantizedSize = blockchainToFloat(floatToBlockchainInt(order.size, precision), precision);
@@ -1556,36 +1580,65 @@ function countOrdersByType(orderType, ordersMap) {
  * SELL orders use assetA precision, BUY orders use assetB precision.
  * @param {Object} assets - Assets object with assetA and assetB precision
  * @param {string} orderType - ORDER_TYPES.SELL or ORDER_TYPES.BUY
- * @returns {number} Precision (defaults to 8)
+ * @returns {number} Precision
+ * @throws {Error} If precision is not available for the asset
  */
 function getPrecisionByOrderType(assets, orderType) {
     const { ORDER_TYPES } = require('../constants');
-    return orderType === ORDER_TYPES.SELL
-        ? (assets?.assetA?.precision ?? 8)
-        : (assets?.assetB?.precision ?? 8);
+    const asset = orderType === ORDER_TYPES.SELL ? assets?.assetA : assets?.assetB;
+    const side = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
+    
+    if (typeof asset?.precision !== 'number') {
+        const errorMsg = `CRITICAL: Asset precision missing for ${side} orders. Asset: ${asset?.symbol || '(unknown)'}. Cannot determine blockchain precision.`;
+        console.error(`[getPrecisionByOrderType] ${errorMsg}`);
+        throw new Error(errorMsg);
+    }
+    
+    return asset.precision;
 }
 
 /**
  * Get blockchain precision for a side string.
  * @param {Object} assets - Assets object with assetA and assetB precision
  * @param {string} side - 'buy' or 'sell'
- * @returns {number} Precision (defaults to 8)
+ * @returns {number} Precision
+ * @throws {Error} If precision is not available for the asset
  */
 function getPrecisionForSide(assets, side) {
-    return side === 'buy'
-        ? (assets?.assetB?.precision ?? 8)
-        : (assets?.assetA?.precision ?? 8);
+    const asset = side === 'buy' ? assets?.assetB : assets?.assetA;
+    const sideUpper = side === 'buy' ? 'BUY' : 'SELL';
+    
+    if (typeof asset?.precision !== 'number') {
+        const errorMsg = `CRITICAL: Asset precision missing for ${sideUpper} side. Asset: ${asset?.symbol || '(unknown)'}. Cannot determine blockchain precision.`;
+        console.error(`[getPrecisionForSide] ${errorMsg}`);
+        throw new Error(errorMsg);
+    }
+    
+    return asset.precision;
 }
 
 /**
  * Get both asset precisions at once.
  * @param {Object} assets - Assets object with assetA and assetB precision
  * @returns {Object} { A: precisionA, B: precisionB }
+ * @throws {Error} If precision is not available for either asset
  */
 function getPrecisionsForManager(assets) {
+    if (typeof assets?.assetA?.precision !== 'number') {
+        const errorMsg = `CRITICAL: Asset precision missing for assetA (${assets?.assetA?.symbol || '(unknown)'}). Cannot determine blockchain precision.`;
+        console.error(`[getPrecisionsForManager] ${errorMsg}`);
+        throw new Error(errorMsg);
+    }
+    
+    if (typeof assets?.assetB?.precision !== 'number') {
+        const errorMsg = `CRITICAL: Asset precision missing for assetB (${assets?.assetB?.symbol || '(unknown)'}). Cannot determine blockchain precision.`;
+        console.error(`[getPrecisionsForManager] ${errorMsg}`);
+        throw new Error(errorMsg);
+    }
+    
     return {
-        A: assets?.assetA?.precision ?? 8,
-        B: assets?.assetB?.precision ?? 8
+        A: assets.assetA.precision,
+        B: assets.assetB.precision
     };
 }
 
