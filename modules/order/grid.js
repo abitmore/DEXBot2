@@ -556,38 +556,51 @@ class Grid {
 
     /**
      * Proactive spread correction check.
+     * 
+     * CRITICAL: Uses AsyncLock to prevent race conditions with fill processing.
+     * Without the lock, a TOCTOU (Time-Of-Check-To-Use) vulnerability exists where:
+     * - Fund snapshot is taken (check phase)
+     * - Fill processor modifies funds in another thread
+     * - Order is placed based on stale funds (use phase)
+     * Result: Orders placed beyond available liquidity, fund accounting errors
+     * 
+     * See RACE_CONDITION_ANALYSIS.md for detailed vulnerability documentation.
      */
     static async checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch = null) {
-        const currentSpread = Grid.calculateCurrentSpread(manager);
-        // Base target widens spread beyond nominal value to account for order density and price movement
-        const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-        // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
-        const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
+        // CRITICAL: Acquire corrections lock to serialize spread correction operations
+        // This prevents concurrent fill processing from modifying funds while we're making decisions
+        return await manager._correctionsLock.acquire(async () => {
+            const currentSpread = Grid.calculateCurrentSpread(manager);
+            // Base target widens spread beyond nominal value to account for order density and price movement
+            const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
+            // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
+            const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
 
-        const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
-        const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
+            const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
+            const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
 
-        manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
-        if (!manager.outOfSpread) return { ordersPlaced: 0, partialsMoved: 0 };
+            manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
+            if (!manager.outOfSpread) return { ordersPlaced: 0, partialsMoved: 0 };
 
-        manager.logger.log(`Spread too wide (${currentSpread.toFixed(2)}%), correcting...`, 'warn');
+            manager.logger.log(`Spread too wide (${currentSpread.toFixed(2)}%), correcting...`, 'warn');
 
-        let marketPrice = manager.config.startPrice;
-        if (BitShares) {
-            const derived = await derivePrice(BitShares, manager.assets.assetA.symbol, manager.assets.assetB.symbol, 'pool');
-            if (derived) marketPrice = derived;
-        }
+            let marketPrice = manager.config.startPrice;
+            if (BitShares) {
+                const derived = await derivePrice(BitShares, manager.assets.assetA.symbol, manager.assets.assetB.symbol, 'pool');
+                if (derived) marketPrice = derived;
+            }
 
-        const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
-        if (!decision.side) return { ordersPlaced: 0, partialsMoved: 0 };
+            const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
+            if (!decision.side) return { ordersPlaced: 0, partialsMoved: 0 };
 
-        const correction = await Grid.prepareSpreadCorrectionOrders(manager, decision.side);
-        if (correction.ordersToPlace.length > 0 && updateOrdersOnChainBatch) {
-            await updateOrdersOnChainBatch(correction);
-            manager.recalculateFunds();
-            return { ordersPlaced: correction.ordersToPlace.length, partialsMoved: 0 };
-        }
-        return { ordersPlaced: 0, partialsMoved: 0 };
+            const correction = await Grid.prepareSpreadCorrectionOrders(manager, decision.side);
+            if (correction.ordersToPlace.length > 0 && updateOrdersOnChainBatch) {
+                await updateOrdersOnChainBatch(correction);
+                manager.recalculateFunds();
+                return { ordersPlaced: correction.ordersToPlace.length, partialsMoved: 0 };
+            }
+            return { ordersPlaced: 0, partialsMoved: 0 };
+        });
     }
 
     /**
@@ -692,7 +705,11 @@ class Grid {
                 } else {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
                     ordersToPlace.push(activated);
+                    // OPTIMIZATION: Use batch mode to avoid multiple recalculateFunds() calls
+                    // Funds will be recalculated once after all updates, improving efficiency
+                    manager.pauseFundRecalc();
                     manager._updateOrder(activated);
+                    manager.resumeFundRecalc();
                 }
             } else if (size) {
                 manager.logger.log(`Spread correction order skipped: calculated size (${size.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)})`, 'warn');

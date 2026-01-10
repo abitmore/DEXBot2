@@ -1197,66 +1197,71 @@ class DEXBot {
         try {
             // Only run grid checks if no fills are being processed
             if (this.manager && this.manager.orders && this.manager.orders.size > 0) {
-                const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
-                if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                    this._log(`Grid updated at startup due to available funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+                // CRITICAL: Use corrections lock to prevent race with fill processing
+                // Even though fill listener is just being set up, fills could arrive immediately
+                // We must serialize grid updates with fund modifications to prevent TOCTOU races
+                await this.manager._correctionsLock.acquire(async () => {
+                    const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+                    
+                    // Step 1: Threshold check result
+                    if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
+                        this._log(`Grid updated at startup due to available funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
 
-                    // CRITICAL: First recalculate grid sizes with chain totals
-                    // This updates order sizes in memory to include newly deposited funds
-                    const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+                        // CRITICAL: First recalculate grid sizes with chain totals
+                        // This updates order sizes in memory to include newly deposited funds
+                        const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
+                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
 
-                    await this.manager.persistGrid();
+                        await this.manager.persistGrid();
 
-                    // Apply grid corrections on-chain immediately to use new funds
-                    try {
-                        await OrderUtils.applyGridDivergenceCorrections(
-                            this.manager,
-                            this.accountOrders,
-                            this.config.botKey,
-                            this.updateOrdersOnChainBatch.bind(this)
-                        );
-                        this._log(`Grid corrections applied on-chain at startup`);
-                    } catch (err) {
-                        this._warn(`Error applying grid corrections at startup: ${err.message}`);
-                    }
-                }
-
-                // Step 2: Divergence check (only if threshold didn't trigger)
-                // Detects structural mismatch between calculated and persisted grid
-                if (!gridCheckResult.buyUpdated && !gridCheckResult.sellUpdated) {
-                    try {
-                        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
-                        const calculatedGrid = Array.from(this.manager.orders.values());
-                        const comparisonResult = Grid.compareGrids(calculatedGrid, persistedGrid, this.manager, this.manager.funds.cacheFunds);
-
-                        if (comparisonResult.buy.updated || comparisonResult.sell.updated) {
-                            this._log(`Grid divergence detected at startup: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`);
-
-                            // Update grid with blockchain snapshot already fresh from initialization
-                            // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
-                            const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
-                            await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-
-                            await this.manager.persistGrid();
-
-                            // Apply grid corrections on-chain immediately
-                            try {
-                                await OrderUtils.applyGridDivergenceCorrections(
-                                    this.manager,
-                                    this.accountOrders,
-                                    this.config.botKey,
-                                    this.updateOrdersOnChainBatch.bind(this)
-                                );
-                                this._log(`Grid divergence corrections applied on-chain at startup`);
-                            } catch (err) {
-                                this._warn(`Error applying divergence corrections at startup: ${err.message}`);
-                            }
+                        // Apply grid corrections on-chain immediately to use new funds
+                        try {
+                            await OrderUtils.applyGridDivergenceCorrections(
+                                this.manager,
+                                this.accountOrders,
+                                this.config.botKey,
+                                this.updateOrdersOnChainBatch.bind(this)
+                            );
+                            this._log(`Grid corrections applied on-chain at startup`);
+                        } catch (err) {
+                            this._warn(`Error applying grid corrections at startup: ${err.message}`);
                         }
-                    } catch (err) {
-                        this._warn(`Error running divergence check at startup: ${err.message}`);
+                    } else {
+                        // Step 2: Divergence check (only if threshold didn't trigger)
+                        // Detects structural mismatch between calculated and persisted grid
+                        try {
+                            const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
+                            const calculatedGrid = Array.from(this.manager.orders.values());
+                            const comparisonResult = Grid.compareGrids(calculatedGrid, persistedGrid, this.manager, this.manager.funds.cacheFunds);
+
+                            if (comparisonResult.buy.updated || comparisonResult.sell.updated) {
+                                this._log(`Grid divergence detected at startup: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`);
+
+                                // Update grid with blockchain snapshot already fresh from initialization
+                                // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
+                                const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
+                                await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+
+                                await this.manager.persistGrid();
+
+                                // Apply grid corrections on-chain immediately
+                                try {
+                                    await OrderUtils.applyGridDivergenceCorrections(
+                                        this.manager,
+                                        this.accountOrders,
+                                        this.config.botKey,
+                                        this.updateOrdersOnChainBatch.bind(this)
+                                    );
+                                    this._log(`Grid divergence corrections applied on-chain at startup`);
+                                } catch (err) {
+                                    this._warn(`Error applying divergence corrections at startup: ${err.message}`);
+                                }
+                            }
+                        } catch (err) {
+                            this._warn(`Error running divergence check at startup: ${err.message}`);
+                        }
                     }
-                }
+                });
             }
         } catch (err) {
             this._warn(`Error checking grid at startup: ${err.message}`);
