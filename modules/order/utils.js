@@ -111,49 +111,6 @@ function isValidNumber(value) {
     return value !== null && value !== undefined && Number.isFinite(Number(value));
 }
 
-/**
- * Assert that a value looks like a human-readable float, not a blockchain integer.
- * Use this at boundaries where values enter the system to catch int/float mixups early.
- * 
- * DYNAMIC THRESHOLD: The check is based on asset precision to avoid false positives/negatives.
- * If precision is provided, threshold = 1e15 / 10^precision (same logic as floatToBlockchainInt).
- * If precision is omitted, uses a conservative fallback of 1e12 (good for most assets).
- * 
- * This catches cases where blockchain integers (satoshis) are accidentally treated as floats.
- * 
- * @param {number} value - Value to check
- * @param {string} context - Description of where this check is happening (for error messages)
- * @param {number} precision - Asset precision (e.g., 5 for BTS). If null, uses conservative fallback.
- * @returns {boolean} True if value passes the sanity check
- * @throws {Error} If value appears to be a blockchain integer
- */
-function assertIsHumanReadableFloat(value, context = 'unknown', precision = null) {
-    const v = toFiniteNumber(value);
-    
-    // Compute dynamic threshold based on precision
-    // If precision provided, use it. Otherwise, use conservative fallback.
-    let threshold;
-    if (Number.isFinite(precision) && precision >= 0) {
-        const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
-        threshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, Number(precision));
-    } else {
-        // Fallback: conservative threshold that works for most assets
-        threshold = 1e12; // Good for assets with precision 0-8
-    }
-    
-    if (Math.abs(v) > threshold) {
-        const precisionStr = Number.isFinite(precision) ? ` (precision ${precision})` : '';
-        const error = new Error(
-            `[assertIsHumanReadableFloat] SUSPICIOUS VALUE in ${context}: ${v} exceeds threshold ${threshold}${precisionStr}. ` +
-            `This might be a blockchain integer (satoshis) passed as a float. ` +
-            `Expected human-readable values like 1.5, not satoshis like 150000000.`
-        );
-        console.error(error.message);
-        throw error;
-    }
-    return true;
-}
-
 function isPercentageString(v) {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
@@ -2191,7 +2148,6 @@ module.exports = {
     // Numeric validation helpers
     toFiniteNumber,
     isValidNumber,
-    assertIsHumanReadableFloat,
 
     // Order filtering helpers
     filterOrdersByType,
