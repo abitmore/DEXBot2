@@ -47,7 +47,7 @@
  *   Purpose: Match grid orders to blockchain orders and reconcile state
  *
  * SECTION 6: FEE MANAGEMENT (lines 922-1180)
- *   - initializeFeeCache, getCachedFees, getAssetFees
+ *   - initializeFeeCache, getAssetFees
  *   - _fetchBlockchainFees, _fetchAssetMarketFees
  *   - calculateOrderCreationFees, deductOrderFeesFromFunds
  *   Purpose: Cache and calculate market-making fees
@@ -1007,17 +1007,6 @@ async function initializeFeeCache(botsConfig, BitShares) {
     }
 
     return feeCache;
-}
-
-/**
- * Get cached fees for a specific asset
- * Useful for checking if cache has been initialized
- *
- * @param {string} assetSymbol - Asset symbol (e.g., 'IOB.XRP', 'TWENTIX', 'BTS')
- * @returns {object|null} Fee data if cached, null otherwise
- */
-function getCachedFees(assetSymbol) {
-    return feeCache[assetSymbol] || null;
 }
 
 /**
@@ -2112,7 +2101,6 @@ module.exports = {
 
     // Fee caching and retrieval
     initializeFeeCache,
-    getCachedFees,
     getAssetFees,
 
     // Persistence

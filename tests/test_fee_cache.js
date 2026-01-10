@@ -12,7 +12,7 @@
 const BitShares = require('btsdex');
 const fs = require('fs');
 const path = require('path');
-const { initializeFeeCache, getAssetFees, getCachedFees } = require('../modules/order/utils');
+const { initializeFeeCache, getAssetFees } = require('../modules/order/utils');
 
 async function main() {
     try {
@@ -55,23 +55,17 @@ async function main() {
         console.log('-'.repeat(80));
 
         for (const assetSymbol of assets) {
-            const cachedFees = getCachedFees(assetSymbol);
-            if (!cachedFees) {
-                console.log(`\n${assetSymbol}: ⚠ Failed to cache`);
-                continue;
-            }
-
-            console.log(`\n${assetSymbol}:`);
-            if (assetSymbol === 'BTS') {
-                console.log(`  Order Creation Fee: ${cachedFees.limitOrderCreate.bts.toFixed(8)} BTS`);
-                console.log(`  Order Cancel Fee: ${cachedFees.limitOrderCancel.bts.toFixed(8)} BTS`);
-            } else {
-                console.log(`  Asset ID: ${cachedFees.assetId}`);
-                console.log(`  Precision: ${cachedFees.precision}`);
-                console.log(`  Market Fee: ${cachedFees.marketFee.percent.toFixed(4)}%`);
-                if (cachedFees.takerFee) {
-                    console.log(`  Taker Fee: ${cachedFees.takerFee.percent.toFixed(4)}%`);
+            try {
+                // Test getAssetFees to verify fees are cached (with minimal amount)
+                const testFee = getAssetFees(assetSymbol, assetSymbol === 'BTS' ? 1 : 0.01);
+                console.log(`\n${assetSymbol}:`);
+                if (assetSymbol === 'BTS') {
+                    console.log(`  ✓ Fees cached (test fee for 1 BTS: ${testFee.total.toFixed(8)} BTS)`);
+                } else {
+                    console.log(`  ✓ Fees cached (test fee: ${testFee.toFixed(8)} ${assetSymbol})`);
                 }
+            } catch (error) {
+                console.log(`\n${assetSymbol}: ⚠ Failed to cache - ${error.message}`);
             }
         }
 
