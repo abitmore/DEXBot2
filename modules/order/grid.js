@@ -9,6 +9,7 @@
 
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, TIMING, INCREMENT_BOUNDS, FEE_PARAMETERS } = require('../constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
+const Format = require('./format');
 
 // FIX: Extract magic numbers to named constants for maintainability
 const GRID_CONSTANTS = {
@@ -894,7 +895,7 @@ class Grid {
 
         if (!side) {
             // FIX: Use consistent optional chaining pattern for logger calls
-            manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${buyRatio.toFixed(2)}, sell ratio: ${sellRatio.toFixed(2)}). Required: buy=${reqBuy?.toFixed(8) || 'N/A'}, sell=${reqSell?.toFixed(8) || 'N/A'}`, 'warn');
+            manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${Format.formatPercent2(buyRatio)}, sell ratio: ${Format.formatPercent2(sellRatio)}). Required: buy=${reqBuy ? Format.formatAmount8(reqBuy) : 'N/A'}, sell=${reqSell ? Format.formatAmount8(reqSell) : 'N/A'}`, 'warn');
         }
 
         return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
@@ -959,7 +960,7 @@ class Grid {
                 const orderSizeRatio = (availableFund / size) * 100;
 
                 if (orderSizeRatio < dustThresholdPercent) {
-                    manager.logger?.log?.(`Spread correction order skipped: available funds would create dust order (${orderSizeRatio.toFixed(2)}% of ideal size ${size.toFixed(8)}, below ${dustThresholdPercent}% threshold)`, 'warn');
+                    manager.logger?.log?.(`Spread correction order skipped: available funds would create dust order (${Format.formatPercent2(orderSizeRatio)}% of ideal size ${Format.formatAmount8(size)}, below ${dustThresholdPercent}% threshold)`, 'warn');
                 } else {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
                     ordersToPlace.push(activated);
@@ -969,7 +970,7 @@ class Grid {
                     manager._updateOrder(activated);
                 }
             } else if (size) {
-                manager.logger?.log?.(`Spread correction order skipped: calculated size (${size.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)})`, 'warn');
+                manager.logger?.log?.(`Spread correction order skipped: calculated size (${Format.formatAmount8(size)}) exceeds available funds (${Format.formatAmount8(availableFund)})`, 'warn');
             }
         }
         return { ordersToPlace, partialMoves: [] };

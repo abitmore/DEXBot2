@@ -12,6 +12,7 @@ const {
     calculateAvailableFundsValue,
     getAssetFees
 } = require('./utils');
+const Format = require('./format');
 
 /**
  * Accountant engine - Specialized handler for fund tracking and calculations
@@ -227,10 +228,10 @@ class Accountant {
 
         if (diffBuy > allowedBuyTolerance) {
             if (mgr._metrics?.invariantViolations) mgr._metrics.invariantViolations.buy++;
-            mgr.logger?.log?.(
-                `WARNING: Fund invariant violation (BUY): chainTotal (${chainTotalBuy.toFixed(8)}) != chainFree (${chainFreeBuy.toFixed(8)}) + chainCommitted (${chainBuy.toFixed(8)}) = ${expectedBuy.toFixed(8)} (diff: ${diffBuy.toFixed(8)}, allowed: ${allowedBuyTolerance.toFixed(8)})`,
-                'warn'
-            );
+             mgr.logger?.log?.(
+                 `WARNING: Fund invariant violation (BUY): chainTotal (${Format.formatAmount8(chainTotalBuy)}) != chainFree (${Format.formatAmount8(chainFreeBuy)}) + chainCommitted (${Format.formatAmount8(chainBuy)}) = ${Format.formatAmount8(expectedBuy)} (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`,
+                 'warn'
+             );
         }
 
         // INVARIANT 1: chainTotal = chainFree + chainCommitted (SELL side)
@@ -241,40 +242,40 @@ class Accountant {
 
         if (diffSell > allowedSellTolerance) {
             if (mgr._metrics?.invariantViolations) mgr._metrics.invariantViolations.sell++;
-            mgr.logger?.log?.(
-                `WARNING: Fund invariant violation (SELL): chainTotal (${chainTotalSell.toFixed(8)}) != chainFree (${chainFreeSell.toFixed(8)}) + chainCommitted (${chainSell.toFixed(8)}) = ${expectedSell.toFixed(8)} (diff: ${diffSell.toFixed(8)}, allowed: ${allowedSellTolerance.toFixed(8)})`,
-                'warn'
-            );
+             mgr.logger?.log?.(
+                 `WARNING: Fund invariant violation (SELL): chainTotal (${Format.formatAmount8(chainTotalSell)}) != chainFree (${Format.formatAmount8(chainFreeSell)}) + chainCommitted (${Format.formatAmount8(chainSell)}) = ${Format.formatAmount8(expectedSell)} (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`,
+                 'warn'
+             );
         }
 
         // INVARIANT 2: Available should not exceed chainFree
         if (mgr.funds.available.buy > chainFreeBuy + allowedBuyTolerance) {
-            mgr.logger?.log?.(
-                `WARNING: Fund invariant violation (BUY available): available (${mgr.funds.available.buy.toFixed(8)}) > chainFree (${chainFreeBuy.toFixed(8)})`,
-                'warn'
-            );
+             mgr.logger?.log?.(
+                 `WARNING: Fund invariant violation (BUY available): available (${Format.formatAmount8(mgr.funds.available.buy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`,
+                 'warn'
+             );
         }
         if (mgr.funds.available.sell > chainFreeSell + allowedSellTolerance) {
-            mgr.logger?.log?.(
-                `WARNING: Fund invariant violation (SELL available): available (${mgr.funds.available.sell.toFixed(8)}) > chainFree (${chainFreeSell.toFixed(8)})`,
-                'warn'
-            );
+             mgr.logger?.log?.(
+                 `WARNING: Fund invariant violation (SELL available): available (${Format.formatAmount8(mgr.funds.available.sell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`,
+                 'warn'
+             );
         }
 
         // INVARIANT 3: Grid committed should not exceed chain total
         const gridCommittedBuy = mgr.funds.committed.grid.buy;
         const gridCommittedSell = mgr.funds.committed.grid.sell;
         if (gridCommittedBuy > chainTotalBuy + allowedBuyTolerance) {
-            mgr.logger?.log?.(
-                `WARNING: Fund invariant violation (BUY grid): gridCommitted (${gridCommittedBuy.toFixed(8)}) > chainTotal (${chainTotalBuy.toFixed(8)})`,
-                'warn'
-            );
+             mgr.logger?.log?.(
+                 `WARNING: Fund invariant violation (BUY grid): gridCommitted (${Format.formatAmount8(gridCommittedBuy)}) > chainTotal (${Format.formatAmount8(chainTotalBuy)})`,
+                 'warn'
+             );
         }
         if (gridCommittedSell > chainTotalSell + allowedSellTolerance) {
-            mgr.logger?.log?.(
-                `WARNING: Fund invariant violation (SELL grid): gridCommitted (${gridCommittedSell.toFixed(8)}) > chainTotal (${chainTotalSell.toFixed(8)})`,
-                'warn'
-            );
+             mgr.logger?.log?.(
+                 `WARNING: Fund invariant violation (SELL grid): gridCommitted (${Format.formatAmount8(gridCommittedSell)}) > chainTotal (${Format.formatAmount8(chainTotalSell)})`,
+                 'warn'
+             );
         }
     }
 
@@ -314,10 +315,10 @@ class Accountant {
 
         // Check: Do we have enough?
         if (current < size) {
-            mgr.logger.log(
-                `[chainFree check-and-deduct] ${orderType} order ${operation}: INSUFFICIENT FUNDS (have ${current.toFixed(8)}, need ${size.toFixed(8)})`,
-                'warn'
-            );
+             mgr.logger.log(
+                 `[chainFree check-and-deduct] ${orderType} order ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`,
+                 'warn'
+             );
             return false;
         }
 
@@ -357,7 +358,7 @@ class Accountant {
          mgr.accountTotals[key] = oldFree + size;
 
          if (mgr.logger && mgr.logger.level === 'debug') {
-             mgr.logger.log(`[ACCOUNTING] ${key} +${size.toFixed(8)} (${operation}) -> ${mgr.accountTotals[key].toFixed(8)}`, 'debug');
+              mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])}`, 'debug');
          }
          
          return true;
@@ -473,14 +474,14 @@ class Accountant {
             const chainDeduction = feesOwedThisSide - cacheDeduction;
 
             if (mgr.logger.level === 'debug') {
-                mgr.logger.log(`[FEES] Deducting BTS fees. Owed: ${feesOwedThisSide.toFixed(8)}, Cache: ${cache.toFixed(8)} (${side}). Plan: Cache=${cacheDeduction.toFixed(8)}, Chain=${chainDeduction.toFixed(8)}`, 'debug');
+                 mgr.logger.log(`[FEES] Deducting BTS fees. Owed: ${Format.formatAmount8(feesOwedThisSide)}, Cache: ${Format.formatAmount8(cache)} (${side}). Plan: Cache=${Format.formatAmount8(cacheDeduction)}, Chain=${Format.formatAmount8(chainDeduction)}`, 'debug');
             }
 
-            mgr.logger.log(
-                `Deducting BTS fees: ${cacheDeduction.toFixed(8)} from cacheFunds, ` +
-                `${chainDeduction.toFixed(8)} from chainFree (total owed: ${feesOwedThisSide.toFixed(8)} BTS)`,
-                'info'
-            );
+             mgr.logger.log(
+                 `Deducting BTS fees: ${Format.formatAmount8(cacheDeduction)} from cacheFunds, ` +
+                 `${Format.formatAmount8(chainDeduction)} from chainFree (total owed: ${Format.formatAmount8(feesOwedThisSide)} BTS)`,
+                 'info'
+             );
 
             // Deduct from cacheFunds first if available
             if (cacheDeduction > 0) {

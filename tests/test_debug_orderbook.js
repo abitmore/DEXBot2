@@ -7,6 +7,7 @@
  */
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
+const Format = require('../modules/order/format');
 
 const colors = {
     reset: '\x1b[0m',
@@ -55,17 +56,17 @@ async function debugOrderBook() {
         try {
             const ob1 = await BitShares.db.get_order_book(xrpId, btsId, 5);
             console.log(`  Bids: ${ob1.bids ? ob1.bids.length : 0}`);
-            if (ob1.bids && ob1.bids.length > 0) {
-                ob1.bids.forEach((bid, i) => {
-                    console.log(`    ${i+1}. Price: ${Number(bid.price).toFixed(8)} BTS/XRP`);
-                });
-            }
-            console.log(`  Asks: ${ob1.asks ? ob1.asks.length : 0}`);
-            if (ob1.asks && ob1.asks.length > 0) {
-                ob1.asks.forEach((ask, i) => {
-                    console.log(`    ${i+1}. Price: ${Number(ask.price).toFixed(8)} BTS/XRP`);
-                });
-            }
+             if (ob1.bids && ob1.bids.length > 0) {
+                 ob1.bids.forEach((bid, i) => {
+                     console.log(`    ${i+1}. Price: ${Format.formatPrice(Number(bid.price))} BTS/XRP`);
+                 });
+             }
+             console.log(`  Asks: ${ob1.asks ? ob1.asks.length : 0}`);
+             if (ob1.asks && ob1.asks.length > 0) {
+                 ob1.asks.forEach((ask, i) => {
+                     console.log(`    ${i+1}. Price: ${Format.formatPrice(Number(ask.price))} BTS/XRP`);
+                 });
+             }
         } catch (err) {
             console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
         }
@@ -77,17 +78,17 @@ async function debugOrderBook() {
         try {
             const ob2 = await BitShares.db.get_order_book(btsId, xrpId, 5);
             console.log(`  Bids: ${ob2.bids ? ob2.bids.length : 0}`);
-            if (ob2.bids && ob2.bids.length > 0) {
-                ob2.bids.forEach((bid, i) => {
-                    console.log(`    ${i+1}. Price: ${Number(bid.price).toFixed(8)} XRP/BTS`);
-                });
-            }
-            console.log(`  Asks: ${ob2.asks ? ob2.asks.length : 0}`);
-            if (ob2.asks && ob2.asks.length > 0) {
-                ob2.asks.forEach((ask, i) => {
-                    console.log(`    ${i+1}. Price: ${Number(ask.price).toFixed(8)} XRP/BTS`);
-                });
-            }
+             if (ob2.bids && ob2.bids.length > 0) {
+                 ob2.bids.forEach((bid, i) => {
+                     console.log(`    ${i+1}. Price: ${Format.formatPrice(Number(bid.price))} XRP/BTS`);
+                 });
+             }
+             console.log(`  Asks: ${ob2.asks ? ob2.asks.length : 0}`);
+             if (ob2.asks && ob2.asks.length > 0) {
+                 ob2.asks.forEach((ask, i) => {
+                     console.log(`    ${i+1}. Price: ${Format.formatPrice(Number(ask.price))} XRP/BTS`);
+                 });
+             }
         } catch (err) {
             console.log(`${colors.red}  Error: ${err.message}${colors.reset}`);
         }

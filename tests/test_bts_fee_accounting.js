@@ -7,29 +7,30 @@
 // MOCK UTILS BEFORE ANYTHING ELSE
 const utils = require('../modules/order/utils');
 utils.getAssetFees = (asset, amount, isMaker = true) => {
-    if (asset === 'BTS') {
-        const createFee = 0.01;
-        const updateFee = 0.0001;
-        const makerNetFee = createFee * 0.1;
-        const takerNetFee = createFee;
-        const netFee = isMaker ? makerNetFee : takerNetFee;
-        return {
-            total: netFee + updateFee,
-            createFee: createFee,
-            updateFee: updateFee,
-            makerNetFee: makerNetFee,
-            takerNetFee: takerNetFee,
-            netFee: netFee,
-            isMaker: isMaker
-        };
-    }
-    if (asset === 'USD') return amount;
-    return amount;
-};
-
-const assert = require('assert');
-const { OrderManager } = require('../modules/order/manager');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+     if (asset === 'BTS') {
+         const createFee = 0.01;
+         const updateFee = 0.0001;
+         const makerNetFee = createFee * 0.1;
+         const takerNetFee = createFee;
+         const netFee = isMaker ? makerNetFee : takerNetFee;
+         return {
+             total: netFee + updateFee,
+             createFee: createFee,
+             updateFee: updateFee,
+             makerNetFee: makerNetFee,
+             takerNetFee: takerNetFee,
+             netFee: netFee,
+             isMaker: isMaker
+         };
+     }
+     if (asset === 'USD') return amount;
+     return amount;
+ };
+ 
+ const assert = require('assert');
+ const { OrderManager } = require('../modules/order/manager');
+ const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+ const Format = require('../modules/order/format');
 
 async function testFeeAccounting() {
     console.log('Testing BTS Fee Accounting...');
@@ -81,7 +82,7 @@ async function testFeeAccounting() {
     await manager.strategy.processFilledOrders([fill]);
 
     const totalFees = deductedAmount + manager.funds.btsFeesOwed;
-    console.log(`  Total BTS fees (deducted + remaining): ${totalFees.toFixed(5)}`);
+    console.log(`  Total BTS fees (deducted + remaining): ${Format.formatMetric5(totalFees)}`);
     
     // Expected: 
     // 1 Fill net cost: makerNetFee = 0.001

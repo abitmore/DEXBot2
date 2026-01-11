@@ -12,6 +12,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const Format = require('../modules/order/format');
 
 class RepoAnalyzer {
     constructor() {
@@ -160,12 +161,12 @@ class RepoAnalyzer {
         }
         console.log();
 
-        // Add/Delete ratio
-        console.log('🎯 Add vs Delete Ratio:');
-        console.log('─'.repeat(80));
-        const ratio = (this.stats.totalAdded / Math.max(1, this.stats.totalDeleted)).toFixed(2);
-        console.log(`Ratio (Added/Deleted): ${ratio}x`);
-        console.log();
+         // Add/Delete ratio
+         console.log('🎯 Add vs Delete Ratio:');
+         console.log('─'.repeat(80));
+         const ratio = (this.stats.totalAdded / Math.max(1, this.stats.totalDeleted));
+         console.log(`Ratio (Added/Deleted): ${Format.formatMetric2(ratio)}x`);
+         console.log();
 
         // Daily stats summary
         const dailyDates = Object.keys(this.stats.dailyStats).sort();

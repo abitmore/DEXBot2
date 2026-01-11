@@ -21,6 +21,7 @@ const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require(
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
 const { parseJsonWithComments } = require('./account_bots');
+const Format = require('./order/format');
 
 const PROFILES_BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
@@ -668,7 +669,7 @@ class DEXBot {
         if (orderSizeViolations.length > 0) {
             let summary = `[VALIDATION] CRITICAL: Order size limit FAILED (Absurd Size Check):\n`;
             for (const v of orderSizeViolations) {
-                summary += `  ${v.asset}: sizeInt=${v.sizeInt}, maxInt=${v.maxInt} (approx ${v.sizeFloat.toFixed(8)})\n`;
+                 summary += `  ${v.asset}: sizeInt=${v.sizeInt}, maxInt=${v.maxInt} (approx ${Format.formatAmount8(v.sizeFloat)})\n`;
             }
             return { isValid: false, summary: summary.trim(), violations: orderSizeViolations };
         }
@@ -690,12 +691,12 @@ class DEXBot {
         if (fundViolations.length > 0) {
             let summary = `[VALIDATION] Fund validation FAILED:\n`;
             for (const v of fundViolations) {
-                summary += `  ${v.asset}: required=${v.required.toFixed(8)}, available=${v.available.toFixed(8)}, deficit=${v.deficit.toFixed(8)}\n`;
+                 summary += `  ${v.asset}: required=${Format.formatAmount8(v.required)}, available=${Format.formatAmount8(v.available)}, deficit=${Format.formatAmount8(v.deficit)}\n`;
             }
             return { isValid: false, summary: summary.trim(), violations: fundViolations };
         }
 
-        const summary = `[VALIDATION] PASSED: ${operations.length} operations, max order=${maxOrderSize.toFixed(8)}`;
+         const summary = `[VALIDATION] PASSED: ${operations.length} operations, max order=${Format.formatAmount8(maxOrderSize)}`;
         return { isValid: true, summary };
     }
 
@@ -1121,7 +1122,7 @@ class DEXBot {
             // CRITICAL: Restore BTS fees owed from blockchain operations
             if (persistedBtsFeesOwed > 0) {
                 this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
-                this._log(`✓ Restored BTS fees owed: ${persistedBtsFeesOwed.toFixed(8)} BTS`);
+                 this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
             }
         } else {
             this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
@@ -1237,7 +1238,7 @@ class DEXBot {
                              // Safety check: ensure comparisonResult has valid structure before accessing properties
                              if (comparisonResult?.buy?.updated !== undefined && comparisonResult?.sell?.updated !== undefined) {
                                  if (comparisonResult.buy.updated || comparisonResult.sell.updated) {
-                                     this._log(`Grid divergence detected at startup: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`);
+                                     this._log(`Grid divergence detected at startup: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
  
                                      // Update grid with blockchain snapshot already fresh from initialization
                                      // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
@@ -1621,9 +1622,9 @@ class DEXBot {
 
         // Log final metrics
         const metrics = this.getMetrics();
-        this._log(`Shutdown complete. Final metrics: fills=${metrics.fillsProcessed}, batches=${metrics.batchesExecuted}, ` +
-            `avgProcessingTime=${metrics.fillsProcessed > 0 ? (metrics.fillProcessingTimeMs / metrics.fillsProcessed).toFixed(2) : 0}ms, ` +
-            `lockContentions=${metrics.lockContentionEvents}, maxQueueDepth=${metrics.maxQueueDepth}`);
+         this._log(`Shutdown complete. Final metrics: fills=${metrics.fillsProcessed}, batches=${metrics.batchesExecuted}, ` +
+             `avgProcessingTime=${metrics.fillsProcessed > 0 ? Format.formatMetric2(metrics.fillProcessingTimeMs / metrics.fillsProcessed) : 0}ms, ` +
+             `lockContentions=${metrics.lockContentionEvents}, maxQueueDepth=${metrics.maxQueueDepth}`);
     }
 }
 

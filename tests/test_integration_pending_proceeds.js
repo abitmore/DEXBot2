@@ -12,6 +12,7 @@
 const { AccountOrders, createBotKey } = require('../modules/account_orders');
 const { OrderManager } = require('../modules/order');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
+const Format = require('../modules/order/format');
 
 async function testCompleteLifecycle() {
     console.log('\n╔════════════════════════════════════════════════════════╗');
@@ -140,15 +141,15 @@ async function testCompleteLifecycle() {
         failed.push('grid');
     }
 
-    // Test 4: Funds not lost
-    const fundsRecovered = (restoredCacheFunds.buy || 0) > 0;
-    if (fundsRecovered) {
-        console.log(`   ✓ Test 4: Funds NOT lost - ${restoredCacheFunds.buy.toFixed(8)} USD recovered`);
-        passed.push('funds_recovered');
-    } else {
-        console.log('   ✗ Test 4: FAILED - Funds were lost!');
-        failed.push('funds_recovered');
-    }
+     // Test 4: Funds not lost
+     const fundsRecovered = (restoredCacheFunds.buy || 0) > 0;
+     if (fundsRecovered) {
+         console.log(`   ✓ Test 4: Funds NOT lost - ${Format.formatAmount8(restoredCacheFunds.buy)} USD recovered`);
+         passed.push('funds_recovered');
+     } else {
+         console.log('   ✗ Test 4: FAILED - Funds were lost!');
+         failed.push('funds_recovered');
+     }
 
     // Summary
     console.log('\n╔════════════════════════════════════════════════════════╗');

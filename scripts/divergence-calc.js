@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const Format = require('../modules/order/format');
 
 // Read data from file argument or stdin
 function readData() {
@@ -64,12 +65,12 @@ console.log(`Orders analyzed: ${activeOrders.length}`);
 if (partialOrdersCount > 0) {
   console.log(`Partial orders excluded: ${partialOrdersCount}`);
 }
-console.log(`Sum of squared relative differences: ${sumSquaredDiff.toFixed(8)}`);
-console.log(`\nMetric: ${normalizedMetric.toFixed(8)}`);
-console.log(`In promille: ${promille.toFixed(4)}`);
-console.log(`Real average error: ${realErrorPercent.toFixed(2)}%`);
+console.log(`Sum of squared relative differences: ${Format.formatPrice4(sumSquaredDiff)}`);
+console.log(`\nMetric: ${Format.formatPrice4(normalizedMetric)}`);
+console.log(`In promille: ${Format.formatPrice4(promille)}`);
+console.log(`Real average error: ${Format.formatMetric2(realErrorPercent)}%`);
 console.log(`\nThreshold comparison (from constants.js):`);
-console.log(`  Current: ${promille.toFixed(4)} promille`);
+console.log(`  Current: ${Format.formatPrice4(promille)} promille`);
 console.log(`  Default threshold: 1 promille (3.2% avg error)`);
 console.log(`  Status: ${promille <= 1 ? '✓ WITHIN THRESHOLD' : '✗ EXCEEDS THRESHOLD'}`);
 
@@ -82,7 +83,7 @@ activeOrders.forEach((order, idx) => {
   if (absError > maxError) { maxError = absError; maxErrorOrder = { ...order, idx }; }
 });
 
-console.log(`\nMin error: ${(minError * 100).toFixed(4)}% at buy-${minErrorOrder.idx}`);
-console.log(`  Calculated: ${minErrorOrder.calculated.toFixed(8)}, Persisted: ${minErrorOrder.persisted.toFixed(8)}`);
-console.log(`Max error: ${(maxError * 100).toFixed(4)}% at buy-${maxErrorOrder.idx}`);
-console.log(`  Calculated: ${maxErrorOrder.calculated.toFixed(8)}, Persisted: ${maxErrorOrder.persisted.toFixed(8)}`);
+console.log(`\nMin error: ${Format.formatPrice4(minError * 100)}% at buy-${minErrorOrder.idx}`);
+console.log(`  Calculated: ${Format.formatPrice(minErrorOrder.calculated)}, Persisted: ${Format.formatPrice(minErrorOrder.persisted)}`);
+console.log(`Max error: ${Format.formatPrice4(maxError * 100)}% at buy-${maxErrorOrder.idx}`);
+console.log(`  Calculated: ${Format.formatPrice(maxErrorOrder.calculated)}, Persisted: ${Format.formatPrice(maxErrorOrder.persisted)}`);

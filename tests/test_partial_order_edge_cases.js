@@ -3,6 +3,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { Grid } = require('../modules/order/grid');
 const { countOrdersByType } = require('../modules/order/utils');
+const Format = require('../modules/order/format');
 
 console.log('Running Partial Order Edge Cases test suite...\n');
 
@@ -367,7 +368,7 @@ async function testPartialInSpreadCalculation() {
     // Spread = (1840 - 1760) / 1800 ≈ 4.4%
 
     assert(spread !== undefined && spread !== null, 'Spread should be calculated');
-    console.log(`  ✓ Spread calculated including PARTIAL orders: ${(spread * 100).toFixed(2)}%`);
+    console.log(`  ✓ Spread calculated including PARTIAL orders: ${Format.formatPercent2(spread * 100)}%`);
     console.log(`  ✓ Uses on-chain orders (ACTIVE + PARTIAL) for accurate spread\n`);
 }
 

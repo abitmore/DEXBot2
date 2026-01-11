@@ -13,6 +13,7 @@ const BitShares = require('btsdex');
 const fs = require('fs');
 const path = require('path');
 const { initializeFeeCache, getAssetFees } = require('../modules/order/utils');
+const Format = require('../modules/order/format');
 
 async function main() {
     try {
@@ -60,9 +61,9 @@ async function main() {
                 const testFee = getAssetFees(assetSymbol, assetSymbol === 'BTS' ? 1 : 0.01);
                 console.log(`\n${assetSymbol}:`);
                 if (assetSymbol === 'BTS') {
-                    console.log(`  ✓ Fees cached (test fee for 1 BTS: ${testFee.total.toFixed(8)} BTS)`);
+                    console.log(`  ✓ Fees cached (test fee for 1 BTS: ${Format.formatAmount8(testFee.total)} BTS)`);
                 } else {
-                    console.log(`  ✓ Fees cached (test fee: ${testFee.toFixed(8)} ${assetSymbol})`);
+                    console.log(`  ✓ Fees cached (test fee: ${Format.formatAmount8(testFee)} ${assetSymbol})`);
                 }
             } catch (error) {
                 console.log(`\n${assetSymbol}: ⚠ Failed to cache - ${error.message}`);
@@ -74,22 +75,22 @@ async function main() {
         console.log('TEST: GET MAKER FEES');
         console.log('-'.repeat(80));
 
-        // Test BTS (blockchain fees)
-        console.log('\n--- BTS ---');
-        const btsFees = getAssetFees('BTS', 1000);
-        console.log(`getAssetFees('BTS', 1000):`);
-        console.log(`  total: ${btsFees.total.toFixed(8)} BTS`);
-        console.log(`  createFee: ${btsFees.createFee.toFixed(8)} BTS`);
+         // Test BTS (blockchain fees)
+         console.log('\n--- BTS ---');
+         const btsFees = getAssetFees('BTS', 1000);
+         console.log(`getAssetFees('BTS', 1000):`);
+         console.log(`  total: ${Format.formatAmount8(btsFees.total)} BTS`);
+         console.log(`  createFee: ${Format.formatAmount8(btsFees.createFee)} BTS`);
 
-        // Test IOB.XRP
-        console.log('\n--- IOB.XRP ---');
-        const xrpFees = getAssetFees('IOB.XRP', 100);
-        console.log(`getAssetFees('IOB.XRP', 100) = ${xrpFees.toFixed(8)} IOB.XRP`);
+         // Test IOB.XRP
+         console.log('\n--- IOB.XRP ---');
+         const xrpFees = getAssetFees('IOB.XRP', 100);
+         console.log(`getAssetFees('IOB.XRP', 100) = ${Format.formatAmount8(xrpFees)} IOB.XRP`);
 
-        // Test HONEST.MONEY
-        console.log('\n--- HONEST.MONEY ---');
-        const honestMoneyFees = getAssetFees('HONEST.MONEY', 500);
-        console.log(`getAssetFees('HONEST.MONEY', 500) = ${honestMoneyFees.toFixed(8)} HONEST.MONEY`);
+         // Test HONEST.MONEY
+         console.log('\n--- HONEST.MONEY ---');
+         const honestMoneyFees = getAssetFees('HONEST.MONEY', 500);
+         console.log(`getAssetFees('HONEST.MONEY', 500) = ${Format.formatAmount8(honestMoneyFees)} HONEST.MONEY`);
 
 
         console.log('\n' + '='.repeat(80) + '\n');

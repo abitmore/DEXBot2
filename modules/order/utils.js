@@ -85,6 +85,7 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS } = require('../constants');
+const Format = require('./format');
 
 // ════════════════════════════════════════════════════════════════════════════════
 // SECTION 1: PARSING & VALIDATION
@@ -357,19 +358,24 @@ function floatToBlockchainInt(floatValue, precision) {
 // Price tolerance calculation and checking (also see Section 4 Part 2: Price derivation)
 
 function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
-    // Cannot calculate tolerance without assets - return null to signal missing precision
-    if (!assets || !gridPrice || !orderSize) {
-        return null;
-    }
+     // Ensure we have numeric grid price and order size
+     if (!isValidNumber(gridPrice) || !isValidNumber(orderSize)) {
+         return null;
+     }
 
-    const precisionA = assets.assetA?.precision;
-    const precisionB = assets.assetB?.precision;
+     // Fallback: if assets missing, use conservative default (0.1% of price)
+     if (!assets) {
+         return gridPrice * 0.001;
+     }
 
-    // When precision is missing/invalid, bot cannot operate safely on this pair
-    // Return null to signal caller that price tolerance cannot be calculated
-    if (!isValidNumber(precisionA) || !isValidNumber(precisionB)) {
-        return null;
-    }
+     const precisionA = assets.assetA?.precision;
+     const precisionB = assets.assetB?.precision;
+
+     // When precision is missing/invalid, bot cannot operate safely on this pair
+     // Return null to signal caller that price tolerance cannot be calculated
+     if (!isValidNumber(precisionA) || !isValidNumber(precisionB)) {
+         return null;
+     }
 
     let orderSizeA, orderSizeB;
     if (orderType === 'sell' || orderType === 'SELL' || orderType === 'Sell') {
@@ -503,7 +509,7 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
             : (Math.abs(gridInt - chainInt) > 1); // Normal case: must match exactly
 
         if (!opts?.skipSizeMatch && sizeMismatch) {
-            logger?.log?.(`Chain size mismatch grid ${gridOrder.id}: chain=${chainSize.toFixed(8)}, grid=${toFiniteNumber(gridOrder.size).toFixed(8)}`, 'debug');
+            logger?.log?.(`Chain size mismatch grid ${gridOrder.id}: chain=${Format.formatAmount8(chainSize)}, grid=${Format.formatAmount8(toFiniteNumber(gridOrder.size))}`, 'debug');
             continue;
         }
 
@@ -514,11 +520,11 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
     }
 
     if (bestMatch) {
-        logger?.log?.(`Matched chain ${parsedChainOrder.orderId} (price=${chainPrice.toFixed(6)}) to grid ${bestMatch.id} (price=${bestMatch.price.toFixed(6)}, state=${bestMatch.state})`, 'info');
+        logger?.log?.(`Matched chain ${parsedChainOrder.orderId} (price=${Format.formatPrice6(chainPrice)}) to grid ${bestMatch.id} (price=${Format.formatPrice6(bestMatch.price)}, state=${bestMatch.state})`, 'info');
         return bestMatch;
     }
 
-    logger?.log?.(`No grid match for chain ${parsedChainOrder.orderId} (price=${chainPrice.toFixed(6)})`, 'warn');
+    logger?.log?.(`No grid match for chain ${parsedChainOrder.orderId} (price=${Format.formatPrice6(chainPrice)})`, 'warn');
     return null;
 }
 
@@ -622,7 +628,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     // don't revert its size back to the tiny on-chain amount during sync.
     // We only accept the chain size if it's DIFFERENT from what we have and it's NOT a dust refill gap.
     if (gridOrder.isDustRefill && newSize < oldSize) {
-        manager.logger?.log?.(`Sync: Preserving dust refill size for ${gridOrder.id} (${oldSize.toFixed(8)}) despite smaller chain size (${newSize.toFixed(8)})`, 'debug');
+        manager.logger?.log?.(`Sync: Preserving dust refill size for ${gridOrder.id} (${Format.formatAmount8(oldSize)}) despite smaller chain size (${Format.formatAmount8(newSize)})`, 'debug');
         return;
     }
 
@@ -630,7 +636,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     const oldInt = floatToBlockchainInt(oldSize, precision);
     const newInt = floatToBlockchainInt(newSize, precision);
     if (oldInt === newInt) { gridOrder.size = newSize; return; }
-    manager.logger?.log?.(`Order ${gridOrder.id} size adjustment: ${oldSize.toFixed(8)} -> ${newSize.toFixed(8)} (delta: ${delta.toFixed(8)})`, 'debug');
+     manager.logger?.log?.(`Order ${gridOrder.id} size adjustment: ${Format.formatAmount8(oldSize)} -> ${Format.formatAmount8(newSize)} (delta: ${Format.formatAmount8(delta)})`, 'debug');
     gridOrder.size = newSize;
     try { manager._updateOrder(gridOrder); } catch (e) { /* best-effort */ }
 
@@ -642,7 +648,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
             const f = manager.funds || {};
             const a = f.available || {};
             manager.logger.log(
-                `Funds after partial fill: available buy=${(a.buy || 0).toFixed(8)} sell=${(a.sell || 0).toFixed(8)}`,
+                `Funds after partial fill: available buy=${Format.formatAmount8(a.buy || 0)} sell=${Format.formatAmount8(a.sell || 0)}`,
                 'info'
             );
         }
@@ -673,7 +679,7 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
         return { success: true, error: null, skipped: true };
     }
 
-    manager.logger?.log?.(`Correcting order ${gridOrder.id} (${chainOrderId}): updating to price ${expectedPrice.toFixed(8)}`, 'info');
+    manager.logger?.log?.(`Correcting order ${gridOrder.id} (${chainOrderId}): updating to price ${Format.formatAmount8(expectedPrice)}`, 'info');
 
     // Calculate amounts (outside try block as this calculation is unlikely to fail)
     let amountToSell, minToReceive;
@@ -684,7 +690,7 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
         amountToSell = size;
         minToReceive = size / expectedPrice;
     }
-    manager.logger?.log?.(`Updating order: amountToSell=${amountToSell.toFixed(8)}, minToReceive=${minToReceive.toFixed(8)}`, 'info');
+    manager.logger?.log?.(`Updating order: amountToSell=${Format.formatAmount8(amountToSell)}, minToReceive=${Format.formatAmount8(minToReceive)}`, 'info');
 
     // Execute the chain update
     try {
@@ -694,7 +700,7 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
             return { success: false, error: 'No change to amount_to_sell (delta=0) - update skipped' };
         }
         manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
-        manager.logger?.log?.(`Order ${gridOrder.id} (${chainOrderId}) price corrected to ${expectedPrice.toFixed(8)}`, 'info');
+        manager.logger?.log?.(`Order ${gridOrder.id} (${chainOrderId}) price corrected to ${Format.formatAmount8(expectedPrice)}`, 'info');
         return { success: true, error: null };
     } catch (error) {
         // Remove from list regardless of outcome to prevent retry loops
@@ -1282,7 +1288,7 @@ async function runGridComparisons(manager, accountOrders, botKey) {
         const calculatedGrid = Array.from(manager.orders.values());
 
         manager.logger?.log?.(
-            `Starting grid comparisons: persistedGrid=${persistedGrid.length} orders, calculatedGrid=${calculatedGrid.length} orders, cacheFunds=buy:${manager.funds.cacheFunds.buy.toFixed(8)}/sell:${manager.funds.cacheFunds.sell.toFixed(8)}`,
+            `Starting grid comparisons: persistedGrid=${persistedGrid.length} orders, calculatedGrid=${calculatedGrid.length} orders, cacheFunds=buy:${Format.formatAmount8(manager.funds.cacheFunds.buy)}/sell:${Format.formatAmount8(manager.funds.cacheFunds.sell)}`,
             'debug'
         );
 
@@ -1302,16 +1308,16 @@ async function runGridComparisons(manager, accountOrders, botKey) {
  
              // Safety check: ensure comparisonResult has valid structure before accessing metric
              if (comparisonResult?.buy?.metric !== undefined && comparisonResult?.sell?.metric !== undefined) {
-                 manager.logger?.log?.(
-                     `Quadratic comparison complete: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}, buyUpdated=${comparisonResult.buy.updated}, sellUpdated=${comparisonResult.sell.updated}`,
-                     'debug'
-                 );
+                  manager.logger?.log?.(
+                      `Quadratic comparison complete: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}, buyUpdated=${comparisonResult.buy.updated}, sellUpdated=${comparisonResult.sell.updated}`,
+                      'debug'
+                  );
  
                  if (comparisonResult.buy.metric > 0 || comparisonResult.sell.metric > 0) {
-                     manager.logger?.log?.(
-                         `Grid divergence detected after rotation: buy=${comparisonResult.buy.metric.toFixed(6)}, sell=${comparisonResult.sell.metric.toFixed(6)}`,
-                         'info'
-                     );
+                      manager.logger?.log?.(
+                          `Grid divergence detected after rotation: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`,
+                          'info'
+                      );
                  }
              } else {
                  manager.logger?.log?.(
@@ -1403,7 +1409,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             // Log specific orders being corrected
             manager.ordersNeedingPriceCorrection.slice(0, 3).forEach(corr => {
                 manager.logger?.log?.(
-                    `  [DIVERGENCE] ${corr.sideUpdated} side: ${corr.chainOrderId} | new size: ${corr.size.toFixed(8)} | price: ${corr.expectedPrice.toFixed(4)}`,
+                    `  [DIVERGENCE] ${corr.sideUpdated} side: ${corr.chainOrderId} | new size: ${Format.formatAmount8(corr.size)} | price: ${Format.formatPrice4(corr.expectedPrice)}`,
                     'debug'
                 );
             });
@@ -1722,7 +1728,7 @@ function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = nu
             finalBuy = Math.max(0, buyFunds - fees);
             if (logger?.log) {
                 logger.log(
-                    `Reduced available BTS (buy) funds by ${fees.toFixed(8)} for order creation fees: ${buyFunds.toFixed(8)} -> ${finalBuy.toFixed(8)}`,
+                    `Reduced available BTS (buy) funds by ${Format.formatAmount8(fees)} for order creation fees: ${Format.formatAmount8(buyFunds)} -> ${Format.formatAmount8(finalBuy)}`,
                     'info'
                 );
             }
@@ -1730,7 +1736,7 @@ function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = nu
             finalSell = Math.max(0, sellFunds - fees);
             if (logger?.log) {
                 logger.log(
-                    `Reduced available BTS (sell) funds by ${fees.toFixed(8)} for order creation fees: ${sellFunds.toFixed(8)} -> ${finalSell.toFixed(8)}`,
+                    `Reduced available BTS (sell) funds by ${Format.formatAmount8(fees)} for order creation fees: ${Format.formatAmount8(sellFunds)} -> ${Format.formatAmount8(finalSell)}`,
                     'info'
                 );
             }
@@ -1932,17 +1938,17 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
                 const relativeDiff = (calcSize - comparisonTarget) / comparisonTarget;
                 const relativePercent = Math.abs(relativeDiff) * 100;
                 if (relativePercent > 10) {
-                    largeDeviations.push({ id: calcOrder.id, persSize: comparisonTarget.toFixed(8), calcSize: calcSize.toFixed(8), percentDiff: relativePercent.toFixed(2) });
+                    largeDeviations.push({ id: calcOrder.id, persSize: Format.formatAmount8(comparisonTarget), calcSize: Format.formatAmount8(calcSize), percentDiff: Format.formatPercent2(relativePercent) });
                 }
                 sumSquaredDiff += relativeDiff * relativeDiff;
                 matchCount++;
             } else if (calcSize > 0) {
-                trackDeviation(calcOrder.id, '0.00000000', calcSize.toFixed(8), 'Infinity');
+                 trackDeviation(calcOrder.id, '0.00000000', Format.formatAmount8(calcSize), 'Infinity');
             } else {
                 matchCount++;
             }
         } else {
-            trackDeviation(calcOrder.id, 'NOT_FOUND', toFiniteNumber(calcOrder.size).toFixed(8), 'Unmatched');
+             trackDeviation(calcOrder.id, 'NOT_FOUND', Format.formatAmount8(toFiniteNumber(calcOrder.size)), 'Unmatched');
             unmatchedCount++;
         }
     }
@@ -1950,7 +1956,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     // Check for missing orders
     for (const persOrder of persistedOrders) {
         if (!calculatedOrders.some(c => c.id === persOrder.id)) {
-            trackDeviation(persOrder.id, toFiniteNumber(persOrder.size).toFixed(8), 'NOT_FOUND', 'Unmatched');
+             trackDeviation(persOrder.id, Format.formatAmount8(toFiniteNumber(persOrder.size)), 'NOT_FOUND', 'Unmatched');
             unmatchedCount++;
         }
     }
@@ -1960,7 +1966,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     const rmsThreshold = (GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE || 14.3) / 100;
 
     if (metric > rmsThreshold) {
-        console.debug(`\nDEBUG [${sideName}] Divergence Breakdown: RMS=${(metric * 100).toFixed(2)}% (Threshold: ${(rmsThreshold * 100).toFixed(1)}%) Matches: ${matchCount} Unmatched: ${unmatchedCount}`);
+         console.debug(`\nDEBUG [${sideName}] Divergence Breakdown: RMS=${Format.formatPercent2(metric * 100)}% (Threshold: ${Format.formatMetric2(rmsThreshold * 100)}%) Matches: ${matchCount} Unmatched: ${unmatchedCount}`);
         if (largeDeviations.length) {
             console.debug(`  Large deviations (>10%): ${largeDeviations.length}`);
             largeDeviations.forEach(dev => {
@@ -2062,7 +2068,7 @@ function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
             isSignificant: proposed > 0,
             percentChange: proposed > 0 ? 100 : 0,
             message: current === 0 
-                ? `Size change from 0 to ${proposed.toFixed(8)} is significant (100%)` 
+                ? `Size change from 0 to ${Format.formatAmount8(proposed)} is significant (100%)` 
                 : `Size change with invalid current size (${current})`
         };
     }
@@ -2074,7 +2080,7 @@ function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
     return {
         isSignificant,
         percentChange,
-        message: `Size change ${percentChange.toFixed(4)}% ${isSignificant ? '>=' : '<'} threshold ${threshold}% (current: ${current.toFixed(8)}, new: ${proposed.toFixed(8)})`
+         message: `Size change ${Format.formatPercent4(percentChange)}% ${isSignificant ? '>=' : '<'} threshold ${threshold}% (current: ${Format.formatAmount8(current)}, new: ${Format.formatAmount8(proposed)})`
     };
 }
 

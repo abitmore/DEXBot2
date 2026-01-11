@@ -19,6 +19,9 @@
  * 
  * @class
  */
+
+const Format = require('./format');
+
 class Logger {
     /**
      * Create a new Logger instance.
@@ -108,11 +111,11 @@ class Logger {
     _logOrderRow(order) {
         const typeColor = this.colors[order.type] || '';
         const stateColor = this.colors[order.state] || '';
-        const price = order.price.toFixed(4).padEnd(12);
-        const id = (order.id || '').padEnd(10);
-        const type = order.type.padEnd(10);
-        const state = order.state.padEnd(12);
-        const size = order.size.toFixed(8);
+         const price = Format.formatPrice4(order.price).padEnd(12);
+         const id = (order.id || '').padEnd(10);
+         const type = order.type.padEnd(10);
+         const state = order.state.padEnd(12);
+         const size = Format.formatAmount8(order.size);
         console.log(
             `${price}${id}${typeColor}${type}${this.colors.reset}${stateColor}${state}${this.colors.reset}${size}`
         );
@@ -144,9 +147,9 @@ class Logger {
         const sellName = manager.config?.assetA || 'base';
         const headerContext = context ? ` [${context}]` : '';
 
-        // Available funds
-        const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? manager.funds.available.buy.toFixed(8) : 'N/A';
-        const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? manager.funds.available.sell.toFixed(8) : 'N/A';
+         // Available funds
+         const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
+         const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
 
         const c = this.colors;
         const buy = c.buy;
@@ -194,8 +197,8 @@ class Logger {
         const buy = c.buy;
         const sell = c.sell;
 
-        const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? manager.funds.available.buy.toFixed(8) : 'N/A';
-        const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? manager.funds.available.sell.toFixed(8) : 'N/A';
+         const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
+         const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
 
         // Chain balances
         const chainFreeBuy = manager.accountTotals?.buyFree ?? 0;
@@ -224,20 +227,20 @@ class Logger {
         console.log(`  ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`);
 
         console.log(`\n${debug}CHAIN BALANCES:${reset}`);
-        console.log(`  chainFree: ${buy}Buy ${chainFreeBuy.toFixed(8)}${reset} | ${sell}Sell ${chainFreeSell.toFixed(8)}${reset}`);
-        console.log(`  total.chain: ${buy}Buy ${totalChainBuy.toFixed(8)}${reset} | ${sell}Sell ${totalChainSell.toFixed(8)}${reset}`);
+         console.log(`  chainFree: ${buy}Buy ${Format.formatAmount8(chainFreeBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(chainFreeSell)}${reset}`);
+         console.log(`  total.chain: ${buy}Buy ${Format.formatAmount8(totalChainBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(totalChainSell)}${reset}`);
 
-        console.log(`\n${debug}GRID ALLOCATIONS:${reset}`);
-        console.log(`  total.grid: ${buy}Buy ${totalGridBuy.toFixed(8)}${reset} | ${sell}Sell ${totalGridSell.toFixed(8)}${reset}`);
-        console.log(`  committed.grid: ${buy}Buy ${committedGridBuy.toFixed(8)}${reset} | ${sell}Sell ${committedGridSell.toFixed(8)}${reset}`);
-        console.log(`  virtual (reserved): ${buy}Buy ${virtualBuy.toFixed(8)}${reset} | ${sell}Sell ${virtualSell.toFixed(8)}${reset}`);
+         console.log(`\n${debug}GRID ALLOCATIONS:${reset}`);
+         console.log(`  total.grid: ${buy}Buy ${Format.formatAmount8(totalGridBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(totalGridSell)}${reset}`);
+         console.log(`  committed.grid: ${buy}Buy ${Format.formatAmount8(committedGridBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(committedGridSell)}${reset}`);
+         console.log(`  virtual (reserved): ${buy}Buy ${Format.formatAmount8(virtualBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(virtualSell)}${reset}`);
 
-        console.log(`\n${debug}COMMITTED ON-CHAIN:${reset}`);
-        console.log(`  ${buy}Buy ${committedChainBuy.toFixed(8)}${reset} | ${sell}Sell ${committedChainSell.toFixed(8)}${reset}`);
+         console.log(`\n${debug}COMMITTED ON-CHAIN:${reset}`);
+         console.log(`  ${buy}Buy ${Format.formatAmount8(committedChainBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(committedChainSell)}${reset}`);
 
-        console.log(`\n${debug}DEDUCTIONS & PENDING:${reset}`);
-        console.log(`  cacheFunds: ${buy}Buy ${cacheBuy.toFixed(8)}${reset} | ${sell}Sell ${cacheSell.toFixed(8)}${reset}`);
-        console.log(`  btsFeesOwed: ${btsFeesOwed.toFixed(8)} BTS${reset}\n`);
+         console.log(`\n${debug}DEDUCTIONS & PENDING:${reset}`);
+         console.log(`  cacheFunds: ${buy}Buy ${Format.formatAmount8(cacheBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(cacheSell)}${reset}`);
+         console.log(`  btsFeesOwed: ${Format.formatAmount8(btsFeesOwed)} BTS${reset}\n`);
     }
 
     // Print a comprehensive status summary using manager state.
@@ -252,9 +255,9 @@ class Logger {
         const buyName = manager.config?.assetB || 'quote';
         const sellName = manager.config?.assetA || 'base';
 
-        // Use new nested structure
-        const gridBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? manager.funds.available.buy.toFixed(8) : 'N/A';
-        const gridSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? manager.funds.available.sell.toFixed(8) : 'N/A';
+         // Use new nested structure
+         const gridBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
+         const gridSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
         const totalChainBuy = manager.funds?.total?.chain?.buy ?? 0;
         const totalChainSell = manager.funds?.total?.chain?.sell ?? 0;
         const totalGridBuy = manager.funds?.total?.grid?.buy ?? 0;
@@ -275,17 +278,17 @@ class Logger {
         const sell = c.sell;
 
         console.log(`funds.available: ${buy}Buy ${gridBuy}${reset} ${buyName} | ${sell}Sell ${gridSell}${reset} ${sellName}`);
-        console.log(`total.chain: ${buy}Buy ${totalChainBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${totalChainSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`total.grid: ${buy}Buy ${totalGridBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${totalGridSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`virtual.grid: ${buy}Buy ${virtualBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${virtualSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`cacheFunds: ${buy}Buy ${cacheBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${cacheSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`committed.grid: ${buy}Buy ${committedGridBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${committedGridSell.toFixed(8)}${reset} ${sellName}`);
-        console.log(`committed.chain: ${buy}Buy ${committedChainBuy.toFixed(8)}${reset} ${buyName} | ${sell}Sell ${committedChainSell.toFixed(8)}${reset} ${sellName}`);
+         console.log(`total.chain: ${buy}Buy ${Format.formatAmount8(totalChainBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(totalChainSell)}${reset} ${sellName}`);
+         console.log(`total.grid: ${buy}Buy ${Format.formatAmount8(totalGridBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(totalGridSell)}${reset} ${sellName}`);
+         console.log(`virtual.grid: ${buy}Buy ${Format.formatAmount8(virtualBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(virtualSell)}${reset} ${sellName}`);
+         console.log(`cacheFunds: ${buy}Buy ${Format.formatAmount8(cacheBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(cacheSell)}${reset} ${sellName}`);
+         console.log(`committed.grid: ${buy}Buy ${Format.formatAmount8(committedGridBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(committedGridSell)}${reset} ${sellName}`);
+         console.log(`committed.chain: ${buy}Buy ${Format.formatAmount8(committedChainBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(committedChainSell)}${reset} ${sellName}`);
         console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length} | Partial ${partialOrders.length}`);
         console.log(`Spreads: ${manager.currentSpreadCount}/${manager.targetSpreadCount}`);
         // calculateCurrentSpread may exist on manager
         const spread = typeof manager.calculateCurrentSpread === 'function' ? manager.calculateCurrentSpread() : 0;
-        console.log(`Current Spread: ${Number(spread).toFixed(2)}%`);
+         console.log(`Current Spread: ${Format.formatPercent2(spread)}%`);
         console.log(`Spread Condition: ${manager.outOfSpread ? 'TOO WIDE' : 'Normal'}`);
     }
 
@@ -328,10 +331,10 @@ class Logger {
         // Active orders summary
         console.log(`\n${active}ACTIVE ORDERS${reset}: ${buy}Buy=${activeBuys.length}${reset}, ${sell}Sell=${activeSells.length}${reset}`);
         if (activeBuys.length > 0) {
-            console.log(`  ${buy}BUY:${reset}  ${activeBuys.map(o => `${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
+             console.log(`  ${buy}BUY:${reset}  ${activeBuys.map(o => `${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
         }
         if (activeSells.length > 0) {
-            console.log(`  ${sell}SELL:${reset} ${activeSells.map(o => `${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
+             console.log(`  ${sell}SELL:${reset} ${activeSells.map(o => `${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
         }
 
         // SPREAD orders
@@ -340,7 +343,7 @@ class Logger {
             for (const order of spreadOrders) {
                 const isBoundary = (order === firstVirtualBuy || order === firstVirtualSell);
                 const boundaryMarker = isBoundary ? ' ← BOUNDARY' : '';
-                console.log(`  ${spread}${order.id}@${order.price.toFixed(4)}${boundaryMarker}${reset}`);
+                 console.log(`  ${spread}${order.id}@${Format.formatPrice4(order.price)}${boundaryMarker}${reset}`);
             }
         }
 
@@ -348,19 +351,19 @@ class Logger {
         console.log(`\n${partial}PARTIAL ORDERS${reset}: ${partialOrders.length}`);
         if (partialOrders.length > 0) {
             for (const order of partialOrders) {
-                console.log(`  ${partial}${order.id}@${order.price.toFixed(4)} size=${order.size.toFixed(8)}${reset}`);
+                 console.log(`  ${partial}${order.id}@${Format.formatPrice4(order.price)} size=${Format.formatAmount8(order.size)}${reset}`);
             }
         }
 
         // First VIRTUAL on boundary
         console.log(`\n${virtual}FIRST VIRTUAL ON BOUNDARY${reset}:`);
         if (firstVirtualSell) {
-            console.log(`  ${virtual}SELL: ${firstVirtualSell.id}@${firstVirtualSell.price.toFixed(4)}${reset}`);
+             console.log(`  ${virtual}SELL: ${firstVirtualSell.id}@${Format.formatPrice4(firstVirtualSell.price)}${reset}`);
         } else {
             console.log(`  ${virtual}SELL: (none)${reset}`);
         }
         if (firstVirtualBuy) {
-            console.log(`  ${virtual}BUY:  ${firstVirtualBuy.id}@${firstVirtualBuy.price.toFixed(4)}${reset}`);
+             console.log(`  ${virtual}BUY:  ${firstVirtualBuy.id}@${Format.formatPrice4(firstVirtualBuy.price)}${reset}`);
         } else {
             console.log(`  ${virtual}BUY:  (none)${reset}`);
         }
@@ -423,21 +426,21 @@ class Logger {
         console.log(`To:   ${ts2}`);
         console.log(`Delta: ${diff.timeDeltaMs}ms`);
 
-        console.log(`\n${buy}Available Change:${reset}`);
-        console.log(`  Buy:  ${diff.availableChange.buy >= 0 ? '+' : ''}${diff.availableChange.buy.toFixed(8)}`);
-        console.log(`  Sell: ${diff.availableChange.sell >= 0 ? '+' : ''}${diff.availableChange.sell.toFixed(8)}`);
+         console.log(`\n${buy}Available Change:${reset}`);
+         console.log(`  Buy:  ${diff.availableChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.availableChange.buy)}`);
+         console.log(`  Sell: ${diff.availableChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.availableChange.sell)}`);
 
-        console.log(`\n${buy}ChainTotal Change:${reset}`);
-        console.log(`  Buy:  ${diff.chainTotalChange.buy >= 0 ? '+' : ''}${diff.chainTotalChange.buy.toFixed(8)}`);
-        console.log(`  Sell: ${diff.chainTotalChange.sell >= 0 ? '+' : ''}${diff.chainTotalChange.sell.toFixed(8)}`);
+         console.log(`\n${buy}ChainTotal Change:${reset}`);
+         console.log(`  Buy:  ${diff.chainTotalChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainTotalChange.buy)}`);
+         console.log(`  Sell: ${diff.chainTotalChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainTotalChange.sell)}`);
 
-        console.log(`\n${buy}ChainCommitted Change:${reset}`);
-        console.log(`  Buy:  ${diff.chainCommittedChange.buy >= 0 ? '+' : ''}${diff.chainCommittedChange.buy.toFixed(8)}`);
-        console.log(`  Sell: ${diff.chainCommittedChange.sell >= 0 ? '+' : ''}${diff.chainCommittedChange.sell.toFixed(8)}`);
+         console.log(`\n${buy}ChainCommitted Change:${reset}`);
+         console.log(`  Buy:  ${diff.chainCommittedChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainCommittedChange.buy)}`);
+         console.log(`  Sell: ${diff.chainCommittedChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainCommittedChange.sell)}`);
 
-        console.log(`\n${buy}CacheFunds Change:${reset}`);
-        console.log(`  Buy:  ${diff.cacheFundsChange.buy >= 0 ? '+' : ''}${diff.cacheFundsChange.buy.toFixed(8)}`);
-        console.log(`  Sell: ${diff.cacheFundsChange.sell >= 0 ? '+' : ''}${diff.cacheFundsChange.sell.toFixed(8)}`);
+         console.log(`\n${buy}CacheFunds Change:${reset}`);
+         console.log(`  Buy:  ${diff.cacheFundsChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.cacheFundsChange.buy)}`);
+         console.log(`  Sell: ${diff.cacheFundsChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.cacheFundsChange.sell)}`);
     }
 }
 

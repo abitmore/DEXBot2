@@ -27,6 +27,7 @@ const Accountant = require('./accounting');
 const StrategyEngine = require('./strategy');
 const SyncEngine = require('./sync_engine');
 const Grid = require('./grid');
+const Format = require('./format');
 
 class OrderManager {
     /**
@@ -136,7 +137,7 @@ class OrderManager {
             ...this._metrics,
             timestamp: now,
             uptimeMs: uptime,
-            fundRecalcPerMinute: (this._metrics.fundRecalcCount / (uptime / 60000)).toFixed(2)
+            fundRecalcPerMinute: Format.formatMetric2(this._metrics.fundRecalcCount / (uptime / 60000))
         };
     }
 
@@ -336,20 +337,17 @@ class OrderManager {
     }
 
      async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
-         if (hasValidAccountTotals(this.accountTotals, false)) return;
-         // CRITICAL: Use lock to prevent race condition where concurrent calls create multiple promises
-         await this._accountTotalsLock.acquireAsync();
-         try {
-             // Double-check after acquiring lock
-             if (hasValidAccountTotals(this.accountTotals, false)) return;
-             if (!this._accountTotalsPromise) {
-                 this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
-             }
-         } finally {
-             this._accountTotalsLock.release();
-         }
-         await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
-     }
+          if (hasValidAccountTotals(this.accountTotals, false)) return;
+          // CRITICAL: Use lock to prevent race condition where concurrent calls create multiple promises
+          await this._accountTotalsLock.acquire(async () => {
+              // Double-check after acquiring lock
+              if (hasValidAccountTotals(this.accountTotals, false)) return;
+              if (!this._accountTotalsPromise) {
+                  this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
+              }
+          });
+          await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
+      }
 
     async fetchAccountTotals(accountId) {
         if (accountId) this.accountId = accountId;
@@ -453,7 +451,7 @@ class OrderManager {
     _logAvailable(label = '') {
         const avail = this.funds?.available || { buy: 0, sell: 0 };
         const cache = this.funds?.cacheFunds || { buy: 0, sell: 0 };
-        this.logger.log(`Available [${label}]: buy=${(avail.buy || 0).toFixed(8)}, sell=${(avail.sell || 0).toFixed(8)}, cacheFunds buy=${(cache.buy || 0).toFixed(8)}, sell=${(cache.sell || 0).toFixed(8)}`, 'info');
+         this.logger.log(`Available [${label}]: buy=${Format.formatAmount8(avail.buy || 0)}, sell=${Format.formatAmount8(avail.sell || 0)}, cacheFunds buy=${Format.formatAmount8(cache.buy || 0)}, sell=${Format.formatAmount8(cache.sell || 0)}`, 'info');
     }
 
     /**

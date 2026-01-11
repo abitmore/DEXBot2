@@ -1,6 +1,7 @@
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
 const { ORDER_TYPES, DEFAULT_CONFIG } = require('../modules/constants');
+const Format = require('../modules/order/format');
 
 console.log('Running rotation order sizing test...\n');
 
@@ -108,8 +109,8 @@ const availableFundsSell = 200;  // from BUY fill proceeds
 console.log(`Available Funds Buy (USDT): ${availableFundsBuy.toFixed(2)} (from fill proceeds)`);
 console.log(`Available Funds Sell (BTS): ${availableFundsSell.toFixed(2)} (from fill proceeds)\n`);
 
-console.log(`Total Grid Buy (USDT): ${buyGridTotal.toFixed(2)} (unchanged - size updated only)`);
-console.log(`Total Grid Sell (BTS): ${sellGridTotal.toFixed(2)} (unchanged - size updated only)\n`);
+console.log(`Total Grid Buy (USDT): ${Format.formatMetric2(buyGridTotal)} (unchanged - size updated only)`);
+console.log(`Total Grid Sell (BTS): ${Format.formatMetric2(sellGridTotal)} (unchanged - size updated only)\n`);
 
 // ==========================================
 // Rotation Calculation
@@ -118,8 +119,8 @@ console.log('=== ROTATION ORDER SIZING CALCULATION ===\n');
 
 // Calculate new rotation sizes for BUY side
 console.log('Buy Side Rotation (5 new orders):');
-console.log(`  Input: available = ${availableFundsBuy.toFixed(2)} USDT, grid = ${buyGridTotal.toFixed(2)} USDT`);
-console.log(`  Total to distribute: ${(availableFundsBuy + buyGridTotal).toFixed(2)} USDT\n`);
+console.log(`  Input: available = ${Format.formatMetric2(availableFundsBuy)} USDT, grid = ${Format.formatMetric2(buyGridTotal)} USDT`);
+console.log(`  Total to distribute: ${Format.formatMetric2(availableFundsBuy + buyGridTotal)} USDT\n`);
 
 const buySizesPrecision = 3;
 const buyRotationSizes = Grid.calculateRotationOrderSizes(
@@ -134,16 +135,16 @@ const buyRotationSizes = Grid.calculateRotationOrderSizes(
 
 console.log('  Calculated Rotation Sizes:');
 buyRotationSizes.forEach((size, i) => {
-    console.log(`    Order ${i}: ${size.toFixed(2)} USDT`);
+     console.log(`    Order ${i}: ${Format.formatMetric2(size)} USDT`);
 });
 
 const buyRotationTotal = buyRotationSizes.reduce((a, b) => a + b, 0);
-console.log(`  TOTAL DISTRIBUTED: ${buyRotationTotal.toFixed(2)} USDT\n`);
+console.log(`  TOTAL DISTRIBUTED: ${Format.formatMetric2(buyRotationTotal)} USDT\n`);
 
 // Calculate new rotation sizes for SELL side
 console.log('Sell Side Rotation (5 new orders):');
-console.log(`  Input: available = ${availableFundsSell.toFixed(2)} BTS, grid = ${sellGridTotal.toFixed(2)} BTS`);
-console.log(`  Total to distribute: ${(availableFundsSell + sellGridTotal).toFixed(2)} BTS\n`);
+console.log(`  Input: available = ${Format.formatMetric2(availableFundsSell)} BTS, grid = ${Format.formatMetric2(sellGridTotal)} BTS`);
+console.log(`  Total to distribute: ${Format.formatMetric2(availableFundsSell + sellGridTotal)} BTS\n`);
 
 const sellSizesPrecision = 8;
 const sellRotationSizes = Grid.calculateRotationOrderSizes(
@@ -158,11 +159,11 @@ const sellRotationSizes = Grid.calculateRotationOrderSizes(
 
 console.log('  Calculated Rotation Sizes:');
 sellRotationSizes.forEach((size, i) => {
-    console.log(`    Order ${i}: ${size.toFixed(2)} BTS`);
+     console.log(`    Order ${i}: ${Format.formatMetric2(size)} BTS`);
 });
 
 const sellRotationTotal = sellRotationSizes.reduce((a, b) => a + b, 0);
-console.log(`  TOTAL DISTRIBUTED: ${sellRotationTotal.toFixed(2)} BTS\n`);
+console.log(`  TOTAL DISTRIBUTED: ${Format.formatMetric2(sellRotationTotal)} BTS\n`);
 
 // ==========================================
 // Final Comparison & Cache Fund Logic
@@ -173,28 +174,28 @@ const buyExpected = availableFundsBuy + buyGridTotal;
 const buyLeftover = buyExpected - buyRotationTotal;
 
 console.log(`Buy Side:`);
-console.log(`  Available Total: ${buyExpected.toFixed(2)} USDT (available ${availableFundsBuy.toFixed(2)} + grid ${buyGridTotal.toFixed(2)})`);
-console.log(`  Calculated Rotation Sizes: ${buyRotationTotal.toFixed(2)} USDT`);
-console.log(`  Leftover: ${buyLeftover.toFixed(4)} USDT`);
+console.log(`  Available Total: ${Format.formatMetric2(buyExpected)} USDT (available ${Format.formatMetric2(availableFundsBuy)} + grid ${Format.formatMetric2(buyGridTotal)})`);
+console.log(`  Calculated Rotation Sizes: ${Format.formatMetric2(buyRotationTotal)} USDT`);
+console.log(`  Leftover: ${Format.formatRatio(buyLeftover, 4)} USDT`);
 
 if (buyRotationTotal < buyExpected) {
-    console.log(`  → Calculated < Available: ADD ${buyLeftover.toFixed(4)} USDT to cacheFunds.buy\n`);
+     console.log(`  → Calculated < Available: ADD ${Format.formatRatio(buyLeftover, 4)} USDT to cacheFunds.buy\n`);
 } else {
-    console.log(`  → Calculated >= Available: cacheFunds.buy UNCHANGED\n`);
+     console.log(`  → Calculated >= Available: cacheFunds.buy UNCHANGED\n`);
 }
 
 const sellExpected = availableFundsSell + sellGridTotal;
 const sellLeftover = sellExpected - sellRotationTotal;
 
 console.log(`Sell Side:`);
-console.log(`  Available Total: ${sellExpected.toFixed(2)} BTS (available ${availableFundsSell.toFixed(2)} + grid ${sellGridTotal.toFixed(2)})`);
-console.log(`  Calculated Rotation Sizes: ${sellRotationTotal.toFixed(2)} BTS`);
-console.log(`  Leftover: ${sellLeftover.toFixed(4)} BTS`);
+console.log(`  Available Total: ${Format.formatMetric2(sellExpected)} BTS (available ${Format.formatMetric2(availableFundsSell)} + grid ${Format.formatMetric2(sellGridTotal)})`);
+console.log(`  Calculated Rotation Sizes: ${Format.formatMetric2(sellRotationTotal)} BTS`);
+console.log(`  Leftover: ${Format.formatRatio(sellLeftover, 4)} BTS`);
 
 if (sellRotationTotal < sellExpected) {
-    console.log(`  → Calculated < Available: ADD ${sellLeftover.toFixed(4)} BTS to cacheFunds.sell\n`);
+     console.log(`  → Calculated < Available: ADD ${Format.formatRatio(sellLeftover, 4)} BTS to cacheFunds.sell\n`);
 } else {
-    console.log(`  → Calculated >= Available: cacheFunds.sell UNCHANGED\n`);
+     console.log(`  → Calculated >= Available: cacheFunds.sell UNCHANGED\n`);
 }
 
 // ==========================================

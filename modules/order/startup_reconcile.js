@@ -1,5 +1,6 @@
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const OrderUtils = require('./utils');
+const Format = require('./format');
 
 function _countActiveOnGrid(manager, type) {
     const active = manager.getOrdersByTypeAndState(type, ORDER_STATES.ACTIVE).filter(o => o && o.orderId);
@@ -423,17 +424,17 @@ async function reconcileStartupOrders({
           const currentXrpBalance = (manager.accountTotals?.sellFree) || 0;
           
           if (gridSize > currentXrpBalance) {
-              logger && logger.log && logger.log(
-                  `Startup: Skipping SELL update ${chainOrder.id} - insufficient balance (need ${gridSize.toFixed(8)} XRP, have ${currentXrpBalance.toFixed(8)})`,
-                  'warn'
-              );
+               logger && logger.log && logger.log(
+                   `Startup: Skipping SELL update ${chainOrder.id} - insufficient balance (need ${Format.formatAmount8(gridSize)} XRP, have ${Format.formatAmount8(currentXrpBalance)})`,
+                   'warn'
+               );
               continue;
           }
           
-          logger && logger.log && logger.log(
-              `Startup: Updating chain SELL ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
-              'info'
-          );
+           logger && logger.log && logger.log(
+               `Startup: Updating chain SELL ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+               'info'
+           );
           try {
               await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
           } catch (err) {
@@ -445,10 +446,10 @@ async function reconcileStartupOrders({
      if (cancelledSellIndex !== null && !dryRun) {
          const targetGridOrder = desiredSellSlots[cancelledSellIndex];
          if (targetGridOrder) {
-             logger && logger.log && logger.log(
-                 `Startup: Creating new SELL for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
-                 'info'
-             );
+              logger && logger.log && logger.log(
+                  `Startup: Creating new SELL for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatAmount8(targetGridOrder.size)})`,
+                  'info'
+              );
              try {
                  await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
              } catch (err) {
@@ -466,10 +467,10 @@ async function reconcileStartupOrders({
     const remainingSellSlots = desiredSellSlots.slice(sellUpdates);
     for (let i = 0; i < Math.min(sellCreateCount, remainingSellSlots.length); i++) {
         const gridOrder = remainingSellSlots[i];
-        logger && logger.log && logger.log(
-            `Startup: Creating SELL for grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
-            'info'
-        );
+         logger && logger.log && logger.log(
+             `Startup: Creating SELL for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+             'info'
+         );
         try {
             await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
         } catch (err) {
@@ -571,17 +572,17 @@ async function reconcileStartupOrders({
           const currentBtsBalance = (manager.accountTotals?.buyFree) || 0;
           
           if (estimatedBtsNeeded > currentBtsBalance) {
-              logger && logger.log && logger.log(
-                  `Startup: Skipping BUY update ${chainOrder.id} - insufficient balance (need ${estimatedBtsNeeded.toFixed(2)} BTS, have ${currentBtsBalance.toFixed(2)})`,
-                  'warn'
-              );
+               logger && logger.log && logger.log(
+                   `Startup: Skipping BUY update ${chainOrder.id} - insufficient balance (need ${Format.formatPercent2(estimatedBtsNeeded)} BTS, have ${Format.formatPercent2(currentBtsBalance)})`,
+                   'warn'
+               );
               continue;
           }
           
-          logger && logger.log && logger.log(
-              `Startup: Updating chain BUY ${chainOrder.id} -> grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
-              'info'
-          );
+           logger && logger.log && logger.log(
+               `Startup: Updating chain BUY ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+               'info'
+           );
           try {
               await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
           } catch (err) {
@@ -593,10 +594,10 @@ async function reconcileStartupOrders({
      if (cancelledBuyIndex !== null && !dryRun) {
          const targetGridOrder = desiredBuySlots[cancelledBuyIndex];
          if (targetGridOrder) {
-             logger && logger.log && logger.log(
-                 `Startup: Creating new BUY for cancelled slot at grid ${targetGridOrder.id} (price=${targetGridOrder.price.toFixed(6)}, size=${targetGridOrder.size.toFixed(8)})`,
-                 'info'
-             );
+              logger && logger.log && logger.log(
+                  `Startup: Creating new BUY for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatAmount8(targetGridOrder.size)})`,
+                  'info'
+              );
              try {
                  await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
              } catch (err) {
@@ -614,10 +615,10 @@ async function reconcileStartupOrders({
     const remainingBuySlots = desiredBuySlots.slice(buyUpdates);
     for (let i = 0; i < Math.min(buyCreateCount, remainingBuySlots.length); i++) {
         const gridOrder = remainingBuySlots[i];
-        logger && logger.log && logger.log(
-            `Startup: Creating BUY for grid ${gridOrder.id} (price=${gridOrder.price.toFixed(6)}, size=${gridOrder.size.toFixed(8)})`,
-            'info'
-        );
+         logger && logger.log && logger.log(
+             `Startup: Creating BUY for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+             'info'
+         );
         try {
             await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
         } catch (err) {

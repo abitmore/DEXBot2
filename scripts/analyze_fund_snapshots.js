@@ -16,6 +16,7 @@
 
 const FundSnapshotPersistence = require('../modules/order/fund_snapshot_persistence');
 const path = require('path');
+const Format = require('../modules/order/format');
 
 // Color codes for output
 const colors = {
@@ -73,12 +74,12 @@ async function analyzeSingleBot(botKey) {
     }
 
     // Statistics
-    subheading('Fund Statistics');
-    if (analysis.statistics.available) {
-        const { available } = analysis.statistics;
-        log(`Available Buy: ${available.buy.latest.toFixed(8)} (avg: ${available.buy.avg.toFixed(8)}, min: ${available.buy.min.toFixed(8)}, max: ${available.buy.max.toFixed(8)})`, 'green');
-        log(`Available Sell: ${available.sell.latest.toFixed(8)} (avg: ${available.sell.avg.toFixed(8)}, min: ${available.sell.min.toFixed(8)}, max: ${available.sell.max.toFixed(8)})`, 'green');
-    }
+     subheading('Fund Statistics');
+     if (analysis.statistics.available) {
+         const { available } = analysis.statistics;
+         log(`Available Buy: ${Format.formatAmount8(available.buy.latest)} (avg: ${Format.formatAmount8(available.buy.avg)}, min: ${Format.formatAmount8(available.buy.min)}, max: ${Format.formatAmount8(available.buy.max)})`, 'green');
+         log(`Available Sell: ${Format.formatAmount8(available.sell.latest)} (avg: ${Format.formatAmount8(available.sell.avg)}, min: ${Format.formatAmount8(available.sell.min)}, max: ${Format.formatAmount8(available.sell.max)})`, 'green');
+     }
 
     // Event distribution
     subheading('Event Type Distribution');
@@ -88,11 +89,11 @@ async function analyzeSingleBot(botKey) {
         log(`  ${eventType}: ${count} (${pct}%)`, 'gray');
     }
 
-    // Fund trend
-    subheading('Fund Trend');
-    const { fundTrend } = analysis;
-    log(`Buy: ${fundTrend.buy.trend} (${fundTrend.buy.change >= 0 ? '+' : ''}${fundTrend.buy.change.toFixed(8)})`);
-    log(`Sell: ${fundTrend.sell.trend} (${fundTrend.sell.change >= 0 ? '+' : ''}${fundTrend.sell.change.toFixed(8)})`);
+     // Fund trend
+     subheading('Fund Trend');
+     const { fundTrend } = analysis;
+     log(`Buy: ${fundTrend.buy.trend} (${fundTrend.buy.change >= 0 ? '+' : ''}${Format.formatAmount8(fundTrend.buy.change)})`);
+     log(`Sell: ${fundTrend.sell.trend} (${fundTrend.sell.change >= 0 ? '+' : ''}${Format.formatAmount8(fundTrend.sell.change)})`);
 
     // Anomalies
     if (analysis.anomalies.length > 0) {
@@ -112,18 +113,18 @@ async function analyzeSingleBot(botKey) {
         log('✅ No anomalies detected', 'green');
     }
 
-    // First and last snapshots
-    subheading('Snapshot Timeline');
-    if (analysis.firstSnapshot) {
-        log(`First: ${new Date(analysis.firstSnapshot.timestamp).toISOString()}`, 'gray');
-        log(`  Event: ${analysis.firstSnapshot.eventType}`);
-        log(`  Available: buy=${analysis.firstSnapshot.funds.available.buy.toFixed(8)}, sell=${analysis.firstSnapshot.funds.available.sell.toFixed(8)}`);
-    }
-    if (analysis.lastSnapshot) {
-        log(`Last: ${new Date(analysis.lastSnapshot.timestamp).toISOString()}`, 'gray');
-        log(`  Event: ${analysis.lastSnapshot.eventType}`);
-        log(`  Available: buy=${analysis.lastSnapshot.funds.available.buy.toFixed(8)}, sell=${analysis.lastSnapshot.funds.available.sell.toFixed(8)}`);
-    }
+     // First and last snapshots
+     subheading('Snapshot Timeline');
+     if (analysis.firstSnapshot) {
+         log(`First: ${new Date(analysis.firstSnapshot.timestamp).toISOString()}`, 'gray');
+         log(`  Event: ${analysis.firstSnapshot.eventType}`);
+         log(`  Available: buy=${Format.formatAmount8(analysis.firstSnapshot.funds.available.buy)}, sell=${Format.formatAmount8(analysis.firstSnapshot.funds.available.sell)}`);
+     }
+     if (analysis.lastSnapshot) {
+         log(`Last: ${new Date(analysis.lastSnapshot.timestamp).toISOString()}`, 'gray');
+         log(`  Event: ${analysis.lastSnapshot.eventType}`);
+         log(`  Available: buy=${Format.formatAmount8(analysis.lastSnapshot.funds.available.buy)}, sell=${Format.formatAmount8(analysis.lastSnapshot.funds.available.sell)}`);
+     }
 
     heading('END ANALYSIS');
 }
@@ -145,27 +146,27 @@ async function compareBots(botKey1, botKey2) {
 
     heading(`BOT COMPARISON: ${botKey1} vs ${botKey2}`);
 
-    subheading('Bot 1: ' + botKey1);
-    log(`Available Buy: ${comparison.bot1.availableBuy.toFixed(8)}`);
-    log(`Available Sell: ${comparison.bot1.availableSell.toFixed(8)}`);
+     subheading('Bot 1: ' + botKey1);
+     log(`Available Buy: ${Format.formatAmount8(comparison.bot1.availableBuy)}`);
+     log(`Available Sell: ${Format.formatAmount8(comparison.bot1.availableSell)}`);
 
-    subheading('Bot 2: ' + botKey2);
-    log(`Available Buy: ${comparison.bot2.availableBuy.toFixed(8)}`);
-    log(`Available Sell: ${comparison.bot2.availableSell.toFixed(8)}`);
+     subheading('Bot 2: ' + botKey2);
+     log(`Available Buy: ${Format.formatAmount8(comparison.bot2.availableBuy)}`);
+     log(`Available Sell: ${Format.formatAmount8(comparison.bot2.availableSell)}`);
 
-    subheading('Differences');
-    const { difference } = comparison;
-    if (difference.availableBuy > 0.00001) {
-        log(`⚠️  Available Buy differs by: ${difference.availableBuy.toFixed(8)}`, 'yellow');
-    } else {
-        log(`✅ Available Buy: Match`, 'green');
-    }
+     subheading('Differences');
+     const { difference } = comparison;
+     if (difference.availableBuy > 0.00001) {
+         log(`⚠️  Available Buy differs by: ${Format.formatAmount8(difference.availableBuy)}`, 'yellow');
+     } else {
+         log(`✅ Available Buy: Match`, 'green');
+     }
 
-    if (difference.availableSell > 0.00001) {
-        log(`⚠️  Available Sell differs by: ${difference.availableSell.toFixed(8)}`, 'yellow');
-    } else {
-        log(`✅ Available Sell: Match`, 'green');
-    }
+     if (difference.availableSell > 0.00001) {
+         log(`⚠️  Available Sell differs by: ${Format.formatAmount8(difference.availableSell)}`, 'yellow');
+     } else {
+         log(`✅ Available Sell: Match`, 'green');
+     }
 
     heading('END COMPARISON');
 }

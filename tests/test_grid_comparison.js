@@ -10,6 +10,7 @@ const assert = require('assert');
 const Grid = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
+const Format = require('../modules/order/format');
 
 /**
  * Test helper to create a mock order
@@ -106,7 +107,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
     // Buy: (15-10)^2/100 + (18-10)^2/100 = 0.25 + 0.64 / 2 = 0.445
     const buyMetricExpected = ((0.5) * (0.5) + (0.8) * (0.8)) / 2;
     const passed = result.sell.metric === 0 && result.buy.metric > 0;
-    logTest('Only BUY orders - SELL metric = 0', passed, `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric}`);
+     logTest('Only BUY orders - SELL metric = 0', passed, `buy=${Format.formatPrice6(result.buy.metric)}, sell=${result.sell.metric}`);
 }
 
 // Test 5: Only SELL orders - BUY should be 0
@@ -121,7 +122,7 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
     ];
     const result = await Grid.compareGrids(calculated, persisted);
     const passed = result.buy.metric === 0 && result.sell.metric > 0;
-    logTest('Only SELL orders - BUY metric = 0', passed, `buy=${result.buy.metric}, sell=${result.sell.metric.toFixed(6)}`);
+     logTest('Only SELL orders - BUY metric = 0', passed, `buy=${result.buy.metric}, sell=${Format.formatPrice6(result.sell.metric)}`);
 }
 
 // Test 6: Different divergence on buy vs sell

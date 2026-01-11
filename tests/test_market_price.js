@@ -13,6 +13,7 @@
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
 const { derivePrice } = require('../modules/order/utils');
+const Format = require('../modules/order/format');
 
 // Color codes for console output
 const colors = {
@@ -123,9 +124,9 @@ async function testMarketPrice() {
                 if (orderBook.bids && orderBook.bids.length > 0) {
                     console.log(`${colors.bold}Best Bids (buyers offering):${colors.reset}`);
                     orderBook.bids.forEach((bid, idx) => {
-                        const price = Number(bid.price);
-                        console.log(`  ${idx + 1}. Price: ${price.toFixed(8)} BTS per IOB.XRP | Amount: ${bid.quote.amount} BTS`);
-                    });
+                         const price = Number(bid.price);
+                         console.log(`  ${idx + 1}. Price: ${Format.formatPrice(price)} BTS per IOB.XRP | Amount: ${bid.quote.amount} BTS`);
+                     });
                     console.log();
                 } else {
                     console.log(`${colors.yellow}No bids available${colors.reset}\n`);
@@ -134,9 +135,9 @@ async function testMarketPrice() {
                 if (orderBook.asks && orderBook.asks.length > 0) {
                     console.log(`${colors.bold}Best Asks (sellers offering):${colors.reset}`);
                     orderBook.asks.forEach((ask, idx) => {
-                        const price = Number(ask.price);
-                        console.log(`  ${idx + 1}. Price: ${price.toFixed(8)} BTS per IOB.XRP | Amount: ${ask.quote.amount} BTS`);
-                    });
+                         const price = Number(ask.price);
+                         console.log(`  ${idx + 1}. Price: ${Format.formatPrice(price)} BTS per IOB.XRP | Amount: ${ask.quote.amount} BTS`);
+                     });
                     console.log();
                 } else {
                     console.log(`${colors.yellow}No asks available${colors.reset}\n`);
@@ -150,26 +151,26 @@ async function testMarketPrice() {
                     const spreadBps = ((bestAsk - bestBid) / midPrice) * 10000;
 
                     console.log(`${colors.bold}Spread Analysis:${colors.reset}`);
-                    console.log(`  Best Bid: ${bestBid.toFixed(8)} BTS per IOB.XRP`);
-                    console.log(`  Best Ask: ${bestAsk.toFixed(8)} BTS per IOB.XRP`);
-                    console.log(`  Mid Price: ${midPrice.toFixed(8)} BTS per IOB.XRP`);
-                    console.log(`  Spread: ${(bestAsk - bestBid).toFixed(8)} BTS (${spreadBps.toFixed(2)} bps)\n`);
+                     console.log(`  Best Bid: ${Format.formatPrice(bestBid)} BTS per IOB.XRP`);
+                     console.log(`  Best Ask: ${Format.formatPrice(bestAsk)} BTS per IOB.XRP`);
+                     console.log(`  Mid Price: ${Format.formatPrice(midPrice)} BTS per IOB.XRP`);
+                     console.log(`  Spread: ${Format.formatPrice(bestAsk - bestBid)} BTS (${Format.formatMetric2(spreadBps)} bps)\n`);
                 }
             }
         } catch (err) {
             console.log(`${colors.yellow}✗ Could not fetch detailed order book: ${err.message}${colors.reset}\n`);
         }
 
-        // Summary
-        console.log(`${colors.bold}${colors.blue}=== Summary ===${colors.reset}`);
-        console.log(`Pool Price:      ${poolPrice ? poolPrice.toFixed(8) : 'N/A'} (${poolTime}ms)`);
-        console.log(`Market Price:    ${startPrice ? startPrice.toFixed(8) : 'N/A'} (${marketTime}ms)`);
-        console.log(`Auto Fallback:   ${autoPrice ? autoPrice.toFixed(8) : 'N/A'} (${autoTime}ms)`);
+         // Summary
+         console.log(`${colors.bold}${colors.blue}=== Summary ===${colors.reset}`);
+         console.log(`Pool Price:      ${poolPrice ? Format.formatPrice(poolPrice) : 'N/A'} (${poolTime}ms)`);
+         console.log(`Market Price:    ${startPrice ? Format.formatPrice(startPrice) : 'N/A'} (${marketTime}ms)`);
+         console.log(`Auto Fallback:   ${autoPrice ? Format.formatPrice(autoPrice) : 'N/A'} (${autoTime}ms)`);
 
-        if (poolPrice && startPrice) {
-            const diff = ((startPrice - poolPrice) / poolPrice) * 100;
-            console.log(`\nPrice Difference: ${diff > 0 ? '+' : ''}${diff.toFixed(2)}%`);
-        }
+         if (poolPrice && startPrice) {
+             const diff = ((startPrice - poolPrice) / poolPrice) * 100;
+             console.log(`\nPrice Difference: ${diff > 0 ? '+' : ''}${Format.formatPercent2(diff)}%`);
+         }
 
         console.log(`\n${colors.green}✓ Test completed successfully${colors.reset}`);
 

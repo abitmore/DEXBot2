@@ -11,6 +11,7 @@ const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { initializeFeeCache } = require('../modules/order/utils');
+const Format = require('../modules/order/format');
 
 // Mock BitShares for fee initialization
 const mockBitShares = {
@@ -124,11 +125,11 @@ async function testSequentialMultiFillProcessing() {
     console.log(`    Orders to Rotate: ${result1.ordersToRotate.length}`);
 
     if (result1.ordersToPlace.length > 0) {
-        console.log(`    Placing: ${result1.ordersToPlace.map(o => `${o.type} ${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
-    }
-    if (result1.ordersToRotate.length > 0) {
-        console.log(`    Rotating: ${result1.ordersToRotate.map(r => `${r.oldOrder.id}->${r.newGridId}@${r.newPrice.toFixed(4)}`).join(', ')}`);
-    }
+         console.log(`    Placing: ${result1.ordersToPlace.map(o => `${o.type} ${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
+     }
+     if (result1.ordersToRotate.length > 0) {
+         console.log(`    Rotating: ${result1.ordersToRotate.map(r => `${r.oldOrder.id}->${r.newGridId}@${Format.formatPrice4(r.newPrice)}`).join(', ')}`);
+     }
 
     // Simulate on-chain execution of result1
     result1.ordersToPlace.forEach(o => {
@@ -156,12 +157,12 @@ async function testSequentialMultiFillProcessing() {
     console.log(`    New Orders to Place: ${result2.ordersToPlace.length}`);
     console.log(`    Orders to Rotate: ${result2.ordersToRotate.length}`);
 
-    if (result2.ordersToPlace.length > 0) {
-        console.log(`    Placing: ${result2.ordersToPlace.map(o => `${o.type} ${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
-    }
-    if (result2.ordersToRotate.length > 0) {
-        console.log(`    Rotating: ${result2.ordersToRotate.map(r => `${r.oldOrder.id}->${r.newGridId}@${r.newPrice.toFixed(4)}`).join(', ')}`);
-    }
+     if (result2.ordersToPlace.length > 0) {
+         console.log(`    Placing: ${result2.ordersToPlace.map(o => `${o.type} ${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
+     }
+     if (result2.ordersToRotate.length > 0) {
+         console.log(`    Rotating: ${result2.ordersToRotate.map(r => `${r.oldOrder.id}->${r.newGridId}@${Format.formatPrice4(r.newPrice)}`).join(', ')}`);
+     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // ASSERTIONS

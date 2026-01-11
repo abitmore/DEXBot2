@@ -13,6 +13,7 @@ const {
     floatToBlockchainInt,
     blockchainToFloat
 } = require("./utils");
+const Format = require('./format');
 
 class StrategyEngine {
     constructor(manager) {
@@ -127,7 +128,7 @@ class StrategyEngine {
 
             if (bestBuyIdx !== -1) {
                 mgr.boundaryIdx = bestBuyIdx;
-                mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from market-closest BUY order (distance=${bestBuyDistance.toFixed(8)} from startPrice).`, "info");
+                 mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from market-closest BUY order (distance=${Format.formatAmount8(bestBuyDistance)} from startPrice).`, "info");
             } else {
                 // 2. Fallback to startPrice-based initialization (Initial or Recovery)
                 mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
@@ -220,8 +221,8 @@ class StrategyEngine {
         const availablePoolSell = (mgr.funds.available?.sell || 0) + (mgr.funds.cacheFunds?.sell || 0);
 
         if (mgr.logger.level === 'debug') {
-            mgr.logger.log(`[BUDGET] Buy: total=${budgetBuy.toFixed(8)}, available=${availablePoolBuy.toFixed(8)}, btsFeeReserved=${btsFeeReservationBuy.toFixed(8)}`, 'debug');
-            mgr.logger.log(`[BUDGET] Sell: total=${budgetSell.toFixed(8)}, available=${availablePoolSell.toFixed(8)}, btsFeeReserved=${btsFeeReservationSell.toFixed(8)}`, 'debug');
+            mgr.logger.log(`[BUDGET] Buy: total=${Format.formatAmount8(budgetBuy)}, available=${Format.formatAmount8(availablePoolBuy)}, btsFeeReserved=${Format.formatAmount8(btsFeeReservationBuy)}`, 'debug');
+            mgr.logger.log(`[BUDGET] Sell: total=${Format.formatAmount8(budgetSell)}, available=${Format.formatAmount8(availablePoolSell)}, btsFeeReserved=${Format.formatAmount8(btsFeeReservationSell)}`, 'debug');
         }
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
@@ -256,13 +257,13 @@ class StrategyEngine {
         if (buyResult.totalNewPlacementSize > 0 && hasSellFills) {
             const oldCache = mgr.funds.cacheFunds.buy || 0;
             mgr.funds.cacheFunds.buy = Math.max(0, oldCache - buyResult.totalNewPlacementSize);
-            mgr.logger.log(`[CACHEFUNDS] buy: ${oldCache.toFixed(8)} - ${buyResult.totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds.buy.toFixed(8)}`, 'debug');
+             mgr.logger.log(`[CACHEFUNDS] buy: ${Format.formatAmount8(oldCache)} - ${Format.formatAmount8(buyResult.totalNewPlacementSize)} (new-placements) = ${Format.formatAmount8(mgr.funds.cacheFunds.buy)}`, 'debug');
         }
         // SELL placements: Deduct from cacheFunds.sell only if BUY fills occurred (they populate cacheFunds.sell)
         if (sellResult.totalNewPlacementSize > 0 && hasBuyFills) {
             const oldCache = mgr.funds.cacheFunds.sell || 0;
             mgr.funds.cacheFunds.sell = Math.max(0, oldCache - sellResult.totalNewPlacementSize);
-            mgr.logger.log(`[CACHEFUNDS] sell: ${oldCache.toFixed(8)} - ${sellResult.totalNewPlacementSize.toFixed(8)} (new-placements) = ${mgr.funds.cacheFunds.sell.toFixed(8)}`, 'debug');
+             mgr.logger.log(`[CACHEFUNDS] sell: ${Format.formatAmount8(oldCache)} - ${Format.formatAmount8(sellResult.totalNewPlacementSize)} (new-placements) = ${Format.formatAmount8(mgr.funds.cacheFunds.sell)}`, 'debug');
         }
 
         mgr.recalculateFunds();
@@ -429,7 +430,7 @@ class StrategyEngine {
             if (isDust) {
                 // Dust partial: Consolidate by updating to ideal size + dust size
                 const consolidatedSize = targetSize + partial.size;
-                mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${partial.size.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to merge: ${consolidatedSize.toFixed(8)}.`, 'info');
+                 mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(targetSize)}). Updating to merge: ${Format.formatAmount8(consolidatedSize)}.`, 'info');
                 ordersToUpdate.push({ partialOrder: { ...partial }, newSize: consolidatedSize });
                 stateUpdates.push({ ...partial, size: consolidatedSize, state: ORDER_STATES.ACTIVE });
                 handledPartialIds.add(partial.id);
@@ -457,7 +458,7 @@ class StrategyEngine {
                 }
 
                 // Now safe to proceed with both operations atomically
-                mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${oldSize.toFixed(8)}, target=${targetSize.toFixed(8)}). Updating to rebalance and placing new order.`, 'info');
+                 mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(targetSize)}). Updating to rebalance and placing new order.`, 'info');
                 ordersToUpdate.push({ partialOrder: { ...partial }, newSize: targetSize });
                 stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
 
@@ -708,13 +709,13 @@ class StrategyEngine {
                         // FIX: Consolidated fee calculation failure logging (Issue #8)
                         mgr.logger.log(
                             `[FILL-FEE-ERROR] ${filledOrder.type} fill ${filledOrder.id}: fee calc failed for ${assetForFee} (${e.message}). ` +
-                            `Using raw proceeds=${rawProceeds.toFixed(8)} - manual verification recommended.`,
+                            `Using raw proceeds=${Format.formatAmount8(rawProceeds)} - manual verification recommended.`,
                             "warn"
                         );
                     }
                 }
 
-                mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${netProceeds.toFixed(8)} ${assetForFee}`, "debug");
+                 mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${Format.formatAmount8(netProceeds)} ${assetForFee}`, "debug");
 
                 // SELL fills → proceeds go to buy side; BUY fills → proceeds go to sell side
                 const isSell = filledOrder.type === ORDER_TYPES.SELL;
@@ -724,7 +725,7 @@ class StrategyEngine {
 
                 const oldCache = mgr.funds.cacheFunds[receiveSide] || 0;
                 mgr.funds.cacheFunds[receiveSide] = oldCache + netProceeds;
-                mgr.logger.log(`[FUNDS] cacheFunds.${receiveSide} updated: ${oldCache.toFixed(5)} -> ${mgr.funds.cacheFunds[receiveSide].toFixed(5)}`, "debug");
+                 mgr.logger.log(`[FUNDS] cacheFunds.${receiveSide} updated: ${Format.formatMetric5(oldCache)} -> ${Format.formatMetric5(mgr.funds.cacheFunds[receiveSide])}`, "debug");
 
                 mgr.accountant.addToChainFree(receiveType, netProceeds, 'fill-proceeds');
                 if (mgr.accountTotals) {
@@ -744,8 +745,8 @@ class StrategyEngine {
                 mgr.funds.btsFeesOwed += makerFeesOwed + takerFeesOwed;
                 if (makerFillCount > 0 || takerFillCount > 0) {
                     mgr.logger.log(
-                        `[FEES] BTS fees calculated: ${makerFillCount} maker fills @ ${btsFeeDataMaker.netFee.toFixed(8)} BTS = ${makerFeesOwed.toFixed(8)} BTS, ` +
-                        `${takerFillCount} taker fills @ ${btsFeeDataTaker.netFee.toFixed(8)} BTS = ${takerFeesOwed.toFixed(8)} BTS (total owed: ${mgr.funds.btsFeesOwed.toFixed(8)} BTS)`,
+                        `[FEES] BTS fees calculated: ${makerFillCount} maker fills @ ${Format.formatAmount8(btsFeeDataMaker.netFee)} BTS = ${Format.formatAmount8(makerFeesOwed)} BTS, ` +
+                        `${takerFillCount} taker fills @ ${Format.formatAmount8(btsFeeDataTaker.netFee)} BTS = ${Format.formatAmount8(takerFeesOwed)} BTS (total owed: ${Format.formatAmount8(mgr.funds.btsFeesOwed)} BTS)`,
                         'info'
                     );
                 }
@@ -796,9 +797,9 @@ class StrategyEngine {
 
             // Log detailed fund state before entering rebalance
             if (mgr.logger.level === 'debug') {
-                mgr.logger.log(`[PRE-REBALANCE] Available: buy=${mgr.funds.available.buy.toFixed(5)}, sell=${mgr.funds.available.sell.toFixed(5)}`, 'debug');
-                mgr.logger.log(`[PRE-REBALANCE] CacheFunds: buy=${mgr.funds.cacheFunds.buy.toFixed(5)}, sell=${mgr.funds.cacheFunds.sell.toFixed(5)}`, 'debug');
-                mgr.logger.log(`[PRE-REBALANCE] ChainFree: buy=${mgr.accountTotals.buyFree.toFixed(5)}, sell=${mgr.accountTotals.sellFree.toFixed(5)}`, 'debug');
+                 mgr.logger.log(`[PRE-REBALANCE] Available: buy=${Format.formatMetric5(mgr.funds.available.buy)}, sell=${Format.formatMetric5(mgr.funds.available.sell)}`, 'debug');
+                 mgr.logger.log(`[PRE-REBALANCE] CacheFunds: buy=${Format.formatMetric5(mgr.funds.cacheFunds.buy)}, sell=${Format.formatMetric5(mgr.funds.cacheFunds.sell)}`, 'debug');
+                 mgr.logger.log(`[PRE-REBALANCE] ChainFree: buy=${Format.formatMetric5(mgr.accountTotals.buyFree)}, sell=${Format.formatMetric5(mgr.accountTotals.sellFree)}`, 'debug');
             }
 
             const result = await this.rebalance(filledOrders, excludeOrderIds);

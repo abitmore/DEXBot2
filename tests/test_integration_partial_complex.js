@@ -389,6 +389,14 @@ async function testStartupDualDustTrigger() {
     await reconcileStartupOrders({
         manager: mgr,
         config: mgr.config,
+        account: 'test-account',
+        privateKey: 'test-key',
+        chainOrders: {
+            updateOrder: async () => {},
+            cancelOrder: async () => {},
+            createOrder: async () => [[{ trx: { operation_results: [[null, 'test-order-id']] } }]]
+        },
+        chainOpenOrders: [],
         syncResult: { unmatchedChainOrders: [] }
     });
 
