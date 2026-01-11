@@ -19,7 +19,7 @@ const SETTINGS_FILE = path.join(__dirname, '..', 'profiles', 'general.settings.j
  * Returns the input string, or '\x1b' if ESC is pressed.
  */
 function readInput(prompt, options = {}) {
-    const { mask, hideEchoBack = false } = options;
+    const { mask, hideEchoBack = false, validate } = options;
     return new Promise((resolve) => {
         const stdin = process.stdin;
         const stdout = process.stdout;
@@ -47,6 +47,13 @@ function readInput(prompt, options = {}) {
                 }
 
                 if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+                    const trimmedInput = input.trim().toLowerCase();
+                    // If validation function exists, check if input is valid
+                    if (validate && !validate(trimmedInput)) {
+                        // Invalid input - clear and restart without newline
+                        input = '';
+                        return;
+                    }
                     cleanup();
                     stdout.write('\n');
                     return resolve(input);
@@ -517,19 +524,25 @@ async function promptBotData(base = {}) {
 
     let finished = false;
     let cancelled = false;
+    let showMenu = true;
 
     while (!finished) {
-         console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
-         console.log(`\x1b[1;33m1) Pair:\x1b[0m       \x1b[1;31m${data.assetA || '?'} / ${data.assetB || '?'} \x1b[0m`);
-         console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[1;31mName:\x1b[0m ${data.name || '?'} , \x1b[1;31mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[1;31mActive:\x1b[0m ${data.active}, \x1b[1;31mDryRun:\x1b[0m ${data.dryRun}`);
-         console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[1;31mRange:\x1b[0m [${data.minPrice} - ${data.maxPrice}], \x1b[1;31mStart:\x1b[0m ${data.startPrice}`);
-         console.log(`\x1b[1;33m4) Grid:\x1b[0m       \x1b[1;31mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[1;31mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[1;31mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
-         console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[1;31mSell:\x1b[0m ${data.botFunds.sell}, \x1b[1;31mBuy:\x1b[0m ${data.botFunds.buy} | \x1b[1;31mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
-         console.log('--------------------------------------------------');
-         console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
-         console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
+        if (showMenu) {
+             console.log('\n\x1b[1m--- Bot Editor: ' + (data.name || 'New Bot') + ' ---\x1b[0m');
+             console.log(`\x1b[1;33m1) Pair:\x1b[0m       \x1b[1;31m${data.assetA || '?'} / ${data.assetB || '?'} \x1b[0m`);
+             console.log(`\x1b[1;33m2) Identity:\x1b[0m   \x1b[38;5;208mName:\x1b[0m ${data.name || '?'} , \x1b[38;5;208mAccount:\x1b[0m ${data.preferredAccount || '?'} , \x1b[38;5;208mActive:\x1b[0m ${data.active}, \x1b[38;5;208mDryRun:\x1b[0m ${data.dryRun}`);
+             console.log(`\x1b[1;33m3) Price:\x1b[0m      \x1b[38;5;208mRange:\x1b[0m [${data.minPrice} - ${data.maxPrice}], \x1b[38;5;208mStart:\x1b[0m ${data.startPrice}`);
+             console.log(`\x1b[1;33m4) Grid:\x1b[0m       \x1b[38;5;208mWeights:\x1b[0m (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}), \x1b[38;5;208mIncr:\x1b[0m ${data.incrementPercent}%, \x1b[38;5;208mSpread:\x1b[0m ${data.targetSpreadPercent}%`);
+             console.log(`\x1b[1;33m5) Funding:\x1b[0m    \x1b[38;5;208mSell:\x1b[0m ${data.botFunds.sell}, \x1b[38;5;208mBuy:\x1b[0m ${data.botFunds.buy} | \x1b[38;5;208mOrders:\x1b[0m (S:${data.activeOrders.sell}, B:${data.activeOrders.buy})`);
+             console.log('--------------------------------------------------');
+             console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
+             console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
+            showMenu = false;
+        }
 
-        const choice = (await readInput('\nSelect section to edit or action: ')).trim().toLowerCase();
+        const choice = (await readInput('Select section to edit or action: ', {
+            validate: (input) => ['1', '2', '3', '4', '5', 's', 'c'].includes(input)
+        })).trim().toLowerCase();
 
         if (choice === '\x1b') {
             finished = true;
@@ -545,6 +558,7 @@ async function promptBotData(base = {}) {
                 if (assetB === '\x1b') break;
                 data.assetA = assetA;
                 data.assetB = assetB;
+                showMenu = true;
                 break;
             case '2':
                 const name = await askRequiredString('Bot name', data.name);
@@ -559,6 +573,7 @@ async function promptBotData(base = {}) {
                 data.preferredAccount = prefAcc;
                 data.active = active;
                 data.dryRun = dryRun;
+                showMenu = true;
                 break;
             case '3':
                 const minP = await askNumberOrMultiplier('minPrice', data.minPrice);
@@ -570,6 +585,7 @@ async function promptBotData(base = {}) {
                 data.minPrice = minP;
                 data.maxPrice = maxP;
                 data.startPrice = startP;
+                showMenu = true;
                 break;
             case '4':
                 const wSell = await askWeightDistribution('Weight distribution (sell)', data.weightDistribution.sell);
@@ -585,6 +601,7 @@ async function promptBotData(base = {}) {
                 data.weightDistribution.buy = wBuy;
                 data.incrementPercent = incrP;
                 data.targetSpreadPercent = targetS;
+                showMenu = true;
                 break;
             case '5':
                 const fSell = await askNumberOrPercentage('botFunds sell amount', data.botFunds.sell);
@@ -599,6 +616,7 @@ async function promptBotData(base = {}) {
                 data.botFunds.buy = fBuy;
                 data.activeOrders.sell = oSell;
                 data.activeOrders.buy = oBuy;
+                showMenu = true;
                 break;
             case 's':
                 // Final basic validation before saving
@@ -613,7 +631,7 @@ async function promptBotData(base = {}) {
                 cancelled = true;
                 break;
             default:
-                console.log('Invalid choice.');
+                // Invalid choice - just ignore and prompt again without redisplaying menu
         }
     }
 
@@ -723,22 +741,22 @@ async function main() {
     console.log('dexbot bots — bots.json configurator (writes profiles/bots.json)');
     const { config, filePath } = loadBotsConfig();
     let exit = false;
-    while (!exit) {
-        console.log('\nActions:');
-        console.log('  1) New bot');
-        console.log('  2) Modify bot');
-        console.log('  3) Delete bot');
-        console.log('  4) Copy bot');
-        console.log('  5) List bots');
-        console.log('  6) General settings');
-        console.log('  7) Exit');
-        const selection = (await readInput('Choose an action [1-7]: ')).trim();
-        console.log('');
-        
-        if (selection === '\x1b' || selection === '7') {
-            exit = true;
-            continue;
-        }
+     while (!exit) {
+         console.log('\nActions:');
+         console.log('  1) New bot');
+         console.log('  2) Modify bot');
+         console.log('  3) Delete bot');
+         console.log('  4) Copy bot');
+         console.log('  5) List bots');
+         console.log('  6) General settings');
+         console.log('  7) Exit (or press Enter)');
+         const selection = (await readInput('Choose an action [1-7]: ')).trim();
+         console.log('');
+         
+         if (selection === '\x1b' || selection === '7' || selection === '') {
+             exit = true;
+             continue;
+         }
 
         switch (selection) {
             case '1': {

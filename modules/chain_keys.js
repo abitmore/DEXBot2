@@ -519,25 +519,25 @@ async function main() {
         }
     }
 
-    while (true) {
-        console.log('\nMenu:');
-        console.log('1. Add key');
-        console.log('2. Modify key');
-        console.log('3. Remove key');
-        console.log('4. List keys');
-        console.log('5. Test decryption');
-        console.log('6. Change master password');
-        console.log('7. Exit');
+     while (true) {
+         console.log('\nMenu:');
+         console.log('1. Add key');
+         console.log('2. Modify key');
+         console.log('3. Remove key');
+         console.log('4. List keys');
+         console.log('5. Test decryption');
+         console.log('6. Change master password');
+         console.log('7. Exit (or press Enter)');
 
-        const choiceRaw = await readInput('Choose an option: ');
-        console.log('');
+         const choiceRaw = await readInput('Choose an option: ');
+         console.log('');
 
-        if (choiceRaw === '\x1b') {
-            console.log('Keymanager closed!');
-            break;
-        }
+         if (choiceRaw === '\x1b' || choiceRaw.trim() === '') {
+             console.log('Keymanager closed!');
+             break;
+         }
 
-        const choice = choiceRaw.trim();
+         const choice = choiceRaw.trim();
 
         if (choice === '1') {
             const accountNameRaw = await readInput('Enter account name: ');
