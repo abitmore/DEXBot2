@@ -549,9 +549,8 @@ class Grid {
             const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
 
             if (ratio >= threshold) {
-                // RC-3: Use Set instead of array to prevent concurrent initialization races
-                // and automatic duplicate prevention
-                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = new Set();
+                // RC-3: Use Set for automatic duplicate prevention
+                if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
                 manager._gridSidesUpdated.add(s.orderType);
                 if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
             }
@@ -723,14 +722,14 @@ class Grid {
             const limit = GRID_COMPARISON.RMS_PERCENTAGE / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;  // Convert percentage threshold to decimal
 
             if (buyMetric > limit) {
-                // RC-3: Use Set for automatic duplicate prevention (consistent with checkAndUpdateGridIfNeeded)
-                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = new Set();
+                // RC-3: Use Set for automatic duplicate prevention
+                if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
                 manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
                 buyUpdated = true;
             }
             if (sellMetric > limit) {
-                // RC-3: Use Set for automatic duplicate prevention (consistent with checkAndUpdateGridIfNeeded)
-                if (!manager._gridSidesUpdated) manager._gridSidesUpdated = new Set();
+                // RC-3: Use Set for automatic duplicate prevention
+                if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
                 manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
                 sellUpdated = true;
             }

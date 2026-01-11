@@ -246,21 +246,17 @@ class StrategyEngine {
 
         // Deduct cacheFunds AFTER state updates are applied (atomic with state transitions)
         // CRITICAL: Only deduct from cacheFunds for the side that USES the fill proceeds
-        // - SELL fills → proceeds in BTS → cacheFunds.buy → deduct for BUY placements
-        // - BUY fills → proceeds in XRP → cacheFunds.sell → deduct for SELL placements
-        // The opposite side placements are just VIRTUAL → ACTIVE conversions (no deduction needed)
+        // - proceeds from SELL fills populate cacheFunds.buy → used for BUY placements
+        // - proceeds from BUY fills populate cacheFunds.sell → used for SELL placements
 
-        const hasSellFills = fills.some(f => f.type === ORDER_TYPES.SELL && !f.isPartial);
-        const hasBuyFills = fills.some(f => f.type === ORDER_TYPES.BUY && !f.isPartial);
-
-        // BUY placements: Deduct from cacheFunds.buy only if SELL fills occurred (they populate cacheFunds.buy)
-        if (buyResult.totalNewPlacementSize > 0 && hasSellFills) {
+        // BUY placements: Deduct from cacheFunds.buy
+        if (buyResult.totalNewPlacementSize > 0) {
             const oldCache = mgr.funds.cacheFunds.buy || 0;
             mgr.funds.cacheFunds.buy = Math.max(0, oldCache - buyResult.totalNewPlacementSize);
              mgr.logger.log(`[CACHEFUNDS] buy: ${Format.formatAmount8(oldCache)} - ${Format.formatAmount8(buyResult.totalNewPlacementSize)} (new-placements) = ${Format.formatAmount8(mgr.funds.cacheFunds.buy)}`, 'debug');
         }
-        // SELL placements: Deduct from cacheFunds.sell only if BUY fills occurred (they populate cacheFunds.sell)
-        if (sellResult.totalNewPlacementSize > 0 && hasBuyFills) {
+        // SELL placements: Deduct from cacheFunds.sell
+        if (sellResult.totalNewPlacementSize > 0) {
             const oldCache = mgr.funds.cacheFunds.sell || 0;
             mgr.funds.cacheFunds.sell = Math.max(0, oldCache - sellResult.totalNewPlacementSize);
              mgr.logger.log(`[CACHEFUNDS] sell: ${Format.formatAmount8(oldCache)} - ${Format.formatAmount8(sellResult.totalNewPlacementSize)} (new-placements) = ${Format.formatAmount8(mgr.funds.cacheFunds.sell)}`, 'debug');

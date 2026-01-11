@@ -88,7 +88,7 @@ class OrderManager {
          this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
          this._accountTotalsLock = new AsyncLock();  // Prevents race condition in waitForAccountTotals
          this._recentlyRotatedOrderIds = new Set();
-        this._gridSidesUpdated = [];
+        this._gridSidesUpdated = new Set();
         this._pauseFundRecalcDepth = 0;  // Counter for safe nested pausing (not boolean)
 
         // Metrics for observability
@@ -649,7 +649,7 @@ class OrderManager {
         if (this.ordersNeedingPriceCorrection.length > 0) {
             reasons.push(`${this.ordersNeedingPriceCorrection.length} corrections pending`);
         }
-        if (this._gridSidesUpdated && this._gridSidesUpdated.length > 0) {
+        if (this._gridSidesUpdated && this._gridSidesUpdated.size > 0) {
             reasons.push('grid divergence corrections pending');
         }
 

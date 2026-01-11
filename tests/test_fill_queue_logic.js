@@ -37,7 +37,8 @@ const mockManager = {
     recalculateFunds: () => { },
     assets: { assetA: { precision: 5 }, assetB: { precision: 5 } },
     orders: new Map(),
-    _gridSidesUpdated: []
+    _gridSidesUpdated: new Set(),
+    _fillProcessingLock: new MockAsyncLock()
 };
 const mockChainOrders = {
     getFillProcessingMode: () => 'history',
@@ -50,7 +51,6 @@ async function testFillQueue() {
 
     const bot = new DEXBot(mockConfig);
     bot.manager = mockManager;
-    bot._fillProcessingLock = new MockAsyncLock();
     // Verify initial state
     assert.deepStrictEqual(bot._incomingFillQueue, []);
 

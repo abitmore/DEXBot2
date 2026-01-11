@@ -362,10 +362,10 @@ class DEXBot {
                         if (anyRotations) {
                             await this.manager._divergenceLock.acquire(async () => {
                                 await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
-                                if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.length > 0) {
+                                if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.size > 0) {
                                     const orderType = getOrderTypeFromUpdatedFlags(
-                                        this.manager._gridSidesUpdated.includes('buy'),
-                                        this.manager._gridSidesUpdated.includes('sell')
+                                        this.manager._gridSidesUpdated.has(ORDER_TYPES.BUY),
+                                        this.manager._gridSidesUpdated.has(ORDER_TYPES.SELL)
                                     );
                                     await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
                                     await this.manager.persistGrid();

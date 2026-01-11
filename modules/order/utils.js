@@ -1371,7 +1371,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
     // Use correction lock to protect all mutations AND the _gridSidesUpdated check (fixes TOCTOU)
     await manager._correctionsLock.acquire(async () => {
         // Early return check INSIDE lock to prevent TOCTOU race
-        if (!manager._gridSidesUpdated || manager._gridSidesUpdated.length === 0) {
+        if (!manager._gridSidesUpdated || manager._gridSidesUpdated.size === 0) {
             return;
         }
 
@@ -1402,7 +1402,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
         if (manager.ordersNeedingPriceCorrection.length > 0) {
             manager.logger?.log?.(
-                `[DIVERGENCE] Updating divergent sides: ${manager._gridSidesUpdated.join(', ')}. Applying ${manager.ordersNeedingPriceCorrection.length} recalculated orders. Other sides remain untouched.`,
+                `[DIVERGENCE] Updating divergent sides: ${Array.from(manager._gridSidesUpdated).join(', ')}. Applying ${manager.ordersNeedingPriceCorrection.length} recalculated orders. Other sides remain untouched.`,
                 'info'
             );
 
@@ -1436,7 +1436,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 // CRITICAL: Only clear flags if operations were actually executed
                 // If all operations were rejected (result.executed === false), keep flags
                 if (result && result.executed) {
-                    manager._gridSidesUpdated = [];
+                    manager._gridSidesUpdated.clear();
                     // Re-persist grid after corrections are applied to keep persisted state in sync
                     persistGridSnapshot(manager, accountOrders, botKey);
                 } else {
@@ -1444,12 +1444,12 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                         `Divergence corrections were rejected (precision tolerance). Clearing flags to prevent loop.`,
                         'info'
                     );
-                    manager._gridSidesUpdated = [];
+                    manager._gridSidesUpdated.clear();
                 }
             } catch (err) {
                 // CRITICAL: Clear corrections AND flags on error to prevent list explosion
                 manager.ordersNeedingPriceCorrection = [];
-                manager._gridSidesUpdated = [];
+                manager._gridSidesUpdated.clear();
                 manager?.logger?.log?.(`Warning: Could not execute grid divergence corrections: ${err.message}`, 'warn');
             }
         }
