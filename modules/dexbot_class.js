@@ -63,10 +63,11 @@ class DEXBot {
         this.privateKey = null;
         this.manager = null;
         this.accountOrders = null;  // Will be initialized in start()
-        this.triggerFile = path.join(PROFILES_DIR, `recalculate.${config.botKey}.trigger`);
-        this._recentlyProcessedFills = new Map();
+         this.triggerFile = path.join(PROFILES_DIR, `recalculate.${config.botKey}.trigger`);
+         this._recentlyProcessedFills = new Map();
+         this._fillCleanupCounter = 0;  // Deterministic cleanup tracking
 
-        // Time-based configuration for fill processing (from constants.TIMING)
+         // Time-based configuration for fill processing (from constants.TIMING)
         this._fillDedupeWindowMs = TIMING.FILL_DEDUPE_WINDOW_MS;      // Window for deduplicating same fill events
         this._fillCleanupIntervalMs = TIMING.FILL_CLEANUP_INTERVAL_MS;  // Clean old fill records periodically
 
@@ -138,30 +139,35 @@ class DEXBot {
      * @private
      */
     async _consumeFillQueue(chainOrders) {
-        // Prevent stacking of consumer calls by checking lock state atomically
-        // If lock is already processing or has queued waiters, don't queue another consumer
-        if (this.manager._fillProcessingLock.isLocked() || this.manager._fillProcessingLock.getQueueLength() > 0) {
-            this._metrics.lockContentionEvents++;
-            return;
-        }
+         // ATOMIC: Only attempt lock acquisition if queue has work
+         // This prevents unnecessary lock contention on empty queues
+         if (this._incomingFillQueue.length === 0) {
+             return;
+         }
 
-        // Check shutdown state
-        if (this._shuttingDown) {
-            this._warn('Fill processing skipped: shutdown in progress');
-            return;
-        }
+         // Check shutdown state
+         if (this._shuttingDown) {
+             this._warn('Fill processing skipped: shutdown in progress');
+             return;
+         }
 
-        try {
-            await this.manager._fillProcessingLock.acquire(async () => {
+         try {
+             // Non-blocking attempt: if lock is held or has waiters, skip this call
+             // New fills will trigger another _consumeFillQueue call automatically
+             if (this.manager._fillProcessingLock.isLocked() || this.manager._fillProcessingLock.getQueueLength() > 0) {
+                 this._metrics.lockContentionEvents++;
+                 return;
+             }
+
+             await this.manager._fillProcessingLock.acquire(async () => {
                 while (this._incomingFillQueue.length > 0) {
                     const batchStartTime = Date.now();
 
                     // Track max queue depth
-                    this._metrics.maxQueueDepth = Math.max(this._metrics.maxQueueDepth, this._incomingFillQueue.length);
+                     this._metrics.maxQueueDepth = Math.max(this._metrics.maxQueueDepth, this._incomingFillQueue.length);
 
-                    // 1. Take snapshot of current work
-                    const allFills = [...this._incomingFillQueue];
-                    this._incomingFillQueue = []; // Clear buffer
+                     // 1. Take snapshot of current work (ATOMIC: splice removes and returns fills atomically)
+                     const allFills = this._incomingFillQueue.splice(0);  // Atomically clear and get all fills
 
                     const validFills = [];
                     const processedFillKeys = new Set();
@@ -309,21 +315,22 @@ class DEXBot {
                         }
 
                         // 6. Rebalance Recovery Loop (Sequential Extensions)
-                        // DISABLED FOR SEQUENTIAL: Each sequential fill already triggers a full rebalance with proper
-                        // boundary shift. An additional recovery loop with EMPTY fills causes the boundary to remain
-                        // at the last fill's position, leading to wrong operation types (updates instead of rotations)
-                        // and operations on the wrong side.
-                        //
-                        // In the future, recovery loop can be re-enabled for single fills if needed, but ONLY
-                        // if it passes the actual fills to processFilledOrders so the boundary shifts correctly.
-                        // For now: Each fill = full rebalance with boundary shift = complete correction in one pass.
-                        // CRITICAL: Do NOT run spread correction here during sequential fill processing.
-                        // The rebalance from each fill should maintain spread naturally. Running spread correction
-                        // immediately after creates new orders that may get filled by market before next cycle,
-                        // causing cascading fills and potentially SPREAD slots becoming PARTIAL (error condition).
-                        // Spread correction runs in the main loop instead.
-                        if (anyRotations || allFilledOrders.length > 0) {
-                            this.manager.recalculateFunds();
+                         // DISABLED FOR SEQUENTIAL: Each sequential fill already triggers a full rebalance with proper
+                         // boundary shift. An additional recovery loop with EMPTY fills causes the boundary to remain
+                         // at the last fill's position, leading to wrong operation types (updates instead of rotations)
+                         // and operations on the wrong side.
+                         //
+                         // In the future, recovery loop can be re-enabled for single fills if needed, but ONLY
+                         // if it passes the actual fills to processFilledOrders so the boundary shifts correctly.
+                         // For now: Each fill = full rebalance with boundary shift = complete correction in one pass.
+                         // CRITICAL: Do NOT run spread correction here during sequential fill processing.
+                         // The rebalance from each fill should maintain spread naturally. Running spread correction
+                         // immediately after creates new orders that may get filled by market before next cycle,
+                         // causing cascading fills and potentially SPREAD slots becoming PARTIAL (error condition).
+                         // Spread correction runs in the main loop instead.
+                         if (anyRotations || allFilledOrders.length > 0) {
+                             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications
+                             this.manager.recalculateFunds();
 
                             // Check grid health only if pipeline is empty (no pending fills, no pending operations)
                             const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
@@ -384,12 +391,23 @@ class DEXBot {
                         }
                     }
 
-                    // Periodically clean up old fill records (cleanup probability from MAINTENANCE constant)
-                    if (Math.random() < MAINTENANCE.CLEANUP_PROBABILITY) {
-                        try {
-                            await this.accountOrders.cleanOldProcessedFills(this.config.botKey, TIMING.FILL_RECORD_RETENTION_MS);
-                        } catch (err) { /* warn */ }
-                    }
+         // Periodically clean up old fill records (deterministic: every N fills processed)
+                     // Track cleanup counter locally to avoid race conditions on shared state
+                     if (!this._fillCleanupCounter) this._fillCleanupCounter = 0;
+                     this._fillCleanupCounter += validFills.length;
+                     
+                     const cleanupThreshold = MAINTENANCE.CLEANUP_PROBABILITY > 0 && MAINTENANCE.CLEANUP_PROBABILITY < 1
+                         ? Math.floor(1 / MAINTENANCE.CLEANUP_PROBABILITY)
+                         : 100; // Default: every 100 fills
+                     
+                     if (this._fillCleanupCounter >= cleanupThreshold) {
+                         try {
+                             await this.accountOrders.cleanOldProcessedFills(this.config.botKey, TIMING.FILL_RECORD_RETENTION_MS);
+                             this._fillCleanupCounter = 0;
+                         } catch (err) {
+                             this.manager?.logger?.log(`Warning: Fill cleanup failed: ${err.message}`, 'warn');
+                         }
+                     }
 
                     // Update metrics
                     this._metrics.fillsProcessed += validFills.length;
@@ -398,26 +416,24 @@ class DEXBot {
                 } // End while(_incomingFillQueue)
 
             });
-        } catch (err) {
-            this._log(`Error processing fills: ${err.message}`);
-            if (this.manager && this.manager.logger) {
-                this.manager.logger.log(`Error processing fills: ${err.message}`, 'error');
-                if (err.stack) this.manager.logger.log(err.stack, 'error');
-            } else {
-                console.error('CRITICAL: Error processing fills (logger unavailable):', err);
-            }
-        } finally {
-            // Check if new fills arrived while processing the batch
-            // If queue is not empty and lock is free, trigger another consumer cycle
-            // Fire-and-forget with error handling to prevent uncaught exceptions in finally
-            if (this._incomingFillQueue.length > 0 &&
-                !this.manager._fillProcessingLock.isLocked() &&
-                this.manager._fillProcessingLock.getQueueLength() === 0) {
-                this._consumeFillQueue(chainOrders).catch(err => {
-                    this._warn(`Error in finally-block consumer restart: ${err.message}`);
-                });
-            }
-        }
+         } catch (err) {
+             this._log(`Error processing fills: ${err.message}`);
+             if (this.manager && this.manager.logger) {
+                 this.manager.logger.log(`Error processing fills: ${err.message}`, 'error');
+                 if (err.stack) this.manager.logger.log(err.stack, 'error');
+             } else {
+                 console.error('CRITICAL: Error processing fills (logger unavailable):', err);
+             }
+         }
+
+         // Post-processing: If new fills arrived while processing, schedule another cycle
+         // SAFE: Done outside lock context, no async work in finally block
+         if (this._incomingFillQueue.length > 0) {
+             // Schedule consumer restart asynchronously (not in finally block)
+             setImmediate(() => this._consumeFillQueue(chainOrders).catch(err => {
+                 this._warn(`Error in deferred consumer restart: ${err.message}`);
+             }));
+         }
     }
 
     async initialize(masterPassword = null) {
@@ -714,55 +730,70 @@ class DEXBot {
         const operations = [];
         const opContexts = [];
 
-        // Collect IDs to lock (shadow)
-        const idsToLock = new Set();
+         // Collect IDs to lock (shadow lock: prevents these orders from being selected for rebalancing)
+         // NOTE: Shadow locks are cooperative - they work only if rebalancing logic checks exclusion sets.
+         // See line 281-288 where fillExcludeSet prevents selecting orders in flight.
+         const idsToLock = new Set();
 
-        // Add placement order IDs
-        if (ordersToPlace && Array.isArray(ordersToPlace)) {
-            ordersToPlace.forEach(o => {
-                if (o && o.id) idsToLock.add(o.id);
-            });
-        }
+         // Add placement order IDs (new virtual orders being placed)
+         if (ordersToPlace && Array.isArray(ordersToPlace)) {
+             ordersToPlace.forEach(o => {
+                 if (o && o.id) idsToLock.add(o.id);
+             });
+         }
 
-        // Add rotation order IDs (both old and new grid IDs)
-        if (ordersToRotate && Array.isArray(ordersToRotate)) {
-            ordersToRotate.forEach(r => {
-                if (r && r.oldOrder && r.oldOrder.orderId) idsToLock.add(r.oldOrder.orderId);
-                if (r && r.newGridId) idsToLock.add(r.newGridId);
-            });
-        }
+         // Add rotation order IDs (both old chain IDs and new grid IDs)
+         if (ordersToRotate && Array.isArray(ordersToRotate)) {
+             ordersToRotate.forEach(r => {
+                 if (r && r.oldOrder && r.oldOrder.orderId) idsToLock.add(r.oldOrder.orderId);
+                 if (r && r.newGridId) idsToLock.add(r.newGridId);
+             });
+         }
 
-        // Add update order IDs
-        if (ordersToUpdate && Array.isArray(ordersToUpdate)) {
-            ordersToUpdate.forEach(u => {
-                if (u && u.partialOrder && u.partialOrder.orderId) idsToLock.add(u.partialOrder.orderId);
-            });
-        }
+         // Add update order IDs (orders being size-updated)
+         if (ordersToUpdate && Array.isArray(ordersToUpdate)) {
+             ordersToUpdate.forEach(u => {
+                 if (u && u.partialOrder && u.partialOrder.orderId) idsToLock.add(u.partialOrder.orderId);
+             });
+         }
 
-        this.manager.lockOrders(idsToLock);
+         // Apply shadow locks to prevent concurrent selection of these orders
+         // IMPORTANT: This is cooperative locking - rebalancing must respect these locks via exclusion sets
+         this.manager.lockOrders(idsToLock);
 
         try {
             // 1. Build Operations
             await this._buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts);
             await this._buildSizeUpdateOps(ordersToUpdate, operations, opContexts);
 
-            // Create virtual state snapshot for rotation ops: apply pending size updates to open orders
-            // This prevents false "unmet" rotations when rotation targets conflict with update slots
-            let virtualOpenOrders = null;
-            if (ordersToUpdate && ordersToUpdate.length > 0) {
-                const currentOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                virtualOpenOrders = currentOpenOrders.map(order => {
-                    const update = ordersToUpdate.find(u => u.partialOrder.orderId === order.id);
-                    if (update) {
-                        return { ...order, size: update.newSize };
-                    }
-                    return order;
-                });
-                this.manager.logger.log(`[ROTATION] Using virtual state with ${ordersToUpdate.length} pending size update(s)`, 'debug');
-            }
+             // Create function to compute virtual state snapshot for rotation ops
+             // This applies pending size updates to current open orders to prevent false "unmet" rotations
+             // Virtual state is recomputed on each rotation attempt to avoid staleness
+             const computeVirtualOpenOrders = async () => {
+                 if (!ordersToUpdate || ordersToUpdate.length === 0) {
+                     return null;
+                 }
+                 const currentOpenOrders = await chainOrders.readOpenOrders(this.accountId);
+                 const virtual = currentOpenOrders.map(order => {
+                     const update = ordersToUpdate.find(u => u.partialOrder.orderId === order.id);
+                     if (update) {
+                         return { ...order, size: update.newSize };
+                     }
+                     return order;
+                 });
+                 return virtual;
+             };
 
-            // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
-            const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts, virtualOpenOrders);
+             // Compute initial virtual state
+             let virtualOpenOrders = await computeVirtualOpenOrders();
+             if (virtualOpenOrders) {
+                 this.manager.logger.log(`[ROTATION] Using virtual state with ${ordersToUpdate.length} pending size update(s)`, 'debug');
+             }
+
+             // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
+             // IMPORTANT: Recompute virtual state to prevent staleness (apply any pending updates that may have changed)
+             virtualOpenOrders = await computeVirtualOpenOrders();
+             const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts, virtualOpenOrders);
 
             // Convert unmet rotations to placements so we still fill the grid gaps
             if (unmetRotations.length > 0) {
@@ -966,14 +997,8 @@ class DEXBot {
                 }
             }
             else if (ctx.kind === 'rotation') {
-                // Wait for divergence lock to be released before processing rotation
-                // This ensures rotation state is updated after divergence correction completes
-                if (this.manager._divergenceLock) {
-                    await this.manager._divergenceLock.acquire(async () => {
-                        // Lock ensures we only process rotation after divergence work is done
-                    });
-                }
-
+                // Rotation processing: divergence corrections are already synchronized via _divergenceLock
+                // during fill processing, so no additional lock needed here
                 hadRotation = true;
                 const { rotation } = ctx;
                 const { oldOrder, newPrice, newGridId, newSize, type } = rotation;
@@ -1062,30 +1087,28 @@ class DEXBot {
             this._warn(`Failed to fetch account totals at startup: ${err.message}`);
         }
 
-        // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
-        try {
-            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
-        } catch (err) {
-            this._warn(`Fee cache initialization failed: ${err.message}`);
-        }
+         // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
+         try {
+             await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
+         } catch (err) {
+             this._warn(`Fee cache initialization failed: ${err.message}`);
+         }
 
-        // CRITICAL: Activate fill listener BEFORE any grid operations or order placement
-        // This ensures we capture fills that occur during startup (initial placement, syncing, corrections)
-        // Must happen after manager initialization and fee cache setup but before any operations
-        await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-        this._log('Fill listener activated (ready to process fills during startup)');
+         // NOTE: Fill listener activation deferred to end of start() to prevent races during startup reconciliation
+         // See line ~1395 where it's activated after all startup grid operations complete
 
-        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
+         const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
         const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
         const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
         const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
 
-        // Restore and consolidate cacheFunds
-        this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-        if (persistedCacheFunds) {
-            this.manager.funds.cacheFunds.buy += Number(persistedCacheFunds.buy || 0);
-            this.manager.funds.cacheFunds.sell += Number(persistedCacheFunds.sell || 0);
-        }
+         // Restore and consolidate cacheFunds
+         // SAFE: Done during startup before fill listener activates, so no concurrent access yet
+         this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+         if (persistedCacheFunds) {
+             this.manager.funds.cacheFunds.buy += Number(persistedCacheFunds.buy || 0);
+             this.manager.funds.cacheFunds.sell += Number(persistedCacheFunds.sell || 0);
+         }
 
         // Use this.accountId which was set during initialize()
         const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
@@ -1187,22 +1210,29 @@ class DEXBot {
                 await this.updateOrdersOnChainBatch(rebalanceResult);
             }
 
-            await this.manager.persistGrid();
-        }
+             await this.manager.persistGrid();
+         }
 
-        // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
-        // Note: Grid checks only run if no fills are being processed
-        // Since fill listener was just set up, fills should not be processing yet at startup
+         // CRITICAL: Activate fill listener NOW after all startup reconciliation completes
+         // This prevents fills from arriving during startup grid operations (grid syncing, order reconciliation)
+         // Safe timing: grid is stable, all initial orders are in place/synced, we're ready for live fill processing
+         await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+         this._log('Fill listener activated (startup complete, ready for live fill processing)');
+
+         // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
+         // Note: Grid checks only run if no fills are being processed
+         // Fill listener is now active, so fills could arrive during checks - use locks appropriately
 
         // Step 1: Threshold check (available funds)
         try {
             // Only run grid checks if no fills are being processed
-            if (this.manager && this.manager.orders && this.manager.orders.size > 0) {
-                // CRITICAL: Use corrections lock to prevent race with fill processing
-                // Even though fill listener is just being set up, fills could arrive immediately
-                // We must serialize grid updates with fund modifications to prevent TOCTOU races
-                await this.manager._correctionsLock.acquire(async () => {
-                    const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+             if (this.manager && this.manager.orders && this.manager.orders.size > 0) {
+                 // CRITICAL: Use divergence lock to prevent race with fill processing
+                 // Even though fill listener is just being set up, fills could arrive immediately
+                 // We must serialize grid updates with fund modifications to prevent TOCTOU races
+                 // NOTE: This consolidates grid sync logic - same lock used for both startup and periodic checks
+                 await this.manager._divergenceLock.acquire(async () => {
+                     const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
                     
                     // Step 1: Threshold check result
                     if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
@@ -1277,10 +1307,11 @@ class DEXBot {
         // Protected by _fillProcessingLock to respect AsyncLock pattern and prevent races with early fills
         // PROACTIVE: immediately corrects spread if needed, no waiting for next fill
         try {
-            await this.manager._fillProcessingLock.acquire(async () => {
-                // CRITICAL: Recalculate funds before spread correction to ensure accurate available values
-                // During startup, funds may be in inconsistent state until recalculated
-                this.manager.recalculateFunds();
+             await this.manager._fillProcessingLock.acquire(async () => {
+                 // CRITICAL: Recalculate funds before spread correction to ensure accurate available values
+                 // During startup, funds may be in inconsistent state until recalculated
+                 // SAFE: Protected by _fillProcessingLock.acquire()
+                 this.manager.recalculateFunds();
 
                 // spreadResult: { ordersPlaced: number, didCorrect: boolean }
                 // Returned by checkSpreadCondition with count of orders placed during spread correction
@@ -1355,9 +1386,10 @@ class DEXBot {
                     });
 
                     // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
-                    this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                    this.manager.funds.btsFeesOwed = 0;
-                    await this.manager.persistGrid();
+                     // SAFE: Protected by _fillProcessingLock held by performResync caller
+                     this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+                     this.manager.funds.btsFeesOwed = 0;
+                     await this.manager.persistGrid();
 
                     if (fs.existsSync(this.triggerFile)) {
                         fs.unlinkSync(this.triggerFile);
@@ -1398,43 +1430,55 @@ class DEXBot {
         // Start periodic blockchain fetch to keep blockchain variables updated
         this._setupBlockchainFetchInterval();
 
-        // Main loop
-        const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
-        this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
+         // Main loop
+         const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
+         this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
 
-        (async () => {
-            while (true) {
-                try {
-                    if (this.manager && !this.config.dryRun) {
-                        // Use syncFromOpenOrders to keep grid in sync with blockchain reality
-                        await this.manager._fillProcessingLock.acquire(async () => {
-                            await this.manager.syncFromOpenOrders();
-                        });
-                    }
-                } catch (err) { console.error('Order manager loop error:', err.message); }
-                await new Promise(resolve => setTimeout(resolve, loopDelayMs));
-            }
-        })();
+         (async () => {
+             while (true) {
+                 try {
+                     if (this.manager && !this.config.dryRun) {
+                         // OPTIMIZATION: Reduce lock thrashing by checking if lock is already held
+                         // Only acquire if we actually need to do work AND lock is available
+                         // This prevents busy-looping that continuously acquires/releases the lock
+                         if (!this.manager._fillProcessingLock.isLocked() && 
+                             this.manager._fillProcessingLock.getQueueLength() === 0) {
+                             await this.manager._fillProcessingLock.acquire(async () => {
+                                 await this.manager.syncFromOpenOrders();
+                             });
+                         } else {
+                             // Lock is busy with fill processing, skip this iteration
+                             this.manager.logger.log('Sync deferred: fill processing in progress', 'debug');
+                         }
+                     }
+                 } catch (err) { console.error('Order manager loop error:', err.message); }
+                 await new Promise(resolve => setTimeout(resolve, loopDelayMs));
+             }
+         })();
 
         console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
     }
 
-    /**
-     * Perform periodic grid checks: fund thresholds, spread condition, grid health.
-     * Called by the periodic blockchain fetch interval to check if grid needs updates.
-     * @private
-     */
-    async _performPeriodicGridChecks() {
-        try {
-            // Check if newly fetched blockchain funds trigger a grid update
-            if (!this.manager || !this.manager.orders || this.manager.orders.size === 0) return;
+     /**
+      * Perform periodic grid checks: fund thresholds, spread condition, grid health.
+      * Called by the periodic blockchain fetch interval to check if grid needs updates.
+      * Uses _divergenceLock for synchronization (consolidated from _correctionsLock).
+      * @private
+      */
+      async _performPeriodicGridChecks() {
+          try {
+              // Check if newly fetched blockchain funds trigger a grid update
+              if (!this.manager || !this.manager.orders || this.manager.orders.size === 0) return;
 
-            const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
-            if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                this._log(`Cache ratio threshold triggered grid update (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+              // SAFE: Called inside _fillProcessingLock.acquire() from periodic fetch interval
+              // cacheFunds access is synchronized via lock
+              const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+             if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
+                 this._log(`Cache ratio threshold triggered grid update (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
 
-                // Divergence lock for grid updates (nested inside fill lock)
-                await this.manager._divergenceLock.acquire(async () => {
+                 // Divergence lock for grid updates (nested inside fill lock)
+                 // CONSOLIDATED: Uses _divergenceLock for all grid sync operations (startup + periodic)
+                 await this.manager._divergenceLock.acquire(async () => {
                     // Update grid with fresh blockchain snapshot from 4-hour timer
                     const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
                     await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
@@ -1452,11 +1496,12 @@ class DEXBot {
                 });
             }
 
-            // Check spread condition after periodic blockchain fetch
-            // Protected by outer _fillProcessingLock - respects AsyncLock pattern
-            // PROACTIVE: immediately corrects spread if needed, no waiting for fills
-            // CRITICAL: Recalculate funds before spread correction to ensure accurate state
-            this.manager.recalculateFunds();
+             // Check spread condition after periodic blockchain fetch
+             // Protected by outer _fillProcessingLock - respects AsyncLock pattern
+             // PROACTIVE: immediately corrects spread if needed, no waiting for fills
+             // CRITICAL: Recalculate funds before spread correction to ensure accurate state
+             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications
+             this.manager.recalculateFunds();
 
             // spreadResult: { ordersPlaced: number, didCorrect: boolean }
             // Returned by checkSpreadCondition with count of orders placed during spread correction
