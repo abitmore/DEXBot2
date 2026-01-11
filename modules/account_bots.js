@@ -293,7 +293,7 @@ async function askWeightDistributionNoLegend(promptText, defaultValue) {
 }
 
 function isMultiplierString(value) {
-    return typeof value === 'string' && /^[ -￿]*[0-9]+(?:\.[0-9]+)?x[ -￿]*$/i.test(value);
+    return typeof value === 'string' && /^[-￿]*[0-9]+(?:\.[0-9]+)?x[-￿]*$/i.test(value);
 }
 
 async function askNumberWithBounds(promptText, defaultValue, minVal, maxVal) {
