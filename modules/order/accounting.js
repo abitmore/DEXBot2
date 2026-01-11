@@ -368,81 +368,119 @@ class Accountant {
 
 
     /**
-     * Update optimistic free balance during order state transitions.
-     * This is CRITICAL for preventing "fund leaks" where locked capital is never released.
-     *
-     * STATE TRANSITION RULES (chainFree impact):
-     * =========================================================================
-     * VIRTUAL → ACTIVE/PARTIAL: Funds transition from "free" to "locked"
-     *   Action: DEDUCT from chainFree (funds become committed/on-chain)
-     *   Why: New on-chain orders lock available capital
-     *
-     * ACTIVE/PARTIAL → VIRTUAL: Funds transition from "locked" to "free"
-     *   Action: ADD to chainFree (funds become available again)
-     *   Why: Cancelled orders release their capital back to available pool
-     *
-     * ACTIVE/PARTIAL → ACTIVE/PARTIAL (RESIZE): Size changes within active state
-     *   Action: DEDUCT if growing, ADD if shrinking
-     *   Why: Consolidations and rotations may resize orders, affecting committed capital
-     *
-     * SIZE CONSISTENCY CHECK:
-     * After any state transition, the formula below should hold:
-     *   chainTotal = chainFree + chainCommitted
-     * Where chainCommitted = sum of all (ACTIVE or PARTIAL orders with orderId)
-     * If this breaks, we have a fund leak somewhere.
-     *
-     * BTS FEE HANDLING:
-     * When an order is placed on a BTS-containing pair, we deduct the transaction fee
-     * from chainFree immediately. This prevents over-committing capital for fees.
-     *
-     * CONTEXT PARAMETER:
-     * Always log the context (e.g., 'rotation', 'consolidation', 'fill') to aid debugging
-     * fund discrepancies. The full context trail makes it easier to trace which operation
-     * caused a fund leak if one occurs.
-     */
-    updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
-        const mgr = this.manager;
-        if (!oldOrder || !newOrder) return;
+      * Update optimistic free balance during order state transitions.
+      * This is CRITICAL for preventing "fund leaks" where locked capital is never released.
+      *
+      * STATE TRANSITION RULES (chainFree impact):
+      * =========================================================================
+      * VIRTUAL → ACTIVE/PARTIAL: Funds transition from "free" to "locked"
+      *   Action: DEDUCT from chainFree (funds become committed/on-chain)
+      *   Why: New on-chain orders lock available capital
+      *
+      * ACTIVE/PARTIAL → VIRTUAL: Funds transition from "locked" to "free"
+      *   Action: ADD to chainFree (funds become available again)
+      *   Why: Cancelled orders release their capital back to available pool
+      *
+      * ACTIVE/PARTIAL → ACTIVE/PARTIAL (RESIZE): Size changes within active state
+      *   Action: DEDUCT if growing, ADD if shrinking
+      *   Why: Consolidations and rotations may resize orders, affecting committed capital
+      *
+      * CRITICAL FIX FOR PARTIAL→ACTIVE TRANSITIONS:
+      * =========================================================================
+      * PROBLEM: When PARTIAL→ACTIVE with a size change, we must track whether the
+      * PARTIAL order was on-chain (had orderId) or just in the grid (no orderId).
+      *
+      * If PARTIAL had NO orderId (grid-only):
+      *   - Old committed to chain: 0 (not on-chain)
+      *   - New committed to chain: newSize (now on-chain with new orderId)
+      *   - Deduction needed: newSize (full amount, not just delta!)
+      *
+      * If PARTIAL had orderId (on-chain):
+      *   - Old committed to chain: oldSize (already on-chain)
+      *   - New committed to chain: newSize (same or different orderId)
+      *   - Deduction needed: (newSize - oldSize) (only the delta)
+      *
+      * This prevents double-counting where a growing PARTIAL→ACTIVE order would
+      * only deduct the delta when it should account for on-chain commitment status.
+      *
+      * SIZE CONSISTENCY CHECK:
+      * After any state transition, the formula below should hold:
+      *   chainTotal = chainFree + chainCommitted
+      * Where chainCommitted = sum of all (ACTIVE or PARTIAL orders with orderId)
+      * If this breaks, we have a fund leak somewhere.
+      *
+      * BTS FEE HANDLING:
+      * When an order is placed on a BTS-containing pair, we deduct the transaction fee
+      * from chainFree immediately. This prevents over-committing capital for fees.
+      *
+      * CONTEXT PARAMETER:
+      * Always log the context (e.g., 'rotation', 'consolidation', 'fill') to aid debugging
+      * fund discrepancies. The full context trail makes it easier to trace which operation
+      * caused a fund leak if one occurs.
+      */
+     updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
+         const mgr = this.manager;
+         if (!oldOrder || !newOrder) return;
 
-        const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
-        const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
-        const oldSize = Number(oldOrder.size) || 0;
-        const newSize = Number(newOrder.size) || 0;
+         const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
+         const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
+         const oldSize = Number(oldOrder.size) || 0;
+         const newSize = Number(newOrder.size) || 0;
+         
+         // CRITICAL: Track whether orders are actually on-chain (have orderId)
+         // This determines if capital is committed to blockchain or just in grid
+         const oldOnChain = oldIsActive && !!oldOrder.orderId;
+         const newOnChain = newIsActive && !!newOrder.orderId;
+         
+         // Amount committed to blockchain before transition
+         const oldChainCommitted = oldOnChain ? oldSize : 0;
+         // Amount committed to blockchain after transition
+         const newChainCommitted = newOnChain ? newSize : 0;
+         // Net change in blockchain commitment
+         const chainCommitmentDelta = newChainCommitted - oldChainCommitted;
 
-        const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' :
-            (mgr.config?.assetB === 'BTS') ? 'buy' : null;
+         const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' :
+             (mgr.config?.assetB === 'BTS') ? 'buy' : null;
 
-        if (!oldIsActive && newIsActive) {
-            if (newSize > 0) {
-                this.tryDeductFromChainFree(newOrder.type, newSize, `${context} (${oldOrder.state}->${newOrder.state})`);
-            }
-            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
-            }
-        }
-         else if (oldIsActive && !newIsActive) {
-             if (oldSize > 0) {
-                 const released = this.addToChainFree(oldOrder.type, oldSize, `${context} (${oldOrder.state}->${newOrder.state})`);
-                 if (!released) {
-                     mgr.logger?.log?.(`WARNING: Failed to release ${oldSize} ${oldOrder.type} funds during state transition`, 'warn');
-                 }
-             }
-         }
-         else if (oldIsActive && newIsActive) {
-             const sizeDelta = newSize - oldSize;
-             if (sizeDelta > 0) {
-                 this.tryDeductFromChainFree(newOrder.type, sizeDelta, `${context} (resize-up)`);
-             } else if (sizeDelta < 0) {
-                 const released = this.addToChainFree(newOrder.type, Math.abs(sizeDelta), `${context} (resize-down)`);
-                 if (!released) {
-                     mgr.logger?.log?.(`WARNING: Failed to release ${Math.abs(sizeDelta)} ${newOrder.type} funds during resize-down`, 'warn');
-                 }
+         if (!oldIsActive && newIsActive) {
+             // VIRTUAL → ACTIVE/PARTIAL: Entire size becomes committed to chain
+             if (newSize > 0) {
+                 this.tryDeductFromChainFree(newOrder.type, newSize, `${context} (${oldOrder.state}->${newOrder.state})`);
              }
              if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
                  this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
              }
          }
-    }
+          else if (oldIsActive && !newIsActive) {
+              // ACTIVE/PARTIAL → VIRTUAL: Release all chain-committed capital
+              if (oldSize > 0) {
+                  const released = this.addToChainFree(oldOrder.type, oldSize, `${context} (${oldOrder.state}->${newOrder.state})`);
+                  if (!released) {
+                      mgr.logger?.log?.(`WARNING: Failed to release ${oldSize} ${oldOrder.type} funds during state transition`, 'warn');
+                  }
+              }
+          }
+          else if (oldIsActive && newIsActive) {
+              // ACTIVE/PARTIAL → ACTIVE/PARTIAL: Handle based on on-chain commitment change
+              // This fixes the PARTIAL→ACTIVE double-counting bug by tracking actual
+              // blockchain commitment, not just state grouping.
+              
+              if (chainCommitmentDelta > 0) {
+                  // More funds committed to chain (either size grew or moved from grid-only to on-chain)
+                  this.tryDeductFromChainFree(newOrder.type, chainCommitmentDelta, `${context} (chain-commit-increase)`);
+              } else if (chainCommitmentDelta < 0) {
+                  // Less funds committed to chain (size shrank or moved from on-chain to grid-only)
+                  const released = this.addToChainFree(newOrder.type, Math.abs(chainCommitmentDelta), `${context} (chain-commit-decrease)`);
+                  if (!released) {
+                      mgr.logger?.log?.(`WARNING: Failed to release ${Math.abs(chainCommitmentDelta)} ${newOrder.type} funds during chain commitment decrease`, 'warn');
+                  }
+              }
+              
+              if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
+                  this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
+              }
+          }
+     }
 
     /**
      * Deduct pending BTS blockchain fees from chainFree and cacheFunds.

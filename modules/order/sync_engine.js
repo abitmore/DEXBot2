@@ -418,128 +418,131 @@ class SyncEngine {
          const isMaker = fillOp.is_maker === true;  // Preserve maker/taker flag for fee calculation
          const orderId = fillOp.order_id;
 
-         // Lock the order to prevent concurrent modifications from createOrder/cancelOrder/sync
-         // This is critical to prevent TOCTOU races where fill processing updates a stale order
-         const orderIdsToLock = new Set([orderId]);
-         mgr.lockOrders([...orderIdsToLock]);
+          // Lock the order to prevent concurrent modifications from createOrder/cancelOrder/sync
+          // This is critical to prevent TOCTOU races where fill processing updates a stale order
+          const orderIdsToLock = new Set([orderId]);
+          mgr.lockOrders([...orderIdsToLock]);
 
-         mgr.pauseFundRecalc();
-         try {
-            const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
-            const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
+          try {
+              mgr.pauseFundRecalc();
+              try {
+                 const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
+                 const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
 
-            const assetAPrecision = mgr.assets?.assetA?.precision;
-            const assetBPrecision = mgr.assets?.assetB?.precision;
+                 const assetAPrecision = mgr.assets?.assetA?.precision;
+                 const assetBPrecision = mgr.assets?.assetB?.precision;
 
-            if (assetAPrecision === undefined || assetBPrecision === undefined) {
-                mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistory', 'error');
-                return { filledOrders: [], updatedOrders: [], partialFill: false };
-            }
+                 if (assetAPrecision === undefined || assetBPrecision === undefined) {
+                     mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistory', 'error');
+                     return { filledOrders: [], updatedOrders: [], partialFill: false };
+                 }
 
-            let matchedGridOrder = null;
-            for (const gridOrder of mgr.orders.values()) {
-                if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
-                    matchedGridOrder = gridOrder;
-                    break;
-                }
-            }
-
-            if (!matchedGridOrder) return { filledOrders: [], updatedOrders: [], partialFill: false };
-
-             const orderType = matchedGridOrder.type;
-             const currentSize = Number(matchedGridOrder.size || 0);
-             let filledAmount = 0;
-             if (orderType === ORDER_TYPES.SELL) {
-                 if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, assetAPrecision, true); // tag=true
-             } else {
-                 if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, assetBPrecision, true); // tag=true
-             }
-
-             const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-             const currentSizeInt = floatToBlockchainInt(currentSize, precision);
-             const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
-             const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
-             const newSize = blockchainToFloat(newSizeInt, precision, true); // tag=true for type safety
-
-            const filledOrders = [];
-            const updatedOrders = [];
-            if (newSizeInt <= 0) {
-                // Capture snapshot before converting filled order to SPREAD
-                try {
-                    mgr.logger?.captureSnapshot(mgr, 'order_filled_history', orderId, {
-                        gridId: matchedGridOrder.id,
-                        type: orderType,
-                        filledAmount: filledAmount,
-                        filledAt: 'syncFromFillHistory',
-                        blockNum: blockNum,
-                        historyId: historyId
-                    });
-                } catch (err) { /* ignore */ }
-
-                const filledOrder = {
-                    ...matchedGridOrder,
-                    blockNum: blockNum,
-                    historyId: historyId,
-                    isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
-                };
-                const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
-                mgr._updateOrder(spreadOrder);
-                filledOrders.push(filledOrder);
-                return { filledOrders, updatedOrders, partialFill: false };
-            } else {
-                const filledPortion = {
-                    ...matchedGridOrder,
-                    size: filledAmount,
-                    isPartial: true,
-                    blockNum: blockNum,
-                    historyId: historyId,
-                    isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
-                };
-                const updatedOrder = { ...matchedGridOrder };
-                updatedOrder.state = ORDER_STATES.PARTIAL;
-                applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
-
-                 if (updatedOrder.isDoubleOrder && updatedOrder.mergedDustSize) {
-                     const mergedDustSize = Number(updatedOrder.mergedDustSize);
-                     const priorFilledSinceRefill = Number(updatedOrder.filledSinceRefill) || 0;
-                     const newFilledSinceRefill = priorFilledSinceRefill + filledAmount;
-                     
-                     // CRITICAL: Cap filledSinceRefill to prevent unbounded accumulation
-                     // Cannot exceed mergedDustSize, so we clamp to that maximum
-                     updatedOrder.filledSinceRefill = Math.min(newFilledSinceRefill, mergedDustSize);
-
-                     // Double order stays ACTIVE while size >= original core size (before dust merged)
-                     // Once it drops below original core size, it becomes PARTIAL
-                     const originalCoreSize = (Number(matchedGridOrder.size) || 0) - mergedDustSize;
-                     const currentSize = Number(updatedOrder.size) || 0;
-
-                     if (currentSize < originalCoreSize) {
-                         // Order has filled below the original core size - become PARTIAL
-                         updatedOrder.state = ORDER_STATES.PARTIAL;
-                     } else {
-                         // Still at or above original core size - stay ACTIVE
-                         updatedOrder.state = ORDER_STATES.ACTIVE;
-                     }
-
-                     // When accumulated fills reach mergedDustSize, trigger delayed rotation
-                     // Note: With the cap above, filledSinceRefill will never exceed mergedDustSize
-                     // so this comparison is safe from overflow
-                     if (updatedOrder.filledSinceRefill >= mergedDustSize) {
-                         filledPortion.isDelayedRotationTrigger = true;
-                         updatedOrder.isDoubleOrder = false;
-                         updatedOrder.pendingRotation = false;
-                         updatedOrder.filledSinceRefill = 0;
+                 let matchedGridOrder = null;
+                 for (const gridOrder of mgr.orders.values()) {
+                     if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
+                         matchedGridOrder = gridOrder;
+                         break;
                      }
                  }
-                mgr._updateOrder(updatedOrder);
-                updatedOrders.push(updatedOrder);
-                filledOrders.push(filledPortion);
-                return { filledOrders, updatedOrders, partialFill: true };
-             }
-         } finally {
-             mgr.resumeFundRecalc();
-             mgr.unlockOrders([...orderIdsToLock]);
-         }
+
+                  if (!matchedGridOrder) return { filledOrders: [], updatedOrders: [], partialFill: false };
+
+                  const orderType = matchedGridOrder.type;
+                  const currentSize = Number(matchedGridOrder.size || 0);
+                  let filledAmount = 0;
+                  if (orderType === ORDER_TYPES.SELL) {
+                      if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, assetAPrecision, true); // tag=true
+                  } else {
+                      if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, assetBPrecision, true); // tag=true
+                  }
+
+                  const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                  const currentSizeInt = floatToBlockchainInt(currentSize, precision);
+                  const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
+                  const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
+                  const newSize = blockchainToFloat(newSizeInt, precision, true); // tag=true for type safety
+
+                  const filledOrders = [];
+                  const updatedOrders = [];
+                  if (newSizeInt <= 0) {
+                      // Capture snapshot before converting filled order to SPREAD
+                      try {
+                          mgr.logger?.captureSnapshot(mgr, 'order_filled_history', orderId, {
+                              gridId: matchedGridOrder.id,
+                              type: orderType,
+                              filledAmount: filledAmount,
+                              filledAt: 'syncFromFillHistory',
+                              blockNum: blockNum,
+                              historyId: historyId
+                          });
+                      } catch (err) { /* ignore */ }
+
+                      const filledOrder = {
+                          ...matchedGridOrder,
+                          blockNum: blockNum,
+                          historyId: historyId,
+                          isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
+                      };
+                      const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
+                      mgr._updateOrder(spreadOrder);
+                      filledOrders.push(filledOrder);
+                      return { filledOrders, updatedOrders, partialFill: false };
+                  } else {
+                      const filledPortion = {
+                          ...matchedGridOrder,
+                          size: filledAmount,
+                          isPartial: true,
+                          blockNum: blockNum,
+                          historyId: historyId,
+                          isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
+                      };
+                      const updatedOrder = { ...matchedGridOrder };
+                      updatedOrder.state = ORDER_STATES.PARTIAL;
+                      applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
+
+                      if (updatedOrder.isDoubleOrder && updatedOrder.mergedDustSize) {
+                          const mergedDustSize = Number(updatedOrder.mergedDustSize);
+                          const priorFilledSinceRefill = Number(updatedOrder.filledSinceRefill) || 0;
+                          const newFilledSinceRefill = priorFilledSinceRefill + filledAmount;
+                          
+                          // CRITICAL: Cap filledSinceRefill to prevent unbounded accumulation
+                          // Cannot exceed mergedDustSize, so we clamp to that maximum
+                          updatedOrder.filledSinceRefill = Math.min(newFilledSinceRefill, mergedDustSize);
+
+                          // Double order stays ACTIVE while size >= original core size (before dust merged)
+                          // Once it drops below original core size, it becomes PARTIAL
+                          const originalCoreSize = (Number(matchedGridOrder.size) || 0) - mergedDustSize;
+                          const currentSize = Number(updatedOrder.size) || 0;
+
+                          if (currentSize < originalCoreSize) {
+                              // Order has filled below the original core size - become PARTIAL
+                              updatedOrder.state = ORDER_STATES.PARTIAL;
+                          } else {
+                              // Still at or above original core size - stay ACTIVE
+                              updatedOrder.state = ORDER_STATES.ACTIVE;
+                          }
+
+                          // When accumulated fills reach mergedDustSize, trigger delayed rotation
+                          // Note: With the cap above, filledSinceRefill will never exceed mergedDustSize
+                          // so this comparison is safe from overflow
+                          if (updatedOrder.filledSinceRefill >= mergedDustSize) {
+                              filledPortion.isDelayedRotationTrigger = true;
+                              updatedOrder.isDoubleOrder = false;
+                              updatedOrder.pendingRotation = false;
+                              updatedOrder.filledSinceRefill = 0;
+                          }
+                      }
+                      mgr._updateOrder(updatedOrder);
+                      updatedOrders.push(updatedOrder);
+                      filledOrders.push(filledPortion);
+                      return { filledOrders, updatedOrders, partialFill: true };
+                  }
+              } finally {
+                  mgr.resumeFundRecalc();
+              }
+          } finally {
+              mgr.unlockOrders([...orderIdsToLock]);
+          }
      }
 
     /**

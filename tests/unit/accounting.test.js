@@ -434,30 +434,215 @@ describe('Accountant - Fund Tracking', () => {
         });
     });
 
-    describe('Edge cases', () => {
-        it('should handle null accountTotals gracefully', () => {
-            manager.accountTotals = null;
+     describe('PARTIAL→ACTIVE Transition Bug Fix', () => {
+         it('should correctly handle PARTIAL→ACTIVE when PARTIAL had no orderId', () => {
+             // CRITICAL TEST: Prevents double-counting bug where a PARTIAL order
+             // without an orderId transitions to ACTIVE with a new orderId.
+             // The full size should be deducted, not just the delta.
 
-            expect(() => {
-                manager.recalculateFunds();
-            }).not.toThrow();
+             manager.setAccountTotals({
+                 buy: 10000,
+                 sell: 100,
+                 buyFree: 10000,
+                 sellFree: 100
+             });
 
-            expect(manager.funds).toBeDefined();
-        });
+             const oldOrder = {
+                 id: 'partial-grid-only',
+                 state: ORDER_STATES.PARTIAL,
+                 type: ORDER_TYPES.BUY,
+                 size: 100,
+                 price: 100
+                 // NOTE: No orderId - this is grid-only, not on-chain yet
+             };
 
-        it('should handle large fund values without precision loss', () => {
-            const largeValue = 999999999.123456;
-            manager.setAccountTotals({
-                buy: largeValue,
-                sell: largeValue,
-                buyFree: largeValue,
-                sellFree: largeValue
-            });
+             const newOrder = {
+                 id: 'partial-grid-only',
+                 state: ORDER_STATES.ACTIVE,
+                 type: ORDER_TYPES.BUY,
+                 size: 100,
+                 price: 100,
+                 orderId: 'chain-new-001'  // Now on-chain!
+             };
 
-            manager.recalculateFunds();
+             const buyFreeBefore = manager.accountTotals.buyFree;
 
-            expect(manager.funds.total.chain.buy).toBeGreaterThan(0);
-            expect(manager.funds.total.chain.sell).toBeGreaterThan(0);
-        });
-    });
-});
+             // Call updateOptimisticFreeBalance as sync engine would
+             manager.accountant.updateOptimisticFreeBalance(oldOrder, newOrder, 'test-transition');
+
+             const buyFreeAfter = manager.accountTotals.buyFree;
+             const deducted = buyFreeBefore - buyFreeAfter;
+
+             // Should deduct the FULL 100 (not zero or partial delta)
+             expect(deducted).toBe(100);
+         });
+
+         it('should correctly handle PARTIAL→ACTIVE when PARTIAL already had orderId', () => {
+             // PARTIAL with orderId is already on-chain
+             // Transition to ACTIVE should only deduct the size increase
+
+             manager.setAccountTotals({
+                 buy: 10000,
+                 sell: 100,
+                 buyFree: 10000,
+                 sellFree: 100
+             });
+
+             const oldOrder = {
+                 id: 'partial-onchain',
+                 state: ORDER_STATES.PARTIAL,
+                 type: ORDER_TYPES.BUY,
+                 size: 100,
+                 price: 100,
+                 orderId: 'chain-001'  // Already on-chain
+             };
+
+             const newOrder = {
+                 id: 'partial-onchain',
+                 state: ORDER_STATES.ACTIVE,
+                 type: ORDER_TYPES.BUY,
+                 size: 150,  // Size increased
+                 price: 100,
+                 orderId: 'chain-001'  // Same orderId
+             };
+
+             const buyFreeBefore = manager.accountTotals.buyFree;
+
+             manager.accountant.updateOptimisticFreeBalance(oldOrder, newOrder, 'test-resize');
+
+             const buyFreeAfter = manager.accountTotals.buyFree;
+             const deducted = buyFreeBefore - buyFreeAfter;
+
+             // Should deduct only the DELTA (150 - 100 = 50)
+             expect(deducted).toBe(50);
+         });
+
+         it('should correctly handle PARTIAL→ACTIVE with size decrease', () => {
+             // PARTIAL with orderId, size decreasing (maybe a partial fill occurred)
+
+             manager.setAccountTotals({
+                 buy: 10000,
+                 sell: 100,
+                 buyFree: 5000,  // Some funds already committed
+                 sellFree: 100
+             });
+
+             const oldOrder = {
+                 id: 'partial-shrinking',
+                 state: ORDER_STATES.PARTIAL,
+                 type: ORDER_TYPES.BUY,
+                 size: 200,
+                 price: 100,
+                 orderId: 'chain-001'
+             };
+
+             const newOrder = {
+                 id: 'partial-shrinking',
+                 state: ORDER_STATES.ACTIVE,
+                 type: ORDER_TYPES.BUY,
+                 size: 150,  // Size decreased after partial fill
+                 price: 100,
+                 orderId: 'chain-001'
+             };
+
+             const buyFreeBefore = manager.accountTotals.buyFree;
+
+             manager.accountant.updateOptimisticFreeBalance(oldOrder, newOrder, 'test-shrink');
+
+             const buyFreeAfter = manager.accountTotals.buyFree;
+             const released = buyFreeAfter - buyFreeBefore;
+
+             // Should RELEASE the delta (200 - 150 = 50)
+             expect(released).toBe(50);
+         });
+
+         it('should maintain chainFree invariant after PARTIAL→ACTIVE transition', () => {
+             // After the fix, the invariant chainTotal = chainFree + chainCommitted
+             // should always hold
+
+             manager.setAccountTotals({
+                 buy: 10000,
+                 sell: 100,
+                 buyFree: 10000,
+                 sellFree: 100
+             });
+
+             manager.pauseFundRecalc();
+
+             const oldOrder = {
+                 id: 'test-invariant',
+                 state: ORDER_STATES.PARTIAL,
+                 type: ORDER_TYPES.BUY,
+                 size: 500
+                 // No orderId - grid-only
+             };
+
+             // Create the order first
+             manager._updateOrder({
+                 id: 'test-invariant',
+                 state: ORDER_STATES.PARTIAL,
+                 type: ORDER_TYPES.BUY,
+                 size: 500,
+                 price: 100
+             });
+
+             manager.resumeFundRecalc();
+
+             const virtualBefore = manager.funds.virtual.buy;
+
+             manager.pauseFundRecalc();
+
+             const newOrder = {
+                 id: 'test-invariant',
+                 state: ORDER_STATES.ACTIVE,
+                 type: ORDER_TYPES.BUY,
+                 size: 500,
+                 price: 100,
+                 orderId: 'chain-invariant'
+             };
+
+             manager.accountant.updateOptimisticFreeBalance(oldOrder, newOrder, 'test');
+             manager._updateOrder(newOrder);
+
+             manager.resumeFundRecalc();
+
+             // Check invariants
+             const chainFree = manager.accountTotals.buyFree;
+             const chainCommitted = manager.funds.committed.chain.buy;
+             const chainTotal = manager.funds.total.chain.buy;
+
+             // chainTotal should equal chainFree + chainCommitted
+             expect(Math.abs(chainTotal - (chainFree + chainCommitted))).toBeLessThan(1);
+
+             // Available should not exceed chainFree
+             expect(manager.funds.available.buy).toBeLessThanOrEqual(chainFree + 0.01);
+         });
+     });
+
+     describe('Edge cases', () => {
+         it('should handle null accountTotals gracefully', () => {
+             manager.accountTotals = null;
+
+             expect(() => {
+                 manager.recalculateFunds();
+             }).not.toThrow();
+
+             expect(manager.funds).toBeDefined();
+         });
+
+         it('should handle large fund values without precision loss', () => {
+             const largeValue = 999999999.123456;
+             manager.setAccountTotals({
+                 buy: largeValue,
+                 sell: largeValue,
+                 buyFree: largeValue,
+                 sellFree: largeValue
+             });
+
+             manager.recalculateFunds();
+
+             expect(manager.funds.total.chain.buy).toBeGreaterThan(0);
+             expect(manager.funds.total.chain.sell).toBeGreaterThan(0);
+         });
+     });
+ });
