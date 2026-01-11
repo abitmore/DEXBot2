@@ -50,7 +50,10 @@ function readInput(prompt, options = {}) {
                     const trimmedInput = input.trim().toLowerCase();
                     // If validation function exists, check if input is valid
                     if (validate && !validate(trimmedInput)) {
-                        // Invalid input - clear and restart without newline
+                        // Invalid input - clear line and restart
+                        for (let j = 0; j < input.length; j++) {
+                            stdout.write('\b \b');
+                        }
                         input = '';
                         return;
                     }
@@ -660,17 +663,19 @@ async function promptGeneralSettings() {
     const settings = loadGeneralSettings();
     let finished = false;
 
-    while (!finished) {
-         console.log('\n\x1b[1m--- General Settings (Global) ---\x1b[0m');
-         console.log(`\x1b[1;33m1) Grid:\x1b[0m          \x1b[1;31mCache:\x1b[0m ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, \x1b[1;31mRMS:\x1b[0m ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, \x1b[1;31mDust:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
-         console.log(`\x1b[1;33m2) Timing (Core):\x1b[0m  \x1b[1;31mFetchInterval:\x1b[0m ${settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN}min, \x1b[1;31mSyncDelay:\x1b[0m ${settings.TIMING.SYNC_DELAY_MS}ms, \x1b[1;31mLockTimeout:\x1b[0m ${settings.TIMING.LOCK_TIMEOUT_MS}ms`);
-         console.log(`\x1b[1;33m3) Timing (Fill):\x1b[0m  \x1b[1;31mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS}ms, \x1b[1;31mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS}ms, \x1b[1;31mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS}ms`);
-         console.log(`\x1b[1;33m4) Log lvl:\x1b[0m       \x1b[1;31m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
-         console.log('--------------------------------------------------');
-         console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
-         console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
+     while (!finished) {
+          console.log('\n\x1b[1m--- General Settings (Global) ---\x1b[0m');
+          console.log(`\x1b[1;33m1) Grid:\x1b[0m          \x1b[38;5;208mCache:\x1b[0m ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, \x1b[38;5;208mRMS:\x1b[0m ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, \x1b[38;5;208mDust:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
+          console.log(`\x1b[1;33m2) Timing (Core):\x1b[0m  \x1b[38;5;208mFetchInterval:\x1b[0m ${settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN}min, \x1b[38;5;208mSyncDelay:\x1b[0m ${settings.TIMING.SYNC_DELAY_MS}ms, \x1b[38;5;208mLockTimeout:\x1b[0m ${settings.TIMING.LOCK_TIMEOUT_MS}ms`);
+          console.log(`\x1b[1;33m3) Timing (Fill):\x1b[0m  \x1b[38;5;208mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS}ms, \x1b[38;5;208mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS}ms, \x1b[38;5;208mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS}ms`);
+          console.log(`\x1b[1;33m4) Log lvl:\x1b[0m       \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
+          console.log('--------------------------------------------------');
+          console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
+          console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
 
-        const choice = (await readInput('\nSelect section to edit or action: ')).trim().toLowerCase();
+         const choice = (await readInput('Select section to edit or action: ', {
+             validate: (input) => ['1', '2', '3', '4', 's', 'c'].includes(input)
+         })).trim().toLowerCase();
 
         if (choice === '\x1b') {
             finished = true;
