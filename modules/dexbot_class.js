@@ -1157,6 +1157,12 @@ class DEXBot {
             this.manager.funds.btsFeesOwed = 0;
         }
 
+        // CRITICAL: Activate fill listener BEFORE any grid operations or order placement
+        // This ensures we capture fills that occur during startup (initial placement, syncing, corrections)
+        // The divergence lock at startup grid checks prevents races with concurrent fill processing
+        await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+        this._log('Fill listener activated (ready to process fills during startup)');
+
         if (shouldRegenerate) {
             await this.manager._initializeAssets();
 
@@ -1215,13 +1221,7 @@ class DEXBot {
             }
 
              await this.manager.persistGrid();
-         }
-
-         // CRITICAL: Activate fill listener NOW after all startup reconciliation completes
-         // This prevents fills from arriving during startup grid operations (grid syncing, order reconciliation)
-         // Safe timing: grid is stable, all initial orders are in place/synced, we're ready for live fill processing
-         await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-         this._log('Fill listener activated (startup complete, ready for live fill processing)');
+          }
 
          // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
          // Note: Grid checks only run if no fills are being processed
