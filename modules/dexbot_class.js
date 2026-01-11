@@ -63,11 +63,11 @@ class DEXBot {
         this.privateKey = null;
         this.manager = null;
         this.accountOrders = null;  // Will be initialized in start()
-         this.triggerFile = path.join(PROFILES_DIR, `recalculate.${config.botKey}.trigger`);
-         this._recentlyProcessedFills = new Map();
-         this._fillCleanupCounter = 0;  // Deterministic cleanup tracking
+        this.triggerFile = path.join(PROFILES_DIR, `recalculate.${config.botKey}.trigger`);
+        this._recentlyProcessedFills = new Map();
+        this._fillCleanupCounter = 0;  // Deterministic cleanup tracking
 
-         // Time-based configuration for fill processing (from constants.TIMING)
+        // Time-based configuration for fill processing (from constants.TIMING)
         this._fillDedupeWindowMs = TIMING.FILL_DEDUPE_WINDOW_MS;      // Window for deduplicating same fill events
         this._fillCleanupIntervalMs = TIMING.FILL_CLEANUP_INTERVAL_MS;  // Clean old fill records periodically
 
@@ -152,9 +152,10 @@ class DEXBot {
          }
 
          try {
-             // Non-blocking attempt: if lock is held or has waiters, skip this call
-             // New fills will trigger another _consumeFillQueue call automatically
-             if (this.manager._fillProcessingLock.isLocked() || this.manager._fillProcessingLock.getQueueLength() > 0) {
+             // Non-blocking check: if lock already has waiters, don't add more
+             // This prevents unbounded queue growth while still ensuring processing
+             // Note: We DO proceed if lock is held but has no waiters - we'll wait our turn
+             if (this.manager._fillProcessingLock.getQueueLength() > 0) {
                  this._metrics.lockContentionEvents++;
                  return;
              }
@@ -230,7 +231,7 @@ class DEXBot {
                         }
                     }
                     if (cleanedCount > 0) {
-                        this.manager?.logger?.log(`Cleaned ${cleanedCount} old fill records. Remaining: ${this._recentlyProcessedFills.size}`, 'debug');
+                        this.manager.logger.log(`Cleaned ${cleanedCount} old fill records. Remaining: ${this._recentlyProcessedFills.size}`, 'debug');
                     }
 
                     if (validFills.length === 0) continue; // Loop back for more
@@ -431,7 +432,10 @@ class DEXBot {
          if (this._incomingFillQueue.length > 0) {
              // Schedule consumer restart asynchronously (not in finally block)
              setImmediate(() => this._consumeFillQueue(chainOrders).catch(err => {
-                 this._warn(`Error in deferred consumer restart: ${err.message}`);
+                 this._log(`Error in deferred consumer restart: ${err.message}`);
+                 if (this.manager && this.manager.logger) {
+                     this.manager.logger.log(`Deferred consumer restart failed: ${err.message}`, 'error');
+                 }
              }));
          }
     }
@@ -784,15 +788,14 @@ class DEXBot {
                  return virtual;
              };
 
-             // Compute initial virtual state
-             let virtualOpenOrders = await computeVirtualOpenOrders();
+             // Compute virtual state snapshot for rotation ops
+             // This applies pending size updates to current open orders to prevent false "unmet" rotations
+             const virtualOpenOrders = await computeVirtualOpenOrders();
              if (virtualOpenOrders) {
                  this.manager.logger.log(`[ROTATION] Using virtual state with ${ordersToUpdate.length} pending size update(s)`, 'debug');
              }
 
              // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
-             // IMPORTANT: Recompute virtual state to prevent staleness (apply any pending updates that may have changed)
-             virtualOpenOrders = await computeVirtualOpenOrders();
              const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts, virtualOpenOrders);
 
             // Convert unmet rotations to placements so we still fill the grid gaps
@@ -1038,7 +1041,8 @@ class DEXBot {
         }
 
         if (updateOperationCount > 0 && (this.manager.config.assetA === 'BTS' || this.manager.config.assetB === 'BTS')) {
-             this.manager.funds.btsFeesOwed += btsFeeData.updateFee * updateOperationCount;
+            const feePerUpdate = Number(btsFeeData.updateFee) || 0;
+            this.manager.funds.btsFeesOwed += feePerUpdate * updateOperationCount;
         }
 
         return { executed: true, hadRotation };
@@ -1094,8 +1098,8 @@ class DEXBot {
              this._warn(`Fee cache initialization failed: ${err.message}`);
          }
 
-         // NOTE: Fill listener activation deferred to end of start() to prevent races during startup reconciliation
-         // See line ~1395 where it's activated after all startup grid operations complete
+         // NOTE: Fill listener activation deferred to after startup reconciliation completes
+         // This prevents fills from arriving during grid initialization/syncing
 
          const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
         const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
