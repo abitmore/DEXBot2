@@ -66,8 +66,11 @@ const { authenticateWithChainKeys, normalizeBotEntry } = require('./modules/dexb
 const PROFILES_BOTS_FILE = path.join(__dirname, 'profiles', 'bots.json');
 
 // Get bot name from args or environment
+// Support both direct names (node bot.js botname) and flag format (node bot.js --botname)
+// Flag format is used by PM2 for consistency with other CLI tools
 let botNameArg = process.argv[2];
 if (botNameArg && botNameArg.startsWith('--')) {
+    // Strip '--' prefix if present (e.g., --mybot becomes mybot)
     botNameArg = botNameArg.substring(2);
 }
 const botNameEnv = process.env.BOT_NAME || process.env.PREFERRED_ACCOUNT;
@@ -116,11 +119,11 @@ async function authenticateMasterPassword() {
     }
 
     // Try interactive prompt with log suppression
+    const originalLog = console.log;
     try {
         console.log('[bot.js] Prompting for master password...');
 
         // Suppress BitShares client logs during password prompt
-        const originalLog = console.log;
         console.log = (...args) => {
             const msg = args.join(' ');
             if (!msg.includes('bitshares_client') && !msg.includes('modules/')) {
@@ -135,6 +138,8 @@ async function authenticateMasterPassword() {
         console.log('[bot.js] Master password authenticated successfully');
         return masterPassword;
     } catch (err) {
+        // Ensure console is restored even if authentication fails
+        console.log = originalLog;
         if (err && err.message && err.message.includes('No master password set')) {
             console.error('[bot.js] No master password set. Run: node dexbot.js keys');
             process.exit(1);
@@ -151,30 +156,45 @@ async function authenticateMasterPassword() {
         console.log(`[bot.js] Loaded configuration for bot: ${botName}`);
         console.log(`[bot.js] Market: ${botConfig.assetA}-${botConfig.assetB}, Account: ${botConfig.preferredAccount}`);
 
-        // Load all bots from configuration to prevent pruning other active bots
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
-        const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
+         // Load all bots from configuration to prevent pruning other active bots
+         const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+         
+         // Normalize all active bots with their correct indices in the unfiltered array
+         // CRITICAL: Index must be based on position in allBotsConfig, not in filtered array.
+         // The index is embedded in botKey (e.g., "bot-0", "bot-1"), determining file names.
+         // If index changes, the bot loses access to persisted state files.
+         const allActiveBots = allBotsConfig
+             .map((b, idx) => b.active !== false ? normalizeBotEntry(b, idx) : null)
+             .filter(b => b !== null);
 
-        // Find the correct index for the current bot in the bots.json list
-        const botIndex = allBotsConfig.findIndex(b => b.name === botName);
-        if (botIndex === -1) {
-            throw new Error(`Bot "${botName}" not found in ${PROFILES_BOTS_FILE}`);
-        }
+         // Find the current bot's index in the unfiltered bots.json array
+         const botIndex = allBotsConfig.findIndex(b => b.name === botName);
+         if (botIndex === -1) {
+             throw new Error(`Bot "${botName}" not found in ${PROFILES_BOTS_FILE}`);
+         }
 
-        // Normalize config for current bot with correct index
-        const normalizedConfig = normalizeBotEntry(botConfig, botIndex);
+         // Normalize config for current bot with correct index from unfiltered array
+         const normalizedConfig = normalizeBotEntry(botConfig, botIndex);
 
         // Authenticate master password
         const masterPassword = await authenticateMasterPassword();
 
-        // Create and start bot with log prefix for [bot.js] context
-        const bot = new DEXBot(normalizedConfig, { logPrefix: '[bot.js]' });
-        await bot.start(masterPassword);
+         // Create and start bot with log prefix for [bot.js] context
+         const bot = new DEXBot(normalizedConfig, { logPrefix: '[bot.js]' });
+         try {
+             await bot.start(masterPassword);
+         } catch (err) {
+             // Attempt graceful cleanup before exiting
+             try {
+                 await bot.shutdown();
+             } catch (shutdownErr) {
+                 console.error('[bot.js] Error during cleanup:', shutdownErr.message);
+             }
+             throw err;
+         }
 
-    } catch (err) {
-        console.error('[bot.js] Failed to start bot:', err.message);
-        process.exit(1);
-    }
+     } catch (err) {
+         console.error('[bot.js] Failed to start bot:', err.message);
+         process.exit(1);
+     }
 })();
