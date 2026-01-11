@@ -782,6 +782,9 @@ class Grid {
         let correction = null;
         let shouldApplyCorrection = false;
         
+        // Use chain snapshot to get consistent total capital context
+        const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
+        
         // FIX: Derive market price OUTSIDE the lock to reduce lock contention
         // derivePrice queries the blockchain and can be slow
         let marketPrice = manager.config.startPrice;
@@ -813,7 +816,8 @@ class Grid {
             const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
             if (!decision.side) return false;
 
-            correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side);
+            // Pass the chain snapshot for consistent sizing context
+            correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side, snap);
             return correction && correction.ordersToPlace.length > 0;
         };
 
@@ -903,14 +907,32 @@ class Grid {
     /**
      * Calculate simulated size for spread correction order.
      */
-    static calculateGeometricSizeForSpreadCorrection(manager, targetType) {
+    static calculateGeometricSizeForSpreadCorrection(manager, targetType, snap = null) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
-        // FIX: Safely access funds.virtual (may not be initialized)
-        const availableFunds = manager.funds?.available?.[side] || 0;
-        const virtualFunds = manager.funds?.virtual?.[side] || 0;
-        const total = availableFunds + virtualFunds;
-        if (total <= 0 || slotsCount <= 1) return null;
+        
+        // Use consistent total capital context from blockchain snapshot if provided
+        // total = chain.free + chain.committed (allocated to grid)
+        // This ensures spread correction sizing matches rotation sizing (Issue #15 consistency)
+        let total = 0;
+        if (snap) {
+            total = side === 'buy' ? (snap.chainTotalBuy || 0) : (snap.chainTotalSell || 0);
+        } else {
+            const availableFunds = manager.funds?.available?.[side] || 0;
+            const cacheFunds = manager.funds?.cacheFunds?.[side] || 0;
+            const committedFunds = manager.funds?.committed?.grid?.[side] || 0;
+            total = availableFunds + cacheFunds + committedFunds;
+        }
+
+        // Deduct BTS fees from total if current side is the BTS side to prevent over-allocation
+        if (total > 0 && ((side === 'buy' && manager.config.assetB === 'BTS') || (side === 'sell' && manager.config.assetA === 'BTS'))) {
+            const targetCount = Math.max(1, manager.config.activeOrders[side]);
+            const btsFees = calculateOrderCreationFees(manager.config.assetA, manager.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
+            total = Math.max(0, total - btsFees);
+        }
+
+        // ALLOW slotsCount === 1 to enable spread correction even if a side is completely missing
+        if (total <= 0 || slotsCount < 1) return null;
 
         const precision = getPrecisionForSide(manager.assets, side);
         // FIX: Create new object for each array element to prevent shared reference mutations
@@ -929,7 +951,7 @@ class Grid {
         }
     }
 
-    static prepareSpreadCorrectionOrders(manager, preferredSide) {
+    static prepareSpreadCorrectionOrders(manager, preferredSide, snap = null) {
         // FIX: Validate preferredSide parameter to prevent silent logic errors
         if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
             throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
@@ -947,7 +969,7 @@ class Grid {
         const candidate = candidateSlots[0];
 
         if (candidate) {
-            const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
+            const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType, snap);
             const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
             // Include cacheFunds in availability check
             // FIX: Use optional chaining for consistent null safety

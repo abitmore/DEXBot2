@@ -2042,8 +2042,11 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
   * @returns {boolean} True if spread is too wide and should be flagged
   */
 function shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount) {
-    const hasBothSides = buyCount > 0 && sellCount > 0;
-    return hasBothSides && currentSpread > targetSpread;
+    // If one side is completely missing, the grid is structurally incomplete and needs correction
+    if (buyCount === 0 || sellCount === 0) return true;
+    
+    // Otherwise, check if current spread exceeds target (which includes widening tolerance)
+    return currentSpread > targetSpread;
 }
 
 /**

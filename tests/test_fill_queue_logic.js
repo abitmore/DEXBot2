@@ -9,17 +9,18 @@ class MockAsyncLock {
         this.queueLen = 0;
     }
     async acquire(fn) {
-        if (this.locked) {
+        while (this.locked) {
             this.queueLen++;
-            // Simple mock: fail if locked to verify we don't double-acquire in loop
-            // In real AsyncLock, it queues. Here we just run immediately if not locked?
-            // For testing the queue loop, we want to simulate "lock acquired".
+            await new Promise(resolve => { this.waitingResolvers = (this.waitingResolvers || []); this.waitingResolvers.push(resolve); });
+            this.queueLen--;
         }
         this.locked = true;
         try {
             return await fn();
         } finally {
             this.locked = false;
+            const next = this.waitingResolvers ? this.waitingResolvers.shift() : null;
+            if (next) next();
         }
     }
     isLocked() { return this.locked; }
@@ -29,12 +30,20 @@ class MockAsyncLock {
 // Mock Dependencies
 const mockConfig = { botKey: 'test_bot', dryRun: false };
 const mockManager = {
-    logger: { log: (msg) => console.log('[MockLog]', msg) },
-    syncFromFillHistory: (op) => ({ filledOrders: [{ id: '1.7.123', ...op }] }),
-    syncFromOpenOrders: (op) => ({ filledOrders: [{ id: '1.7.123', ...op }] }),
+    logger: { 
+        log: (msg) => console.log('[MockLog]', msg),
+        logFundsStatus: () => {} 
+    },
+    syncFromFillHistory: (op) => ({ filledOrders: [{ id: '1.7.3', ...op }] }),
+    syncFromOpenOrders: (op) => ({ filledOrders: [{ id: '1.7.3', ...op }] }),
     processFilledOrders: async (orders) => ({ executed: true, hadRotation: true }),
     checkSpreadCondition: async () => ({ ordersPlaced: 0 }),
     recalculateFunds: () => { },
+    pauseFundRecalc: () => { },
+    resumeFundRecalc: () => { },
+    isPipelineEmpty: () => ({ isEmpty: true }),
+    _updateOrder: () => { },
+    accountant: { tryDeductFromChainFree: () => { } },
     assets: { assetA: { precision: 5 }, assetB: { precision: 5 } },
     orders: new Map(),
     _gridSidesUpdated: new Set(),
@@ -101,6 +110,9 @@ async function testFillQueue() {
     const fills2 = [{ op: [4, { order_id: '1.7.3', is_maker: true }], block_num: 101, id: '1.11.3' }];
     const fills3 = [{ op: [4, { order_id: '1.7.4', is_maker: true }], block_num: 101, id: '1.11.4' }];
 
+    // Add 1.7.3 to manager's orders so it's a "valid" fill and blocks on processFilledOrders
+    bot.manager.orders.set('1.7.3', { id: '1.7.3', type: 'buy', state: 'active', orderId: '1.7.3' });
+
     // Trigger first batch (will block)
     callback(fills2);
 
@@ -128,6 +140,7 @@ async function testFillQueue() {
     console.log('Passed: Interruption handled.');
 
     console.log('--- Test Complete ---');
+    process.exit(0);
 }
 
 testFillQueue().catch(err => {
