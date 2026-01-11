@@ -62,6 +62,11 @@ const { parseJsonWithComments } = accountBots;
 const { createBotKey } = require('./modules/account_orders');
 const DEXBot = require('./modules/dexbot_class');
 const { authenticateWithChainKeys, normalizeBotEntry } = require('./modules/dexbot_class');
+const { readBotsFileSync } = require('./modules/bots_file_lock');
+const { setupGracefulShutdown, registerCleanup } = require('./modules/graceful_shutdown');
+
+// Setup graceful shutdown handlers
+setupGracefulShutdown();
 
 const PROFILES_BOTS_FILE = path.join(__dirname, 'profiles', 'bots.json');
 
@@ -92,8 +97,7 @@ function loadBotConfig(name) {
     }
 
     try {
-        const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-        const config = parseJsonWithComments(content);
+        const { config } = readBotsFileSync(PROFILES_BOTS_FILE, parseJsonWithComments);
         const bots = config.bots || [];
         const botEntry = bots.find(b => b.name === name);
 
@@ -132,19 +136,16 @@ async function authenticateMasterPassword() {
         };
 
         const masterPassword = await authenticateWithChainKeys();
-
-        // Restore console output
-        console.log = originalLog;
-        console.log('[bot.js] Master password authenticated successfully');
         return masterPassword;
     } catch (err) {
-        // Ensure console is restored even if authentication fails
-        console.log = originalLog;
         if (err && err.message && err.message.includes('No master password set')) {
-            console.error('[bot.js] No master password set. Run: node dexbot.js keys');
-            process.exit(1);
+            throw err;
         }
         throw err;
+    } finally {
+        // Always restore console output, regardless of success or failure
+        console.log = originalLog;
+        console.log('[bot.js] Master password authentication attempt completed');
     }
 }
 
@@ -157,7 +158,7 @@ async function authenticateMasterPassword() {
         console.log(`[bot.js] Market: ${botConfig.assetA}-${botConfig.assetB}, Account: ${botConfig.preferredAccount}`);
 
          // Load all bots from configuration to prevent pruning other active bots
-         const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+          const allBotsConfig = readBotsFileSync(PROFILES_BOTS_FILE, parseJsonWithComments).config.bots || [];
          
          // Normalize all active bots with their correct indices in the unfiltered array
          // CRITICAL: Index must be based on position in allBotsConfig, not in filtered array.
@@ -180,18 +181,21 @@ async function authenticateMasterPassword() {
         const masterPassword = await authenticateMasterPassword();
 
          // Create and start bot with log prefix for [bot.js] context
-         const bot = new DEXBot(normalizedConfig, { logPrefix: '[bot.js]' });
-         try {
-             await bot.start(masterPassword);
-         } catch (err) {
-             // Attempt graceful cleanup before exiting
-             try {
-                 await bot.shutdown();
-             } catch (shutdownErr) {
-                 console.error('[bot.js] Error during cleanup:', shutdownErr.message);
-             }
-             throw err;
-         }
+          const bot = new DEXBot(normalizedConfig, { logPrefix: '[bot.js]' });
+          try {
+              // Register bot cleanup on shutdown
+              registerCleanup(`Bot: ${botName}`, () => bot.shutdown());
+              
+              await bot.start(masterPassword);
+          } catch (err) {
+              // Attempt graceful cleanup before exiting
+              try {
+                  await bot.shutdown();
+              } catch (shutdownErr) {
+                  console.error('[bot.js] Error during cleanup:', shutdownErr.message);
+              }
+              throw err;
+          }
 
      } catch (err) {
          console.error('[bot.js] Failed to start bot:', err.message);

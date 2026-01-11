@@ -25,6 +25,11 @@ const { parseJsonWithComments } = accountBots;
 const { createBotKey } = require('./modules/account_orders');
 const SharedDEXBot = require('./modules/dexbot_class');
 const { authenticateWithChainKeys } = require('./modules/dexbot_class');
+const { readBotsFileSync } = require('./modules/bots_file_lock');
+const { setupGracefulShutdown, registerCleanup } = require('./modules/graceful_shutdown');
+
+// Setup graceful shutdown handlers
+setupGracefulShutdown();
 
 // Note: accountOrders is now per-bot only. Each bot has its own AccountOrders instance
 // created in DEXBot.start() (line 663). This eliminates shared-file race conditions.
@@ -107,9 +112,8 @@ function loadSettingsFile({ silent = false } = {}) {
          return { config: {}, filePath: PROFILES_BOTS_FILE };
      }
      try {
-         const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-         if (!content || !content.trim()) return { config: {}, filePath: PROFILES_BOTS_FILE };
-         return { config: parseJsonWithComments(content), filePath: PROFILES_BOTS_FILE };
+         const { config } = readBotsFileSync(PROFILES_BOTS_FILE, parseJsonWithComments);
+         return { config, filePath: PROFILES_BOTS_FILE };
      } catch (err) {
          console.error('Failed to parse bot settings from', PROFILES_BOTS_FILE);
          console.error('Error:', err.message);
@@ -164,6 +168,15 @@ class DEXBot extends SharedDEXBot {
         super(config, { logPrefix: '' });
     }
 }
+
+// Register BitShares cleanup on shutdown
+registerCleanup('BitShares connection', () => {
+    try {
+        BitShares.disconnect();
+    } catch (err) {
+        // BitShares may already be disconnected
+    }
+});
 
 // Track attempts to prevent infinite loops while allowing retries after key setup
 let keySetupInProgress = false;
