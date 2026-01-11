@@ -338,15 +338,17 @@ class OrderManager {
 
      async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
           if (hasValidAccountTotals(this.accountTotals, false)) return;
-          // CRITICAL: Use lock to prevent race condition where concurrent calls create multiple promises
+          // CRITICAL: Await inside lock to prevent race where promise is created inside lock
+          // but awaited outside (allowing overwrites between check and wait)
           await this._accountTotalsLock.acquire(async () => {
               // Double-check after acquiring lock
               if (hasValidAccountTotals(this.accountTotals, false)) return;
               if (!this._accountTotalsPromise) {
                   this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
               }
+              // Await inside lock to ensure atomic creation and wait (prevents promise overwrite race)
+              await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
           });
-          await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
       }
 
     async fetchAccountTotals(accountId) {

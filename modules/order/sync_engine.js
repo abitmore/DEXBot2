@@ -293,7 +293,7 @@ class SyncEngine {
 
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         mgr._updateOrder(spreadOrder);
-                        filledOrders.push({ ...gridOrder });
+                        filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                         continue;
                     }
