@@ -220,61 +220,109 @@ async function installPM2() {
     });
 }
 
-// Execute PM2 command via shell
+// Execute PM2 command safely (no shell injection via proper argument passing)
 async function execPM2Command(action, target) {
-    const command = `pm2 ${action} ${target}`;
-    console.log(`Executing: ${command}`);
-
-    try {
-        const { stdout, stderr } = await execAsync(command);
-        if (stdout) console.log(stdout);
-        if (stderr) console.error(stderr);
-        return { success: true, stdout, stderr };
-    } catch (error) {
-        console.error(`PM2 command failed: ${error.message}`);
-        return { success: false, error };
+    // Validate action to prevent injection
+    const validActions = ['start', 'stop', 'delete', 'restart', 'reload'];
+    if (!validActions.includes(action)) {
+        throw new Error(`Invalid PM2 action: ${action}`);
     }
+
+    // Use spawn instead of shell to avoid injection vulnerabilities
+    // spawn passes arguments as array, preventing shell interpretation
+    return new Promise((resolve, reject) => {
+        const args = [action];
+        if (target) {
+            args.push(target);
+        }
+
+        const { spawn } = require('child_process');
+        const pm2 = spawn('pm2', args, { stdio: 'pipe' });
+        
+        let stdout = '';
+        let stderr = '';
+
+        pm2.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        pm2.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        pm2.on('close', (code) => {
+            if (code === 0) {
+                if (stdout) console.log(stdout);
+                resolve({ success: true, stdout, stderr });
+            } else {
+                if (stderr) console.error(stderr);
+                reject(new Error(`PM2 command failed with code ${code}: ${stderr || stdout}`));
+            }
+        });
+
+        pm2.on('error', reject);
+    });
 }
 
-// Stop PM2 processes (only dexbot ones)
+// Stop PM2 processes (only dexbot ones, requires proper setup)
 async function stopPM2Processes(target) {
+    // Ensure ecosystem config exists (validates bot configuration)
+    if (!fs.existsSync(BOTS_JSON)) {
+        throw new Error('profiles/bots.json not found. Run: npm run bootstrap:profiles');
+    }
+
     console.log(`Stopping PM2 processes: ${target}`);
 
     if (target === 'all') {
+        // Regenerate ecosystem config to ensure it's current
+        generateEcosystemConfig();
         // Stop all dexbot processes via ecosystem config
-        const result = await execPM2Command('stop', ECOSYSTEM_FILE);
-        if (result.success) {
-            console.log('All dexbot PM2 processes stopped.');
-        }
+        await execPM2Command('stop', ECOSYSTEM_FILE);
+        console.log('All dexbot PM2 processes stopped.');
     } else {
-        // Stop specific bot by name
-        const result = await execPM2Command('stop', target);
-        if (result.success) {
-            console.log(`PM2 process '${target}' stopped.`);
-        } else if (result.error && result.error.message && result.error.message.includes('not found')) {
-            console.log(`Bot '${target}' not found in PM2.`);
+        // Validate bot exists in configuration before stopping
+        const content = fs.readFileSync(BOTS_JSON, 'utf8');
+        const config = parseJsonWithComments(content);
+        const botExists = config.bots && config.bots.some(b => b.name === target && b.active !== false);
+        
+        if (!botExists) {
+            throw new Error(`Bot '${target}' not found or not active in profiles/bots.json`);
         }
+
+        // Stop specific bot by name
+        await execPM2Command('stop', target);
+        console.log(`PM2 process '${target}' stopped.`);
     }
 }
 
-// Delete PM2 processes (only dexbot ones)
+// Delete PM2 processes (only dexbot ones, requires proper setup)
 async function deletePM2Processes(target) {
+    // Ensure ecosystem config exists (validates bot configuration)
+    if (!fs.existsSync(BOTS_JSON)) {
+        throw new Error('profiles/bots.json not found. Run: npm run bootstrap:profiles');
+    }
+
     console.log(`Deleting PM2 processes: ${target}`);
 
     if (target === 'all') {
+        // Regenerate ecosystem config to ensure it's current
+        generateEcosystemConfig();
         // Delete all dexbot processes via ecosystem config
-        const result = await execPM2Command('delete', ECOSYSTEM_FILE);
-        if (result.success) {
-            console.log('All dexbot PM2 processes deleted.');
-        }
+        await execPM2Command('delete', ECOSYSTEM_FILE);
+        console.log('All dexbot PM2 processes deleted.');
     } else {
-        // Delete specific bot by name
-        const result = await execPM2Command('delete', target);
-        if (result.success) {
-            console.log(`PM2 process '${target}' deleted.`);
-        } else if (result.error && result.error.message && result.error.message.includes('not found')) {
-            console.log(`Bot '${target}' not found in PM2.`);
+        // Validate bot exists in configuration before deleting
+        const content = fs.readFileSync(BOTS_JSON, 'utf8');
+        const config = parseJsonWithComments(content);
+        const botExists = config.bots && config.bots.some(b => b.name === target && b.active !== false);
+        
+        if (!botExists) {
+            throw new Error(`Bot '${target}' not found or not active in profiles/bots.json`);
         }
+
+        // Delete specific bot by name
+        await execPM2Command('delete', target);
+        console.log(`PM2 process '${target}' deleted.`);
     }
 
     console.log('Bot configs remain in profiles/bots.json.');
@@ -312,26 +360,29 @@ async function main(botNameFilter = null) {
     console.log('='.repeat(50));
     console.log();
 
-    // Step 0: Wait for BitShares connection (suppress BitShares client logs)
-    const { waitForConnected } = require('./modules/bitshares_client');
-    console.log('Connecting to BitShares...');
+     // Step 0: Wait for BitShares connection (suppress BitShares client logs)
+     const { waitForConnected } = require('./modules/bitshares_client');
+     console.log('Connecting to BitShares...');
+ 
+     // Suppress BitShares console output during connection
+     const originalLog = console.log;
+     try {
+         console.log = (...args) => {
+             // Only suppress BitShares-specific messages
+             const msg = args.join(' ');
+             if (!msg.includes('bitshares_client') && !msg.includes('modules/')) {
+                 originalLog(...args);
+             }
+         };
 
-    // Suppress BitShares console output during connection
-    const originalLog = console.log;
-    console.log = (...args) => {
-        // Only suppress BitShares-specific messages
-        const msg = args.join(' ');
-        if (!msg.includes('bitshares_client') && !msg.includes('modules/')) {
-            originalLog(...args);
-        }
-    };
-
-    await waitForConnected(30000);
-
-    // Restore console output
-    console.log = originalLog;
-    console.log('Connected to BitShares');
-    console.log();
+         await waitForConnected(30000);
+     } finally {
+         // Always restore console output, even if waitForConnected throws
+         console.log = originalLog;
+     }
+     
+     console.log('Connected to BitShares');
+     console.log();
 
     // Step 1: Check PM2
     if (!checkPM2Installed()) {
@@ -383,16 +434,26 @@ if (require.main === module) {
                     showPM2Help();
                     process.exit(1);
                 }
-                await stopPM2Processes(target);
-                process.exit(0);
+                try {
+                    await stopPM2Processes(target);
+                    process.exit(0);
+                } catch (err) {
+                    console.error(`Failed to stop processes: ${err.message}`);
+                    process.exit(1);
+                }
             } else if (command === 'delete') {
                 if (!target) {
                     console.error('Error: Target required. Specify bot name or "all".');
                     showPM2Help();
                     process.exit(1);
                 }
-                await deletePM2Processes(target);
-                process.exit(0);
+                try {
+                    await deletePM2Processes(target);
+                    process.exit(0);
+                } catch (err) {
+                    console.error(`Failed to delete processes: ${err.message}`);
+                    process.exit(1);
+                }
             } else if (command === 'help') {
                 showPM2Help();
                 process.exit(0);
