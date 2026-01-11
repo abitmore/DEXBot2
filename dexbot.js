@@ -98,23 +98,25 @@ if (cliArgs.includes(CLI_EXAMPLES_FLAG)) {
 
 // `parseJsonWithComments` is provided by `modules/account_bots.js` (shared single-source)
 
-// Load the tracked bot settings file, handling missing files or parse failures gracefully.
+// Load the tracked bot settings file, handling missing files gracefully but throwing on parse errors.
 function loadSettingsFile({ silent = false } = {}) {
-    if (!fs.existsSync(PROFILES_BOTS_FILE)) {
-        if (!silent) {
-            console.error('profiles/bots.json not found. Run `npm run bootstrap:profiles` to create it from the tracked examples.');
-        }
-        return { config: {}, filePath: PROFILES_BOTS_FILE };
-    }
-    try {
-        const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-        if (!content || !content.trim()) return { config: {}, filePath: PROFILES_BOTS_FILE };
-        return { config: parseJsonWithComments(content), filePath: PROFILES_BOTS_FILE };
-    } catch (err) {
-        console.warn('Failed to load bot settings from', PROFILES_BOTS_FILE, '-', err.message);
-        return { config: {}, filePath: PROFILES_BOTS_FILE };
-    }
-}
+     if (!fs.existsSync(PROFILES_BOTS_FILE)) {
+         if (!silent) {
+             console.error('profiles/bots.json not found. Run `npm run bootstrap:profiles` to create it from the tracked examples.');
+         }
+         return { config: {}, filePath: PROFILES_BOTS_FILE };
+     }
+     try {
+         const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
+         if (!content || !content.trim()) return { config: {}, filePath: PROFILES_BOTS_FILE };
+         return { config: parseJsonWithComments(content), filePath: PROFILES_BOTS_FILE };
+     } catch (err) {
+         console.error('Failed to parse bot settings from', PROFILES_BOTS_FILE);
+         console.error('Error:', err.message);
+         console.error('Please check the JSON syntax in profiles/bots.json and try again.');
+         process.exit(1);
+     }
+ }
 
 // Persist the tracked bot settings to disk when users edit via CLI.
 function saveSettingsFile(config, filePath) {
@@ -163,57 +165,64 @@ class DEXBot extends SharedDEXBot {
     }
 }
 
-let accountKeysAutostarted = false;
+// Track attempts to prevent infinite loops while allowing retries after key setup
+let keySetupInProgress = false;
 
 // Launch the account key manager helper with optional BitShares handshake and cleanup.
 async function runAccountManager({ waitForConnection = false, exitAfter = false, disconnectAfter = false } = {}) {
-    if (waitForConnection) {
-        try {
-            await waitForConnected();
-        } catch (err) {
-            console.warn('Timed out waiting for BitShares connection before launching key manager.');
-        }
-    }
+     if (waitForConnection) {
+         try {
+             await waitForConnected();
+         } catch (err) {
+             console.warn('Timed out waiting for BitShares connection before launching key manager.');
+         }
+     }
 
-    let succeeded = false;
-    try {
-        await accountKeys.main();
-        succeeded = true;
-    } finally {
-        if (disconnectAfter) {
-            try {
-                BitShares.disconnect();
-            } catch (err) {
-                console.warn('Failed to disconnect BitShares connection after key manager exited:', err.message || err);
-            }
-        }
-    }
+     let succeeded = false;
+     try {
+         await accountKeys.main();
+         succeeded = true;
+     } finally {
+         if (disconnectAfter) {
+             try {
+                 BitShares.disconnect();
+             } catch (err) {
+                 console.warn('Failed to disconnect BitShares connection after key manager exited:', err.message || err);
+             }
+         }
+     }
 
-    if (exitAfter && succeeded) {
-        process.exit(0);
-    }
-}
+     if (exitAfter && succeeded) {
+         process.exit(0);
+     }
+ }
 
-/**
- * Handle master password authentication with auto-launch fallback.
- * If no master password is set, automatically launches the key manager
- * to guide the user through initial setup.
- * @returns {Promise<string>} The authenticated master password
- */
-async function authenticateMasterPassword() {
-    try {
-        return await authenticateWithChainKeys();
-    } catch (err) {
-        if (!accountKeysAutostarted && err && err.message && err.message.includes('No master password set')) {
-            accountKeysAutostarted = true;
-            console.log('no master password set');
-            console.log('autostart account keys');
-            await runAccountManager();
-            return await authenticateWithChainKeys();
-        }
-        throw err;
-    }
-}
+ /**
+  * Handle master password authentication with auto-launch fallback.
+  * If no master password is set, automatically launches the key manager
+  * to guide the user through initial setup.
+  * @returns {Promise<string>} The authenticated master password
+  */
+ async function authenticateMasterPassword() {
+     try {
+         return await authenticateWithChainKeys();
+     } catch (err) {
+         if (!keySetupInProgress && err && err.message && err.message.includes('No master password set')) {
+             keySetupInProgress = true;
+             try {
+                 console.log('no master password set');
+                 console.log('autostart account keys');
+                 await runAccountManager();
+                 keySetupInProgress = false;
+                 return await authenticateWithChainKeys();
+             } catch (setupErr) {
+                 keySetupInProgress = false;
+                 throw setupErr;
+             }
+         }
+         throw err;
+     }
+ }
 
 /**
  * Validate a bot configuration entry for required fields.
@@ -322,14 +331,16 @@ async function runBotInstances(botEntries, { forceDryRun = false, sourceName = '
         }
     }
 
-    // Fee cache is required for fill processing (getAssetFees), including offline fill reconciliation at startup.
-    // Initialize it once per process for the assets used by active bots.
-    try {
-        await waitForConnected();
-        await OrderUtils.initializeFeeCache(prepared.filter(b => b.active), BitShares);
-    } catch (err) {
-        console.warn(`Fee cache initialization failed: ${err.message}`);
-    }
+     // Fee cache is required for fill processing (getAssetFees), including offline fill reconciliation at startup.
+     // Initialize it once per process for the assets used by active bots.
+     try {
+         await waitForConnected();
+         await OrderUtils.initializeFeeCache(prepared.filter(b => b.active), BitShares);
+     } catch (err) {
+         console.error(`Fee cache initialization failed: ${err.message}`);
+         console.error('Cannot proceed without fee cache for fill processing. Aborting.');
+         process.exit(1);
+     }
 
     const instances = [];
     for (const entry of prepared) {
@@ -338,16 +349,17 @@ async function runBotInstances(botEntries, { forceDryRun = false, sourceName = '
             continue;
         }
 
-        try {
-            const bot = new DEXBot(entry);
-            await bot.start(masterPassword);
-            instances.push(bot);
-        } catch (err) {
-            console.error('Failed to start bot:', err.message);
-            if (err && err instanceof chainKeys.MasterPasswordError) {
-                console.error('Aborting because the master password failed 3 times.');
-                process.exit(1);
-            }
+         try {
+             const bot = new DEXBot(entry);
+             await bot.start(masterPassword);
+             instances.push(bot);
+         } catch (err) {
+             console.error('Failed to start bot:', err.message);
+             // Check for master password failure using code property (more reliable than instanceof)
+             if (err && (err instanceof chainKeys.MasterPasswordError || err?.code === 'MASTER_PASSWORD_FAILED')) {
+                 console.error('Aborting because the master password failed 3 times.');
+                 process.exit(1);
+             }
             if (err && err.message && String(err.message).toLowerCase().includes('marketprice')) {
                 console.info('Hint: startPrice could not be derived.');
                 console.info(' - If using profiles/bots.json with "pool" or "market" signals, ensure the chain contains a matching liquidity pool or orderbook for the configured pair.');
@@ -501,16 +513,19 @@ async function handleCLICommands() {
         case 'keys':
             await runAccountManager({ waitForConnection: true, exitAfter: true, disconnectAfter: true });
             return true;
-        case 'bots':
-            setSuppressConnectionLog(true);
-            await accountBots.main();
-            try {
-                BitShares.disconnect();
-            } catch (err) {
-                console.warn('Failed to disconnect BitShares after bot helper exit:', err && err.message ? err.message : err);
-            }
-            process.exit(0);
-            return true;
+         case 'bots':
+             setSuppressConnectionLog(true);
+             try {
+                 await accountBots.main();
+             } finally {
+                 try {
+                     BitShares.disconnect();
+                 } catch (err) {
+                     console.warn('Failed to disconnect BitShares after bot helper exit:', err && err.message ? err.message : err);
+                 }
+             }
+             process.exit(0);
+             return true;
         case 'pm2':
             try {
                 const pm2Launcher = require('./pm2.js');
