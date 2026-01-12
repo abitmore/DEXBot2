@@ -297,9 +297,10 @@ class AccountOrders {
    * @param {Array} orders - Array of order objects from OrderManager
   * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
   * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
-  * @param {number} boundaryIdx - Optional master boundary index for StrategyEngine
-  */
-  async storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null, boundaryIdx = null) {
+   * @param {number} boundaryIdx - Optional master boundary index for StrategyEngine
+   * @param {Object} assets - Optional asset metadata { assetA, assetB }
+   */
+  async storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null, boundaryIdx = null, assets = null) {
     if (!botKey) return;
 
     // Use AsyncLock to serialize read-modify-write operations (fixes Issue #1, #5)
@@ -319,6 +320,7 @@ class AccountOrders {
           cacheFunds: cacheFunds || { buy: 0, sell: 0 },
           btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
           boundaryIdx: Number.isFinite(boundaryIdx) ? boundaryIdx : null,
+          assets: assets || null,
           processedFills: {},
           createdAt: meta.createdAt,
           lastUpdated: meta.updatedAt
@@ -337,10 +339,15 @@ class AccountOrders {
           this.data.bots[botKey].boundaryIdx = boundaryIdx;
         }
 
+        if (assets) {
+          this.data.bots[botKey].assets = assets;
+        }
+
         // Initialize processedFills if missing (backward compat)
         if (!this.data.bots[botKey].processedFills) {
           this.data.bots[botKey].processedFills = {};
         }
+
         const timestamp = nowIso();
         this.data.bots[botKey].lastUpdated = timestamp;
         if (this.data.bots[botKey].meta) this.data.bots[botKey].meta.updatedAt = timestamp;
@@ -365,6 +372,23 @@ class AccountOrders {
     if (this.data && this.data.bots && this.data.bots[botKey]) {
       const botData = this.data.bots[botKey];
       return botData.grid || null;
+    }
+    return null;
+  }
+
+  /**
+   * Load persisted asset metadata for a bot.
+   * @param {string} botKey - Bot identifier key
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Object|null} Asset metadata { assetA, assetB } or null if not found
+   */
+  loadPersistedAssets(botKey, forceReload = false) {
+    if (forceReload) {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+    }
+
+    if (this.data && this.data.bots && this.data.bots[botKey]) {
+      return this.data.bots[botKey].assets || null;
     }
     return null;
   }

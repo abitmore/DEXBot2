@@ -772,12 +772,32 @@ class SyncEngine {
     async initializeAssets() {
         const mgr = this.manager;
         if (mgr.assets) return;
+
+        const { lookupAsset } = require('./utils');
+        const { BitShares } = require('../bitshares_client');
+
+        const fetchAssetWithFallback = async (symbol, side) => {
+            try {
+                return await lookupAsset(BitShares, symbol);
+            } catch (err) {
+                // If blockchain lookup fails, check for persisted fallback
+                if (mgr.accountOrders) {
+                    const persistedAssets = mgr.accountOrders.loadPersistedAssets(mgr.config.botKey);
+                    const assetData = (side === 'A') ? persistedAssets?.assetA : persistedAssets?.assetB;
+
+                    if (assetData && assetData.symbol === symbol && typeof assetData.precision === 'number') {
+                        mgr.logger.log(`Blockchain lookup failed for ${symbol}: ${err.message}. Using persisted fallback: id=${assetData.id}, precision=${assetData.precision}`, 'warn');
+                        return assetData;
+                    }
+                }
+                throw err;
+            }
+        };
+
         try {
-            const { lookupAsset } = require('./utils');
-            const { BitShares } = require('../bitshares_client');
             mgr.assets = {
-                assetA: await lookupAsset(BitShares, mgr.config.assetA),
-                assetB: await lookupAsset(BitShares, mgr.config.assetB)
+                assetA: await fetchAssetWithFallback(mgr.config.assetA, 'A'),
+                assetB: await fetchAssetWithFallback(mgr.config.assetB, 'B')
             };
         } catch (err) {
             mgr.logger.log(`Asset metadata lookup failed: ${err.message}`, 'error');

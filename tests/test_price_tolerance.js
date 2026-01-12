@@ -6,10 +6,13 @@ const { OrderManager, utils } = require('../modules/order/index.js');
 
 const calc = utils.calculatePriceTolerance;
 
-// 1) Fallback behaviour when assets missing
-const fallback = calc(1000, 10, 'buy', null);
-assert.strictEqual(typeof fallback === 'number', true, 'fallback should be numeric');
-assert.strictEqual(fallback, 1000 * 0.001, 'fallback should be gridPrice * 0.001 when assets missing');
+// 1) Handle assets missing - should throw error
+try {
+    calc(1000, 10, 'buy', null);
+    assert.fail('calculatePriceTolerance should throw when assets are missing');
+} catch (err) {
+    assert.strictEqual(err.message, 'CRITICAL: Assets object required for calculatePriceTolerance');
+}
 
 // 2) Example from inline comment in manager: BUY: gridPrice=1820, orderSize=73.88, precisionA=4, precisionB=5
 const assetsExample = { assetA: { precision: 4 }, assetB: { precision: 5 } };
