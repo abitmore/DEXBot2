@@ -693,8 +693,9 @@ class AccountOrders {
     const priceValue = Number(order.price !== undefined && order.price !== null ? order.price : 0);
     const sizeValue = Number(order.size !== undefined && order.size !== null ? order.size : 0);
     // Preserve orderId for both ACTIVE and PARTIAL orders
-    const shouldHaveId = order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL;
-    const orderId = shouldHaveId ? (order.orderId || order.id || '') : '';
+    // CRITICAL: NEVER use slot id as fallback for orderId. 
+    // This was causing grid corruption where virtual orders were treated as on-chain.
+    const orderId = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) ? (order.orderId || '') : '';
 
     const serialized = {
       id: order.id || null,
