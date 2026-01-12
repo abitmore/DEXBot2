@@ -20,16 +20,23 @@ const { FundSnapshot, FundSnapshotHistory } = require('./fund_snapshot');
 
 const SNAPSHOTS_DIR = path.join(__dirname, '..', '..', '.snapshots');
 
+/**
+ * FundSnapshotPersistence class - Handles saving, loading, and analyzing fund snapshots.
+ * @class
+ */
 class FundSnapshotPersistence {
     /**
-     * Get the snapshot file path for a specific bot
+     * Get the snapshot file path for a specific bot.
+     * @param {string} botKey - Bot identifier.
+     * @returns {string} The file path.
      */
     static getSnapshotPath(botKey) {
         return path.join(SNAPSHOTS_DIR, `${botKey}.snapshots.jsonl`);
     }
 
     /**
-     * Ensure snapshots directory exists
+     * Ensure snapshots directory exists.
+     * @returns {Promise<void>}
      */
     static async ensureDirectory() {
         try {
@@ -166,7 +173,9 @@ class FundSnapshotPersistence {
     }
 
     /**
-     * Analyze snapshots and generate report
+     * Analyze snapshots and generate report.
+     * @param {string} botKey - Bot identifier.
+     * @returns {Promise<Object>} The analysis report.
      */
     static async analyzeSnapshots(botKey) {
         try {
@@ -213,7 +222,10 @@ class FundSnapshotPersistence {
     }
 
     /**
-     * Calculate statistics from snapshot history
+     * Calculate statistics from snapshot history.
+     * @param {FundSnapshotHistory} history - Snapshot history.
+     * @returns {Object} The calculated statistics.
+     * @private
      */
     static _calculateStatistics(history) {
         const snapshots = history.snapshots;
@@ -241,7 +253,10 @@ class FundSnapshotPersistence {
     }
 
     /**
-     * Get distribution of event types
+     * Get distribution of event types.
+     * @param {FundSnapshotHistory} history - Snapshot history.
+     * @returns {Object} Mapping of event type to count.
+     * @private
      */
     static _getEventTypeDistribution(history) {
         const dist = {};
@@ -252,7 +267,10 @@ class FundSnapshotPersistence {
     }
 
     /**
-     * Calculate fund trend (increasing/decreasing/stable)
+     * Calculate fund trend (increasing/decreasing/stable).
+     * @param {FundSnapshotHistory} history - Snapshot history.
+     * @returns {Object} Trend information for buy and sell sides.
+     * @private
      */
     static _calculateFundTrend(history) {
         if (history.snapshots.length < 2) return { trend: 'unknown', reason: 'insufficient_data' };
@@ -278,7 +296,10 @@ class FundSnapshotPersistence {
     }
 
     /**
-     * Compare two bot's snapshots to find divergence
+     * Compare two bot's snapshots to find divergence.
+     * @param {string} botKey1 - First bot identifier.
+     * @param {string} botKey2 - Second bot identifier.
+     * @returns {Promise<Object>} Comparison result.
      */
     static async compareBots(botKey1, botKey2) {
         try {
@@ -326,7 +347,10 @@ class FundSnapshotPersistence {
     }
 
     /**
-     * Export snapshots to CSV for external analysis
+     * Export snapshots to CSV for external analysis.
+     * @param {string} botKey - Bot identifier.
+     * @param {string|null} [outputPath=null] - Custom output path.
+     * @returns {Promise<Object>} Status and path.
      */
     static async exportToCSV(botKey, outputPath = null) {
         try {

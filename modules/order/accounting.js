@@ -330,6 +330,10 @@ class Accountant {
 
     /**
      * Add an amount back to the optimistic chainFree balance.
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL.
+     * @param {number} size - Amount to add back.
+     * @param {string} [operation='release'] - Operation name for logging.
+     * @returns {boolean} True if addition succeeded.
      */
     addToChainFree(orderType, size, operation = 'release') {
          const mgr = this.manager;
@@ -367,58 +371,64 @@ class Accountant {
 
 
 
-    /**
-      * Update optimistic free balance during order state transitions.
-      * This is CRITICAL for preventing "fund leaks" where locked capital is never released.
-      *
-      * STATE TRANSITION RULES (chainFree impact):
-      * =========================================================================
-      * VIRTUAL → ACTIVE/PARTIAL: Funds transition from "free" to "locked"
-      *   Action: DEDUCT from chainFree (funds become committed/on-chain)
-      *   Why: New on-chain orders lock available capital
-      *
-      * ACTIVE/PARTIAL → VIRTUAL: Funds transition from "locked" to "free"
-      *   Action: ADD to chainFree (funds become available again)
-      *   Why: Cancelled orders release their capital back to available pool
-      *
-      * ACTIVE/PARTIAL → ACTIVE/PARTIAL (RESIZE): Size changes within active state
-      *   Action: DEDUCT if growing, ADD if shrinking
-      *   Why: Consolidations and rotations may resize orders, affecting committed capital
-      *
-      * CRITICAL FIX FOR PARTIAL→ACTIVE TRANSITIONS:
-      * =========================================================================
-      * PROBLEM: When PARTIAL→ACTIVE with a size change, we must track whether the
-      * PARTIAL order was on-chain (had orderId) or just in the grid (no orderId).
-      *
-      * If PARTIAL had NO orderId (grid-only):
-      *   - Old committed to chain: 0 (not on-chain)
-      *   - New committed to chain: newSize (now on-chain with new orderId)
-      *   - Deduction needed: newSize (full amount, not just delta!)
-      *
-      * If PARTIAL had orderId (on-chain):
-      *   - Old committed to chain: oldSize (already on-chain)
-      *   - New committed to chain: newSize (same or different orderId)
-      *   - Deduction needed: (newSize - oldSize) (only the delta)
-      *
-      * This prevents double-counting where a growing PARTIAL→ACTIVE order would
-      * only deduct the delta when it should account for on-chain commitment status.
-      *
-      * SIZE CONSISTENCY CHECK:
-      * After any state transition, the formula below should hold:
-      *   chainTotal = chainFree + chainCommitted
-      * Where chainCommitted = sum of all (ACTIVE or PARTIAL orders with orderId)
-      * If this breaks, we have a fund leak somewhere.
-      *
-      * BTS FEE HANDLING:
-      * When an order is placed on a BTS-containing pair, we deduct the transaction fee
-      * from chainFree immediately. This prevents over-committing capital for fees.
-      *
-      * CONTEXT PARAMETER:
-      * Always log the context (e.g., 'rotation', 'consolidation', 'fill') to aid debugging
-      * fund discrepancies. The full context trail makes it easier to trace which operation
-      * caused a fund leak if one occurs.
-      */
-     updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
+      /**
+       * Update optimistic free balance during order state transitions.
+       * This is CRITICAL for preventing "fund leaks" where locked capital is never released.
+       *
+       * @param {Object} oldOrder - The original order object.
+       * @param {Object} newOrder - The updated order object.
+       * @param {string} context - Context string for logging (e.g., 'rotation').
+       * @param {number} [fee=0] - Blockchain fee to deduct.
+       *
+       * STATE TRANSITION RULES (chainFree impact):
+       * =========================================================================
+       * VIRTUAL → ACTIVE/PARTIAL: Funds transition from "free" to "locked"
+       *   Action: DEDUCT from chainFree (funds become committed/on-chain)
+       *   Why: New on-chain orders lock available capital
+       *
+       * ACTIVE/PARTIAL → VIRTUAL: Funds transition from "locked" to "free"
+       *   Action: ADD to chainFree (funds become available again)
+       *   Why: Cancelled orders release their capital back to available pool
+       *
+       * ACTIVE/PARTIAL → ACTIVE/PARTIAL (RESIZE): Size changes within active state
+       *   Action: DEDUCT if growing, ADD if shrinking
+       *   Why: Consolidations and rotations may resize orders, affecting committed capital
+       *
+       * CRITICAL FIX FOR PARTIAL→ACTIVE TRANSITIONS:
+       * =========================================================================
+       * PROBLEM: When PARTIAL→ACTIVE with a size change, we must track whether the
+       * PARTIAL order was on-chain (had orderId) or just in the grid (no orderId).
+       *
+       * If PARTIAL had NO orderId (grid-only):
+       *   - Old committed to chain: 0 (not on-chain)
+       *   - New committed to chain: newSize (now on-chain with new orderId)
+       *   - Deduction needed: newSize (full amount, not just delta!)
+       *
+       * If PARTIAL had orderId (on-chain):
+       *   - Old committed to chain: oldSize (already on-chain)
+       *   - New committed to chain: newSize (same or different orderId)
+       *   - Deduction needed: (newSize - oldSize) (only the delta)
+       *
+       * This prevents double-counting where a growing PARTIAL→ACTIVE order would
+       * only deduct the delta when it should account for on-chain commitment status.
+       *
+       * SIZE CONSISTENCY CHECK:
+       * After any state transition, the formula below should hold:
+       *   chainTotal = chainFree + chainCommitted
+       * Where chainCommitted = sum of all (ACTIVE or PARTIAL orders with orderId)
+       * If this breaks, we have a fund leak somewhere.
+       *
+       * BTS FEE HANDLING:
+       * When an order is placed on a BTS-containing pair, we deduct the transaction fee
+       * from chainFree immediately. This prevents over-committing capital for fees.
+       *
+       * CONTEXT PARAMETER:
+       * Always log the context (e.g., 'rotation', 'consolidation', 'fill') to aid debugging
+       * fund discrepancies. The full context trail makes it easier to trace which operation
+       * caused a fund leak if one occurs.
+       */
+      updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
+
          const mgr = this.manager;
          if (!oldOrder || !newOrder) return;
 

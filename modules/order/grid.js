@@ -323,6 +323,10 @@ class Grid {
 
     /**
      * Restore a persisted grid snapshot onto a manager instance.
+     * @param {OrderManager} manager - The manager instance.
+     * @param {Array<Object>} grid - The persisted grid array.
+     * @param {number|null} [boundaryIdx=null] - The master boundary index.
+     * @returns {Promise<void>}
      */
     static async loadGrid(manager, grid, boundaryIdx = null) {
         if (!Array.isArray(grid)) return;
@@ -359,6 +363,9 @@ class Grid {
 
     /**
      * Initialize the order grid with blockchain-aware sizing.
+     * @param {OrderManager} manager - The manager instance.
+     * @returns {Promise<void>}
+     * @throws {Error} If initialization fails or account totals are missing.
      */
     static async initializeGrid(manager) {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
@@ -485,6 +492,13 @@ class Grid {
 
     /**
      * Full grid resynchronization from blockchain state.
+     * @param {OrderManager} manager - The manager instance.
+     * @param {Object} opts - Options for resynchronization.
+     * @param {Function} opts.readOpenOrdersFn - Function to read open orders.
+     * @param {Object} opts.chainOrders - Chain orders module.
+     * @param {string} opts.account - Account name.
+     * @param {string} opts.privateKey - Private key.
+     * @returns {Promise<void>}
      */
     static async recalculateGrid(manager, opts) {
         const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
@@ -743,6 +757,8 @@ class Grid {
 
     /**
      * Calculate current market spread using on-chain orders.
+     * @param {OrderManager} manager - The manager instance.
+     * @returns {number} The calculated spread percentage.
      */
     static calculateCurrentSpread(manager) {
         const activeBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
@@ -847,6 +863,9 @@ class Grid {
 
     /**
      * Grid health check for structural violations.
+     * @param {OrderManager} manager - The manager instance.
+     * @param {Function|null} [updateOrdersOnChainBatch=null] - Optional batch update function.
+     * @returns {Promise<Object>} Health status { buyDust, sellDust }.
      */
     static async checkGridHealth(manager, updateOrdersOnChainBatch = null) {
         if (!manager) return;
@@ -876,6 +895,9 @@ class Grid {
 
     /**
      * Utility to decide which side can support an extra order.
+     * @param {OrderManager} manager - The manager instance.
+     * @param {number} currentMarketPrice - The current market price.
+     * @returns {Object} Side decision { side, reason }.
      */
     static determineOrderSideByFunds(manager, currentMarketPrice) {
         const reqBuy = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.BUY);
@@ -904,6 +926,10 @@ class Grid {
 
     /**
      * Calculate simulated size for spread correction order.
+     * @param {OrderManager} manager - The manager instance.
+     * @param {string} targetType - The type of order (BUY/SELL).
+     * @param {Object|null} [snap=null] - Optional fund snapshot.
+     * @returns {number|null} The calculated size or null if failed.
      */
     static calculateGeometricSizeForSpreadCorrection(manager, targetType, snap = null) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
@@ -949,6 +975,14 @@ class Grid {
         }
     }
 
+    /**
+     * Prepare order operations for spread correction.
+     * @param {OrderManager} manager - The manager instance.
+     * @param {string} preferredSide - The preferred side for the new order.
+     * @param {Object|null} [snap=null] - Optional fund snapshot.
+     * @returns {Object} Correction result { ordersToPlace, partialMoves }.
+     * @throws {Error} If preferredSide is invalid.
+     */
     static prepareSpreadCorrectionOrders(manager, preferredSide, snap = null) {
         // FIX: Validate preferredSide parameter to prevent silent logic errors
         if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
@@ -1015,6 +1049,12 @@ class Grid {
         });
     }
 
+    /**
+     * Get a snapshot of current funds including grid and cache.
+     * @param {OrderManager} manager - The manager instance.
+     * @returns {Object} Fund snapshot.
+     * @private
+     */
     static _getFundSnapshot(manager) {
         const snap = manager.getChainFundsSnapshot();
         return { ...snap, gridBuy: Number(manager.funds?.total?.grid?.buy || 0), gridSell: Number(manager.funds?.total?.grid?.sell || 0), cacheBuy: Number(manager.funds?.cacheFunds?.buy || 0), cacheSell: Number(manager.funds?.cacheFunds?.sell || 0) };

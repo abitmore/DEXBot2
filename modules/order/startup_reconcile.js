@@ -2,12 +2,27 @@ const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const OrderUtils = require('./utils');
 const Format = require('./format');
 
+/**
+ * Count active orders on the grid for a given type.
+ * @param {Object} manager - OrderManager instance.
+ * @param {string} type - ORDER_TYPES value.
+ * @returns {number} Count of active and partial orders with orderId.
+ * @private
+ */
 function _countActiveOnGrid(manager, type) {
     const active = manager.getOrdersByTypeAndState(type, ORDER_STATES.ACTIVE).filter(o => o && o.orderId);
     const partial = manager.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL).filter(o => o && o.orderId);
     return active.length + partial.length;
 }
 
+/**
+ * Pick virtual slots to activate based on type and count.
+ * @param {Object} manager - OrderManager instance.
+ * @param {string} type - ORDER_TYPES value.
+ * @param {number} count - Number of slots to pick.
+ * @returns {Array<Object>} Array of picked virtual slots.
+ * @private
+ */
 function _pickVirtualSlotsToActivate(manager, type, count) {
      if (count <= 0) return [];
 
@@ -70,6 +85,19 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
     return allEdgeActive;
 }
 
+/**
+ * Update an existing chain order to match a grid slot.
+ * @param {Object} params - Update parameters.
+ * @param {Object} params.chainOrders - Chain orders module.
+ * @param {string} params.account - Account name.
+ * @param {string} params.privateKey - Private key.
+ * @param {Object} params.manager - OrderManager instance.
+ * @param {string} params.chainOrderId - ID of the chain order to update.
+ * @param {Object} params.gridOrder - Grid order object.
+ * @param {boolean} params.dryRun - Whether to simulate.
+ * @returns {Promise<void>}
+ * @private
+ */
 async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId, gridOrder, dryRun }) {
      if (dryRun) return;
 
@@ -164,6 +192,18 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
     }
 }
 
+/**
+ * Create a new chain order from a grid slot.
+ * @param {Object} params - Creation parameters.
+ * @param {Object} params.chainOrders - Chain orders module.
+ * @param {string} params.account - Account name.
+ * @param {string} params.privateKey - Private key.
+ * @param {Object} params.manager - OrderManager instance.
+ * @param {Object} params.gridOrder - Grid order object.
+ * @param {boolean} params.dryRun - Whether to simulate.
+ * @returns {Promise<void>}
+ * @private
+ */
 async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }) {
     if (dryRun) return;
 
@@ -206,6 +246,18 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
     }
 }
 
+/**
+ * Cancel a chain order and sync with manager.
+ * @param {Object} params - Cancellation parameters.
+ * @param {Object} params.chainOrders - Chain orders module.
+ * @param {string} params.account - Account name.
+ * @param {string} params.privateKey - Private key.
+ * @param {Object} params.manager - OrderManager instance.
+ * @param {string} params.chainOrderId - ID of the chain order to cancel.
+ * @param {boolean} params.dryRun - Whether to simulate.
+ * @returns {Promise<void>}
+ * @private
+ */
 async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun }) {
     if (dryRun) return;
 

@@ -1,4 +1,8 @@
-// Patch for the btsdex event subsystem to keep account history in sync via the history API.
+/**
+ * Patch for the btsdex event subsystem.
+ * Keeps account history in sync via the history API by overriding the updateAccounts method.
+ * @module btsdex_event_patch
+ */
 const historyApi = require('btsdex-api').history;
 let patched = false;
 try {

@@ -195,6 +195,10 @@ function readInput(prompt, options = {}) {
 // Profiles key file (ignored) only
 const PROFILES_KEYS_FILE = path.join(__dirname, '..', 'profiles', 'keys.json');
 
+/**
+ * Ensures that the profiles/keys directory exists.
+ * @private
+ */
 function ensureProfilesKeysDirectory() {
     const dir = path.dirname(PROFILES_KEYS_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -329,6 +333,12 @@ class MasterPasswordError extends Error {
 const MASTER_PASSWORD_MAX_ATTEMPTS = 3;
 let masterPasswordAttempts = 0;
 
+/**
+ * Prompts the user for the master password with retry tracking.
+ * @returns {Promise<string>} The entered password.
+ * @throws {MasterPasswordError} If max attempts are reached.
+ * @private
+ */
 async function _promptPassword() {
     if (masterPasswordAttempts >= MASTER_PASSWORD_MAX_ATTEMPTS) {
         throw new MasterPasswordError(`Incorrect master password after ${MASTER_PASSWORD_MAX_ATTEMPTS} attempts.`);
@@ -395,6 +405,12 @@ function listKeyNames(accounts) {
     });
 }
 
+/**
+ * Prompts the user to select an account name from the stored keys.
+ * @param {Object} accounts - The accounts object.
+ * @param {string} promptText - The prompt message to display.
+ * @returns {Promise<string|null>} The selected account name, or null/ESC.
+ */
 async function selectKeyName(accounts, promptText) {
     const names = Object.keys(accounts);
     if (!names.length) {
@@ -413,6 +429,12 @@ async function selectKeyName(accounts, promptText) {
     return names[idx];
 }
 
+/**
+ * Interactively changes the master password and re-encrypts all stored keys.
+ * @param {Object} accountsData - The loaded accounts data object.
+ * @param {string} currentPassword - The current master password.
+ * @returns {Promise<string>} The new master password, or the old one if failed/cancelled.
+ */
 async function changeMasterPassword(accountsData, currentPassword) {
     if (!accountsData.masterPasswordHash) {
         console.log('No master password is set yet.');

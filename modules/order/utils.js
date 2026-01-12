@@ -112,10 +112,20 @@ function isValidNumber(value) {
     return value !== null && value !== undefined && Number.isFinite(Number(value));
 }
 
+/**
+ * Checks if a value is a percentage string (e.g. "50%").
+ * @param {*} v - The value to check.
+ * @returns {boolean} True if it's a percentage string.
+ */
 function isPercentageString(v) {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
 
+/**
+ * Parses a percentage string into a decimal factor.
+ * @param {string} v - The percentage string.
+ * @returns {number|null} The decimal factor (e.g. 0.5 for "50%") or null.
+ */
 function parsePercentageString(v) {
     if (!isPercentageString(v)) return null;
     const num = parseFloat(v.trim().slice(0, -1));
@@ -357,6 +367,14 @@ function floatToBlockchainInt(floatValue, precision) {
 // ════════════════════════════════════════════════════════════════════════════════
 // Price tolerance calculation and checking (also see Section 4 Part 2: Price derivation)
 
+/**
+ * Calculates price tolerance based on asset precision and order size.
+ * @param {number} gridPrice - The price from the grid.
+ * @param {number} orderSize - The size of the order.
+ * @param {string} orderType - The type of order (BUY/SELL).
+ * @param {Object} [assets=null] - Assets object with precision info.
+ * @returns {number|null} The price tolerance or null if inputs are invalid.
+ */
 function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
      // Ensure we have numeric grid price and order size
      if (!isValidNumber(gridPrice) || !isValidNumber(orderSize)) {
@@ -429,6 +447,12 @@ function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecis
 // ════════════════════════════════════════════════════════════════════════════════
 // Parse blockchain orders and match them to grid orders
 
+/**
+ * Parses a raw blockchain order object into a simplified format.
+ * @param {Object} chainOrder - The raw order from the blockchain.
+ * @param {Object} assets - Assets object with IDs and precisions.
+ * @returns {Object|null} The parsed order or null if invalid.
+ */
 function parseChainOrder(chainOrder, assets) {
     if (!chainOrder || !chainOrder.sell_price || !assets) return null;
     const { base, quote } = chainOrder.sell_price;
@@ -717,6 +741,13 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
     }
 }
 
+/**
+ * Calculates the minimum allowable order size based on asset precision.
+ * @param {string} orderType - The type of order (BUY/SELL).
+ * @param {Object} assets - Assets object with precision info.
+ * @param {number} [factor=50] - Safety factor multiplied by the smallest unit.
+ * @returns {number} The minimum order size.
+ */
 function getMinOrderSize(orderType, assets, factor = 50) {
     const f = Number(factor);
     if (!f || !Number.isFinite(f) || f <= 0) return 0;
@@ -1087,7 +1118,11 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
 }
 
 /**
- * Internal function to fetch blockchain operation fees
+ * Internal function to fetch blockchain operation fees.
+ * @param {Object} BitShares - BitShares library instance.
+ * @returns {Promise<Object>} Fee information for limit order operations.
+ * @throws {Error} If fetching fails.
+ * @private
  */
 async function _fetchBlockchainFees(BitShares) {
     try {
@@ -1116,7 +1151,12 @@ async function _fetchBlockchainFees(BitShares) {
 }
 
 /**
- * Internal function to fetch market fees for a specific asset
+ * Internal function to fetch market fees for a specific asset.
+ * @param {string} assetSymbol - Asset symbol.
+ * @param {Object} BitShares - BitShares library instance.
+ * @returns {Promise<Object>} Market fee information for the asset.
+ * @throws {Error} If fetching fails.
+ * @private
  */
 async function _fetchAssetMarketFees(assetSymbol, BitShares) {
     try {
@@ -1680,6 +1720,13 @@ function checkSizeThreshold(sizes, threshold, precision, includeNonFinite = fals
     return sizes.some(checkSize);
 }
 
+/**
+ * Check if any order sizes fall below a minimum threshold.
+ * @param {Array<number>} sizes - Order sizes to check.
+ * @param {number} minSize - Minimum allowed size.
+ * @param {number|null} precision - Blockchain precision.
+ * @returns {boolean} True if any size is below minimum.
+ */
 function checkSizesBeforeMinimum(sizes, minSize, precision) {
     return checkSizeThreshold(sizes, minSize, precision, true);
 }

@@ -23,7 +23,10 @@ let connected = false;
 let suppressConnectionLog = false;
 const connectedCallbacks = new Set();
 
-// Allow suppressing the connection log message
+/**
+ * Allow suppressing the connection log message.
+ * @param {boolean} suppress - Whether to suppress the log message.
+ */
 function setSuppressConnectionLog(suppress) {
     suppressConnectionLog = suppress;
 }

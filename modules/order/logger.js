@@ -44,6 +44,11 @@ class Logger {
         };
     }
 
+    /**
+     * Log a message with timestamp and level.
+     * @param {string} message - The message to log.
+     * @param {string} [level='info'] - The log level ('debug', 'info', 'warn', 'error').
+     */
     log(message, level = 'info') {
         if (this.levels[level] >= this.levels[this.level]) {
             const color = this.colors[level] || '';
@@ -51,6 +56,11 @@ class Logger {
         }
     }
 
+    /**
+     * Log a sample of the order grid.
+     * @param {Array<Object>} orders - The list of orders.
+     * @param {number} startPrice - The market start price.
+     */
     logOrderGrid(orders, startPrice) {
         console.log('\n===== ORDER GRID (SAMPLE) =====');
         if (this.marketName) console.log(`Market: ${this.marketName} @ ${startPrice}`);
@@ -108,6 +118,11 @@ class Logger {
         console.log('===============================================\n');
     }
 
+    /**
+     * Log a single order row.
+     * @param {Object} order - The order to log.
+     * @private
+     */
     _logOrderRow(order) {
         const typeColor = this.colors[order.type] || '';
         const stateColor = this.colors[order.state] || '';
@@ -243,7 +258,10 @@ class Logger {
          console.log(`  btsFeesOwed: ${Format.formatAmount8(btsFeesOwed)} BTS${reset}\n`);
     }
 
-    // Print a comprehensive status summary using manager state.
+    /**
+     * Print a comprehensive status summary using manager state.
+     * @param {OrderManager} manager - The manager instance.
+     */
     displayStatus(manager) {
         if (!manager) return;
         const market = manager.marketName || manager.config?.market || 'unknown';
@@ -397,7 +415,9 @@ class Logger {
     }
 
     /**
-     * Log a fund snapshot with optional detail level
+     * Log a fund snapshot with optional detail level.
+     * @param {FundSnapshot} snapshot - The snapshot to log.
+     * @param {boolean} [detailed=false] - Whether to show detailed info.
      */
     logSnapshot(snapshot, detailed = false) {
         if (!snapshot) return;
@@ -405,7 +425,9 @@ class Logger {
     }
 
     /**
-     * Log a detailed comparison between two snapshots
+     * Log a detailed comparison between two snapshots.
+     * @param {FundSnapshot} snapshot1 - The first snapshot.
+     * @param {FundSnapshot} snapshot2 - The second snapshot.
      */
     logSnapshotComparison(snapshot1, snapshot2) {
         if (!snapshot1 || !snapshot2) return;

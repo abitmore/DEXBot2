@@ -6,6 +6,11 @@ const readline = require('readline');
 const { execSync } = require('child_process');
 const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER } = require('./constants');
 
+/**
+ * Parses JSON content that may contain comments (/* or //).
+ * @param {string} raw - The raw string content with possible comments.
+ * @returns {Object} The parsed JSON object.
+ */
 function parseJsonWithComments(raw) {
     const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');
     return JSON.parse(stripped);
@@ -16,7 +21,12 @@ const SETTINGS_FILE = path.join(__dirname, '..', 'profiles', 'general.settings.j
 
 /**
  * Async version of readlineSync.question that supports ESC key.
- * Returns the input string, or '\x1b' if ESC is pressed.
+ * @param {string} prompt - The prompt text to display.
+ * @param {Object} [options={}] - Input options.
+ * @param {string} [options.mask] - Mask character for hidden input.
+ * @param {boolean} [options.hideEchoBack=false] - Whether to hide input as it is typed.
+ * @param {Function} [options.validate] - Validation function for the input.
+ * @returns {Promise<string>} The input string, or '\x1b' if ESC is pressed.
  */
 function readInput(prompt, options = {}) {
     const { mask, hideEchoBack = false, validate } = options;
@@ -94,6 +104,10 @@ function readInput(prompt, options = {}) {
     });
 }
 
+/**
+ * Ensures that the profiles directory exists.
+ * @private
+ */
 function ensureProfilesDirectory() {
     const dir = path.dirname(BOTS_FILE);
     if (!fs.existsSync(dir)) {
@@ -101,6 +115,10 @@ function ensureProfilesDirectory() {
     }
 }
 
+/**
+ * Loads the bots configuration from profiles/bots.json.
+ * @returns {Object} An object containing the config and the file path.
+ */
 function loadBotsConfig() {
     if (!fs.existsSync(BOTS_FILE)) {
         return { config: { bots: [] }, filePath: BOTS_FILE };
@@ -117,6 +135,12 @@ function loadBotsConfig() {
     }
 }
 
+/**
+ * Saves the bots configuration to the specified file path.
+ * @param {Object} config - The configuration object to save.
+ * @param {string} filePath - The path to the file.
+ * @throws {Error} If saving fails.
+ */
 function saveBotsConfig(config, filePath) {
     try {
             ensureProfilesDirectory();
@@ -127,6 +151,10 @@ function saveBotsConfig(config, filePath) {
     }
 }
 
+/**
+ * Loads general settings from profiles/general.settings.json.
+ * @returns {Object} The loaded settings or default settings if the file doesn't exist.
+ */
 function loadGeneralSettings() {
     if (!fs.existsSync(SETTINGS_FILE)) {
         return {
@@ -155,6 +183,10 @@ function loadGeneralSettings() {
     }
 }
 
+/**
+ * Saves general settings to profiles/general.settings.json.
+ * @param {Object} settings - The settings object to save.
+ */
 function saveGeneralSettings(settings) {
     try {
         ensureProfilesDirectory();
@@ -165,6 +197,10 @@ function saveGeneralSettings(settings) {
     }
 }
 
+/**
+ * Lists the configured bots to the console.
+ * @param {Array<Object>} bots - The list of bot configuration objects.
+ */
 function listBots(bots) {
     if (!bots.length) {
         console.log('  (no bot entries defined yet)');
@@ -178,6 +214,12 @@ function listBots(bots) {
     });
 }
 
+/**
+ * Prompts the user to select a bot from the list.
+ * @param {Array<Object>} bots - The list of bots.
+ * @param {string} promptMessage - The message to display.
+ * @returns {Promise<number|string|null>} The selected index, '\x1b' if ESC, or null if invalid.
+ */
 async function selectBotIndex(bots, promptMessage) {
     if (!bots.length) return null;
     listBots(bots);
@@ -191,6 +233,12 @@ async function selectBotIndex(bots, promptMessage) {
     return idx - 1;
 }
 
+/**
+ * Prompts the user for a string input.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} [defaultValue] - The default value to use if input is empty.
+ * @returns {Promise<string>} The user input or default value.
+ */
 async function askString(promptText, defaultValue) {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const answer = await readInput(`${promptText}${suffix}: `);
@@ -199,6 +247,12 @@ async function askString(promptText, defaultValue) {
     return answer.trim();
 }
 
+/**
+ * Prompts the user for a required string input.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} [defaultValue] - The default value to use if input is empty.
+ * @returns {Promise<string>} The user input.
+ */
 async function askRequiredString(promptText, defaultValue) {
     while (true) {
         const value = await askString(promptText, defaultValue);
@@ -208,6 +262,12 @@ async function askRequiredString(promptText, defaultValue) {
     }
 }
 
+/**
+ * Prompts the user for an asset symbol.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} [defaultValue] - The default value to use if input is empty.
+ * @returns {Promise<string>} The asset symbol in uppercase.
+ */
 async function askAsset(promptText, defaultValue) {
     while (true) {
         const displayDefault = defaultValue ? String(defaultValue).toUpperCase() : undefined;
@@ -226,6 +286,13 @@ async function askAsset(promptText, defaultValue) {
     }
 }
 
+/**
+ * Prompts the user for Asset B, ensuring it's different from Asset A.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} [defaultValue] - The default value to use if input is empty.
+ * @param {string} assetA - The symbol of Asset A.
+ * @returns {Promise<string>} The asset symbol in uppercase.
+ */
 async function askAssetB(promptText, defaultValue, assetA) {
     while (true) {
         const displayDefault = defaultValue ? String(defaultValue).toUpperCase() : undefined;
@@ -252,6 +319,12 @@ async function askAssetB(promptText, defaultValue, assetA) {
     }
 }
 
+/**
+ * Prompts the user for a numeric value.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number} [defaultValue] - The default value to use if input is empty.
+ * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
+ */
 async function askNumber(promptText, defaultValue) {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
@@ -270,6 +343,12 @@ async function askNumber(promptText, defaultValue) {
     return parsed;
 }
 
+/**
+ * Prompts the user for a weight distribution value with a legend.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number} [defaultValue] - The default value to use if input is empty.
+ * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
+ */
 async function askWeightDistribution(promptText, defaultValue) {
     const MIN_WEIGHT = -1;
     const MAX_WEIGHT = 2;
@@ -290,6 +369,12 @@ async function askWeightDistribution(promptText, defaultValue) {
     return parsed;
 }
 
+/**
+ * Prompts the user for a weight distribution value without a legend.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number} [defaultValue] - The default value to use if input is empty.
+ * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
+ */
 async function askWeightDistributionNoLegend(promptText, defaultValue) {
     const MIN_WEIGHT = -1;
     const MAX_WEIGHT = 2;
@@ -309,10 +394,23 @@ async function askWeightDistributionNoLegend(promptText, defaultValue) {
     return parsed;
 }
 
+/**
+ * Checks if a value is a multiplier string (e.g. "3x").
+ * @param {*} value - The value to check.
+ * @returns {boolean} True if it's a multiplier string.
+ */
 function isMultiplierString(value) {
     return typeof value === 'string' && /^[-￿]*[0-9]+(?:\.[0-9]+)?x[-￿]*$/i.test(value);
 }
 
+/**
+ * Prompts the user for a number within specified bounds.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number} defaultValue - The default value to use if input is empty.
+ * @param {number} minVal - The minimum allowed value.
+ * @param {number} maxVal - The maximum allowed value.
+ * @returns {Promise<number|string>} The numeric value or '\x1b' if ESC.
+ */
 async function askNumberWithBounds(promptText, defaultValue, minVal, maxVal) {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
@@ -340,6 +438,13 @@ async function askNumberWithBounds(promptText, defaultValue, minVal, maxVal) {
     return parsed;
 }
 
+/**
+ * Prompts the user for the target spread percentage.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number} defaultValue - The default value to use if input is empty.
+ * @param {number} incrementPercent - The grid increment percentage.
+ * @returns {Promise<number|string>} The spread percentage or '\x1b' if ESC.
+ */
 async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent) {
     const minRequired = incrementPercent * 2;
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue.toFixed(2)}]` : '';
@@ -369,6 +474,14 @@ async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent
     return parsed;
 }
 
+/**
+ * Prompts the user for an integer within a range.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number} defaultValue - The default value to use if input is empty.
+ * @param {number} minVal - The minimum allowed value.
+ * @param {number} maxVal - The maximum allowed value.
+ * @returns {Promise<number|string>} The integer or '\x1b' if ESC.
+ */
 async function askIntegerInRange(promptText, defaultValue, minVal, maxVal) {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
@@ -392,6 +505,12 @@ async function askIntegerInRange(promptText, defaultValue, minVal, maxVal) {
     return parsed;
 }
 
+/**
+ * Prompts the user for a numeric value or a multiplier.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number|string} defaultValue - The default value to use if input is empty.
+ * @returns {Promise<number|string>} The value or '\x1b' if ESC.
+ */
 async function askNumberOrMultiplier(promptText, defaultValue) {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
@@ -419,6 +538,13 @@ async function askNumberOrMultiplier(promptText, defaultValue) {
     return parsed;
 }
 
+/**
+ * Prompts the user for the maximum price, ensuring it's greater than minimum price.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number|string} defaultValue - The default value to use if input is empty.
+ * @param {number|string} minPrice - The minimum price.
+ * @returns {Promise<number|string>} The value or '\x1b' if ESC.
+ */
 async function askMaxPrice(promptText, defaultValue, minPrice) {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
@@ -452,6 +578,11 @@ async function askMaxPrice(promptText, defaultValue, minPrice) {
     return parsed;
 }
 
+/**
+ * Normalizes a percentage string input.
+ * @param {string} value - The input string.
+ * @returns {string|null} The normalized percentage string or null if invalid.
+ */
 function normalizePercentageInput(value) {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -461,6 +592,12 @@ function normalizePercentageInput(value) {
     return `${numeric}%`;
 }
 
+/**
+ * Prompts the user for a numeric value or a percentage.
+ * @param {string} promptText - The prompt text to display.
+ * @param {number|string} defaultValue - The default value to use if input is empty.
+ * @returns {Promise<number|string>} The value or '\x1b' if ESC.
+ */
 async function askNumberOrPercentage(promptText, defaultValue) {
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
@@ -476,6 +613,12 @@ async function askNumberOrPercentage(promptText, defaultValue) {
     return parsed;
 }
 
+/**
+ * Prompts the user for a boolean value (Y/n).
+ * @param {string} promptText - The prompt text to display.
+ * @param {boolean} defaultValue - The default value to use if input is empty.
+ * @returns {Promise<boolean|string>} The boolean value or '\x1b' if ESC.
+ */
 async function askBoolean(promptText, defaultValue) {
     const label = defaultValue ? 'Y/n' : 'y/N';
     const raw = (await readInput(`${promptText} (${label}): `)).trim().toLowerCase();
@@ -484,6 +627,12 @@ async function askBoolean(promptText, defaultValue) {
     return raw.startsWith('y');
 }
 
+/**
+ * Prompts the user for the start price (numeric or "pool"/"market").
+ * @param {string} promptText - The prompt text to display.
+ * @param {number|string} defaultValue - The default value to use if input is empty.
+ * @returns {Promise<number|string>} The start price or '\x1b' if ESC.
+ */
 async function askStartPrice(promptText, defaultValue) {
     while (true) {
         const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
@@ -514,6 +663,11 @@ async function askStartPrice(promptText, defaultValue) {
     }
 }
 
+/**
+ * Interactive menu to edit bot data.
+ * @param {Object} [base={}] - The initial bot data to edit.
+ * @returns {Promise<Object|null>} The edited bot data or null if cancelled.
+ */
 async function promptBotData(base = {}) {
     // Create a working copy of the data
     const data = JSON.parse(JSON.stringify(base));
@@ -666,6 +820,10 @@ async function promptBotData(base = {}) {
     };
 }
 
+/**
+ * Interactive menu to edit general settings.
+ * @returns {Promise<void>}
+ */
 async function promptGeneralSettings() {
     const settings = loadGeneralSettings();
     let finished = false;
@@ -766,7 +924,10 @@ async function promptGeneralSettings() {
     }
 }
 
-// Entry point exposing a menu-driven interface for creating, modifying, and reviewing bots.
+/**
+ * Entry point exposing a menu-driven interface for creating, modifying, and reviewing bots.
+ * @returns {Promise<void>}
+ */
 async function main() {
     console.log('dexbot bots — bots.json configurator (writes profiles/bots.json)');
     const { config, filePath } = loadBotsConfig();

@@ -13,13 +13,22 @@
 const fs = require('fs');
 const path = require('path');
 
-// Semaphore for synchronizing access to bots.json
+/**
+ * Semaphore for synchronizing access to bots.json.
+ * @class
+ */
 class FileLock {
     constructor() {
+        /** @type {boolean} */
         this.isLocked = false;
+        /** @type {Array<Function>} */
         this.queue = [];
     }
 
+    /**
+     * Acquires the lock. If already locked, waits in queue.
+     * @returns {Promise<void>}
+     */
     async acquire() {
         if (!this.isLocked) {
             this.isLocked = true;
@@ -31,6 +40,9 @@ class FileLock {
         });
     }
 
+    /**
+     * Releases the lock and allows the next waiting operation to proceed.
+     */
     release() {
         const next = this.queue.shift();
         if (next) {

@@ -642,6 +642,13 @@ class StrategyEngine {
         return { ordersToPlace, ordersToRotate, ordersToUpdate, ordersToCancel, stateUpdates, totalNewPlacementSize };
     }
 
+    /**
+     * Checks if any of the provided partial orders are below the dust threshold.
+     * @param {Array<Object>} partials - Array of partial orders.
+     * @param {string} side - 'buy' or 'sell'.
+     * @param {number} budget - Total budget for the side.
+     * @returns {boolean} True if any dust partials are found.
+     */
     hasAnyDust(partials, side, budget) {
         const mgr = this.manager;
         const type = side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
@@ -667,6 +674,12 @@ class StrategyEngine {
         });
     }
 
+    /**
+     * Process multiple filled orders and trigger rebalancing.
+     * @param {Array<Object>} filledOrders - Array of filled order objects.
+     * @param {Set<string>} [excludeOrderIds=new Set()] - IDs to exclude from processing.
+     * @returns {Promise<Object|void>} Rebalance result or void if no rebalance triggered.
+     */
     async processFilledOrders(filledOrders, excludeOrderIds = new Set()) {
         const mgr = this.manager;
         if (!mgr || !Array.isArray(filledOrders)) return;
@@ -845,7 +858,7 @@ class StrategyEngine {
 
     /**
      * Callback when a rotation transaction completes successfully.
-     * Used to finalize state or trigger follow-up actions.
+     * @param {Object} oldInfo - The old order information.
      */
     completeOrderRotation(oldInfo) {
         if (this.manager.logger.level === 'debug') {

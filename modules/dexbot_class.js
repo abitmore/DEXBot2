@@ -87,6 +87,11 @@ class DEXBot {
         this._shuttingDown = false;
     }
 
+    /**
+     * Log a message to the console with the bot's prefix.
+     * @param {string} msg - The message to log.
+     * @private
+     */
     _log(msg) {
         if (this.logPrefix) {
             console.log(`${this.logPrefix} ${msg}`);
@@ -95,6 +100,11 @@ class DEXBot {
         }
     }
 
+    /**
+     * Log a warning message to the console with the bot's prefix.
+     * @param {string} msg - The message to log.
+     * @private
+     */
     _warn(msg) {
         if (this.logPrefix) {
             console.warn(`${this.logPrefix} ${msg}`);
@@ -440,6 +450,12 @@ class DEXBot {
          }
     }
 
+    /**
+     * Initialize the bot by connecting to BitShares and setting up the account.
+     * @param {string} [masterPassword=null] - The master password for authentication.
+     * @returns {Promise<void>}
+     * @throws {Error} If initialization fails or preferredAccount is missing.
+     */
     async initialize(masterPassword = null) {
         await waitForConnected(30000);
         let accountData = null;
@@ -477,6 +493,10 @@ class DEXBot {
         this._log(`Initialized DEXBot for account: ${this.account}`);
     }
 
+    /**
+     * Places initial orders on the blockchain.
+     * @returns {Promise<void>}
+     */
     async placeInitialOrders() {
         if (!this.manager) {
             this.manager = new OrderManager(this.config);
@@ -720,6 +740,11 @@ class DEXBot {
         return { isValid: true, summary };
     }
 
+    /**
+     * Executes a batch of order operations on the blockchain.
+     * @param {Object} rebalanceResult - The result of a rebalance operation.
+     * @returns {Promise<Object>} The batch result.
+     */
     async updateOrdersOnChainBatch(rebalanceResult) {
         let { ordersToPlace, ordersToRotate = [], ordersToUpdate = [], ordersToCancel = [] } = rebalanceResult;
 
@@ -1087,6 +1112,11 @@ class DEXBot {
     }
 
 
+    /**
+     * Starts the bot's operation.
+     * @param {string} [masterPassword=null] - The master password.
+     * @returns {Promise<void>}
+     */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
 

@@ -112,6 +112,9 @@ class OrderManager {
         this._cleanExpiredLocks();
     }
 
+    /**
+     * Finish the bootstrap phase and activate grid health monitoring.
+     */
     finishBootstrap() {
         if (this.isBootstrapping) {
             this.isBootstrapping = false;
@@ -120,15 +123,25 @@ class OrderManager {
     }
 
     // --- Accounting Delegation ---
+
+    /**
+     * Resets the funds structure to zero.
+     * @returns {void}
+     */
     resetFunds() { return this.accountant.resetFunds(); }
 
+    /**
+     * Recalculates all fund values based on current order states.
+     * @returns {void}
+     */
     recalculateFunds() {
         this._metrics.fundRecalcCount++;
         return this.accountant.recalculateFunds();
     }
 
     /**
-     * Get metrics for observability and monitoring
+     * Get metrics for observability and monitoring.
+     * @returns {Object} Metrics object.
      */
     getMetrics() {
         const now = Date.now();
@@ -142,14 +155,58 @@ class OrderManager {
     }
 
     // --- Strategy Delegation ---
+
+    /**
+     * Processes filled orders and calculates rebalancing actions.
+     * @param {Array<Object>} orders - Array of filled order objects.
+     * @param {Set<string>} excl - Set of order IDs to exclude from rebalancing.
+     * @returns {Promise<Object>} Rebalance result.
+     */
     async processFilledOrders(orders, excl) { return await this.strategy.processFilledOrders(orders, excl); }
+
+    /**
+     * Completes an order rotation by updating internal state.
+     * @param {Object} oldInfo - The old order information.
+     */
     completeOrderRotation(oldInfo) { return this.strategy.completeOrderRotation(oldInfo); }
 
     // --- Sync Delegation ---
+
+    /**
+     * Synchronizes internal state with open orders from the blockchain.
+     * @param {Array<Object>} [orders] - Array of raw chain orders.
+     * @param {Object} [info] - Optional metadata.
+     * @returns {Object} Sync result.
+     */
     syncFromOpenOrders(orders, info) { return this.sync.syncFromOpenOrders(orders, info); }
+
+    /**
+     * Synchronizes internal state from a single fill history record.
+     * @param {Object} fill - The fill operation object.
+     * @returns {Object} Sync result.
+     */
     syncFromFillHistory(fill) { return this.sync.syncFromFillHistory(fill); }
+
+    /**
+     * Synchronizes internal state with provided blockchain data.
+     * @param {Object|Array} data - Blockchain data (orders or fill).
+     * @param {string} src - Source identifier for logging.
+     * @returns {Promise<Object>} Sync result.
+     */
     async synchronizeWithChain(data, src) { return await this.sync.synchronizeWithChain(data, src); }
+
+    /**
+     * Fetches current account balances and updates totals.
+     * @returns {Promise<void>}
+     * @private
+     */
     async _fetchAccountBalancesAndSetTotals() { return await this.sync.fetchAccountBalancesAndSetTotals(); }
+
+    /**
+     * Initializes asset metadata (ids, symbols, precisions).
+     * @returns {Promise<void>}
+     * @private
+     */
     async _initializeAssets() { return await this.sync.initializeAssets(); }
 
     // --- Controller Logic ---
@@ -185,6 +242,10 @@ class OrderManager {
         }
     }
 
+    /**
+     * Get a snapshot of current on-chain funds.
+     * @returns {Object} Fund snapshot { chainTotalBuy, chainTotalSell, allocatedBuy, allocatedSell, ... }.
+     */
     getChainFundsSnapshot() {
         const totals = computeChainFundTotals(this.accountTotals, this.funds?.committed?.chain);
         const allocatedBuy = Number.isFinite(Number(this.funds?.allocated?.buy)) ? Number(this.funds.allocated.buy) : totals.chainTotalBuy;
@@ -321,6 +382,10 @@ class OrderManager {
         if (allocatedSell > 0) this.funds.available.sell = Math.min(this.funds.available.sell, allocatedSell);
     }
 
+    /**
+     * Set account totals and update fund state.
+     * @param {Object} totals - Account balances.
+     */
     setAccountTotals(totals = { buy: null, sell: null, buyFree: null, sellFree: null }) {
         this.accountTotals = { ...this.accountTotals, ...totals };
         if (!this.funds) this.resetFunds();
@@ -336,6 +401,11 @@ class OrderManager {
         }
     }
 
+    /**
+     * Wait for account totals to be fetched from the blockchain.
+     * @param {number} [timeoutMs=TIMING.ACCOUNT_TOTALS_TIMEOUT_MS] - Timeout in milliseconds.
+     * @returns {Promise<void>}
+     */
      async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
           if (hasValidAccountTotals(this.accountTotals, false)) return;
           // CRITICAL: Await inside lock to prevent race where promise is created inside lock
@@ -351,6 +421,11 @@ class OrderManager {
           });
       }
 
+    /**
+     * Fetch account totals from the blockchain.
+     * @param {string} [accountId] - Account ID to fetch for.
+     * @returns {Promise<void>}
+     */
     async fetchAccountTotals(accountId) {
         if (accountId) this.accountId = accountId;
         await this._fetchAccountBalancesAndSetTotals();
@@ -450,6 +525,11 @@ class OrderManager {
         }
     }
 
+    /**
+     * Log current available and cache funds.
+     * @param {string} [label=''] - Label for the log message.
+     * @private
+     */
     _logAvailable(label = '') {
         const avail = this.funds?.available || { buy: 0, sell: 0 };
         const cache = this.funds?.cacheFunds || { buy: 0, sell: 0 };
@@ -485,6 +565,10 @@ class OrderManager {
         }
     }
 
+    /**
+     * Identifies which virtual orders should be activated on-chain initially.
+     * @returns {Array<Object>} Array of orders to activate.
+     */
     getInitialOrdersToActivate() {
         const sellCount = Math.max(0, Number(this.config.activeOrders?.sell || 1));
         const buyCount = Math.max(0, Number(this.config.activeOrders?.buy || 1));
@@ -506,6 +590,12 @@ class OrderManager {
         return [...validSells, ...validBuys];
     }
 
+    /**
+     * Retrieves orders filtered by type and/or state.
+     * @param {string|null} type - ORDER_TYPES value or null for all types.
+     * @param {string|null} state - ORDER_STATES value or null for all states.
+     * @returns {Array<Object>} Filtered array of orders.
+     */
     getOrdersByTypeAndState(type, state) {
         if (state !== null && type !== null) {
             const stateIds = this._ordersByState[state] || new Set();

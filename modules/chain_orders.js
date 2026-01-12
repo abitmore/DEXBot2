@@ -42,7 +42,12 @@ const _resolutionLock = new AsyncLock();
 // Cache for account resolutions (name -> id and id -> name)
 const _accountResolutionCache = new Map();
 
-// Resolve asset precision from id or symbol via BitShares DB; returns 0 on failure
+/**
+ * Resolve asset precision from ID or symbol via BitShares DB.
+ * @param {string} assetRef - Asset ID or symbol.
+ * @returns {Promise<number>} The asset's precision (number of decimals), or 0 on failure.
+ * @private
+ */
 async function _getAssetPrecision(assetRef) {
     if (!assetRef) return 0;
     try {
@@ -169,8 +174,12 @@ async function resolveAccountId(accountName) {
 // Access MUST be protected by _subscriptionLock to prevent TOCTOU races (fixes Issue #1)
 const accountSubscriptions = new Map();
 
-// Ensure a per-account BitShares subscription exists so we only subscribe once.
-// Uses AsyncLock to make check-and-set atomic (fixes Issue #1, #3)
+/**
+ * Ensure a per-account BitShares subscription exists so we only subscribe once.
+ * @param {string} accountName - The name of the account to subscribe to.
+ * @returns {Promise<Object>} The subscription entry { userCallbacks, bsCallback }.
+ * @private
+ */
 async function _ensureAccountSubscriber(accountName) {
     return await _subscriptionLock.acquire(async () => {
         // Check again inside lock to prevent duplicate subscriptions
@@ -366,7 +375,16 @@ async function listenForFills(accountRef, callback) {
 
 /**
  * Build a limit_order_update operation.
- * @returns {Promise<Object|null>} Operation object or null if no change
+ * @param {string} accountName - The name of the account.
+ * @param {string} orderId - The ID of the order to update.
+ * @param {Object} newParams - The new parameters for the order.
+ * @param {number} [newParams.amountToSell] - New amount to sell.
+ * @param {number} [newParams.minToReceive] - New minimum amount to receive.
+ * @param {number} [newParams.newPrice] - New price.
+ * @param {string} [newParams.orderType] - Type of the order ('buy' or 'sell').
+ * @param {string} [newParams.expiration] - New expiration date.
+ * @returns {Promise<Object|null>} Operation object or null if no change.
+ * @throws {Error} If account or order not found, or if amounts exceed limits.
  */
 async function buildUpdateOrderOp(accountName, orderId, newParams) {
     const accId = await resolveAccountId(accountName);
@@ -562,6 +580,12 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
 
 /**
  * Update an existing limit order on the blockchain.
+ * @param {string} accountName - The name of the account.
+ * @param {string} privateKey - The private key for signing.
+ * @param {string} orderId - The ID of the order to update.
+ * @param {Object} newParams - The new parameters for the order.
+ * @returns {Promise<Object|null>} Success object or null if skipped.
+ * @throws {Error} If update fails.
  */
 async function updateOrder(accountName, privateKey, orderId, newParams) {
     try {
@@ -600,6 +624,14 @@ async function updateOrder(accountName, privateKey, orderId, newParams) {
 
 /**
  * Build a limit_order_create operation.
+ * @param {string} accountName - The name of the account.
+ * @param {number} amountToSell - The amount of the asset to sell.
+ * @param {string} sellAssetId - The ID of the asset to sell.
+ * @param {number} minToReceive - The minimum amount of the asset to receive.
+ * @param {string} receiveAssetId - The ID of the asset to receive.
+ * @param {string} [expiration] - The expiration date for the order.
+ * @returns {Promise<Object>} The operation object.
+ * @throws {Error} If account not found.
  */
 async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration) {
     const accId = await resolveAccountId(accountName);
@@ -633,6 +665,16 @@ async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToR
 
 /**
  * Create a new limit order on the blockchain.
+ * @param {string} accountName - The name of the account.
+ * @param {string} privateKey - The private key for signing.
+ * @param {number} amountToSell - The amount of the asset to sell.
+ * @param {string} sellAssetId - The ID of the asset to sell.
+ * @param {number} minToReceive - The minimum amount of the asset to receive.
+ * @param {string} receiveAssetId - The ID of the asset to receive.
+ * @param {string} [expiration] - The expiration date for the order.
+ * @param {boolean} [dryRun=false] - Whether to simulate the operation.
+ * @returns {Promise<Object>} The transaction result or dry run info.
+ * @throws {Error} If account not found or creation fails.
  */
 async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false) {
     try {
@@ -681,6 +723,10 @@ async function createOrder(accountName, privateKey, amountToSell, sellAssetId, m
 
 /**
  * Build a limit_order_cancel operation.
+ * @param {string} accountName - The name of the account.
+ * @param {string} orderId - The ID of the order to cancel.
+ * @returns {Promise<Object>} The operation object.
+ * @throws {Error} If account not found.
  */
 async function buildCancelOrderOp(accountName, orderId) {
     const accId = await resolveAccountId(accountName);
@@ -698,6 +744,11 @@ async function buildCancelOrderOp(accountName, orderId) {
 
 /**
  * Cancel an existing limit order on the blockchain.
+ * @param {string} accountName - The name of the account.
+ * @param {string} privateKey - The private key for signing.
+ * @param {string} orderId - The ID of the order to cancel.
+ * @returns {Promise<Object>} Success object with order ID.
+ * @throws {Error} If cancellation fails.
  */
 async function cancelOrder(accountName, privateKey, orderId) {
     try {

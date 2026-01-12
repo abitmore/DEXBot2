@@ -28,11 +28,22 @@ const path = require('path');
 const { ORDER_TYPES, ORDER_STATES } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 
+/**
+ * Ensures that the directory for the given file path exists.
+ * @param {string} filePath - The file path to check.
+ * @private
+ */
 function ensureDirExists(filePath) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+/**
+ * Sanitizes a string to be used as a key in storage.
+ * @param {string} source - The source string.
+ * @returns {string} The sanitized string.
+ * @private
+ */
 function sanitizeKey(source) {
   if (!source) return 'bot';
   return String(source)
@@ -58,6 +69,11 @@ function createBotKey(bot, index) {
   return `${sanitizeKey(identifier)}-${index}`;
 }
 
+/**
+ * Returns the current date and time in ISO format.
+ * @returns {string} ISO timestamp.
+ * @private
+ */
 function nowIso() {
   return new Date().toISOString();
 }
@@ -99,11 +115,22 @@ class AccountOrders {
     }
   }
 
+  /**
+   * Loads the data for the current bot from its profile file.
+   * @returns {Object|null} The loaded data or null if not found.
+   * @private
+   */
   _loadData() {
     // Load the file directly - per-bot files only contain their own bot's data
     return this._readFile(this.profilesPath);
   }
 
+  /**
+   * Reads and parses a JSON file.
+   * @param {string} filePath - The path to the file.
+   * @returns {Object|null} The parsed object or null on failure.
+   * @private
+   */
   _readFile(filePath) {
     try {
       if (!fs.existsSync(filePath)) return null;
@@ -117,6 +144,10 @@ class AccountOrders {
     return null;
   }
 
+  /**
+   * Persists the current data to the profile file.
+   * @private
+   */
   _persist() {
     ensureDirExists(this.profilesPath);
     fs.writeFileSync(this.profilesPath, JSON.stringify(this.data, null, 2) + '\n', 'utf8');
@@ -216,6 +247,13 @@ class AccountOrders {
     });
   }
 
+  /**
+   * Checks if metadata has changed between two metadata objects.
+   * @param {Object} existing - The existing metadata.
+   * @param {Object} next - The new metadata.
+   * @returns {boolean} True if metadata has changed.
+   * @private
+   */
   _metaChanged(existing, next) {
     if (!existing) return true;
     return existing.name !== next.name ||
@@ -225,6 +263,15 @@ class AccountOrders {
       existing.index !== next.index;
   }
 
+  /**
+   * Builds a metadata object for a bot.
+   * @param {Object} bot - The bot configuration.
+   * @param {string} key - The bot key.
+   * @param {number} index - The bot index.
+   * @param {Object} [existing={}] - Existing metadata for preserving createdAt.
+   * @returns {Object} The metadata object.
+   * @private
+   */
   _buildMeta(bot, key, index, existing = {}) {
     const timestamp = nowIso();
     return {
@@ -636,6 +683,12 @@ class AccountOrders {
     return sums;
   }
 
+  /**
+   * Serializes an order object for persistence.
+   * @param {Object} [order={}] - The order object to serialize.
+   * @returns {Object} The serialized order.
+   * @private
+   */
   _serializeOrder(order = {}) {
     const priceValue = Number(order.price !== undefined && order.price !== null ? order.price : 0);
     const sizeValue = Number(order.size !== undefined && order.size !== null ? order.size : 0);

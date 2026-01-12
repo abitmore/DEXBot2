@@ -17,9 +17,17 @@
 const { ORDER_TYPES, ORDER_STATES } = require('../constants');
 
 /**
- * FundSnapshot class - Captures immutable fund state at a point in time
+ * FundSnapshot class - Captures immutable fund state at a point in time.
+ * @class
  */
 class FundSnapshot {
+    /**
+     * Create a new FundSnapshot.
+     * @param {number} timestamp - The timestamp of the snapshot.
+     * @param {string} eventType - The type of event that triggered the snapshot.
+     * @param {Object} context - Event-specific metadata.
+     * @param {Object} manager - The OrderManager instance to capture from.
+     */
     constructor(timestamp, eventType, context, manager) {
         this.timestamp = timestamp;
         this.eventType = eventType;  // 'fill_detected', 'order_created', 'order_cancelled', 'recalc', etc.
@@ -64,7 +72,9 @@ class FundSnapshot {
     }
 
     /**
-     * Calculate consistency metrics
+     * Calculate consistency metrics.
+     * @returns {Object} The calculated metrics.
+     * @private
      */
     _calculateMetrics() {
         const metrics = {};
@@ -117,7 +127,9 @@ class FundSnapshot {
     }
 
     /**
-     * Check if any invariant is violated (with tolerance)
+     * Check if any invariant is violated (with tolerance).
+     * @param {number} [tolerancePercent=0.1] - Tolerance percentage.
+     * @returns {boolean} True if violations are detected.
      */
     hasViolations(tolerancePercent = 0.1) {
         const tolerance = (val) => Math.abs(val) < tolerancePercent / 100;
@@ -131,7 +143,9 @@ class FundSnapshot {
     }
 
     /**
-     * Format snapshot for logging
+     * Format snapshot for logging.
+     * @param {boolean} [detailed=false] - Whether to include detailed fund info.
+     * @returns {string} The formatted string.
      */
     toString(detailed = false) {
         const ts = new Date(this.timestamp).toISOString();
@@ -162,7 +176,8 @@ class FundSnapshot {
     }
 
     /**
-     * Export as JSON for storage
+     * Export as JSON for storage.
+     * @returns {Object} The JSON-serializable object.
      */
     toJSON() {
         return {
@@ -177,7 +192,12 @@ class FundSnapshot {
     }
 
     /**
-     * Static factory method to capture current state
+     * Static factory method to capture current state.
+     * @param {Object} manager - The OrderManager instance.
+     * @param {string} eventType - The type of event.
+     * @param {string|null} [eventId=null] - Optional event ID.
+     * @param {Object} [extraContext={}] - Additional context metadata.
+     * @returns {FundSnapshot} A new snapshot instance.
      */
     static capture(manager, eventType, eventId = null, extraContext = {}) {
         const context = {
@@ -192,9 +212,14 @@ class FundSnapshot {
 }
 
 /**
- * FundSnapshotHistory - Manages a time-series history of fund snapshots
+ * FundSnapshotHistory - Manages a time-series history of fund snapshots.
+ * @class
  */
 class FundSnapshotHistory {
+    /**
+     * Create a new FundSnapshotHistory.
+     * @param {number} [maxSnapshots=1000] - Maximum number of snapshots to keep.
+     */
     constructor(maxSnapshots = 1000) {
         this.snapshots = [];
         this.maxSnapshots = maxSnapshots;
@@ -202,7 +227,8 @@ class FundSnapshotHistory {
     }
 
     /**
-     * Add a snapshot to history (with automatic pruning if max reached)
+     * Add a snapshot to history (with automatic pruning if max reached).
+     * @param {FundSnapshot} snapshot - The snapshot to add.
      */
     add(snapshot) {
         this.snapshots.push(snapshot);
@@ -214,28 +240,38 @@ class FundSnapshotHistory {
     }
 
     /**
-     * Get snapshots in a time range
+     * Get snapshots in a time range.
+     * @param {number} startTime - Start timestamp.
+     * @param {number} endTime - End timestamp.
+     * @returns {Array<FundSnapshot>} Array of snapshots.
      */
     getByTimeRange(startTime, endTime) {
         return this.snapshots.filter(s => s.timestamp >= startTime && s.timestamp <= endTime);
     }
 
     /**
-     * Get snapshots by event type
+     * Get snapshots by event type.
+     * @param {string} eventType - The event type to filter by.
+     * @returns {Array<FundSnapshot>} Array of snapshots.
      */
     getByEventType(eventType) {
         return this.snapshots.filter(s => s.eventType === eventType);
     }
 
     /**
-     * Get the last N snapshots
+     * Get the last N snapshots.
+     * @param {number} [count=10] - Number of snapshots to return.
+     * @returns {Array<FundSnapshot>} Array of snapshots.
      */
     getLast(count = 10) {
         return this.snapshots.slice(-count);
     }
 
     /**
-     * Find fund changes between two snapshots
+     * Find fund changes between two snapshots.
+     * @param {FundSnapshot} snapshot1 - The first snapshot.
+     * @param {FundSnapshot} snapshot2 - The second snapshot.
+     * @returns {Object} Difference metrics.
      */
     static getDifference(snapshot1, snapshot2) {
         return {
@@ -262,7 +298,9 @@ class FundSnapshotHistory {
     }
 
     /**
-     * Detect anomalies in snapshot history
+     * Detect anomalies in snapshot history.
+     * @param {number} [tolerancePercent=0.1] - Tolerance percentage for invariants.
+     * @returns {Array<Object>} Array of detected anomalies.
      */
     detectAnomalies(tolerancePercent = 0.1) {
         const anomalies = [];
@@ -336,7 +374,9 @@ class FundSnapshotHistory {
     }
 
     /**
-     * Generate detailed report of fund history
+     * Generate detailed report of fund history.
+     * @param {number|null} [limit=null] - Limit the number of snapshots in the report.
+     * @returns {Object} The generated report.
      */
     generateReport(limit = null) {
         const relevantSnapshots = limit ? this.snapshots.slice(-limit) : this.snapshots;
@@ -365,7 +405,7 @@ class FundSnapshotHistory {
     }
 
     /**
-     * Print summary to console
+     * Print summary to console.
      */
     printSummary() {
         console.log('\n' + '='.repeat(80));
