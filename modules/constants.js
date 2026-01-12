@@ -201,6 +201,25 @@ let MAINTENANCE = {
 // - 'error': Critical errors only.
 let LOG_LEVEL = 'info';
 
+// Updater Configuration
+let UPDATER = {
+    // Whether the automated updater is enabled
+    ACTIVE: true,
+    // Hardcoded repository URL
+    REPOSITORY_URL: "https://github.com/froooze/DEXBot2.git",
+    // Default branch policy: 'auto' (track current), 'main', 'dev', 'test'
+    BRANCH: "auto",
+    // Automated update schedule using Cron format:
+    // ┌────────────── minute (0 - 59)
+    // │ ┌──────────── hour (0 - 23)
+    // │ │ ┌────────── day of month (1 - 31)
+    // │ │ │ ┌──────── month (1 - 12)
+    // │ │ │ │ ┌────── day of week (0 - 6) (0 is Sunday)
+    // │ │ │ │ │
+    // 0 0 * * 0  (Default: Weekly on Sunday at midnight)
+    SCHEDULE: "0 0 * * 0"
+};
+
 // --- LOCAL SETTINGS OVERRIDES ---
 // Load user-defined settings from profiles/general.settings.json if it exists.
 // This allows preserving settings during updates without git stashing.
@@ -253,6 +272,10 @@ if (fs.existsSync(SETTINGS_FILE)) {
         if (settings.DEFAULT_CONFIG) {
             DEFAULT_CONFIG = { ...DEFAULT_CONFIG, ...settings.DEFAULT_CONFIG };
         }
+
+        if (settings.UPDATER) {
+            UPDATER = { ...UPDATER, ...settings.UPDATER };
+        }
     } catch (err) {
         console.warn(`[WARN] Failed to load local settings from ${SETTINGS_FILE}: ${err.message}`);
     }
@@ -269,5 +292,6 @@ Object.freeze(FEE_PARAMETERS);
 Object.freeze(API_LIMITS);
 Object.freeze(FILL_PROCESSING);
 Object.freeze(MAINTENANCE);
+Object.freeze(UPDATER);
 
-module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE };
+module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, UPDATER };

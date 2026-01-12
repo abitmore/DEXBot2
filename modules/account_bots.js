@@ -4,7 +4,7 @@ const path = require('path');
 const readlineSync = require('readline-sync');
 const readline = require('readline');
 const { execSync } = require('child_process');
-const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL } = require('./constants');
+const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER } = require('./constants');
 
 function parseJsonWithComments(raw) {
     const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');
@@ -132,18 +132,25 @@ function loadGeneralSettings() {
         return {
             LOG_LEVEL: LOG_LEVEL,
             GRID_LIMITS: { ...GRID_LIMITS },
-            TIMING: { ...TIMING }
+            TIMING: { ...TIMING },
+            UPDATER: { ...UPDATER }
         };
     }
     try {
         const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
-        return JSON.parse(raw);
+        const settings = JSON.parse(raw);
+        // Ensure UPDATER section exists
+        if (!settings.UPDATER) {
+            settings.UPDATER = { ...UPDATER };
+        }
+        return settings;
     } catch (err) {
         console.error('Failed to load general settings:', err.message);
         return {
             LOG_LEVEL: LOG_LEVEL,
             GRID_LIMITS: { ...GRID_LIMITS },
-            TIMING: { ...TIMING }
+            TIMING: { ...TIMING },
+            UPDATER: { ...UPDATER }
         };
     }
 }
@@ -669,12 +676,14 @@ async function promptGeneralSettings() {
           console.log(`\x1b[1;33m2) Timing (Core):\x1b[0m  \x1b[38;5;208mFetchInterval:\x1b[0m ${settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN}min, \x1b[38;5;208mSyncDelay:\x1b[0m ${settings.TIMING.SYNC_DELAY_MS}ms, \x1b[38;5;208mLockTimeout:\x1b[0m ${settings.TIMING.LOCK_TIMEOUT_MS}ms`);
           console.log(`\x1b[1;33m3) Timing (Fill):\x1b[0m  \x1b[38;5;208mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS}ms, \x1b[38;5;208mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS}ms, \x1b[38;5;208mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS}ms`);
           console.log(`\x1b[1;33m4) Log lvl:\x1b[0m       \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
+          const updaterStatus = settings.UPDATER.ACTIVE ? `\x1b[32mON\x1b[0m` : `\x1b[31mOFF\x1b[0m`;
+          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mSchedule:\x1b[0m ${settings.UPDATER.SCHEDULE}`);
           console.log('--------------------------------------------------');
           console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
           console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
 
          const choice = (await readInput('Select section to edit or action: ', {
-             validate: (input) => ['1', '2', '3', '4', 's', 'c'].includes(input)
+             validate: (input) => ['1', '2', '3', '4', '5', 's', 'c'].includes(input)
          })).trim().toLowerCase();
 
         if (choice === '\x1b') {
@@ -727,6 +736,22 @@ async function promptGeneralSettings() {
                 } else {
                     console.log('Invalid log level.');
                 }
+                break;
+            case '5':
+                const upActive = await askBoolean('Enable Automated Updater', settings.UPDATER.ACTIVE !== false);
+                if (upActive === '\x1b') break;
+                settings.UPDATER.ACTIVE = upActive;
+
+                console.log('\x1b[37m  Branch: main, dev, test, or auto (detected current)\x1b[0m');
+                const branch = await askRequiredString('Branch', settings.UPDATER.BRANCH);
+                if (branch === '\x1b') break;
+                
+                console.log('\x1b[37m  Schedule (Cron): "0 0 * * 0" (Weekly), "0 0 * * *" (Daily)\x1b[0m');
+                const schedule = await askRequiredString('Schedule', settings.UPDATER.SCHEDULE);
+                if (schedule === '\x1b') break;
+
+                settings.UPDATER.BRANCH = branch;
+                settings.UPDATER.SCHEDULE = schedule;
                 break;
             case 's':
                 saveGeneralSettings(settings);
