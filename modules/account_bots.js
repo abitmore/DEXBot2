@@ -352,7 +352,7 @@ async function askNumber(promptText, defaultValue) {
 async function askWeightDistribution(promptText, defaultValue) {
     const MIN_WEIGHT = -1;
     const MAX_WEIGHT = 2;
-    console.log('\x1b[33m  -1=SuperValley ←→ 0=Valley ←→ 0.5=Neutral ←→ 1=Mountain ←→ 2=SuperMountain\x1b[0m');
+    console.log('  \x1b[38;5;45m-1=SuperValley\x1b[0m ←→ \x1b[38;5;39m0=Valley\x1b[0m ←→ \x1b[38;5;250m0.5=Neutral\x1b[0m ←→ \x1b[38;5;208m1=Mountain\x1b[0m ←→ \x1b[38;5;196m2=SuperMountain\x1b[0m');
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue}]` : '';
     const raw = (await readInput(`${promptText}${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -835,7 +835,7 @@ async function promptGeneralSettings() {
           console.log(`\x1b[1;33m3) Timing (Fill):\x1b[0m  \x1b[38;5;208mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS / 1000}s, \x1b[38;5;208mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS / 1000}s, \x1b[38;5;208mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS / 1000}s`);
           console.log(`\x1b[1;33m4) Log lvl:\x1b[0m       \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `\x1b[32mON\x1b[0m` : `\x1b[31mOFF\x1b[0m`;
-          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mSchedule:\x1b[0m ${settings.UPDATER.SCHEDULE}`);
+          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;39mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mSchedule:\x1b[0m ${settings.UPDATER.SCHEDULE}`);
           console.log('--------------------------------------------------');
           console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
           console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
@@ -900,11 +900,11 @@ async function promptGeneralSettings() {
                 if (upActive === '\x1b') break;
                 settings.UPDATER.ACTIVE = upActive;
 
-                console.log('\x1b[37m  Branch: main, dev, test, or auto (detected current)\x1b[0m');
+                console.log('  \x1b[38;5;250mBranch:\x1b[0m \x1b[32mmain\x1b[0m, \x1b[38;5;208mdev\x1b[0m, \x1b[31mtest\x1b[0m, or \x1b[38;5;39mauto\x1b[0m (detected current)');
                 const branch = await askRequiredString('Branch', settings.UPDATER.BRANCH);
                 if (branch === '\x1b') break;
                 
-                console.log('\x1b[37m  Schedule (Cron): "0 0 * * 0" (Weekly), "0 0 * * *" (Daily)\x1b[0m');
+                console.log('  \x1b[38;5;250mSchedule (Cron):\x1b[0m \x1b[38;5;208m"0 0 * * 0" (Weekly)\x1b[0m, \x1b[38;5;196m"0 0 * * *" (Daily)\x1b[0m');
                 const schedule = await askRequiredString('Schedule', settings.UPDATER.SCHEDULE);
                 if (schedule === '\x1b') break;
 
