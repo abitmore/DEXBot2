@@ -38,7 +38,10 @@ setupGracefulShutdown();
 const PROFILES_BOTS_FILE = path.join(__dirname, 'profiles', 'bots.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
 
-// Initialize profiles directory if it doesn't exist
+/**
+ * Initialize profiles directory if it doesn't exist.
+ * @returns {boolean} True if directory was created.
+ */
 function ensureProfilesDirectory() {
     if (!fs.existsSync(PROFILES_DIR)) {
         fs.mkdirSync(PROFILES_DIR, { recursive: true });
@@ -63,7 +66,9 @@ const CLI_EXAMPLES = [
 ];
 const cliArgs = process.argv.slice(2);
 
-// Show the CLI usage/help text when requested or upon invalid commands.
+/**
+ * Show the CLI usage/help text when requested or upon invalid commands.
+ */
 function printCLIUsage() {
     console.log('Usage: dexbot [command] [bot-name]');
     console.log('Commands:');
@@ -80,7 +85,9 @@ function printCLIUsage() {
     console.log('Envs: RUN_LOOP_MS controls the polling delay; LIVE_BOT_NAME or BOT_NAME selects a single entry.');
 }
 
-// Print curated CLI snippets for quick reference.
+/**
+ * Print curated CLI snippets for quick reference.
+ */
 function printCLIExamples() {
     console.log('CLI Examples:');
     CLI_EXAMPLES.forEach((example, index) => {
@@ -103,7 +110,12 @@ if (cliArgs.includes(CLI_EXAMPLES_FLAG)) {
 
 // `parseJsonWithComments` is provided by `modules/account_bots.js` (shared single-source)
 
-// Load the tracked bot settings file, handling missing files gracefully but throwing on parse errors.
+/**
+ * Load the tracked bot settings file.
+ * @param {Object} [options={}] - Load options.
+ * @param {boolean} [options.silent=false] - Whether to suppress missing file errors.
+ * @returns {Object} Object containing config and filePath.
+ */
 function loadSettingsFile({ silent = false } = {}) {
      if (!fs.existsSync(PROFILES_BOTS_FILE)) {
          if (!silent) {
@@ -122,7 +134,12 @@ function loadSettingsFile({ silent = false } = {}) {
      }
  }
 
-// Persist the tracked bot settings to disk when users edit via CLI.
+/**
+ * Persist the tracked bot settings to disk.
+ * @param {Object} config - The configuration object to save.
+ * @param {string} filePath - The path to the file.
+ * @throws {Error} If saving fails.
+ */
 function saveSettingsFile(config, filePath) {
     try {
         fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + '\n', 'utf8');
@@ -132,7 +149,11 @@ function saveSettingsFile(config, filePath) {
     }
 }
 
-// Normalize the root data structure so we always operate on an array of bot entries.
+/**
+ * Normalize the root data structure to always return an array of bot entries.
+ * @param {Object} settings - The settings object.
+ * @returns {Array<Object>} Array of bot entries.
+ */
 function resolveRawBotEntries(settings) {
     if (!settings || typeof settings !== 'object') return [];
     if (Array.isArray(settings.bots)) return settings.bots;
@@ -140,7 +161,11 @@ function resolveRawBotEntries(settings) {
     return [];
 }
 
-// Decorate each bot entry with metadata (botKey, index, default active) for runtime use.
+/**
+ * Decorate each bot entry with runtime metadata.
+ * @param {Array<Object>} rawEntries - Array of raw bot entries.
+ * @returns {Array<Object>} Normalized bot entries.
+ */
 function normalizeBotEntries(rawEntries) {
     return rawEntries.map((entry, index) => {
         const normalized = { active: entry.active === undefined ? true : !!entry.active, ...entry };
@@ -181,7 +206,14 @@ registerCleanup('BitShares connection', () => {
 // Track attempts to prevent infinite loops while allowing retries after key setup
 let keySetupInProgress = false;
 
-// Launch the account key manager helper with optional BitShares handshake and cleanup.
+/**
+ * Launch the account key manager helper.
+ * @param {Object} [options={}] - Manager options.
+ * @param {boolean} [options.waitForConnection=false] - Whether to wait for BitShares connection.
+ * @param {boolean} [options.exitAfter=false] - Whether to exit the process after completion.
+ * @param {boolean} [options.disconnectAfter=false] - Whether to disconnect BitShares after completion.
+ * @returns {Promise<void>}
+ */
 async function runAccountManager({ waitForConnection = false, exitAfter = false, disconnectAfter = false } = {}) {
      if (waitForConnection) {
          try {
@@ -275,6 +307,12 @@ function validateBotEntry(b, i, src) {
     return null;
 }
 
+/**
+ * Collect all validation issues across a set of bot entries.
+ * @param {Array<Object>} entries - Bot entries.
+ * @param {string} sourceName - Label for the source of entries.
+ * @returns {Object} { errors: string[], warnings: string[] }
+ */
 function collectValidationIssues(entries, sourceName) {
     const errors = [];
     const warnings = [];
@@ -557,7 +595,13 @@ async function handleCLICommands() {
     }
 }
 
-// Run whatever bots are marked active in the tracked settings file.
+/**
+ * Run all bots marked as active in settings.
+ * @param {Object} [options={}] - Run options.
+ * @param {boolean} [options.forceDryRun=false] - Force dry-run mode.
+ * @param {string} [options.sourceName='settings'] - Source label.
+ * @returns {Promise<void>}
+ */
 async function runDefaultBots({ forceDryRun = false, sourceName = 'settings' } = {}) {
     const { config } = loadSettingsFile();
     const entries = resolveRawBotEntries(config);
@@ -565,7 +609,11 @@ async function runDefaultBots({ forceDryRun = false, sourceName = 'settings' } =
     await runBotInstances(normalized, { forceDryRun, sourceName });
 }
 
-// Entry point combining CLI shortcuts and default bot execution.
+/**
+ * Main application entry point for DEXBot2 CLI.
+ * Handles initial setup, command routing, and starting active bots.
+ * @returns {Promise<void>}
+ */
 async function bootstrap() {
     // Ensure profiles directory exists
     const isNewSetup = ensureProfilesDirectory();

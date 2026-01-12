@@ -89,7 +89,12 @@ if (!botName) {
 
 console.log(`[bot.js] Starting bot: ${botName}`);
 
-// Load bot configuration from profiles/bots.json
+/**
+ * Loads the configuration for a specific bot from profiles/bots.json.
+ * @param {string} name - The name of the bot to load.
+ * @returns {Object} The bot configuration entry.
+ * @throws {Error} If profiles/bots.json is missing or bot not found.
+ */
 function loadBotConfig(name) {
     if (!fs.existsSync(PROFILES_BOTS_FILE)) {
         console.error('[bot.js] profiles/bots.json not found. Run: npm run bootstrap:profiles');
@@ -114,7 +119,12 @@ function loadBotConfig(name) {
     }
 }
 
-// Authenticate master password with environment variable check and error handling
+/**
+ * Authenticate the master password using environment variables or an interactive prompt.
+ * Suppresses internal library logs during interactive input for a cleaner UI.
+ * @returns {Promise<string>} The verified master password.
+ * @throws {Error} If authentication fails or no master password is set.
+ */
 async function authenticateMasterPassword() {
     // Check environment variable first
     if (process.env.MASTER_PASSWORD) {

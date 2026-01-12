@@ -68,7 +68,12 @@ const BOTS_JSON = path.join(PROFILES_DIR, 'bots.json');
 const ECOSYSTEM_FILE = path.join(PROFILES_DIR, 'ecosystem.config.js');
 const LOGS_DIR = path.join(PROFILES_DIR, 'logs');
 
-// Generate ecosystem.config.js from bots.json
+/**
+ * Generate ecosystem.config.js from bots.json.
+ * @param {string|null} [botNameFilter=null] - Optional bot name to filter by.
+ * @returns {Array<Object>} The generated app configurations.
+ * @throws {Error} If configuration loading fails.
+ */
 function generateEcosystemConfig(botNameFilter = null) {
     if (!fs.existsSync(BOTS_JSON)) {
         console.error('profiles/bots.json not found. Run: npm run bootstrap:profiles');
@@ -145,7 +150,11 @@ module.exports = { apps: ${JSON.stringify(apps, null, 2)} };
     }
 }
 
-// Authenticate master password (assumes BitShares already connected)
+/**
+ * Authenticate master password without waiting for connection.
+ * @returns {Promise<string>} The authenticated master password.
+ * @throws {Error} If authentication fails or no password is set.
+ */
 async function authenticateWithoutWait() {
     const chainKeys = require('./modules/chain_keys');
 
@@ -162,7 +171,11 @@ async function authenticateWithoutWait() {
     }
 }
 
-// Start PM2 with environment
+/**
+ * Start PM2 with provided environment and configuration.
+ * @param {string} masterPassword - The master password to pass as an environment variable.
+ * @returns {Promise<void>}
+ */
 function startPM2(masterPassword) {
     return new Promise((resolve, reject) => {
         const env = { ...process.env, MASTER_PASSWORD: masterPassword };
@@ -191,7 +204,10 @@ function startPM2(masterPassword) {
     });
 }
 
-// Check if PM2 is installed (local or global)
+/**
+ * Check if PM2 is installed locally or globally.
+ * @returns {boolean} True if PM2 is found.
+ */
 function checkPM2Installed() {
     try {
         require.resolve('pm2');
@@ -208,7 +224,10 @@ function checkPM2Installed() {
     }
 }
 
-// Prompt to install PM2
+/**
+ * Prompt the user to install PM2 globally.
+ * @returns {Promise<void>}
+ */
 async function installPM2() {
     const readline = require('readline');
     const { spawn } = require('child_process');
@@ -244,7 +263,13 @@ async function installPM2() {
     });
 }
 
-// Execute PM2 command safely (no shell injection via proper argument passing)
+/**
+ * Execute a PM2 command safely.
+ * @param {string} action - PM2 action (start, stop, etc.).
+ * @param {string} [target] - The target process name or configuration file.
+ * @returns {Promise<Object>} Command result.
+ * @throws {Error} If action is invalid or command fails.
+ */
 async function execPM2Command(action, target) {
     // Validate action to prevent injection
     const validActions = ['start', 'stop', 'delete', 'restart', 'reload'];
@@ -288,7 +313,12 @@ async function execPM2Command(action, target) {
     });
 }
 
-// Stop PM2 processes (only dexbot ones, requires proper setup)
+/**
+ * Stop PM2 processes based on target.
+ * @param {string} target - 'all' or specific bot name.
+ * @returns {Promise<void>}
+ * @throws {Error} If target not found or stopping fails.
+ */
 async function stopPM2Processes(target) {
     // Ensure ecosystem config exists (validates bot configuration)
     if (!fs.existsSync(BOTS_JSON)) {
@@ -322,7 +352,12 @@ async function stopPM2Processes(target) {
     }
 }
 
-// Delete PM2 processes (only dexbot ones, requires proper setup)
+/**
+ * Delete PM2 processes based on target.
+ * @param {string} target - 'all' or specific bot name.
+ * @returns {Promise<void>}
+ * @throws {Error} If target not found or deleting fails.
+ */
 async function deletePM2Processes(target) {
     // Ensure ecosystem config exists (validates bot configuration)
     if (!fs.existsSync(BOTS_JSON)) {
@@ -359,7 +394,9 @@ async function deletePM2Processes(target) {
     console.log('Run "node dexbot.js bots" to manage bot configurations.');
 }
 
-// Show help text
+/**
+ * Show help text for PM2 CLI usage.
+ */
 function showPM2Help() {
     console.log(`
 Usage: node pm2.js <command> [target]
@@ -381,7 +418,11 @@ Examples:
     `);
 }
 
-// Main
+/**
+ * Main application entry point for PM2 orchestration.
+ * @param {string|null} [botNameFilter=null] - Optional bot name to start.
+ * @returns {Promise<void>}
+ */
 async function main(botNameFilter = null) {
     console.log('='.repeat(50));
     console.log('DEXBot2 PM2 Launcher');
