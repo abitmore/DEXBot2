@@ -102,7 +102,7 @@ node dexbot update
 ```
 
 The update script automatically:
-- Fetches and pulls the latest code from GitHub
+- Fetches and pulls the latest code
 - Installs any new dependencies
 - Reloads PM2 processes if running
 - Ensures your `profiles/` directory is protected and unchanged
@@ -158,7 +158,14 @@ DEXBot2 now supports global parameter management via the interactive editor (`de
 - **Partial Dust Threshold %**: Threshold for identifying small "dust" orders for geometric refilling (Default: `5%`).
 - **Blockchain Fetch Interval**: Frequency of full account balance refreshes (Default: `240 min`).
 - **Sync Delay**: Polling delay for blockchain synchronization (Default: `500ms`).
+- **Lock Timeout**: Order lock auto-expiry timeout (Default: `10s`).
+- **Fill Dedupe Window**: Window for deduplicating same fill events (Default: `5s`).
+- **Fill Cleanup Interval**: Frequency for cleaning old fill records (Default: `10s`).
+- **Fill Record Retention**: Duration to keep persisted fill records (Default: `60 min`).
 - **Log Level**: Global verbosity control (`debug`, `info`, `warn`, `error`).
+- **Updater Active**: Toggle weekly automated repository updates (Default: `ON`).
+- **Updater Branch**: Branch to track for updates (`auto`, `main`, `dev`, `test`).
+- **Updater Schedule**: Cron-formatted schedule for automated updates (Default: `0 0 * * 0` - Weekly on Sunday at midnight).
 
 ## 🎯 PM2 Process Management (Recommended for Production)
 
@@ -294,21 +301,12 @@ DEXBot can automatically refresh your blockchain account balances at regular int
 
 This ensures your bot's internal account balance tracking stays synchronized with the blockchain, especially useful for accounts that receive external transfers or participate in other trading activities.
 
-**Configuration Options** (via `dexbot bots` → Timing (Core)):
-- `SYNC_DELAY_MS`: Delay between blockchain operations (default: 500ms)
-- `ACCOUNT_TOTALS_TIMEOUT_MS`: Timeout for account balance fetch (default: 10000ms)
-- `BLOCKCHAIN_FETCH_INTERVAL_MIN`: Periodic blockchain fetch interval (default: 240 min = 4 hours)
-- `LOCK_TIMEOUT_MS`: Order lock auto-expiry timeout (default: 10000ms)
-
-Or configure directly in `profiles/general.settings.json`:
-```json
-{
-  "TIMING": {
-    "BLOCKCHAIN_FETCH_INTERVAL_MIN": 240,
-    "LOCK_TIMEOUT_MS": 10000
-  }
-}
-```
+### ⬆️ Automated Updater
+DEXBot2 includes an integrated updater that can automatically keep your installation up-to-date with the latest improvements from GitHub. It integrates with PM2 to ensure a seamless update process:
+- **Automatic**: Fetches and pulls latest code, installs dependencies, and reloads PM2 processes.
+- **Configurable**: Choose your branch (`auto`, `main`, `dev`, `test`) and set a custom Cron schedule.
+- **Safe**: Protects your `profiles/` directory and logs all update operations to `update.log`.
+- **Integrated**: Managed as a separate "updater" process in PM2.
 
 ### ⚡ Automatic Grid Recalculation via Threshold Detection
 DEXBot automatically regenerates grid order sizes when market conditions or cached proceeds exceed configurable thresholds. This ensures orders remain optimally sized without manual intervention:
@@ -469,6 +467,8 @@ Below is a short summary of the modules in this repository and what they provide
 - `modules/bitshares_client.js`: Shared BitShares client wrapper and connection utilities (`BitShares`, `createAccountClient`, `waitForConnected`).
 - `modules/btsdex_event_patch.js`: Runtime patch for `btsdex` library to improve history and account event handling.
 - `modules/account_orders.js`: Local persistence for per-bot order-grid snapshots, metadata, and cacheFunds (`profiles/orders/<bot-key>.json`). Manages bot-specific files with AsyncLock-protected atomic updates, reload-before-write TOCTOU prevention, and optional forceReload for fresh disk reads.
+- `modules/bots_file_lock.js`: Thread-safe reading and writing of `bots.json` with in-memory locking to prevent race conditions during concurrent bot management operations.
+- `modules/graceful_shutdown.js`: Centralized graceful shutdown handler. Registers cleanup functions to ensure BitShares connections are closed and state is saved before process termination.
 - `modules/dexbot_class.js`: Core `DEXBot2` class — handles bot initialization, account setup, order placement, fill processing, grid rebalancing, and divergence detection. Fill processing protected by AsyncLock to safely handle concurrent fills. Shared implementation used by both `bot.js` (single-bot) and `dexbot.js` (multi-bot orchestration).
 
 ### 📊 Order Subsystem (`modules/order/`)
@@ -487,6 +487,9 @@ Core order generation, management, and grid algorithms:
 - `modules/order/runner.js`: Standalone calculator runner for multi-pass grid calculations and dry-runs without blockchain interaction. Useful for testing grid logic and debugging price/size calculations. Runs via environment variables `BOT_NAME`, `CALC_CYCLES`, `CALC_DELAY_MS`.
 - `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers). Includes grid utility functions (filter, sum, precision handling, fee calculation), price correction utilities, and fill deduplication.
 - `modules/order/startup_reconcile.js`: Startup grid reconciliation and synchronization. Compares persisted grid state with on-chain open orders to detect offline fills, process pending state changes, and decide recovery strategy (reload vs. continue). Ensures grid state matches blockchain reality on startup before trading resumes.
+- `modules/order/format.js`: Numeric formatting utilities for consistent decimal precision display across logs and output.
+- `modules/order/fund_snapshot.js`: Fund snapshot system. Captures detailed immutable fund state and grid metrics at critical points for post-mortem analysis and anomaly detection.
+- `modules/order/fund_snapshot_persistence.js`: Persistence and analysis engine for fund snapshots. Handles JSONL-based streaming storage, disk loading, and automated auditing/reporting.
 
 ## 🔐 Environment Variables
 
