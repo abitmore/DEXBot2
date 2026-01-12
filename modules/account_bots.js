@@ -295,6 +295,24 @@ async function askUpdaterBranch(promptText, defaultValue) {
 }
 
 /**
+ * Prompts the user for a log level and validates it.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} defaultValue - The default value to use if input is empty.
+ * @returns {Promise<string>} The user input.
+ */
+async function askLogLevel(promptText, defaultValue) {
+    const validLevels = ['debug', 'info', 'warn', 'error'];
+    while (true) {
+        console.log(`Available levels: ${validLevels.join(', ')}`);
+        const value = await askString(promptText, defaultValue);
+        if (value === '\x1b') return '\x1b';
+        const lowered = value.toLowerCase().trim();
+        if (validLevels.includes(lowered)) return lowered;
+        console.log(`Invalid log level. Please choose from: ${validLevels.join(', ')}`);
+    }
+}
+
+/**
  * Prompts the user for an asset symbol.
  * @param {string} promptText - The prompt text to display.
  * @param {string} [defaultValue] - The default value to use if input is empty.
@@ -926,16 +944,9 @@ async function promptGeneralSettings() {
                 settings.TIMING.FILL_RECORD_RETENTION_MS = retain * 1000;
                 break;
             case '4':
-                const levels = ['debug', 'info', 'warn', 'error'];
-                console.log(`Available levels: ${levels.join(', ')}`);
-                const newLevel = await askString('Enter log level', settings.LOG_LEVEL);
+                const newLevel = await askLogLevel('Enter log level', settings.LOG_LEVEL);
                 if (newLevel === '\x1b') break;
-                const lowered = newLevel.toLowerCase();
-                if (levels.includes(lowered)) {
-                    settings.LOG_LEVEL = lowered;
-                } else {
-                    console.log('Invalid log level.');
-                }
+                settings.LOG_LEVEL = newLevel;
                 break;
             case '5':
                 const upActive = await askBoolean('Enable Automated Updater', settings.UPDATER.ACTIVE !== false);
