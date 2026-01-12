@@ -263,6 +263,38 @@ async function askRequiredString(promptText, defaultValue) {
 }
 
 /**
+ * Prompts the user for a cron schedule and validates it.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} defaultValue - The default value to use if input is empty.
+ * @returns {Promise<string>} The user input.
+ */
+async function askCronSchedule(promptText, defaultValue) {
+    while (true) {
+        const value = await askString(promptText, defaultValue);
+        if (value === '\x1b') return '\x1b';
+        if (value && isValidCron(value)) return value.trim();
+        console.log('Invalid Cron schedule format. Please use "min hour dom month dow" (e.g. "0 0 * * 0")');
+    }
+}
+
+/**
+ * Prompts the user for a branch and validates it.
+ * @param {string} promptText - The prompt text to display.
+ * @param {string} defaultValue - The default value to use if input is empty.
+ * @returns {Promise<string>} The user input.
+ */
+async function askUpdaterBranch(promptText, defaultValue) {
+    const validBranches = ['main', 'dev', 'test', 'auto'];
+    while (true) {
+        const value = await askString(promptText, defaultValue);
+        if (value === '\x1b') return '\x1b';
+        const lowered = value.toLowerCase().trim();
+        if (validBranches.includes(lowered)) return lowered;
+        console.log(`Invalid branch. Please choose from: ${validBranches.join(', ')}`);
+    }
+}
+
+/**
  * Prompts the user for an asset symbol.
  * @param {string} promptText - The prompt text to display.
  * @param {string} [defaultValue] - The default value to use if input is empty.
@@ -401,6 +433,16 @@ async function askWeightDistributionNoLegend(promptText, defaultValue) {
  */
 function isMultiplierString(value) {
     return typeof value === 'string' && /^[-￿]*[0-9]+(?:\.[0-9]+)?x[-￿]*$/i.test(value);
+}
+
+/**
+ * Validates a cron expression (5 fields).
+ * @param {string} cron - The cron string to validate.
+ * @returns {boolean} True if valid.
+ */
+function isValidCron(cron) {
+    const cronRegex = /^((\*(\/\d+)?)|(\d+(-\d+)?(,\d+(-\d+)?)*))( ((\*(\/\d+)?)|(\d+(-\d+)?(,\d+(-\d+)?)*))){4}$/;
+    return cronRegex.test(cron.trim());
 }
 
 /**
@@ -901,11 +943,11 @@ async function promptGeneralSettings() {
                 settings.UPDATER.ACTIVE = upActive;
 
                 console.log('  \x1b[38;5;250mBranch:\x1b[0m \x1b[32mmain\x1b[0m, \x1b[38;5;208mdev\x1b[0m, \x1b[31mtest\x1b[0m, or \x1b[38;5;39mauto\x1b[0m (detected current)');
-                const branch = await askRequiredString('Branch', settings.UPDATER.BRANCH);
+                const branch = await askUpdaterBranch('Branch', settings.UPDATER.BRANCH);
                 if (branch === '\x1b') break;
                 
                 console.log('  \x1b[38;5;250mSchedule (Cron):\x1b[0m \x1b[38;5;208m"0 0 * * 0" (Weekly)\x1b[0m, \x1b[38;5;196m"0 0 * * *" (Daily)\x1b[0m');
-                const schedule = await askRequiredString('Schedule', settings.UPDATER.SCHEDULE);
+                const schedule = await askCronSchedule('Schedule', settings.UPDATER.SCHEDULE);
                 if (schedule === '\x1b') break;
 
                 settings.UPDATER.BRANCH = branch;
