@@ -188,7 +188,8 @@ function startPM2(masterPassword) {
             cwd: ROOT,
             env,
             stdio: 'inherit',
-            detached: false
+            detached: false,
+            shell: process.platform === 'win32'
         });
 
         pm2.on('close', code => {
@@ -247,18 +248,69 @@ async function installPM2() {
             }
 
             console.log('Installing PM2...');
-            const npm = spawn('npm', ['install', '-g', 'pm2'], { stdio: 'inherit' });
+            
+            // Helper to run installation command
+            const runInstall = (command, args) => {
+                return new Promise((res, rej) => {
+                    const proc = spawn(command, args, { 
+                        stdio: 'inherit', 
+                        shell: process.platform === 'win32' 
+                    });
+                    proc.on('close', (code) => {
+                        if (code === 0) res();
+                        else rej(code);
+                    });
+                    proc.on('error', (err) => rej(err));
+                });
+            };
 
-            npm.on('close', (code) => {
-                if (code === 0) {
+            // Try standard install first
+            runInstall('npm', ['install', '-g', 'pm2'])
+                .then(() => {
                     console.log('PM2 installed successfully!');
                     resolve();
-                } else {
-                    reject(new Error('PM2 installation failed'));
-                }
-            });
+                })
+                .catch((err) => {
+                    // If failed and not on Windows, try sudo
+                    if (process.platform !== 'win32') {
+                        console.log('\nStandard installation failed (likely permissions). Trying with sudo...');
+                        console.log('This covers Linux and macOS. Please enter your password if prompted:');
+                        
+                        runInstall('sudo', ['npm', 'install', '-g', 'pm2'])
+                            .then(() => {
+                                console.log('PM2 installed successfully with sudo!');
+                                resolve();
+                            })
+                            .catch((finalErr) => {
+                                reject(new Error('PM2 installation failed even with sudo'));
+                            });
+                    } else {
+                        // Windows handling
+                        console.log('\nStandard installation failed (likely permissions).');
+                        console.log('Attempting to install with Administrator privileges...');
+                        console.log('Please accept the UAC dialog to proceed.');
 
-            npm.on('error', reject);
+                        // Run npm install in a new elevated window
+                        // We use timeout so the user can see the result before window closes
+                        const psCommand = "Start-Process cmd -ArgumentList '/c npm install -g pm2 & echo. & echo Installation complete. Closing in 5 seconds... & timeout /t 5' -Verb RunAs -Wait";
+                        
+                        runInstall('powershell', ['-Command', psCommand])
+                            .then(() => {
+                                // Verify installation succeeded since we can't easily get the exit code from the elevated process
+                                if (checkPM2Installed()) {
+                                    console.log('PM2 installed successfully (Elevated)!');
+                                    resolve();
+                                } else {
+                                    reject(new Error('PM2 installation failed or was cancelled in the elevated window.'));
+                                }
+                            })
+                            .catch((winErr) => {
+                                console.error('\nFailed to elevate permissions.');
+                                console.error('Please manually run "npm install -g pm2" as Administrator.');
+                                reject(new Error('PM2 installation failed.'));
+                            });
+                    }
+                });
         });
     });
 }
@@ -286,7 +338,10 @@ async function execPM2Command(action, target) {
         }
 
         const { spawn } = require('child_process');
-        const pm2 = spawn('pm2', args, { stdio: 'pipe' });
+        const pm2 = spawn('pm2', args, { 
+            stdio: 'pipe', 
+            shell: process.platform === 'win32' 
+        });
         
         let stdout = '';
         let stderr = '';
