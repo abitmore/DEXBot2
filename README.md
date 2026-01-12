@@ -98,7 +98,7 @@ To update DEXBot2 to the latest version from the main branch:
 
 ```bash
 # Run the update script from project root
-bash scripts/update.sh
+node dexbot update
 ```
 
 The update script automatically:

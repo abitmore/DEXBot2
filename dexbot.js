@@ -52,7 +52,7 @@ function ensureProfilesDirectory() {
 }
 
 
-const CLI_COMMANDS = ['start', 'reset', 'disable', 'drystart', 'keys', 'bots', 'pm2'];
+const CLI_COMMANDS = ['start', 'reset', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update'];
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -62,7 +62,8 @@ const CLI_EXAMPLES = [
     { title: 'Reset a bot grid', command: 'dexbot reset bot-name', notes: 'Triggers a full grid regeneration for the named bot.' },
     { title: 'Manage keys', command: 'dexbot keys', notes: 'Runs modules/chain_keys.js to add or update master passwords.' },
     { title: 'Edit bot definitions', command: 'dexbot bots', notes: 'Launches the interactive modules/account_bots.js helper for the JSON config.' },
-    { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' }
+    { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' },
+    { title: 'Update DEXBot2', command: 'node dexbot update', notes: 'Fetches latest code, updates dependencies, and reloads PM2.' }
 ];
 const cliArgs = process.argv.slice(2);
 
@@ -79,6 +80,7 @@ function printCLIUsage() {
     console.log('  keys              Launch the chain key helper (modules/chain_keys.js).');
     console.log('  bots              Launch the interactive bot configurator (modules/account_bots.js).');
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
+    console.log('  update            Update DEXBot2 from the repository and reload active bots.');
     console.log('Options:');
     console.log('  --cli-examples    Print curated CLI snippets.');
     console.log('  -h, --help        Show this help text.');
@@ -588,6 +590,9 @@ async function handleCLICommands() {
                 console.error('Error:', err.message);
                 process.exit(1);
             }
+            return true;
+        case 'update':
+            require('./scripts/update.js');
             return true;
         default:
             printCLIUsage();

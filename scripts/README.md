@@ -7,11 +7,11 @@ This guide provides a terminal-focused reference for the maintenance and diagnos
 ## 🛠️ CORE MAINTENANCE
 
 ### Update DEXBot2
-**File:** `update.sh`
+**File:** `update.js`
 **Purpose:** Perform a safe, production-ready update.
 ```bash
 # Pull latest code, install deps, and reload PM2
-bash scripts/update.sh
+node dexbot update
 ```
 *Note: Protects your `profiles/` directory and logs all changes to `profiles/logs/update.log`.*
 
@@ -90,13 +90,6 @@ node scripts/analyze-repo-stats.js
 bash scripts/dev-install.sh
 ```
 
-### Dev update
-**File:** `update-dev.sh`
-**Purpose:** Update code without production side-effects (skips PM2 reloads).
-```bash
-bash scripts/update-dev.sh
-```
-
 ---
 
 ## ⚡ CONVENIENCE WRAPPERS
@@ -118,7 +111,7 @@ Boost your workflow by adding these aliases to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 # DEXBot2 Shortcuts
-alias dbu='bash scripts/update.sh'
+alias dbu='node dexbot update'
 alias dbc='bash scripts/clear-logs.sh'
 alias dbr='bash scripts/clear-orders.sh'
 alias dbv='node scripts/validate_bots.js'
