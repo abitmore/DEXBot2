@@ -592,6 +592,7 @@ async function handleCLICommands() {
             }
             return true;
         case 'update':
+            setSuppressConnectionLog(true);
             require('./scripts/update.js');
             return true;
         default:

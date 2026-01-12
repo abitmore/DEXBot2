@@ -37,12 +37,10 @@ try {
         throw new Error('Not a git repository. Manual update required.');
     }
 
-    // Step 2: Prepare working directory
-    log('Cleaning working directory...');
-    run('git reset --hard');
-    run('git clean -fd');
-
-    // Step 3: Handle Branch policy
+    // Step 2: Fetch and Check for updates
+    log('Checking for updates...');
+    
+    // Handle Branch policy for detection
     if (branch === 'auto') {
         try {
             branch = execSync('git rev-parse --abbrev-ref HEAD').toString().trim();
@@ -64,6 +62,23 @@ try {
         log(`Adding origin remote: ${repoUrl}`);
         run(`git remote add origin ${repoUrl}`);
     }
+
+    run(`git fetch origin ${branch}`);
+    
+    const localHash = execSync('git rev-parse HEAD').toString().trim();
+    const remoteHash = execSync(`git rev-parse origin/${branch}`).toString().trim();
+
+    if (localHash === remoteHash) {
+        log('DEXBot2 is already up to date.');
+        process.exit(0);
+    }
+
+    log('Updates available. Proceeding with update process...');
+
+    // Step 3: Prepare working directory
+    log('Cleaning working directory...');
+    run('git reset --hard');
+    run('git clean -fd');
 
     // Step 4: Pull changes
     log(`Pulling latest changes from ${repoUrl} (branch: ${branch})...`);
@@ -109,6 +124,7 @@ try {
 
 
     log('DEXBot2 update completed successfully.');
+    process.exit(0);
 } catch (err) {
     console.error('==========================================');
     console.error('UPDATE FAILED');
