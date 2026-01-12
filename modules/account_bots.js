@@ -273,7 +273,7 @@ async function askCronSchedule(promptText, defaultValue) {
         const value = await askString(promptText, defaultValue);
         if (value === '\x1b') return '\x1b';
         if (value && isValidCron(value)) return value.trim();
-        console.log('Invalid Cron schedule format. Please use "min hour dom month dow" (e.g. "0 0 * * 0")');
+        console.log('Invalid Cron schedule format. Please use "min hour dom month dow" (e.g. "0 0 * * *")');
     }
 }
 
@@ -957,7 +957,7 @@ async function promptGeneralSettings() {
                 const branch = await askUpdaterBranch('Branch', settings.UPDATER.BRANCH);
                 if (branch === '\x1b') break;
                 
-                console.log('  \x1b[38;5;250mSchedule (Cron):\x1b[0m \x1b[38;5;208m"0 0 * * 0" (Weekly)\x1b[0m, \x1b[38;5;196m"0 0 * * *" (Daily)\x1b[0m');
+                console.log('  \x1b[38;5;250mSchedule (Cron):\x1b[0m \x1b[38;5;196m"0 0 * * *" (Daily)\x1b[0m, \x1b[38;5;208m"0 0 * * 0" (Weekly)\x1b[0m');
                 const schedule = await askCronSchedule('Schedule', settings.UPDATER.SCHEDULE);
                 if (schedule === '\x1b') break;
 

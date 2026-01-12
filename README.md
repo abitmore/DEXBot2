@@ -163,9 +163,9 @@ DEXBot2 now supports global parameter management via the interactive editor (`de
 - **Fill Cleanup Interval**: Frequency for cleaning old fill records (Default: `10s`).
 - **Fill Record Retention**: Duration to keep persisted fill records (Default: `60 min`).
 - **Log Level**: Global verbosity control (`debug`, `info`, `warn`, `error`).
-- **Updater Active**: Toggle weekly automated repository updates (Default: `ON`).
+- **Updater Active**: Toggle daily automated repository updates (Default: `ON`).
 - **Updater Branch**: Branch to track for updates (`auto`, `main`, `dev`, `test`).
-- **Updater Schedule**: Cron-formatted schedule for automated updates (Default: `0 0 * * 0` - Weekly on Sunday at midnight).
+- **Updater Schedule**: Cron-formatted schedule for automated updates (Default: `0 0 * * *` - Daily at midnight).
 
 ## 🎯 PM2 Process Management (Recommended for Production)
 

@@ -216,8 +216,8 @@ let UPDATER = {
     // │ │ │ ┌──────── month (1 - 12)
     // │ │ │ │ ┌────── day of week (0 - 6) (0 is Sunday)
     // │ │ │ │ │
-    // 0 0 * * 0  (Default: Weekly on Sunday at midnight)
-    SCHEDULE: "0 0 * * 0"
+    // 0 0 * * *  (Default: Daily at midnight)
+    SCHEDULE: "0 0 * * *"
 };
 
 // --- LOCAL SETTINGS OVERRIDES ---
