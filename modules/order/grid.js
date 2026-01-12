@@ -666,17 +666,14 @@ class Grid {
             persistedSnap = snapshotResult.persisted;
         }
 
-        // Filter to PARTIAL orders only (excludes ACTIVE/SPREAD which have exact sizes)
-        // PARTIAL orders are where divergence matters most (they indicate partial fills)
+        // Filter to ACTIVE orders only (excludes PARTIAL/VIRTUAL/SPREAD)
+        // Partial orders are excluded from divergence calculation as they are expected to deviate;
+        // they are instead handled by the simple cacheFunds ratio check or the follow-up correction.
         // Must be sorted ASC for calculateRotationOrderSizes to match geometric weight distribution
-        // RC-4: Use snapshot grids instead of live references to prevent concurrent modification
-        // FIX: Guard against null/undefined return from filterOrdersByTypeAndState
         const filterForRms = (orders, type) => {
-            const filtered = filterOrdersByTypeAndState(orders, type, ORDER_STATES.PARTIAL);
-            if (!Array.isArray(filtered)) return [];
-            return filtered
+            const result = Array.isArray(orders) ? orders.filter(o => o && o.type === type && o.state === ORDER_STATES.ACTIVE) : [];
+            return result
                 .filter(o => !o.isDoubleOrder)
-                // FIX: Use null-safe price comparison to prevent NaN in sort
                 .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
         };
         
@@ -700,9 +697,10 @@ class Grid {
             // Safety Gate: If total is 0 or very small during startup, don't try to size
             if (total <= 0) return orders;
 
-            // Subtract existing partial sizes to get residual budget for ideal sizing
-            const partials = sumOrderSizes(calculatedSnap.filter(o => o && o.type === type && o.state === ORDER_STATES.PARTIAL));
-            const budget = Math.max(0, total - partials);
+            // budget represents the total liquid capital + committed capital for this side.
+            // We treat all slots (ACTIVE and PARTIAL) as "to be reset" to their full geometric size
+            // during the divergence reset phase.
+            const budget = Math.max(0, total);
 
             // Calculate geometric ideal sizes based on remaining budget
             const precision = getPrecisionByOrderType(manager.assets, type);
@@ -1008,7 +1006,8 @@ class Grid {
             const newSize = newSizes[i] || 0;
             if (order.size === undefined || Math.abs(order.size - newSize) > 1e-8) {
                 try {
-                    manager._updateOrder({ ...order, size: newSize });
+                    // Update size and reset state to ACTIVE (promotes partials back to full size)
+                    manager._updateOrder({ ...order, size: newSize, state: ORDER_STATES.ACTIVE });
                 } catch (err) {
                     manager.logger?.log?.(`Error updating order ${order.id} size: ${err.message}`, 'warn');
                 }

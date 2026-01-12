@@ -1378,7 +1378,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         // Process each divergent side independently
         for (const orderType of manager._gridSidesUpdated) {
             const ordersOnSide = Array.from(manager.orders.values())
-                .filter(o => o.type === orderType && o.orderId && o.state === ORDER_STATES.ACTIVE);
+                .filter(o => o.type === orderType && o.orderId && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL));
 
             const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
 

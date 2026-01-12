@@ -11,7 +11,10 @@ const {
     getAssetFees,
     allocateFundsByWeights,
     floatToBlockchainInt,
-    blockchainToFloat
+    blockchainToFloat,
+    calculateSpreadFromOrders,
+    countOrdersByType,
+    shouldFlagOutOfSpread
 } = require("./utils");
 const Format = require('./format');
 
@@ -101,6 +104,22 @@ class StrategyEngine {
 
         // Calculate gap slots once for use throughout the rebalance
         const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
+
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 0: SPREAD CONDITION CHECK (Pre-rebalance)
+        // ════════════════════════════════════════════════════════════════════════════════
+        // Determine if spread is too wide before rebalancing. This affects targetCount
+        // in rebalanceSideRobust, allowing an extra slot to narrow the spread.
+        const currentSpread = mgr.calculateCurrentSpread();
+        const baseTarget = mgr.config.targetSpreadPercent + (mgr.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
+        const targetSpread = baseTarget + (Array.from(mgr.orders.values()).some(o => o.isDoubleOrder) ? mgr.config.incrementPercent : 0);
+        const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
+        const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
+        mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
+
+        if (mgr.outOfSpread) {
+            mgr.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${targetSpread.toFixed(2)}%). Extra orderslot enabled for this cycle.`, "info");
+        }
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 1: BOUNDARY DETERMINATION (Initial or Recovery)
@@ -277,6 +296,9 @@ class StrategyEngine {
 
         mgr.logger.log(`[BOUNDARY] Sequence complete: ${result.ordersToPlace.length} place, ${result.ordersToRotate.length} rotate. Gap size: ${gapSlots} slots.`, "info");
 
+        // Reset outOfSpread flag after rebalance completes
+        mgr.outOfSpread = false;
+
         return result;
     }
 
@@ -301,6 +323,9 @@ class StrategyEngine {
         const ordersToUpdate = [];
 
         const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : sideSlots.length;
+        
+        // Consider an extra order slot when out of spread
+        const finalTargetCount = mgr.outOfSpread ? targetCount + 1 : targetCount;
 
         // ════════════════════════════════════════════════════════════════════════════════
         // BUILD SLOT INDEX MAP FOR O(1) LOOKUPS (FIX: O(n²) → O(n) complexity)
@@ -315,7 +340,7 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         const sortedSideSlots = [...sideSlots].sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
         const targetIndices = [];
-        for (let i = 0; i < Math.min(targetCount, sortedSideSlots.length); i++) {
+        for (let i = 0; i < Math.min(finalTargetCount, sortedSideSlots.length); i++) {
             const idx = slotIndexMap.get(sortedSideSlots[i].id);
             if (idx !== undefined) targetIndices.push(idx);
         }
@@ -381,10 +406,13 @@ class StrategyEngine {
         });
         
         // Prioritize PARTIAL orders for rotation, then sort by distance (furthest first)
+        // Prioritize PARTIAL orders for rotation, then sort by distance (INNER FIRST)
+        // This ensures OUTER surpluses are left over for cancellation
         surpluses.sort((a, b) => {
             if (a.state === ORDER_STATES.PARTIAL && b.state !== ORDER_STATES.PARTIAL) return -1;
             if (a.state !== ORDER_STATES.PARTIAL && b.state === ORDER_STATES.PARTIAL) return 1;
-            return type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price;
+            // Market-Closest first (Inner-to-Edge)
+            return type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price;
         });
 
         let budgetRemaining = reactionCap;
@@ -593,8 +621,10 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 5: CANCEL REMAINING SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
+        // Cancel surpluses from the outside in (lowest buy/highest sell first)
         const rotatedOldIds = new Set(ordersToRotate.map(r => r.oldOrder.id));
-        for (const surplus of filteredSurpluses) {
+        for (let i = filteredSurpluses.length - 1; i >= 0; i--) {
+            const surplus = filteredSurpluses[i];
             if (!rotatedOldIds.has(surplus.id)) {
                 ordersToCancel.push({ ...surplus });
                 stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL, orderId: null });

@@ -721,13 +721,14 @@ class DEXBot {
     }
 
     async updateOrdersOnChainBatch(rebalanceResult) {
-        let { ordersToPlace, ordersToRotate = [], ordersToUpdate = [] } = rebalanceResult;
+        let { ordersToPlace, ordersToRotate = [], ordersToUpdate = [], ordersToCancel = [] } = rebalanceResult;
 
         if (this.config.dryRun) {
+            if (ordersToCancel && ordersToCancel.length > 0) this.manager.logger.log(`Dry run: would cancel ${ordersToCancel.length} orders`, 'info');
             if (ordersToPlace && ordersToPlace.length > 0) this.manager.logger.log(`Dry run: would place ${ordersToPlace.length} new orders`, 'info');
             if (ordersToRotate && ordersToRotate.length > 0) this.manager.logger.log(`Dry run: would update ${ordersToRotate.length} orders`, 'info');
             if (ordersToUpdate && ordersToUpdate.length > 0) this.manager.logger.log(`Dry run: would update size of ${ordersToUpdate.length} orders`, 'info');
-            return;
+            return { executed: true, hadRotation: false };
         }
 
         const { assetA, assetB } = this.manager.assets;
@@ -738,6 +739,14 @@ class DEXBot {
          // NOTE: Shadow locks are cooperative - they work only if rebalancing logic checks exclusion sets.
          // See line 281-288 where fillExcludeSet prevents selecting orders in flight.
          const idsToLock = new Set();
+
+         // Add cancellation order IDs
+         if (ordersToCancel && Array.isArray(ordersToCancel)) {
+             ordersToCancel.forEach(o => {
+                 if (o && o.orderId) idsToLock.add(o.orderId);
+                 if (o && o.id) idsToLock.add(o.id);
+             });
+         }
 
          // Add placement order IDs (new virtual orders being placed)
          if (ordersToPlace && Array.isArray(ordersToPlace)) {
@@ -767,6 +776,10 @@ class DEXBot {
 
         try {
             // 1. Build Operations
+            // Priority 1: Cancellations (Outside-In surpluses)
+            await this._buildCancelOps(ordersToCancel, operations, opContexts);
+
+            // Priority 2: Placements and Updates
             await this._buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts);
             await this._buildSizeUpdateOps(ordersToUpdate, operations, opContexts);
 
@@ -852,6 +865,27 @@ class DEXBot {
      * @param {Array} opContexts - Operation contexts array to append to
      * @private
      */
+    /**
+     * Build cancellation operations for surplus orders.
+     * @param {Array} ordersToCancel - Grid orders to cancel
+     * @param {Array} operations - Operations array to append to
+     * @param {Array} opContexts - Operation contexts array to append to
+     * @private
+     */
+    async _buildCancelOps(ordersToCancel, operations, opContexts) {
+        if (!ordersToCancel || ordersToCancel.length === 0) return;
+        for (const order of ordersToCancel) {
+            if (!order.orderId) continue;
+            try {
+                const op = await chainOrders.buildCancelOrderOp(this.account, order.orderId);
+                operations.push(op);
+                opContexts.push({ kind: 'cancel', order });
+            } catch (err) {
+                this.manager.logger.log(`Failed to prepare cancel op for order ${order.id} (${order.orderId}): ${err.message}`, 'error');
+            }
+        }
+    }
+
     async _buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts) {
         if (!ordersToPlace || ordersToPlace.length === 0) return;
         for (const order of ordersToPlace) {
@@ -984,7 +1018,11 @@ class DEXBot {
             const ctx = opContexts[i];
             const res = results[i];
 
-            if (ctx.kind === 'size-update') {
+            if (ctx.kind === 'cancel') {
+                this.manager.logger.log(`Cancelled surplus order ${ctx.order.id} (${ctx.order.orderId})`, 'info');
+                // Synchronization handled by rebalance result stateUpdates applied in caller
+            }
+            else if (ctx.kind === 'size-update') {
                 const ord = this.manager.orders.get(ctx.updateInfo.partialOrder.id);
                 if (ord) this.manager._updateOrder({ ...ord, size: ctx.updateInfo.newSize });
                 this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
