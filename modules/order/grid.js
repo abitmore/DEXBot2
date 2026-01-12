@@ -702,12 +702,10 @@ class Grid {
             if (!manager || activeOrders.length === 0 || !manager.assets) return activeOrders;
             const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
 
-            // 1. Calculate absolute total budget for this side (Chain Total + Cache)
-            // This matches the "all available funds" logic of new orders
+            // 1. Calculate absolute total budget for this side (Chain Total)
+            // Since chainTotal = (free + committed), it already includes cacheFunds proceeds.
             const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
-            const chainTotal = (type === ORDER_TYPES.BUY) ? (snap.chainTotalBuy || 0) : (snap.chainTotalSell || 0);
-            const currentCacheValue = cacheFunds?.[side] || (manager.funds?.cacheFunds?.[side] || 0);
-            const totalBudget = chainTotal + currentCacheValue;
+            const totalBudget = (type === ORDER_TYPES.BUY) ? (snap.chainTotalBuy || 0) : (snap.chainTotalSell || 0);
 
             // 2. Identify ALL slots currently assigned to this side
             // Ideal sizing must use the full slot count to determine geometric share per slot
