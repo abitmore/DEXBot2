@@ -45,6 +45,56 @@ const {
 
 class Grid {
     /**
+     * Unifies budget calculation and fee deduction for all grid sizing scenarios.
+     * Ensures consistent fund context (Allocated vs Total) across the bot.
+     * 
+     * @param {Object} manager - OrderManager instance
+     * @param {string} side - 'buy' or 'sell'
+     * @returns {Object} { budget, precision, config }
+     * @private
+     */
+    static _getSizingContext(manager, side) {
+        if (!manager || !manager.assets) return null;
+        
+        // 1. Refresh allocation to handle percentage-based botFunds correctly
+        // This ensures the sizing budget responds to account balance changes dynamically.
+        if (typeof manager.applyBotFundsAllocation === 'function') {
+            manager.applyBotFundsAllocation();
+        }
+        
+        const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
+        const isBuy = side === 'buy';
+        const type = isBuy ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+
+        // 2. Determine base budget: Always use ALLOCATED funds (respects botFunds %)
+        // This ensures the bot only "thinks" about the capital it is allowed to use.
+        let budget = isBuy ? (snap.allocatedBuy || 0) : (snap.allocatedSell || 0);
+
+        // 3. Standardize BTS Fee Deduction (Issue #15 consistency)
+        // If this side is the BTS-holding side, it must reserve fees for the WHOLE grid.
+        const isBtsSide = (isBuy && manager.config.assetB === 'BTS') || (!isBuy && manager.config.assetA === 'BTS');
+        if (isBtsSide && budget > 0) {
+            const targetBuy = Math.max(0, manager.config.activeOrders?.buy || 1);
+            const targetSell = Math.max(0, manager.config.activeOrders?.sell || 1);
+            const totalTarget = targetBuy + targetSell;
+
+            const btsFees = calculateOrderCreationFees(
+                manager.config.assetA, 
+                manager.config.assetB, 
+                totalTarget, 
+                FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
+            );
+            budget = Math.max(0, budget - btsFees);
+        }
+
+        return {
+            budget,
+            precision: getPrecisionByOrderType(manager.assets, type),
+            config: manager.config
+        };
+    }
+
+    /**
      * RACE CONDITION FIXES: Synchronization primitives
      * These helpers assume manager has async-lock or similar primitives
      */
@@ -432,26 +482,29 @@ class Grid {
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 
         if (manager.applyBotFundsAllocation) manager.applyBotFundsAllocation();
-
-        // RC-5: Take fund snapshot with lock to prevent torn reads from concurrent account updates
-        let snapshot;
-        if (manager._accountLock?.acquire) {
-            snapshot = await manager._accountLock.acquire(() => {
-                return manager.getChainFundsSnapshot();
-            });
-        } else {
-            snapshot = manager.getChainFundsSnapshot();
-        }
-
-        const btsFees = calculateOrderCreationFees(manager.config.assetA, manager.config.assetB, (manager.config.activeOrders.buy + manager.config.activeOrders.sell), FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
-        const { buyFunds, sellFunds } = deductOrderFeesFromFunds(snapshot.allocatedBuy, snapshot.allocatedSell, btsFees, manager.config);
-
+        
         const { A: precA, B: precB } = getPrecisionsForManager(manager.assets);
-        let sizedOrders = calculateOrderSizes(orders, manager.config, sellFunds, buyFunds, minSellSize, minBuySize, precA, precB);
 
-         // Verification of sizes
-         const sells = filterOrdersByType(sizedOrders, ORDER_TYPES.SELL).map(o => Number(o.size || 0));
-         const buys = filterOrdersByType(sizedOrders, ORDER_TYPES.BUY).map(o => Number(o.size || 0));
+        // Use centralized sizing context for both sides
+        const sellCtx = Grid._getSizingContext(manager, 'sell');
+        const buyCtx = Grid._getSizingContext(manager, 'buy');
+
+        if (!sellCtx || !buyCtx) throw new Error('Failed to retrieve sizing context for grid initialization');
+
+        let sizedOrders = calculateOrderSizes(
+            orders, 
+            manager.config, 
+            sellCtx.budget, 
+            buyCtx.budget, 
+            minSellSize, 
+            minBuySize, 
+            precA, 
+            precB
+        );
+
+        // Verification of sizes
+        const sells = filterOrdersByType(sizedOrders, ORDER_TYPES.SELL).map(o => Number(o.size || 0));
+        const buys = filterOrdersByType(sizedOrders, ORDER_TYPES.BUY).map(o => Number(o.size || 0));
         if (checkSizesBeforeMinimum(sells, minSellSize, precA) || checkSizesBeforeMinimum(buys, minBuySize, precB)) {
             throw new Error('Calculated orders fall below minimum allowable size.');
         }
@@ -581,34 +634,35 @@ class Grid {
         if (!manager.assets) return;
         const isBuy = orderType === ORDER_TYPES.BUY;
         const sideName = isBuy ? 'buy' : 'sell';
-        const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
-        const allocatedFunds = isBuy ? snap.chainTotalBuy : snap.chainTotalSell;
+
+        // Use centralized sizing context (respects botFunds % allocation)
+        const ctx = Grid._getSizingContext(manager, sideName);
+        if (!ctx) return;
 
         const orders = Array.from(manager.orders.values())
             .filter(o => o.type === orderType)
             .sort((a, b) => a.price - b.price); // Must be sorted ASC for calculateRotationOrderSizes
         if (orders.length === 0) return;
 
-        const precision = getPrecisionByOrderType(manager.assets, orderType);
-        let fundsForSizing = allocatedFunds;
-
-        if ((isBuy && manager.config.assetB === 'BTS') || (!isBuy && manager.config.assetA === 'BTS')) {
-            const targetCount = Math.max(1, manager.config.activeOrders[sideName]);
-            const btsFees = calculateOrderCreationFees(manager.config.assetA, manager.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
-            fundsForSizing = Math.max(0, allocatedFunds - btsFees);
-        }
-
-        const newSizes = calculateRotationOrderSizes(fundsForSizing, 0, orders.length, orderType, manager.config, 0, precision);
+        const newSizes = calculateRotationOrderSizes(
+            ctx.budget, 
+            0, 
+            orders.length, 
+            orderType, 
+            manager.config, 
+            0, 
+            ctx.precision
+        );
         Grid._updateOrdersForSide(manager, orderType, newSizes, orders);
         manager.recalculateFunds();
 
          // Calculate remaining cache for this side only (independent per side)
-         const totalInputInt = floatToBlockchainInt(allocatedFunds, precision);
+         const totalInputInt = floatToBlockchainInt(ctx.budget, ctx.precision);
          let totalAllocatedInt = 0;
-         newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, precision));
+         newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, ctx.precision));
 
          // RC-1: Update cacheFunds atomically to prevent TOCTOU races
-         const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, precision);
+         const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, ctx.precision);
          await Grid._updateCacheFundsAtomic(manager, sideName, newCacheValue);
     }
 
@@ -697,15 +751,13 @@ class Grid {
         const persistedSells = filterForRms(persistedSnap, ORDER_TYPES.SELL);
 
         // Calculate ideal sizes for each order based on current available budget
-        // RC-7: Re-snapshot funds immediately before calculation to prevent staleness
         const getIdeals = (activeOrders, type) => {
             if (!manager || activeOrders.length === 0 || !manager.assets) return activeOrders;
             const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
 
-            // 1. Calculate absolute total budget for this side (Chain Total)
-            // Since chainTotal = (free + committed), it already includes cacheFunds proceeds.
-            const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
-            const totalBudget = (type === ORDER_TYPES.BUY) ? (snap.chainTotalBuy || 0) : (snap.chainTotalSell || 0);
+            // 1. Get centralized sizing context (respects botFunds % allocation)
+            const ctx = Grid._getSizingContext(manager, side);
+            if (!ctx || ctx.budget <= 0) return activeOrders;
 
             // 2. Identify ALL slots currently assigned to this side
             // Ideal sizing must use the full slot count to determine geometric share per slot
@@ -713,20 +765,19 @@ class Grid {
                 .filter(o => o.type === type)
                 .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
 
-            if (sideSlots.length === 0 || totalBudget <= 0) return activeOrders;
+            if (sideSlots.length === 0) return activeOrders;
 
-            // 3. Standardize funds by deducting BTS fees if applicable (Issue #15 consistency)
-            let fundsForSizing = totalBudget;
-            if ((type === ORDER_TYPES.BUY && manager.config.assetB === 'BTS') || (type === ORDER_TYPES.SELL && manager.config.assetA === 'BTS')) {
-                const targetCount = Math.max(1, manager.config.activeOrders[side]);
-                const btsFees = calculateOrderCreationFees(manager.config.assetA, manager.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
-                fundsForSizing = Math.max(0, totalBudget - btsFees);
-            }
-
-            // 4. Calculate geometric ideals for the ENTIRE side (all slots)
-            const precision = getPrecisionByOrderType(manager.assets, type);
+            // 3. Calculate geometric ideals for the ENTIRE side (all slots)
             try {
-                const allIdealSizes = calculateRotationOrderSizes(fundsForSizing, 0, sideSlots.length, type, manager.config, 0, precision);
+                const allIdealSizes = calculateRotationOrderSizes(
+                    ctx.budget, 
+                    0, 
+                    sideSlots.length, 
+                    type, 
+                    manager.config, 
+                    0, 
+                    ctx.precision
+                );
                 
                 // Map Ideal sizes to IDs for quick lookup
                 const idealMap = new Map();
@@ -943,42 +994,30 @@ class Grid {
      * Calculate simulated size for spread correction order.
      * @param {OrderManager} manager - The manager instance.
      * @param {string} targetType - The type of order (BUY/SELL).
-     * @param {Object|null} [snap=null] - Optional fund snapshot.
+     * @param {Object|null} [snap=null] - Optional fund snapshot (unused in unified logic).
      * @returns {number|null} The calculated size or null if failed.
      */
     static calculateGeometricSizeForSpreadCorrection(manager, targetType, snap = null) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
         
-        // Use consistent total capital context from blockchain snapshot if provided
-        // total = chain.free + chain.committed (allocated to grid)
-        // This ensures spread correction sizing matches rotation sizing (Issue #15 consistency)
-        let total = 0;
-        if (snap) {
-            total = side === 'buy' ? (snap.chainTotalBuy || 0) : (snap.chainTotalSell || 0);
-        } else {
-            const availableFunds = manager.funds?.available?.[side] || 0;
-            const cacheFunds = manager.funds?.cacheFunds?.[side] || 0;
-            const committedFunds = manager.funds?.committed?.grid?.[side] || 0;
-            total = availableFunds + cacheFunds + committedFunds;
-        }
-
-        // Deduct BTS fees from total if current side is the BTS side to prevent over-allocation
-        if (total > 0 && ((side === 'buy' && manager.config.assetB === 'BTS') || (side === 'sell' && manager.config.assetA === 'BTS'))) {
-            const targetCount = Math.max(1, manager.config.activeOrders[side]);
-            const btsFees = calculateOrderCreationFees(manager.config.assetA, manager.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
-            total = Math.max(0, total - btsFees);
-        }
+        // Use centralized sizing context (respects botFunds % allocation)
+        const ctx = Grid._getSizingContext(manager, side);
+        if (!ctx || ctx.budget <= 0 || slotsCount < 1) return null;
 
         // ALLOW slotsCount === 1 to enable spread correction even if a side is completely missing
-        if (total <= 0 || slotsCount < 1) return null;
-
-        const precision = getPrecisionForSide(manager.assets, side);
-        // FIX: Create new object for each array element to prevent shared reference mutations
-        // Array(n).fill(obj) creates array with same object reference, causing mutation issues
         const dummy = Array.from({ length: slotsCount }, () => ({ type: targetType }));
         try {
-            const sized = calculateOrderSizes(dummy, manager.config, side === 'sell' ? total : 0, side === 'buy' ? total : 0, 0, 0, precision, precision);
+            const sized = calculateOrderSizes(
+                dummy, 
+                manager.config, 
+                side === 'sell' ? ctx.budget : 0, 
+                side === 'buy' ? ctx.budget : 0, 
+                0, 
+                0, 
+                ctx.precision, 
+                ctx.precision
+            );
             if (!Array.isArray(sized) || sized.length === 0) {
                 manager.logger?.log?.(`calculateOrderSizes returned invalid result for spread correction`, 'warn');
                 return null;
