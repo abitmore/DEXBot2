@@ -381,18 +381,16 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
          return null;
      }
 
-     // Fallback: if assets missing, use conservative default (0.1% of price)
      if (!assets) {
-         return gridPrice * 0.001;
+         throw new Error("CRITICAL: Assets object required for calculatePriceTolerance");
      }
 
      const precisionA = assets.assetA?.precision;
      const precisionB = assets.assetB?.precision;
 
      // When precision is missing/invalid, bot cannot operate safely on this pair
-     // Return null to signal caller that price tolerance cannot be calculated
-     if (!isValidNumber(precisionA) || !isValidNumber(precisionB)) {
-         return null;
+     if (typeof precisionA !== 'number' || typeof precisionB !== 'number') {
+         throw new Error(`CRITICAL: Missing precision for price tolerance (A=${precisionA}, B=${precisionB})`);
      }
 
     if (!orderSize || orderSize <= 0) {
@@ -470,24 +468,24 @@ function parseChainOrder(chainOrder, assets) {
         type = ORDER_TYPES.BUY;
     } else return null;
 
-    let size = null;
     try {
         if (chainOrder.for_sale !== undefined && chainOrder.for_sale !== null) {
             if (type === ORDER_TYPES.SELL) {
                 // For SELL: for_sale is in assetA (base asset)
-                const prec = assets?.assetA?.precision ?? 0;
-                // NOTE: Return plain number here. Tagging happens at higher-level boundaries
-                // (e.g., in sync_engine) to avoid mixing typed and untyped values.
+                if (typeof assets?.assetA?.precision !== 'number') throw new Error("Asset A precision missing");
+                const prec = assets.assetA.precision;
                 size = blockchainToFloat(Number(chainOrder.for_sale), prec);
             } else {
                 // For BUY: for_sale is in assetB (quote asset we're selling)
-                // IMPORTANT: grid BUY sizes are tracked in assetB units (see ORDER_STATES docs).
-                // So we keep size in assetB units here.
-                const bPrec = assets?.assetB?.precision ?? 0;
+                if (typeof assets?.assetB?.precision !== 'number') throw new Error("Asset B precision missing");
+                const bPrec = assets.assetB.precision;
                 size = blockchainToFloat(Number(chainOrder.for_sale), bPrec);
             }
         }
-    } catch (e) { size = null; }
+    } catch (e) { 
+        console.error(`[utils.js] parseChainOrder failed: ${e.message}`);
+        return null; 
+    }
 
     return { orderId: chainOrder.id, price, type, size };
 }
@@ -513,7 +511,13 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
     const chainSize = toFiniteNumber(parsedChainOrder.size);
     const chainPrice = toFiniteNumber(parsedChainOrder.price);
     const isSell = parsedChainOrder.type === ORDER_TYPES.SELL;
-    const precision = isSell ? (assets?.assetA?.precision ?? 0) : (assets?.assetB?.precision ?? 0);
+    const precision = isSell ? assets?.assetA?.precision : assets?.assetB?.precision;
+    
+    if (typeof precision !== 'number') {
+        logger?.log?.(`Cannot match chain order ${parsedChainOrder.orderId}: missing precision for ${isSell ? 'assetA' : 'assetB'}`, 'warn');
+        return null;
+    }
+    
     const chainInt = floatToBlockchainInt(chainSize, precision);
 
     let bestMatch = null;
@@ -755,12 +759,17 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
 function getMinOrderSize(orderType, assets, factor = 50) {
     const f = Number(factor);
     if (!f || !Number.isFinite(f) || f <= 0) return 0;
+    
     let precision = null;
     if (assets) {
         if ((orderType === ORDER_TYPES.SELL) && assets.assetA) precision = assets.assetA.precision;
         else if ((orderType === ORDER_TYPES.BUY) && assets.assetB) precision = assets.assetB.precision;
     }
-    if (precision === null || precision === undefined || !Number.isFinite(precision)) return 0;
+    
+    if (typeof precision !== 'number') {
+        throw new Error(`CRITICAL: Cannot determine minimum order size for ${orderType} - missing precision`);
+    }
+    
     const smallestUnit = Math.pow(10, -precision);
     return Number(f) * smallestUnit;
 }
@@ -975,7 +984,10 @@ const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
             const getPrec = async (id) => {
                 if (BitShares.assets?.[id]?.precision !== undefined) return BitShares.assets[id].precision;
                 const [a] = await BitShares.db.get_assets([id]).catch(() => []);
-                return a?.precision ?? 0;
+                if (typeof a?.precision !== 'number') {
+                    throw new Error(`Precision missing for asset ${id}`);
+                }
+                return a.precision;
             };
 
             const [basePrec, quotePrec] = await Promise.all([getPrec(base.asset_id), getPrec(quote.asset_id)]);

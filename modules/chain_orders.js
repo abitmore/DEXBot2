@@ -49,7 +49,7 @@ const _accountResolutionCache = new Map();
  * @private
  */
 async function _getAssetPrecision(assetRef) {
-    if (!assetRef) return 0;
+    if (!assetRef) throw new Error("Asset reference required for _getAssetPrecision");
     try {
         if (typeof assetRef === 'string' && assetRef.match(/^1\.3\.\d+$/)) {
             if (BitShares && BitShares.db && typeof BitShares.db.get_assets === 'function') {
@@ -62,8 +62,11 @@ async function _getAssetPrecision(assetRef) {
                 if (Array.isArray(res) && res[0] && typeof res[0].precision === 'number') return res[0].precision;
             }
         }
-    } catch (e) { }
-    return 0;
+    } catch (e) { 
+        console.error(`[_getAssetPrecision] Failed to resolve precision for ${assetRef}: ${e.message}`);
+    }
+    
+    throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors.`);
 }
 
 // Preferred account ID and name for operations (can be changed)
