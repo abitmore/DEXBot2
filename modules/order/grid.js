@@ -929,6 +929,12 @@ class Grid {
 
     /**
      * Grid health check for structural violations.
+     * Monitors for "Dust Partials" that are too small to be traded on-chain.
+     * 
+     * NOTE: Internal gaps (virtual slots between active ones) are no longer
+     * flagged as violations. The "Edge-First" placement strategy intentionally
+     * creates these gaps to maximize grid coverage during fund expansion.
+     *
      * @param {OrderManager} manager - The manager instance.
      * @param {Function|null} [updateOrdersOnChainBatch=null] - Optional batch update function.
      * @returns {Promise<Object>} Health status { buyDust, sellDust }.
@@ -936,27 +942,26 @@ class Grid {
     static async checkGridHealth(manager, updateOrdersOnChainBatch = null) {
         if (!manager) return;
         
-        // Skip health checks during bootstrap to prevent spamming warnings while grid is building
+        // Skip health checks during bootstrap to prevent spamming warnings
         if (manager.isBootstrapping) return { buyDust: false, sellDust: false };
 
         const allOrders = Array.from(manager.orders.values());
-        const sells = allOrders.filter(o => o.type === ORDER_TYPES.SELL).sort((a, b) => a.price - b.price);
-        const buys = allOrders.filter(o => o.type === ORDER_TYPES.BUY).sort((a, b) => b.price - a.price);
+        
+        // Only check for dust partials - these are real structural risks
+        // Gap detection is removed as it conflicts with the Edge-First placement strategy
+        const buyDust = allOrders.some(o => 
+            o.type === ORDER_TYPES.BUY && 
+            o.state === ORDER_STATES.PARTIAL && 
+            Grid.isDustPartial(manager, o)
+        );
+        
+        const sellDust = allOrders.some(o => 
+            o.type === ORDER_TYPES.SELL && 
+            o.state === ORDER_STATES.PARTIAL && 
+            Grid.isDustPartial(manager, o)
+        );
 
-        const logViolations = (orders, label) => {
-            let seenVirtual = false;
-            const hasOppositePending = allOrders.some(o => o.type !== label && o.pendingRotation);
-            for (const o of orders) {
-                if (o.state === ORDER_STATES.VIRTUAL) seenVirtual = true;
-                if ((o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL) && seenVirtual && !hasOppositePending) {
-                    // FIX: Use consistent optional chaining pattern for logger calls
-                    manager.logger?.log?.(`Health violation (${label}): ${o.id} is further than VIRTUAL slot.`, 'warn');
-                }
-            }
-        };
-        logViolations(sells, 'SELL');
-        logViolations(buys, 'BUY');
-        return { buyDust: false, sellDust: false };
+        return { buyDust, sellDust };
     }
 
     /**
