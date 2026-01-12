@@ -623,13 +623,13 @@ async function reconcileStartupOrders({
           const estimatedBtsNeeded = gridSize;  // BUY size is in BTS, no price multiplication needed
           const currentBtsBalance = (manager.accountTotals?.buyFree) || 0;
           
-          if (estimatedBtsNeeded > currentBtsBalance) {
-               logger && logger.log && logger.log(
-                   `Startup: Skipping BUY update ${chainOrder.id} - insufficient balance (need ${Format.formatPercent2(estimatedBtsNeeded)} BTS, have ${Format.formatPercent2(currentBtsBalance)})`,
-                   'warn'
-               );
-              continue;
-          }
+           if (estimatedBtsNeeded > currentBtsBalance) {
+                logger && logger.log && logger.log(
+                    `Startup: Skipping BUY update ${chainOrder.id} - insufficient balance (need ${Format.formatAmount8(estimatedBtsNeeded)} BTS, have ${Format.formatAmount8(currentBtsBalance)})`,
+                    'warn'
+                );
+               continue;
+           }
           
            logger && logger.log && logger.log(
                `Startup: Updating chain BUY ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,

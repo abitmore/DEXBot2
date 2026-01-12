@@ -395,6 +395,10 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
          return null;
      }
 
+    if (!orderSize || orderSize <= 0) {
+        return null;
+    }
+
     let orderSizeA, orderSizeB;
     if (orderType === 'sell' || orderType === 'SELL' || orderType === 'Sell') {
         orderSizeA = orderSize;

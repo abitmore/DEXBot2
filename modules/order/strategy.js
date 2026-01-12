@@ -678,13 +678,16 @@ class StrategyEngine {
      * Process multiple filled orders and trigger rebalancing.
      * @param {Array<Object>} filledOrders - Array of filled order objects.
      * @param {Set<string>} [excludeOrderIds=new Set()] - IDs to exclude from processing.
+     * @param {Object} [options={}] - Processing options.
+     * @param {boolean} [options.skipAccountTotalsUpdate=false] - If true, do not update manager.accountTotals (used during startup sync).
      * @returns {Promise<Object|void>} Rebalance result or void if no rebalance triggered.
      */
-    async processFilledOrders(filledOrders, excludeOrderIds = new Set()) {
+    async processFilledOrders(filledOrders, excludeOrderIds = new Set(), options = {}) {
         const mgr = this.manager;
         if (!mgr || !Array.isArray(filledOrders)) return;
 
-        mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders`, "info");
+        const skipAccountTotals = options.skipAccountTotalsUpdate === true;
+        mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders${skipAccountTotals ? ' (skipping accountTotals update)' : ''}`, "info");
         mgr.pauseFundRecalc();
 
         try {
@@ -767,7 +770,8 @@ class StrategyEngine {
                  mgr.logger.log(`[FUNDS] cacheFunds.${receiveSide} updated: ${Format.formatMetric5(oldCache)} -> ${Format.formatMetric5(mgr.funds.cacheFunds[receiveSide])}`, "debug");
 
                 mgr.accountant.addToChainFree(receiveType, netProceeds, 'fill-proceeds');
-                if (mgr.accountTotals) {
+                
+                if (!skipAccountTotals && mgr.accountTotals) {
                     mgr.accountTotals[receiveSide] = (mgr.accountTotals[receiveSide] || 0) + netProceeds;
                     mgr.accountTotals[spendSide] = (mgr.accountTotals[spendSide] || 0) - filledOrder.size;
                 }

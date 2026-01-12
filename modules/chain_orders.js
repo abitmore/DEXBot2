@@ -873,14 +873,21 @@ async function getOnChainAssetBalances(accountRef, assets) {
             } catch (e) { }
 
             // try to get precision and symbol
-            let precision = 0; let symbol = String(a);
+            let precision = null; let symbol = String(a);
             try {
                 const am = await BitShares.db.get_assets([aid]).catch(() => null);
                 if (Array.isArray(am) && am[0]) {
-                    precision = typeof am[0].precision === 'number' ? am[0].precision : precision;
+                    precision = typeof am[0].precision === 'number' ? am[0].precision : null;
                     symbol = am[0].symbol || symbol;
                 }
-            } catch (e) { }
+            } catch (e) { 
+                console.warn(`[chain_orders.js] Failed to fetch asset data for ${aid}:`, e.message);
+            }
+
+            if (precision === null) {
+                console.error(`[chain_orders.js] CRITICAL: Could not determine precision for asset ${aid}. Skipping balance entry to prevent massive scaling errors.`);
+                continue;
+            }
 
             const freeRaw = freeInt.get(String(aid)) || 0;
             const lockedRaw = lockedInt.get(String(aid)) || 0;

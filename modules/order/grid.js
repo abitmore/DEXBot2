@@ -698,30 +698,47 @@ class Grid {
 
         // Calculate ideal sizes for each order based on current available budget
         // RC-7: Re-snapshot funds immediately before calculation to prevent staleness
-        const getIdeals = (orders, type) => {
-            if (!manager || orders.length === 0 || !manager.assets) return orders;
+        const getIdeals = (activeOrders, type) => {
+            if (!manager || activeOrders.length === 0 || !manager.assets) return activeOrders;
             const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
 
-            // RC-7: Re-take fund snapshot immediately before calculation to use fresh data
-            // Prevents using stale data from 30+ lines of prior calculation
+            // 1. Calculate absolute total budget for this side (Chain Total + Cache)
+            // This matches the "all available funds" logic of new orders
+            const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
+            const chainTotal = (type === ORDER_TYPES.BUY) ? (snap.chainTotalBuy || 0) : (snap.chainTotalSell || 0);
             const currentCacheValue = cacheFunds?.[side] || (manager.funds?.cacheFunds?.[side] || 0);
-            const currentGridValue = manager.funds?.total?.grid?.[side] || 0;
-            const total = currentCacheValue + currentGridValue;
+            const totalBudget = chainTotal + currentCacheValue;
 
-            // Safety Gate: If total is 0 or very small during startup, don't try to size
-            if (total <= 0) return orders;
+            // 2. Identify ALL slots currently assigned to this side
+            // Ideal sizing must use the full slot count to determine geometric share per slot
+            const sideSlots = Array.from(manager.orders.values())
+                .filter(o => o.type === type)
+                .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
 
-            // budget represents the total liquid capital + committed capital for this side.
-            // We treat all slots (ACTIVE and PARTIAL) as "to be reset" to their full geometric size
-            // during the divergence reset phase.
-            const budget = Math.max(0, total);
+            if (sideSlots.length === 0 || totalBudget <= 0) return activeOrders;
 
-            // Calculate geometric ideal sizes based on remaining budget
+            // 3. Standardize funds by deducting BTS fees if applicable (Issue #15 consistency)
+            let fundsForSizing = totalBudget;
+            if ((type === ORDER_TYPES.BUY && manager.config.assetB === 'BTS') || (type === ORDER_TYPES.SELL && manager.config.assetA === 'BTS')) {
+                const targetCount = Math.max(1, manager.config.activeOrders[side]);
+                const btsFees = calculateOrderCreationFees(manager.config.assetA, manager.config.assetB, targetCount, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
+                fundsForSizing = Math.max(0, totalBudget - btsFees);
+            }
+
+            // 4. Calculate geometric ideals for the ENTIRE side (all slots)
             const precision = getPrecisionByOrderType(manager.assets, type);
             try {
-                const idealSizes = calculateRotationOrderSizes(budget, 0, orders.length, type, manager.config, 0, precision);
-                return orders.map((o, i) => ({ ...o, size: idealSizes[i] }));
-            } catch (e) { return orders; }
+                const allIdealSizes = calculateRotationOrderSizes(fundsForSizing, 0, sideSlots.length, type, manager.config, 0, precision);
+                
+                // Map Ideal sizes to IDs for quick lookup
+                const idealMap = new Map();
+                sideSlots.forEach((slot, i) => idealMap.set(slot.id, allIdealSizes[i]));
+
+                // Return the activeOrders subset with their true geometric ideal sizes
+                return activeOrders.map(o => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
+            } catch (e) { 
+                return activeOrders; 
+            }
         };
 
         // Calculate RMS divergence metric for each side

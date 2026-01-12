@@ -1267,7 +1267,9 @@ class DEXBot {
             // Process fills discovered during startup sync (happened while bot was offline)
             if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
                 this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                await this.manager.processFilledOrders(syncResult.filledOrders);
+                // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
+                // and already reflect these fills. Adding them again would cause fund inflation.
+                await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
             }
 
             // Reconcile existing on-chain orders to the configured target counts.
