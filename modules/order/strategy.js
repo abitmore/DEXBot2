@@ -110,15 +110,22 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // Determine if spread is too wide before rebalancing. This affects targetCount
         // in rebalanceSideRobust, allowing an extra slot to narrow the spread.
-        const currentSpread = mgr.calculateCurrentSpread();
-        const baseTarget = mgr.config.targetSpreadPercent + (mgr.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-        const targetSpread = baseTarget + (Array.from(mgr.orders.values()).some(o => o.isDoubleOrder) ? mgr.config.incrementPercent : 0);
-        const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
-        const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
-        mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
+        // CRITICAL: Only perform this check if NOT processing a fill. Fills naturally 
+        // widen the spread; we should let the replacement rotation close the gap
+        // using base spreadSlots first. (Fix: Issue #17)
+        if (fills.length === 0) {
+            const currentSpread = mgr.calculateCurrentSpread();
+            const baseTarget = mgr.config.targetSpreadPercent + (mgr.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
+            const targetSpread = baseTarget + (Array.from(mgr.orders.values()).some(o => o.isDoubleOrder) ? mgr.config.incrementPercent : 0);
+            const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
+            const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
+            mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
 
-        if (mgr.outOfSpread) {
-            mgr.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${targetSpread.toFixed(2)}%). Extra orderslot enabled for this cycle.`, "info");
+            if (mgr.outOfSpread) {
+                mgr.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${targetSpread.toFixed(2)}%). Extra orderslot enabled for this cycle.`, "info");
+            }
+        } else {
+            mgr.outOfSpread = false;
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
