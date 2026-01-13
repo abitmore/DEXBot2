@@ -346,27 +346,16 @@ class DEXBot {
                             // Check grid health only if pipeline is empty (no pending fills, no pending operations)
                             const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
                             if (pipelineStatus.isEmpty) {
-                                const healthResult = await this.manager.checkGridHealth(
-                                    this.updateOrdersOnChainBatch.bind(this)
-                                );
-                                if (healthResult.buyDust && healthResult.sellDust) {
-                                    await this.manager.persistGrid();
-                                }
-
-                                // Check spread condition after fill processing completes
-                                // PROACTIVE: immediately corrects spread if needed
-                                const spreadResult = await this.manager.checkSpreadCondition(
-                                    BitShares,
-                                    this.updateOrdersOnChainBatch.bind(this)
-                                );
-                                if (spreadResult && spreadResult.ordersPlaced > 0) {
-                                    this._log(`✓ Spread correction after fill: ${spreadResult.ordersPlaced} order(s) placed`);
-                                    await this.manager.persistGrid();
-                                }
-                            } else {
-                                this.manager.logger.log(`Deferring grid health check: ${pipelineStatus.reasons.join(', ')}`, 'debug');
-                            }
-                        }
+                                 const healthResult = await this.manager.checkGridHealth(
+                                     this.updateOrdersOnChainBatch.bind(this)
+                                 );
+                                 if (healthResult.buyDust && healthResult.sellDust) {
+                                     await this.manager.persistGrid();
+                                 }
+                             } else {
+                                 this.manager.logger.log(`Deferring grid health check: ${pipelineStatus.reasons.join(', ')}`, 'debug');
+                             }
+                         }
 
                         // Only run divergence checks if rotation was completed
                         if (anyRotations) {
