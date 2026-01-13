@@ -4,16 +4,11 @@ A sophisticated market making bot for the BitShares Decentralized Exchange (DEX)
 
 ## 🚀 Features
 
-- **Staggered Order Grid**: Creates geometric order grids around market price for efficient market making with configurable weight distribution.
-- **Atomic Fill Processing**: Handles partial fills and complete fills with immediate state synchronization and capital efficiency.
-- **Automatic Grid Recalculation**: Intelligently regenerates grid order sizes when market conditions or proceeds exceed configurable thresholds.
-- **Persistent Grid Caching**: Caches grid calculations and order prices across bot restarts to reduce blockchain queries.
-- **Offline Fill Detection**: Automatically detects and processes orders that were filled while the bot was offline.
-- **Multi-Bot Support**: Run multiple bots simultaneously on different trading pairs with race-condition protection via AsyncLock.
-- **PM2 Process Management**: Automatic restart and monitoring for production use with ecosystem config generation.
-- **Master Password Security**: Encrypted key storage with RAM-only password handling—never written to disk.
-- **Automated Updater**: Built-in update system with configurable branches and cron schedules, integrated with PM2.
-- **Advanced Monitoring**: Periodic blockchain fetches, fill deduplication, and fund snapshots for anomaly detection.
+- **Adaptive Geometric Grids**: Dynamic order scaling with configurable weight distribution and automated recalculation based on market volatility.
+- **Atomic Execution & Recovery**: Instant state sync for partial fills and automatic detection of orders filled while offline to ensure capital efficiency.
+- **Persistent State Management**: Caches grid configurations and price levels across restarts to ensure continuity and minimize blockchain queries.
+- **Enterprise-Grade Security**: AES-encrypted key storage with RAM-only password handling—sensitive data is never written to disk.
+- **Production-Ready Orchestration**: Native PM2 integration for multi-bot management with built-in auto-updates and real-time monitoring.
 
 ## 🔥 Quick Start
 
