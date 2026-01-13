@@ -895,7 +895,7 @@ async function promptGeneralSettings() {
           console.log(`\x1b[1;33m3) Timing (Fill):\x1b[0m  \x1b[38;5;208mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS / 1000}s, \x1b[38;5;208mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS / 1000}s, \x1b[38;5;208mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS / 1000}s`);
           console.log(`\x1b[1;33m4) Log lvl:\x1b[0m       \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `\x1b[32mON\x1b[0m` : `\x1b[31mOFF\x1b[0m`;
-          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;39mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mSchedule:\x1b[0m ${settings.UPDATER.SCHEDULE}`);
+          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mSchedule:\x1b[0m ${settings.UPDATER.SCHEDULE}`);
           console.log('--------------------------------------------------');
           console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
           console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
