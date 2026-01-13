@@ -373,7 +373,9 @@ async function testStartupDualDustTrigger() {
     const { reconcileStartupOrders } = require('../modules/order/startup_reconcile');
     
     // We need to mock getChainFundsSnapshot for the dust check
+    // Unified logic uses this to calculate ideal sizes
     mgr.getChainFundsSnapshot = () => ({
+        allocatedBuy: 1000, allocatedSell: 1000, // Use allocated for unified sizing
         chainFreeBuy: 1000, chainFreeSell: 1000,
         committedChainBuy: 5, committedChainSell: 1
     });

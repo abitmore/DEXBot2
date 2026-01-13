@@ -729,12 +729,8 @@ async function reconcileStartupOrders({
     const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
 
     if (buyPartials.length > 0 && sellPartials.length > 0) {
-        const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
-        const budgetBuy = (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) + (manager.funds.cacheFunds?.buy || 0);
-        const budgetSell = (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) + (manager.funds.cacheFunds?.sell || 0);
-
-        const buyHasDust = buyPartials.length > 0 && manager.strategy.hasAnyDust(buyPartials, "buy", budgetBuy);
-        const sellHasDust = sellPartials.length > 0 && manager.strategy.hasAnyDust(sellPartials, "sell", budgetSell);
+        const buyHasDust = manager.strategy.hasAnyDust(buyPartials, "buy");
+        const sellHasDust = manager.strategy.hasAnyDust(sellPartials, "sell");
 
         if (buyHasDust && sellHasDust) {
             logger && logger.log && logger.log("[STARTUP] Dual-side dust partials detected. Triggering full rebalance.", "info");

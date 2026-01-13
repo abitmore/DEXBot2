@@ -233,22 +233,30 @@ class StrategyEngine {
         // Total Side Budget = (ChainFree + Committed) - BTS_Fees (if asset is BTS)
         // Available Pool = funds.available + cacheFunds
 
-        const snap = mgr.getChainFundsSnapshot();
-        const hasBtsPair = (mgr.config.assetA === "BTS" || mgr.config.assetB === "BTS");
-        const { btsFeeReservationBuy, btsFeeReservationSell } = this.calculateBtsFeeReservations(hasBtsPair, mgr.config);
+        const Grid = require('./grid');
+        const buyCtx = Grid._getSizingContext(mgr, 'buy');
+        const sellCtx = Grid._getSizingContext(mgr, 'sell');
 
-        // Total Side Budget: (Free + Committed) with BTS fees deducted
-        const budgetBuy = Math.max(0, (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) - btsFeeReservationBuy);
-        const budgetSell = Math.max(0, (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) - btsFeeReservationSell);
+        if (!buyCtx || !sellCtx) {
+            mgr.logger.log("[BUDGET] Failed to retrieve unified sizing context. Aborting rebalance.", "error");
+            return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
+        }
+
+        const budgetBuy = buyCtx.budget;
+        const budgetSell = sellCtx.budget;
+
+        // Ensure availablePool is calculated with current allocations (respects botFunds %)
+        if (mgr.applyBotFundsAllocation) mgr.applyBotFundsAllocation();
 
         // Available Pool: Liquid funds for net capital increases
         // funds.available already has BTS fees and other reserves subtracted
-        const availablePoolBuy = (mgr.funds.available?.buy || 0) + (mgr.funds.cacheFunds?.buy || 0);
-        const availablePoolSell = (mgr.funds.available?.sell || 0) + (mgr.funds.cacheFunds?.sell || 0);
+        // In some test environments, accountTotals might be mocked directly while funds is not.
+        // Fallback to manager.accountTotals for robustness during testing if funds available is not set.
+        const availablePoolBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0) + (mgr.funds?.cacheFunds?.buy ?? 0);
+        const availablePoolSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0) + (mgr.funds?.cacheFunds?.sell ?? 0);
 
         if (mgr.logger.level === 'debug') {
-            mgr.logger.log(`[BUDGET] Buy: total=${Format.formatAmount8(budgetBuy)}, available=${Format.formatAmount8(availablePoolBuy)}, btsFeeReserved=${Format.formatAmount8(btsFeeReservationBuy)}`, 'debug');
-            mgr.logger.log(`[BUDGET] Sell: total=${Format.formatAmount8(budgetSell)}, available=${Format.formatAmount8(availablePoolSell)}, btsFeeReserved=${Format.formatAmount8(btsFeeReservationSell)}`, 'debug');
+            mgr.logger.log(`[BUDGET] Unified Sizing: Buy=${Format.formatAmount8(budgetBuy)}, Sell=${Format.formatAmount8(budgetSell)} (Respects botFunds % and Fees)`, 'debug');
         }
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
@@ -550,7 +558,16 @@ class StrategyEngine {
             // ATOMIC ROTATION: Both old→VIRTUAL and new→ACTIVE are pushed to stateUpdates,
             // ensuring they are applied together within pauseFundRecalc block in rebalance().
             // This prevents crash window between marking old as VIRTUAL and new as ACTIVE.
-            ordersToRotate.push({ oldOrder: { ...currentSurplus }, newPrice: shortageSlot.price, newSize: size, newGridId: shortageSlot.id, type: type });
+            ordersToRotate.push({ 
+                oldOrder: { ...currentSurplus }, 
+                newPrice: shortageSlot.price, 
+                newSize: size, 
+                newGridId: shortageSlot.id, 
+                type: type,
+                // Unified rotation structure
+                from: { ...currentSurplus },
+                to: { ...shortageSlot, size: size }
+            });
             const vacatedUpdate = { ...currentSurplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
             stateUpdates.push(vacatedUpdate);
             stateUpdates.push({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
@@ -653,25 +670,36 @@ class StrategyEngine {
      * Checks if any of the provided partial orders are below the dust threshold.
      * @param {Array<Object>} partials - Array of partial orders.
      * @param {string} side - 'buy' or 'sell'.
-     * @param {number} budget - Total budget for the side.
      * @returns {boolean} True if any dust partials are found.
      */
-    hasAnyDust(partials, side, budget) {
+    hasAnyDust(partials, side) {
         const mgr = this.manager;
+        const Grid = require('./grid');
         const type = side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+        
+        // 1. Get centralized sizing context (respects botFunds % allocation and fees)
+        const ctx = Grid._getSizingContext(mgr, side);
+        if (!ctx || ctx.budget <= 0) return false;
+
         const allOrders = Array.from(mgr.orders.values());
         
-        // CRITICAL: Slots must be sorted Market-to-Edge to match allocateFundsByWeights assumption
-        // This sorting ensures index 0 always points to the market-closest order
+        // 2. Slots must be sorted Market-to-Edge to match geometric weight distribution
         const slots = allOrders.filter(o => o.type === type)
             .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
         if (slots.length === 0) return false;
-        const precision = getPrecisionForSide(mgr.assets, side);
-        const sideWeight = mgr.config.weightDistribution[side];
 
-        // Slots are pre-sorted Market-to-Edge, so allocateFundsByWeights puts maximum weight at index 0
-        const idealSizes = allocateFundsByWeights(budget, slots.length, sideWeight, mgr.config.incrementPercent / 100, false, 0, precision);
+        // 3. Calculate geometric ideals for the ENTIRE side (all slots)
+        // This ensures the dust threshold matches the exact target size for each slot.
+        const idealSizes = allocateFundsByWeights(
+            ctx.budget, 
+            slots.length, 
+            mgr.config.weightDistribution[side], 
+            mgr.config.incrementPercent / 100, 
+            type === ORDER_TYPES.BUY, 
+            0, 
+            ctx.precision
+        );
 
         return partials.some(p => {
             const idx = slots.findIndex(s => s.id === p.id);
@@ -814,24 +842,8 @@ class StrategyEngine {
                 const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
 
                 if (buyPartials.length > 0 || sellPartials.length > 0) {
-                    const snap = mgr.getChainFundsSnapshot ? mgr.getChainFundsSnapshot() : {};
-
-                    let btsFeeReservationBuy = 0;
-                    let btsFeeReservationSell = 0;
-                    try {
-                        const reservations = this.calculateBtsFeeReservations(hasBtsPair, mgr.config);
-                        btsFeeReservationBuy = reservations.btsFeeReservationBuy;
-                        btsFeeReservationSell = reservations.btsFeeReservationSell;
-                    } catch (err) {
-                        mgr.logger.log(`Warning: Could not calculate BTS fees for dust detection: ${err.message}`, "warn");
-                    }
-
-                    // Use same budget calculation as rebalance() (chainFree + committed - btsFeeReservation)
-                    const budgetBuy = Math.max(0, (snap.chainFreeBuy || 0) + (snap.committedChainBuy || 0) - btsFeeReservationBuy);
-                    const budgetSell = Math.max(0, (snap.chainFreeSell || 0) + (snap.committedChainSell || 0) - btsFeeReservationSell);
-
-                    const buyHasDust = buyPartials.length > 0 && this.hasAnyDust(buyPartials, "buy", budgetBuy);
-                    const sellHasDust = sellPartials.length > 0 && this.hasAnyDust(sellPartials, "sell", budgetSell);
+                    const buyHasDust = buyPartials.length > 0 && this.hasAnyDust(buyPartials, "buy");
+                    const sellHasDust = sellPartials.length > 0 && this.hasAnyDust(sellPartials, "sell");
 
                     if (buyHasDust && sellHasDust) {
                         mgr.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");
