@@ -263,18 +263,31 @@ async function askRequiredString(promptText, defaultValue) {
 }
 
 /**
- * Prompts the user for a cron schedule and validates it.
+ * Prompts the user for a cron schedule using interval and time.
  * @param {string} promptText - The prompt text to display.
  * @param {string} defaultValue - The default value to use if input is empty.
  * @returns {Promise<string>} The user input.
  */
 async function askCronSchedule(promptText, defaultValue) {
+    const current = parseCronToDelta(defaultValue);
+    
+    // Interval Prompt
+    const days = await askNumberWithBounds('  Interval (days)', current.days, 1, 31);
+    if (days === '\x1b') return '\x1b';
+    
+    // Time Prompt
+    let time = current.time;
     while (true) {
-        const value = await askString(promptText, defaultValue);
-        if (value === '\x1b') return '\x1b';
-        if (value && isValidCron(value)) return value.trim();
-        console.log('Invalid Cron schedule format. Please use "min hour dom month dow" (e.g. "0 0 * * *")');
+        const rawTime = await askString('  Time (HH:mm)', current.time);
+        if (rawTime === '\x1b') return '\x1b';
+        if (/^([01]\d|2[0-3]):([0-5]\d)$/.test(rawTime)) {
+            time = rawTime;
+            break;
+        }
+        console.log('  Invalid time format. Use HH:mm (24h)');
     }
+    
+    return deltaToCron(days, time);
 }
 
 /**
@@ -461,6 +474,41 @@ function isMultiplierString(value) {
 function isValidCron(cron) {
     const cronRegex = /^((\*(\/\d+)?)|(\d+(-\d+)?(,\d+(-\d+)?)*))( ((\*(\/\d+)?)|(\d+(-\d+)?(,\d+(-\d+)?)*))){4}$/;
     return cronRegex.test(cron.trim());
+}
+
+/**
+ * Converts a cron string to a readable format (days delta and time).
+ * Only supports simple daily/multi-day patterns like "0 0 * /N * *".
+ * @param {string} cron 
+ * @returns {Object} { days, time }
+ */
+function parseCronToDelta(cron) {
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length !== 5) return { days: 1, time: '00:00' };
+    
+    const min = parts[0].padStart(2, '0');
+    const hour = parts[1].padStart(2, '0');
+    let days = 1;
+    
+    if (parts[2].startsWith('*/')) {
+        days = parseInt(parts[2].substring(2)) || 1;
+    } else if (parts[2] === '*') {
+        days = 1;
+    }
+    
+    return { days, time: `${hour}:${min}` };
+}
+
+/**
+ * Converts days delta and time to a cron string.
+ * @param {number} days 
+ * @param {string} time - format "HH:mm"
+ * @returns {string} cron string
+ */
+function deltaToCron(days, time) {
+    const [hour, min] = time.split(':').map(s => parseInt(s));
+    const dayPart = days > 1 ? `*/${days}` : '*';
+    return `${min} ${hour} ${dayPart} * *`;
 }
 
 /**
@@ -895,7 +943,8 @@ async function promptGeneralSettings() {
           console.log(`\x1b[1;33m3) Timing (Fill):\x1b[0m  \x1b[38;5;208mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS / 1000}s, \x1b[38;5;208mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS / 1000}s, \x1b[38;5;208mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS / 1000}s`);
           console.log(`\x1b[1;33m4) Log lvl:\x1b[0m       \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `\x1b[32mON\x1b[0m` : `\x1b[31mOFF\x1b[0m`;
-          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mSchedule:\x1b[0m ${settings.UPDATER.SCHEDULE}`);
+          const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");
+          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mInterval:\x1b[0m ${currentSched.days}d, \x1b[38;5;208mTime:\x1b[0m ${currentSched.time}`);
           console.log('--------------------------------------------------');
           console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
           console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
@@ -953,15 +1002,15 @@ async function promptGeneralSettings() {
                 if (upActive === '\x1b') break;
                 settings.UPDATER.ACTIVE = upActive;
 
-                console.log('  \x1b[38;5;250mBranch:\x1b[0m \x1b[32mmain\x1b[0m, \x1b[38;5;208mdev\x1b[0m, \x1b[31mtest\x1b[0m, or \x1b[38;5;39mauto\x1b[0m (detected current)');
+                 console.log('  \x1b[38;5;250mBranch:\x1b[0m \x1b[32mmain\x1b[0m, \x1b[38;5;208mdev\x1b[0m, \x1b[31mtest\x1b[0m, or \x1b[38;5;39mauto\x1b[0m (detected current)');
                 const branch = await askUpdaterBranch('Branch', settings.UPDATER.BRANCH);
                 if (branch === '\x1b') break;
                 
-                console.log('  \x1b[38;5;250mSchedule (Cron):\x1b[0m \x1b[38;5;196m"0 0 * * *" (Daily)\x1b[0m, \x1b[38;5;208m"0 0 * * 0" (Weekly)\x1b[0m');
                 const schedule = await askCronSchedule('Schedule', settings.UPDATER.SCHEDULE);
                 if (schedule === '\x1b') break;
 
                 settings.UPDATER.BRANCH = branch;
+
                 settings.UPDATER.SCHEDULE = schedule;
                 break;
             case 's':
@@ -1085,4 +1134,4 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-module.exports = { main, parseJsonWithComments };
+module.exports = { main, parseJsonWithComments, parseCronToDelta, deltaToCron };

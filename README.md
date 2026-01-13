@@ -169,7 +169,8 @@ DEXBot2 now supports global parameter management via the interactive editor (`de
 - **Log Level**: Global verbosity control (`debug`, `info`, `warn`, `error`).
 - **Updater Active**: Toggle daily automated repository updates (Default: `ON`).
 - **Updater Branch**: Branch to track for updates (`auto`, `main`, `dev`, `test`).
-- **Updater Schedule**: Cron-formatted schedule for automated updates (Default: `0 0 * * *` - Daily at midnight).
+- **Updater Interval**: Frequency of automated updates in days (Default: `1 day`).
+- **Updater Time**: Specific time of day to run the update (Default: `00:00`).
 
 ## 🎯 PM2 Process Management (Recommended for Production)
 
