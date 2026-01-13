@@ -4,12 +4,16 @@ A sophisticated market making bot for the BitShares Decentralized Exchange (DEX)
 
 ## 🚀 Features
 
-- **Staggered Order Grid**: Creates geometric order grids around market price for efficient market making.
-- **Dynamic Rebalancing**: Automatically adjusts orders after fills to maintain optimal spread.
-- **Multi-Bot Support**: Run multiple bots simultaneously on different trading pairs with race-condition protection.
-- **PM2 Process Management**: Automatic restart and monitoring for production use.
-- **Master Password Security**: Encrypted key storage with RAM-only password handling.
-- **Race Condition Prevention**: AsyncLock-based concurrency control for safe multi-bot operations and file persistence.
+- **Staggered Order Grid**: Creates geometric order grids around market price for efficient market making with configurable weight distribution.
+- **Atomic Fill Processing**: Handles partial fills and complete fills with immediate state synchronization and capital efficiency.
+- **Automatic Grid Recalculation**: Intelligently regenerates grid order sizes when market conditions or proceeds exceed configurable thresholds.
+- **Persistent Grid Caching**: Caches grid calculations and order prices across bot restarts to reduce blockchain queries.
+- **Offline Fill Detection**: Automatically detects and processes orders that were filled while the bot was offline.
+- **Multi-Bot Support**: Run multiple bots simultaneously on different trading pairs with race-condition protection via AsyncLock.
+- **PM2 Process Management**: Automatic restart and monitoring for production use with ecosystem config generation.
+- **Master Password Security**: Encrypted key storage with RAM-only password handling—never written to disk.
+- **Automated Updater**: Built-in update system with configurable branches and cron schedules, integrated with PM2.
+- **Advanced Monitoring**: Periodic blockchain fetches, fill deduplication, and fund snapshots for anomaly detection.
 
 ## 🔥 Quick Start
 
