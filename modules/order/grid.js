@@ -38,6 +38,7 @@ const {
     getMinOrderSize,
     calculateAvailableFundsValue,
     calculateSpreadFromOrders,
+    allocateFundsByWeights,
     countOrdersByType,
     shouldFlagOutOfSpread,
     derivePrice
@@ -932,28 +933,55 @@ class Grid {
      * @returns {Promise<Object>} Health status { buyDust, sellDust }.
      */
     static async checkGridHealth(manager, updateOrdersOnChainBatch = null) {
-        if (!manager) return;
+        if (!manager) return { buyDust: false, sellDust: false };
         
         // Skip health checks during bootstrap to prevent spamming warnings
         if (manager.isBootstrapping) return { buyDust: false, sellDust: false };
 
         const allOrders = Array.from(manager.orders.values());
         
-        // Only check for dust partials - these are real structural risks
-        // Gap detection is removed as it conflicts with the Edge-First placement strategy
-        const buyDust = allOrders.some(o => 
-            o.type === ORDER_TYPES.BUY && 
-            o.state === ORDER_STATES.PARTIAL && 
-            Grid.isDustPartial(manager, o)
-        );
-        
-        const sellDust = allOrders.some(o => 
-            o.type === ORDER_TYPES.SELL && 
-            o.state === ORDER_STATES.PARTIAL && 
-            Grid.isDustPartial(manager, o)
-        );
+        const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
+        const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
+
+        const buyDust = buyPartials.length > 0 && Grid._hasAnyDust(manager, buyPartials, ORDER_TYPES.BUY);
+        const sellDust = sellPartials.length > 0 && Grid._hasAnyDust(manager, sellPartials, ORDER_TYPES.SELL);
 
         return { buyDust, sellDust };
+    }
+
+    /**
+     * Internal helper to check for dust partials on a specific side.
+     * @private
+     */
+    static _hasAnyDust(manager, partials, type) {
+        if (!partials || partials.length === 0) return false;
+        
+        const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
+        const ctx = Grid._getSizingContext(manager, side);
+        if (!ctx || ctx.budget <= 0) return false;
+
+        const sideSlots = Array.from(manager.orders.values())
+            .filter(o => o.type === type)
+            .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+
+        if (sideSlots.length === 0) return false;
+
+        const idealSizes = allocateFundsByWeights(
+            ctx.budget,
+            sideSlots.length,
+            manager.config.weightDistribution[side],
+            manager.config.incrementPercent / 100,
+            type === ORDER_TYPES.BUY,
+            0,
+            ctx.precision
+        );
+
+        return partials.some(p => {
+            const idx = sideSlots.findIndex(s => s.id === p.id);
+            if (idx === -1) return false;
+            const threshold = idealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            return p.size < threshold;
+        });
     }
 
     /**
