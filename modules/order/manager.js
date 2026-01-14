@@ -87,11 +87,16 @@ class OrderManager {
          this._correctionsLock = new AsyncLock();
          this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
          this._fillProcessingLock = new AsyncLock();  // Prevents concurrent fill processing
-         this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
+          this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
          this._accountTotalsLock = new AsyncLock();  // Prevents race condition in waitForAccountTotals
+         this._gridLock = new AsyncLock();  // Prevents concurrent grid mutations
+         this._fundsSemaphore = new AsyncLock();  // Prevents concurrent fund updates
+         this._spreadCountLock = new AsyncLock();  // Prevents concurrent spread count updates
          this._recentlyRotatedOrderIds = new Set();
+
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalcDepth = 0;  // Counter for safe nested pausing (not boolean)
+        this._persistenceWarning = null;
 
         // Metrics for observability
         this._metrics = {
@@ -585,7 +590,7 @@ class OrderManager {
 
     /**
      * Resume fund recalculation after batch updates.
-     * Recalculation only happens when depth reaches 0 (all pauses resolved).
+     * Recalculate only happens when depth reaches 0 (all pauses resolved).
      * All orders updated during pause are now reflected in fund calculations.
      */
     resumeFundRecalc() {
@@ -598,7 +603,15 @@ class OrderManager {
     }
 
     /**
+     * Proxy for accountant._verifyFundInvariants.
+     */
+    _verifyFundInvariants(chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
+        return this.accountant._verifyFundInvariants(this, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
+    }
+
+    /**
      * Identifies which virtual orders should be activated on-chain initially.
+
      * @returns {Array<Object>} Array of orders to activate.
      */
     getInitialOrdersToActivate() {
