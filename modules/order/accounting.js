@@ -56,49 +56,7 @@ class Accountant {
      * This is THE MASTER FUND CALCULATION and must be called after any state change.
      * Called automatically by _updateOrder(), but can be manually triggered to verify consistency.
      *
-     * Also captures a fund snapshot for audit trail (if snapshot logging enabled).
-     *
      * @returns {void}
-     *
-     * FUND CATEGORIES:
-     * ========================================================================
-     * 1. CHAIN FUNDS (blockchain source of truth)
-     *    - chainTotal: Total balance in account (on-chain)
-     *    - chainFree: Unallocated balance (on-chain, not locked in orders)
-     *    - chainCommitted: Locked in on-chain orders (orderId exists)
-     *    Formula: chainTotal = chainFree + chainCommitted
-     *
-     * 2. GRID FUNDS (orders we placed, might be on-chain or not yet)
-     *    - gridBuy/gridSell: ACTIVE + PARTIAL orders (including those not on-chain yet)
-     *    - Includes both on-chain orders and pending placements
-     *
-     * 3. VIRTUAL FUNDS (in grid but not on-chain)
-     *    - virtualBuy/virtualSell: VIRTUAL orders (pure grid state, no blockchain)
-     *
-     * 4. AVAILABLE FUNDS (what we can spend right now)
-     *    - Calculated as: max(0, chainFree - virtual - btsFeesOwed - btsFeesReservation)
-     *    - Excludes: VIRTUAL order reserves, pending BTS fees, fee buffers
-     *    - Excludes: cacheFunds (kept separate, added back for rebalancing decisions)
-     *    - Gates new orders from being placed if insufficient
-     *
-     * CALCULATION FLOW:
-     * 1. Walk all orders, sum sizes by (state, orderId presence)
-     * 2. Calculate committed amounts from sums
-     * 3. Infer total from free + committed
-     * 4. Compare inferred total vs. blockchain's reported total
-     *    - Use max of inferred vs reported (prevents undercounting)
-     * 5. Calculate available funds based on totals and committed
-     *
-     * WHY THIS MATTERS:
-     * If recalculateFunds() is not called after order state changes:
-     * - Phantom funds appear (orders deducted but still counted as available)
-     * - Available funds go negative (impossible to place new orders)
-     * - Inconsistent state between blockchain and grid (causes sync errors)
-     *
-     * FUND CONSISTENCY CHECK (use to detect leaks):
-     *   gridBuy_committed + gridSell_committed + available.buy <= chainTotal.buy
-     *   gridBuy_committed + gridSell_committed + available.sell <= chainTotal.sell
-     * If this fails, funds are leaking somewhere.
      */
     recalculateFunds() {
         const mgr = this.manager;
@@ -108,17 +66,15 @@ class Accountant {
         let chainBuy = 0, chainSell = 0;
         let virtualBuy = 0, virtualSell = 0;
 
-        // AUTO-SYNC SPREAD COUNT: Centralized logic ensures spread counts are always accurate
+        // AUTO-SYNC SPREAD COUNT
         mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
 
-        // Use indices for faster iteration - only walk active/partial/virtual states
         const activePartialIds = [
             ...(mgr._ordersByState[ORDER_STATES.ACTIVE] || new Set()),
             ...(mgr._ordersByState[ORDER_STATES.PARTIAL] || new Set())
         ];
         const virtualIds = [...(mgr._ordersByState[ORDER_STATES.VIRTUAL] || new Set())];
 
-        // Calculate grid and chain committed funds from active/partial orders
         for (const orderId of activePartialIds) {
             const order = mgr.orders.get(orderId);
             if (!order) continue;
@@ -134,7 +90,6 @@ class Accountant {
             }
         }
 
-        // Calculate virtual funds from virtual orders
         for (const orderId of virtualIds) {
             const order = mgr.orders.get(orderId);
             if (!order) continue;
@@ -148,107 +103,57 @@ class Accountant {
             }
         }
 
-        // Get chain free balances (unallocated funds per blockchain)
         const chainFreeBuy = mgr.accountTotals?.buyFree || 0;
         const chainFreeSell = mgr.accountTotals?.sellFree || 0;
 
-        // Set committed (funds locked in orders)
         mgr.funds.committed.grid = { buy: gridBuy, sell: gridSell };
         mgr.funds.committed.chain = { buy: chainBuy, sell: chainSell };
-
-        // Set virtual (grid orders not on-chain yet)
         mgr.funds.virtual = { buy: virtualBuy, sell: virtualSell };
 
-        // Set totals based on accountable funds only (chainFree + gridCommitted)
-        // We use gridCommitted because chainFree is optimistically reduced by all ACTIVE grid orders,
-        // even those without an orderId yet (in-flight). This ensures the sum remains stable.
         const chainTotalBuy = chainFreeBuy + gridBuy;
         const chainTotalSell = chainFreeSell + gridSell;
 
-        mgr.funds.total.chain = {
-            buy: chainTotalBuy,
-            sell: chainTotalSell
-        };
+        mgr.funds.total.chain = { buy: chainTotalBuy, sell: chainTotalSell };
         mgr.funds.total.grid = { buy: gridBuy + virtualBuy, sell: gridSell + virtualSell };
 
-        // Set available (what we can spend right now)
         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
 
-        // Verify fund invariants to catch leaks early - but only if not in a batch update
         if (mgr._pauseFundRecalcDepth === 0) {
             this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, gridBuy, gridSell);
-
-            // Capture fund snapshot for audit trail (non-intrusive, only in batch-completion mode)
-            try {
-                if (mgr.logger?.level === 'debug' && mgr._snapshotHistory) {
-                    mgr.logger.captureSnapshot(mgr, 'fund_recalc_complete', null, {
-                        gridSize: mgr.orders?.size || 0,
-                        activeCount: mgr._ordersByState?.[require('../constants').ORDER_STATES.ACTIVE]?.size || 0
-                    });
-                }
-            } catch (err) {
-                // Silently ignore snapshot errors - they shouldn't break core logic
-            }
         }
     }
 
     /**
      * Verify critical fund tracking invariants.
-     * These checks catch fund leaks and inconsistencies early.
-     *
-     * INVARIANT 1: chainTotal = chainFree + chainCommitted
-     * INVARIANT 2: available <= chainFree
-     * INVARIANT 3: gridCommitted <= chainTotal
-     *
-     * TOLERANCE: Dynamic based on asset precision. Allows 2 units of slack
-     * (one unit from each operand's rounding). This accounts for the fact that
-     * both chainFree and chainCommitted are calculated independently and may
-     * each have minor rounding differences.
      */
     _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, gridBuy, gridSell) {
-         // 1. Dynamic tolerance based on asset precision (slack for rounding)
-         //    Since chainFree and gridCommitted are calculated independently,
-         //    each may have minor rounding differences. We allow 2 units of slack
-         //    (one from each operand). Example: asset precision 8 → slack of 2e-8
-         const buyPrecision = mgr.assets?.assetB?.precision;
-         const sellPrecision = mgr.assets?.assetA?.precision;
+         const buyPrecision = mgr.assets?.assetB?.precision || 8;
+         const sellPrecision = mgr.assets?.assetA?.precision || 8;
          const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
          const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
+         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
-        // 2. Percentage-based tolerance to handle market fees and timing offsets
-        const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
-
-        // INVARIANT 1: chainTotal matches blockchain snapshot (with bot-only view limitation)
-        // We use gridCommitted because chainFree is optimistically reduced by all ACTIVE grid orders.
+        // INVARIANT 1: Drift detection
         const expectedBuy = chainFreeBuy + gridBuy;
-        const actualBuy = mgr.accountTotals?.buy ?? expectedBuy; // Use snapshotted total if available
+        const actualBuy = mgr.accountTotals?.buy ?? expectedBuy;
         const diffBuy = Math.abs(actualBuy - expectedBuy);
         const allowedBuyTolerance = Math.max(precisionSlackBuy, actualBuy * PERCENT_TOLERANCE);
 
         if (diffBuy > allowedBuyTolerance && mgr.accountTotals?.buy !== null) {
-            if (mgr._metrics?.invariantViolations) mgr._metrics.invariantViolations.buy++;
-             mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)}). May indicate non-bot activity or missed fills.`,
-                 'warn'
-             );
+             mgr.logger?.log?.(`WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'warn');
         }
 
-        // INVARIANT 1: chainTotal (SELL side)
         const expectedSell = chainFreeSell + gridSell;
         const actualSell = mgr.accountTotals?.sell ?? expectedSell;
         const diffSell = Math.abs(actualSell - expectedSell);
         const allowedSellTolerance = Math.max(precisionSlackSell, actualSell * PERCENT_TOLERANCE);
 
         if (diffSell > allowedSellTolerance && mgr.accountTotals?.sell !== null) {
-            if (mgr._metrics?.invariantViolations) mgr._metrics.invariantViolations.sell++;
-             mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)}). May indicate non-bot activity or missed fills.`,
-                 'warn'
-             );
+             mgr.logger?.log?.(`WARNING: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'warn');
         }
 
-        // INVARIANT 4: Cache funds should not exceed physical free funds
+        // INVARIANT 2: Surplus check
         const cacheBuy = mgr.funds?.cacheFunds?.buy || 0;
         const cacheSell = mgr.funds?.cacheFunds?.sell || 0;
         if (cacheBuy > chainFreeBuy + allowedBuyTolerance) {
@@ -257,352 +162,145 @@ class Accountant {
         if (cacheSell > chainFreeSell + allowedSellTolerance) {
              mgr.logger?.log?.(`WARNING: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'warn');
         }
-
-        // INVARIANT 2: Available should not exceed chainFree
-        if (mgr.funds.available.buy > chainFreeBuy + allowedBuyTolerance) {
-             mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (BUY available): available (${Format.formatAmount8(mgr.funds.available.buy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`,
-                 'warn'
-             );
-        }
-        if (mgr.funds.available.sell > chainFreeSell + allowedSellTolerance) {
-             mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (SELL available): available (${Format.formatAmount8(mgr.funds.available.sell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`,
-                 'warn'
-             );
-        }
-
-        // INVARIANT 3: Grid committed should not exceed chain total
-        const gridCommittedBuy = mgr.funds.committed.grid.buy;
-        const gridCommittedSell = mgr.funds.committed.grid.sell;
-        if (gridCommittedBuy > expectedBuy + allowedBuyTolerance) {
-             mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (BUY grid): gridCommitted (${Format.formatAmount8(gridCommittedBuy)}) > chainTotal (${Format.formatAmount8(expectedBuy)})`,
-                 'warn'
-             );
-        }
-        if (gridCommittedSell > expectedSell + allowedSellTolerance) {
-             mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (SELL grid): gridCommitted (${Format.formatAmount8(gridCommittedSell)}) > chainTotal (${Format.formatAmount8(expectedSell)})`,
-                 'warn'
-             );
-        }
     }
 
     /**
-     * Check if sufficient funds exist AND atomically deduct.
-     * This prevents race conditions where multiple operations check the same balance
-     * and all think they have enough funds, leading to negative balances.
-     *
-     * ATOMIC CHECK-AND-DEDUCT:
-     * This pattern solves the TOCTOU (Time-of-Check vs Time-of-Use) race where:
-     * 1. Op A checks: buyFree=1000 (has 1000)
-     * 2. Op B checks: buyFree=1000 (has 1000)  ← Race condition!
-     * 3. Op A deducts: buyFree=400
-     * 4. Op B deducts: buyFree=-600 ← PROBLEM!
-     *
-     * With atomic check-and-deduct, either both checks succeed or one fails.
-     *
-     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
-     * @param {number} size - Amount to deduct
-     * @param {string} [operation='move'] - Operation name for logging
-     * @returns {boolean} true if deduction succeeded, false if insufficient funds
+     * Check if sufficient funds exist AND atomically deduct (FREE portion only).
      */
     tryDeductFromChainFree(orderType, size, operation = 'move') {
         const mgr = this.manager;
         const isBuy = orderType === ORDER_TYPES.BUY;
         const key = isBuy ? 'buyFree' : 'sellFree';
 
-        if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) {
-            mgr.logger.log(
-                `[chainFree check-and-deduct] ${orderType} order ${operation}: accountTotals not available`,
-                'warn'
-            );
-            return false;
-        }
+        if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
 
         const current = Number(mgr.accountTotals[key]) || 0;
-
-        // Check: Do we have enough?
         if (current < size) {
-             mgr.logger.log(
-                 `[chainFree check-and-deduct] ${orderType} order ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`,
-                 'warn'
-             );
+             mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
             return false;
         }
 
-        // Deduct: Now that we've passed the check, deduct
         mgr.accountTotals[key] = Math.max(0, current - size);
-
-        // Optimistically update the total balance field to maintain invariant until next fetch
-        const totalKey = isBuy ? 'buy' : 'sell';
-        if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
-            mgr.accountTotals[totalKey] = Math.max(0, mgr.accountTotals[totalKey] - size);
-        }
-
         return true;
     }
 
-
     /**
-     * Add an amount back to the optimistic chainFree balance.
-     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL.
-     * @param {number} size - Amount to add back.
-     * @param {string} [operation='release'] - Operation name for logging.
-     * @returns {boolean} True if addition succeeded.
+     * Add an amount back to the optimistic chainFree balance (FREE portion only).
      */
     addToChainFree(orderType, size, operation = 'release') {
          const mgr = this.manager;
          const isBuy = orderType === ORDER_TYPES.BUY;
          const key = isBuy ? 'buyFree' : 'sellFree';
 
-         if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) {
-             mgr.logger?.log?.(
-                 `[chainFree check-and-add] ${orderType} order ${operation}: accountTotals not available`,
-                 'warn'
-             );
-             return false;
-         }
+         if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
 
          const oldFree = Number(mgr.accountTotals[key]) || 0;
-         
-         // Guard against NaN
-         if (isNaN(oldFree) || isNaN(size)) {
-             mgr.logger?.log?.(
-                 `[chainFree check-and-add] ${orderType} order ${operation}: Invalid numeric values (oldFree=${oldFree}, size=${size})`,
-                 'warn'
-             );
-             return false;
-         }
+         mgr.accountTotals[key] = oldFree + size;
 
-          mgr.accountTotals[key] = oldFree + size;
-
-          // Optimistically update the total balance field to maintain invariant until next fetch
-          const totalKey = isBuy ? 'buy' : 'sell';
-          if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
-              mgr.accountTotals[totalKey] = mgr.accountTotals[totalKey] + size;
-          }
-
-          if (mgr.logger && mgr.logger.level === 'debug') {
-
+         if (mgr.logger && mgr.logger.level === 'debug') {
               mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])}`, 'debug');
          }
-         
-          return true;
-      }
+         return true;
+    }
 
     /**
-     * Safely modify cache funds using the manager's fund semaphore.
-     * Prevents race conditions during concurrent fill/rotation processing.
-     * 
-     * @param {string} side - 'buy' or 'sell'
-     * @param {number} delta - Amount to add (positive) or subtract (negative)
-     * @param {string} [operation='update'] - Operation name for logging
-     * @returns {Promise<number>} New cache fund value
+     * Adjust both total and free balances (for fills, fees, deposits).
      */
-    async modifyCacheFunds(side, delta, operation = 'update') {
+    adjustTotalBalance(orderType, delta, operation) {
         const mgr = this.manager;
-        if (!mgr.funds.cacheFunds) {
-            mgr.funds.cacheFunds = { buy: 0, sell: 0 };
+        const isBuy = (orderType === ORDER_TYPES.BUY);
+        const freeKey = isBuy ? 'buyFree' : 'sellFree';
+        const totalKey = isBuy ? 'buy' : 'sell';
+
+        if (!mgr.accountTotals) return;
+
+        const oldFree = Number(mgr.accountTotals[freeKey]) || 0;
+        mgr.accountTotals[freeKey] = Math.max(0, oldFree + delta);
+
+        if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
+            const oldTotal = Number(mgr.accountTotals[totalKey]) || 0;
+            mgr.accountTotals[totalKey] = Math.max(0, oldTotal + delta);
         }
 
-        const executeUpdate = () => {
-            const oldValue = mgr.funds.cacheFunds[side] || 0;
-            const newValue = Math.max(0, oldValue + delta);
-            mgr.funds.cacheFunds[side] = newValue;
-            
-            if (mgr.logger && mgr.logger.level === 'debug') {
-                mgr.logger.log(`[CACHEFUNDS] ${side} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
-            }
-            return newValue;
-        };
-
-        if (mgr._fundsSemaphore?.acquire) {
-            return await mgr._fundsSemaphore.acquire(executeUpdate);
-        } else {
-            return executeUpdate();
+        if (mgr.logger && mgr.logger.level === 'debug') {
+            mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(mgr.accountTotals[totalKey])}, Free: ${Format.formatAmount8(mgr.accountTotals[freeKey])}`, 'debug');
         }
     }
 
     /**
-     * Update optimistic free balance during order state transitions.
+     * Update optimistic balance during transitions.
+     */
+    updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
+        const mgr = this.manager;
+        if (!oldOrder || !newOrder) return;
 
-       * This is CRITICAL for preventing "fund leaks" where locked capital is never released.
-       *
-       * @param {Object} oldOrder - The original order object.
-       * @param {Object} newOrder - The updated order object.
-       * @param {string} context - Context string for logging (e.g., 'rotation').
-       * @param {number} [fee=0] - Blockchain fee to deduct.
-       *
-       * STATE TRANSITION RULES (chainFree impact):
-       * =========================================================================
-       * VIRTUAL → ACTIVE/PARTIAL: Funds transition from "free" to "locked"
-       *   Action: DEDUCT from chainFree (funds become committed/on-chain)
-       *   Why: New on-chain orders lock available capital
-       *
-       * ACTIVE/PARTIAL → VIRTUAL: Funds transition from "locked" to "free"
-       *   Action: ADD to chainFree (funds become available again)
-       *   Why: Cancelled orders release their capital back to available pool
-       *
-       * ACTIVE/PARTIAL → ACTIVE/PARTIAL (RESIZE): Size changes within active state
-       *   Action: DEDUCT if growing, ADD if shrinking
-       *   Why: Consolidations and rotations may resize orders, affecting committed capital
-       *
-       * CRITICAL FIX FOR PARTIAL→ACTIVE TRANSITIONS:
-       * =========================================================================
-       * PROBLEM: When PARTIAL→ACTIVE with a size change, we must track whether the
-       * PARTIAL order was on-chain (had orderId) or just in the grid (no orderId).
-       *
-       * If PARTIAL had NO orderId (grid-only):
-       *   - Old committed to chain: 0 (not on-chain)
-       *   - New committed to chain: newSize (now on-chain with new orderId)
-       *   - Deduction needed: newSize (full amount, not just delta!)
-       *
-       * If PARTIAL had orderId (on-chain):
-       *   - Old committed to chain: oldSize (already on-chain)
-       *   - New committed to chain: newSize (same or different orderId)
-       *   - Deduction needed: (newSize - oldSize) (only the delta)
-       *
-       * This prevents double-counting where a growing PARTIAL→ACTIVE order would
-       * only deduct the delta when it should account for on-chain commitment status.
-       *
-       * SIZE CONSISTENCY CHECK:
-       * After any state transition, the formula below should hold:
-       *   chainTotal = chainFree + chainCommitted
-       * Where chainCommitted = sum of all (ACTIVE or PARTIAL orders with orderId)
-       * If this breaks, we have a fund leak somewhere.
-       *
-       * BTS FEE HANDLING:
-       * When an order is placed on a BTS-containing pair, we deduct the transaction fee
-       * from chainFree immediately. This prevents over-committing capital for fees.
-       *
-       * CONTEXT PARAMETER:
-       * Always log the context (e.g., 'rotation', 'consolidation', 'fill') to aid debugging
-       * fund discrepancies. The full context trail makes it easier to trace which operation
-       * caused a fund leak if one occurs.
-       */
-      updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
+        const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
+        const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
+        const oldSize = Number(oldOrder.size) || 0;
+        const newSize = Number(newOrder.size) || 0;
+        
+        const oldOnChain = oldIsActive && !!oldOrder.orderId;
+        const newOnChain = newIsActive && !!newOrder.orderId;
+        
+        const oldChainCommitted = oldOnChain ? oldSize : 0;
+        const newChainCommitted = newOnChain ? newSize : 0;
+        const chainCommitmentDelta = newChainCommitted - oldChainCommitted;
 
-         const mgr = this.manager;
-         if (!oldOrder || !newOrder) return;
+        const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
 
-         const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
-         const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
-         const oldSize = Number(oldOrder.size) || 0;
-         const newSize = Number(newOrder.size) || 0;
-         
-         // CRITICAL: Track whether orders are actually on-chain (have orderId)
-         // This determines if capital is committed to blockchain or just in grid
-         const oldOnChain = oldIsActive && !!oldOrder.orderId;
-         const newOnChain = newIsActive && !!newOrder.orderId;
-         
-         // Amount committed to blockchain before transition
-         const oldChainCommitted = oldOnChain ? oldSize : 0;
-         // Amount committed to blockchain after transition
-         const newChainCommitted = newOnChain ? newSize : 0;
-         // Net change in blockchain commitment
-         const chainCommitmentDelta = newChainCommitted - oldChainCommitted;
-
-         const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' :
-             (mgr.config?.assetB === 'BTS') ? 'buy' : null;
-
-         if (!oldIsActive && newIsActive) {
-             // VIRTUAL → ACTIVE/PARTIAL: Entire size becomes committed to chain
-             if (newSize > 0) {
-                 this.tryDeductFromChainFree(newOrder.type, newSize, `${context} (${oldOrder.state}->${newOrder.state})`);
-             }
-             if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                 this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
-             }
-         }
-          else if (oldIsActive && !newIsActive) {
-              // ACTIVE/PARTIAL → VIRTUAL: Release all chain-committed capital
-              if (oldSize > 0) {
-                  const released = this.addToChainFree(oldOrder.type, oldSize, `${context} (${oldOrder.state}->${newOrder.state})`);
-                  if (!released) {
-                      mgr.logger?.log?.(`WARNING: Failed to release ${oldSize} ${oldOrder.type} funds during state transition`, 'warn');
-                  }
-              }
-          }
-          else if (oldIsActive && newIsActive) {
-              // ACTIVE/PARTIAL → ACTIVE/PARTIAL: Handle based on on-chain commitment change
-              // This fixes the PARTIAL→ACTIVE double-counting bug by tracking actual
-              // blockchain commitment, not just state grouping.
-              
-              if (chainCommitmentDelta > 0) {
-                  // More funds committed to chain (either size grew or moved from grid-only to on-chain)
-                  this.tryDeductFromChainFree(newOrder.type, chainCommitmentDelta, `${context} (chain-commit-increase)`);
-              } else if (chainCommitmentDelta < 0) {
-                  // Less funds committed to chain (size shrank or moved from on-chain to grid-only)
-                  const released = this.addToChainFree(newOrder.type, Math.abs(chainCommitmentDelta), `${context} (chain-commit-decrease)`);
-                  if (!released) {
-                      mgr.logger?.log?.(`WARNING: Failed to release ${Math.abs(chainCommitmentDelta)} ${newOrder.type} funds during chain commitment decrease`, 'warn');
-                  }
-              }
-              
-              if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                  this.tryDeductFromChainFree(newOrder.type, fee, `${context} (tx-fee)`);
-              }
-          }
-     }
+        if (!oldIsActive && newIsActive) {
+            if (newSize > 0) this.tryDeductFromChainFree(newOrder.type, newSize, `${context}`);
+            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
+                this.adjustTotalBalance(newOrder.type, -fee, `${context}-fee`);
+            }
+        } else if (oldIsActive && !newIsActive) {
+            if (oldSize > 0) this.addToChainFree(oldOrder.type, oldSize, `${context}`);
+        } else if (oldIsActive && newIsActive) {
+            if (chainCommitmentDelta > 0) this.tryDeductFromChainFree(newOrder.type, chainCommitmentDelta, `${context}`);
+            else if (chainCommitmentDelta < 0) this.addToChainFree(newOrder.type, Math.abs(chainCommitmentDelta), `${context}`);
+            
+            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
+                this.adjustTotalBalance(newOrder.type, -fee, `${context}-fee`);
+            }
+        }
+    }
 
     /**
-     * Deduct pending BTS blockchain fees from chainFree and cacheFunds.
-     *
-     * When BTS is the trading asset, fees represent real money leaving the account.
-     * They must be deducted from chainFree immediately to reflect true available balance.
-     *
-     * @param {string} requestedSide - Optional side to deduct from ('buy' or 'sell')
+     * Deduct BTS fees using adjustTotalBalance.
      */
     async deductBtsFees(requestedSide = null) {
         const mgr = this.manager;
         if (!mgr.funds.btsFeesOwed || mgr.funds.btsFeesOwed <= 0) return;
 
-        const assetA = mgr.config.assetA;
-        const assetB = mgr.config.assetB;
-        const btsSide = (assetA === 'BTS') ? 'sell' :
-            (assetB === 'BTS') ? 'buy' : null;
-
-        const side = requestedSide ? (requestedSide === btsSide ? btsSide : null) : btsSide;
+        const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
+        const side = requestedSide || btsSide;
 
         if (side && mgr.funds.btsFeesOwed > 0) {
-            // CRITICAL: Deduct ALL owed fees from chainFree immediately when BTS is the trading asset
-            // Do NOT wait for cacheFunds - these are real fees already incurred and must be deducted
-            const feesOwedThisSide = mgr.funds.btsFeesOwed;
+            const fees = mgr.funds.btsFeesOwed;
             const cache = mgr.funds.cacheFunds?.[side] || 0;
+            const cacheDeduction = Math.min(fees, cache);
+            const chainDeduction = fees - cacheDeduction;
 
-            // First deduct from cacheFunds (preferred, as it's surplus from fills/rotations)
-            const cacheDeduction = Math.min(feesOwedThisSide, cache);
-            const chainDeduction = feesOwedThisSide - cacheDeduction;
-
-            if (mgr.logger.level === 'debug') {
-                 mgr.logger.log(`[FEES] Deducting BTS fees. Owed: ${Format.formatAmount8(feesOwedThisSide)}, Cache: ${Format.formatAmount8(cache)} (${side}). Plan: Cache=${Format.formatAmount8(cacheDeduction)}, Chain=${Format.formatAmount8(chainDeduction)}`, 'debug');
-            }
-
-             mgr.logger.log(
-                 `Deducting BTS fees: ${Format.formatAmount8(cacheDeduction)} from cacheFunds, ` +
-                 `${Format.formatAmount8(chainDeduction)} from chainFree (total owed: ${Format.formatAmount8(feesOwedThisSide)} BTS)`,
-                 'info'
-             );
-
-            // Deduct from cacheFunds first if available
-            if (cacheDeduction > 0) {
-                await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
-            }
-
-            // CRITICAL: Always deduct remaining fees from chainFree to reflect real balance
-            // This ensures invariant stays: chainTotal = chainFree + chainCommitted
+            if (cacheDeduction > 0) await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
             if (chainDeduction > 0) {
                 const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-                this.tryDeductFromChainFree(orderType, chainDeduction, 'bts-fee-settlement');
+                this.adjustTotalBalance(orderType, -chainDeduction, 'bts-fee-settlement');
             }
-
-            // Update total owed (now fully settled)
             mgr.funds.btsFeesOwed = 0;
         }
     }
 
+    async modifyCacheFunds(side, delta, operation = 'update') {
+        const mgr = this.manager;
+        if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
+        const oldValue = mgr.funds.cacheFunds[side] || 0;
+        const newValue = Math.max(0, oldValue + delta);
+        mgr.funds.cacheFunds[side] = newValue;
+        if (mgr.logger && mgr.logger.level === 'debug') {
+            mgr.logger.log(`[CACHEFUNDS] ${side} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
+        }
+        return newValue;
+    }
 }
 
 module.exports = Accountant;

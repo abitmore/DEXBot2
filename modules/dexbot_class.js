@@ -332,13 +332,6 @@ class DEXBot {
                         this.manager.resumeFundRecalc();
                     }
 
-
-                    // Refresh blockchain account totals after fill detection to ensure accounting invariants
-                    // reflect the latest balance sheet before rebalancing.
-                    if (allFilledOrders.length > 0) {
-                        await this.manager._fetchAccountBalancesAndSetTotals();
-                    }
-
                     // 5. Sequential Rebalance Loop (Interruptible)
                     if (allFilledOrders.length > 0) {
                         this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders sequentially...`, 'info');

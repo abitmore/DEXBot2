@@ -798,12 +798,10 @@ class StrategyEngine {
 
                 await mgr.modifyCacheFunds(receiveSide, netProceeds, 'fill-proceeds');
 
-                mgr.accountant.addToChainFree(receiveType, netProceeds, 'fill-proceeds');
-                
-                if (!skipAccountTotals && mgr.accountTotals) {
-                    mgr.accountTotals[receiveSide] = (mgr.accountTotals[receiveSide] || 0) + netProceeds;
-                    mgr.accountTotals[spendSide] = (mgr.accountTotals[spendSide] || 0) - filledOrder.size;
-                }
+                // Record the physical arrival of proceeds and the physical departure of the filled asset.
+                // This updates both 'free' and 'total' balances to maintain account invariants.
+                mgr.accountant.adjustTotalBalance(receiveType, netProceeds, 'fill-proceeds');
+                mgr.accountant.adjustTotalBalance(filledOrder.type, -filledOrder.size, 'fill-consumption');
             }
 
             if (hasBtsPair && fillsToSettle > 0) {
