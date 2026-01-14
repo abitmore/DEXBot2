@@ -430,12 +430,15 @@ class StrategyEngine {
         // - Non-dust partial: Update to ideal size for proper grid alignment
         // These are then filtered from surpluses to prevent unwanted rotation.
         const handledPartialIds = new Set();
-         const partialOrdersInWindow = allSlots.filter(s =>
-             s.type === type &&
-             s.state === ORDER_STATES.PARTIAL &&
-             targetSet.has(slotIndexMap.get(s.id)) &&
-             !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId)))
-         );
+        const partialOrdersInWindow = allSlots.filter(s =>
+            s.type === type &&
+            s.state === ORDER_STATES.PARTIAL &&
+            targetSet.has(slotIndexMap.get(s.id)) &&
+            !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId)))
+        );
+
+        let remainingAvail = availSide;
+        let totalNewPlacementSize = 0;
 
         for (const partial of partialOrdersInWindow) {
             // FIX: Check budget BEFORE processing to respect reactionCap (Issue #4 enhancement)
@@ -446,27 +449,38 @@ class StrategyEngine {
 
             const partialIdx = slotIndexMap.get(partial.id);
             if (partialIdx === undefined) continue;
-            const targetSize = finalIdealSizes[partialIdx];
+            const idealSize = finalIdealSizes[partialIdx];
 
-            if (targetSize <= 0) {
+            if (idealSize <= 0) {
                 mgr.logger.log(`[PARTIAL] Slot ${partial.id} has no target size, skipping`, 'debug');
                 continue;
             }
 
-            const threshold = targetSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            const threshold = idealSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
             const isDust = partial.size < threshold;
 
             if (isDust) {
                 // Dust partial: Set side doubled flag and update to ideal size
-                mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(targetSize)}). Updating to target and flagging side as doubled.`, 'info');
-                
-                if (type === ORDER_TYPES.BUY) mgr.buySideIsDoubled = true;
-                else mgr.sellSideIsDoubled = true;
+                // CRITICAL: Cap increase to respect available funds
+                const currentSize = partial.size || 0;
+                const sizeIncrease = Math.max(0, idealSize - currentSize);
+                const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
+                const finalSize = currentSize + cappedIncrease;
 
-                ordersToUpdate.push({ partialOrder: { ...partial }, newSize: targetSize });
-                stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
-                handledPartialIds.add(partial.id);
-                budgetRemaining--;
+                if (finalSize > 0) {
+                    mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and flagging side as doubled.`, 'info');
+                    
+                    if (type === ORDER_TYPES.BUY) mgr.buySideIsDoubled = true;
+                    else mgr.sellSideIsDoubled = true;
+
+                    ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
+                    stateUpdates.push({ ...partial, size: finalSize, state: ORDER_STATES.ACTIVE });
+                    
+                    totalNewPlacementSize += cappedIncrease;
+                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    handledPartialIds.add(partial.id);
+                    budgetRemaining--;
+                }
             } else {
                 // Non-dust partial: Update to ideal size and place new order with old partial size
                 const oldSize = partial.size;
@@ -475,30 +489,36 @@ class StrategyEngine {
                 const nextSlotIdx = partialIdx + (type === ORDER_TYPES.BUY ? -1 : 1);
 
                 // FIX: Validate nextSlot BEFORE committing to the operation (Issue #2 + capital leak fix)
-                // If we can't place the split order, skip the entire operation to prevent capital leak
                 if (nextSlotIdx < 0 || nextSlotIdx >= allSlots.length) {
                     mgr.logger.log(`[PARTIAL] Skipping non-dust partial at ${partial.id}: no adjacent slot available (idx=${nextSlotIdx} out of bounds)`, "warn");
                     continue;
                 }
 
                 const nextSlot = allSlots[nextSlotIdx];
-                // Re-fetch current state from manager to avoid stale snapshot
                 const currentNextSlot = mgr.orders.get(nextSlot.id);
                 if (!currentNextSlot || currentNextSlot.orderId || currentNextSlot.state !== ORDER_STATES.VIRTUAL) {
                     mgr.logger.log(`[PARTIAL] Skipping non-dust partial at ${partial.id}: target slot ${nextSlot.id} not available (state=${currentNextSlot?.state}, orderId=${currentNextSlot?.orderId})`, "warn");
                     continue;
                 }
 
-                // Now safe to proceed with both operations atomically
-                 mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(targetSize)}). Updating to rebalance and placing new order.`, 'info');
-                ordersToUpdate.push({ partialOrder: { ...partial }, newSize: targetSize });
-                stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
+                // CRITICAL: Update increase must be capped by available funds
+                const sizeIncrease = Math.max(0, idealSize - oldSize);
+                const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
+                const finalSize = oldSize + cappedIncrease;
 
-                ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
-                stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+                if (finalSize > 0) {
+                    mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
+                    ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
+                    stateUpdates.push({ ...partial, size: finalSize, state: ORDER_STATES.ACTIVE });
 
-                handledPartialIds.add(partial.id);
-                budgetRemaining--;
+                    ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+                    stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
+
+                    totalNewPlacementSize += cappedIncrease;
+                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    handledPartialIds.add(partial.id);
+                    budgetRemaining--;
+                }
             }
         }
 
@@ -506,7 +526,6 @@ class StrategyEngine {
         const filteredSurpluses = surpluses.filter(s => !handledPartialIds.has(s.id));
 
         // Remove handled partial slots from shortages so they aren't targeted for rotation or placement
-        // (they're already being updated in-place via ordersToUpdate)
         const filteredShortages = shortages.filter(idx => !handledPartialIds.has(allSlots[idx].id));
 
         // ════════════════════════════════════════════════════════════════════════════════
@@ -518,7 +537,6 @@ class StrategyEngine {
         let surplusIdx = 0;
         let shortageIdx = 0;
         let rotationsPerformed = 0;
-        let remainingAvail = availSide;
 
         while (surplusIdx < filteredSurpluses.length &&
                shortageIdx < filteredShortages.length &&
@@ -527,89 +545,80 @@ class StrategyEngine {
             const surplus = filteredSurpluses[surplusIdx];
             const shortageSlotIdx = filteredShortages[shortageIdx];
             const shortageSlot = allSlots[shortageSlotIdx];
-            const size = finalIdealSizes[shortageSlotIdx];
+            const idealSize = finalIdealSizes[shortageSlotIdx];
 
-            // Validate shortage slot exists and has required fields
+            // Validate shortage slot exists
             if (!shortageSlot || !shortageSlot.id || !shortageSlot.price) {
-                mgr.logger.log(`[ROTATION] Skipping shortage: invalid slot at index ${shortageSlotIdx}: ${JSON.stringify(shortageSlot)}`, "warn");
-                shortageIdx++;  // Skip this shortage, try next
+                mgr.logger.log(`[ROTATION] Skipping shortage: invalid slot at index ${shortageSlotIdx}`, "warn");
+                shortageIdx++;
                 continue;
             }
 
-            // RE-VALIDATE SURPLUS TO PREVENT RACE CONDITION (Issue #3)
-            // STEP 2.5 may have changed surplus state (e.g., ACTIVE→VIRTUAL, or converted to SPREAD).
-            // Check current state before queuing rotation to avoid stale order references.
-            // Also verify orderId matches to detect slot reuse (Issue #5 enhancement)
             const currentSurplus = mgr.orders.get(surplus.id);
             if (!currentSurplus ||
                 currentSurplus.state === ORDER_STATES.VIRTUAL ||
                 (surplus.orderId && currentSurplus.orderId !== surplus.orderId)) {
-                mgr.logger.log(`[ROTATION] Skipping surplus ${surplus.id}: no longer valid (state: ${currentSurplus?.state}, orderId mismatch: ${surplus.orderId} vs ${currentSurplus?.orderId})`, "warn");
-                surplusIdx++;  // Skip this surplus, try next (shortage stays for next valid surplus)
+                mgr.logger.log(`[ROTATION] Skipping surplus ${surplus.id}: no longer valid`, "warn");
+                surplusIdx++;
                 continue;
             }
 
-            // ATOMIC ROTATION: Both old→VIRTUAL and new→ACTIVE are pushed to stateUpdates,
-            // ensuring they are applied together within pauseFundRecalc block in rebalance().
-            // This prevents crash window between marking old as VIRTUAL and new as ACTIVE.
-            ordersToRotate.push({ 
-                oldOrder: { ...currentSurplus }, 
-                newPrice: shortageSlot.price, 
-                newSize: size, 
-                newGridId: shortageSlot.id, 
-                type: type,
-                // Unified rotation structure
-                from: { ...currentSurplus },
-                to: { ...shortageSlot, size: size }
-            });
-            const vacatedUpdate = { ...currentSurplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
-            stateUpdates.push(vacatedUpdate);
-            stateUpdates.push({ ...shortageSlot, type: type, size: size, state: ORDER_STATES.ACTIVE });
-            mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${currentSurplus.price}) → VIRTUAL, ${shortageSlot.id} (${shortageSlot.price}) → ACTIVE`, 'debug');
+            // CRITICAL: Rotations that INCREASE size must be capped by available funds
+            const currentSize = currentSurplus.size || 0;
+            const sizeIncrease = Math.max(0, idealSize - currentSize);
+            const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
+            const finalSize = currentSize + cappedIncrease;
 
-            surplusIdx++;
-            shortageIdx++;
-            rotationsPerformed++;
-            budgetRemaining--;
+            if (finalSize > 0) {
+                ordersToRotate.push({ 
+                    oldOrder: { ...currentSurplus }, 
+                    newPrice: shortageSlot.price, 
+                    newSize: finalSize, 
+                    newGridId: shortageSlot.id, 
+                    type: type,
+                    from: { ...currentSurplus },
+                    to: { ...shortageSlot, size: finalSize }
+                });
+                const vacatedUpdate = { ...currentSurplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
+                stateUpdates.push(vacatedUpdate);
+                stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
+                
+                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(currentSize)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'debug');
+
+                totalNewPlacementSize += cappedIncrease;
+                remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                surplusIdx++;
+                shortageIdx++;
+                rotationsPerformed++;
+                budgetRemaining--;
+            } else {
+                // Should not happen if idealSize > 0 and currentSize > 0
+                surplusIdx++;
+                continue;
+            }
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 4: PLACEMENTS (Activate Outer Edges)
+        // STEP 5: PLACEMENTS (Activate Outer Edges)
         // ════════════════════════════════════════════════════════════════════════════════
         // Use remaining budget to place new orders at the edge of the grid window.
         // CRITICAL: Cap placement sizes to respect available funds.
-        // Ideal sizes are calculated from totalSideBudget (distributed across all slots),
-        // but actual placements can only use available liquid funds.
-        let totalNewPlacementSize = 0;
         if (budgetRemaining > 0) {
-            // Remaining shortages are those not covered by rotations.
-            // Reverse them to target Furthest First (Outer Edges).
-            // Use shortageIdx since it tracks how many shortages were consumed/skipped in rotation phase
             const outerShortages = filteredShortages.slice(shortageIdx).reverse();
-
             const placeCount = Math.min(outerShortages.length, budgetRemaining);
+
             for (let i = 0; i < placeCount; i++) {
                 const idx = outerShortages[i];
                 const slot = allSlots[idx];
                 const idealSize = finalIdealSizes[idx];
 
-                // Validate slot exists and has required fields
-                if (!slot || !slot.id || !slot.price) {
-                    mgr.logger.log(`[PLACEMENT] Skipping invalid slot at index ${idx}: ${JSON.stringify(slot)}`, "warn");
-                    continue;
-                }
-
+                if (!slot || !slot.id || !slot.price) continue;
                 if (idealSize <= 0) continue;
 
-                // CRITICAL: VIRTUAL orders already have capital allocated in idealSize.
-                // Only cap if we're INCREASING the size beyond what was allocated.
-                // If slot has no size (truly empty), it needs capital from available funds.
-                // If slot already has size allocated (VIRTUAL), use the full idealSize.
                 const currentSize = slot.size || 0;
                 const sizeIncrease = Math.max(0, idealSize - currentSize);
 
                 if (sizeIncrease > 0) {
-                    // Only cap the INCREASE, not the full order
                     const remainingOrders = placeCount - i;
                     const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
                     const finalSize = currentSize + cappedIncrease;
@@ -617,18 +626,14 @@ class StrategyEngine {
                     if (finalSize > 0) {
                         ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
                         stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
-                        totalNewPlacementSize += cappedIncrease;  // Track capital allocated to new placements
-                        // FIX: Ensure remainingAvail stays non-negative (Issue #7)
+                        totalNewPlacementSize += cappedIncrease;
                         remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                         budgetRemaining--;
                     }
-                } else {
-                    // No size increase needed, just activate at current size
-                    if (idealSize > 0) {
-                        ordersToPlace.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
-                        stateUpdates.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
-                        budgetRemaining--;
-                    }
+                } else if (idealSize > 0) {
+                    ordersToPlace.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
+                    stateUpdates.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
+                    budgetRemaining--;
                 }
             }
         }
