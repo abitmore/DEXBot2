@@ -119,6 +119,11 @@ class Accountant {
         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
 
+        if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0) {
+            mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmount8(chainTotalBuy)} (Free=${Format.formatAmount8(chainFreeBuy)}, Grid=${Format.formatAmount8(gridBuy)})`, 'debug');
+            mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmount8(chainTotalSell)} (Free=${Format.formatAmount8(chainFreeSell)}, Grid=${Format.formatAmount8(gridSell)})`, 'debug');
+        }
+
         if (mgr._pauseFundRecalcDepth === 0) {
             this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, gridBuy, gridSell);
         }
@@ -229,6 +234,8 @@ class Accountant {
 
     /**
      * Update optimistic balance during transitions.
+     * CRITICAL: Use isActive state (ACTIVE/PARTIAL) to determine commitment, NOT orderId.
+     * Using orderId causes double-deduction when an in-flight order receives its ID.
      */
     updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
         const mgr = this.manager;
@@ -239,29 +246,24 @@ class Accountant {
         const oldSize = Number(oldOrder.size) || 0;
         const newSize = Number(newOrder.size) || 0;
         
-        const oldOnChain = oldIsActive && !!oldOrder.orderId;
-        const newOnChain = newIsActive && !!newOrder.orderId;
-        
-        const oldChainCommitted = oldOnChain ? oldSize : 0;
-        const newChainCommitted = newOnChain ? newSize : 0;
-        const chainCommitmentDelta = newChainCommitted - oldChainCommitted;
+        // Change in commitment level (based on GRID state, not blockchain ID)
+        const oldGridCommitted = oldIsActive ? oldSize : 0;
+        const newGridCommitted = newIsActive ? newSize : 0;
+        const commitmentDelta = newGridCommitted - oldGridCommitted;
 
         const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
 
-        if (!oldIsActive && newIsActive) {
-            if (newSize > 0) this.tryDeductFromChainFree(newOrder.type, newSize, `${context}`);
-            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                this.adjustTotalBalance(newOrder.type, -fee, `${context}-fee`);
-            }
-        } else if (oldIsActive && !newIsActive) {
-            if (oldSize > 0) this.addToChainFree(oldOrder.type, oldSize, `${context}`);
-        } else if (oldIsActive && newIsActive) {
-            if (chainCommitmentDelta > 0) this.tryDeductFromChainFree(newOrder.type, chainCommitmentDelta, `${context}`);
-            else if (chainCommitmentDelta < 0) this.addToChainFree(newOrder.type, Math.abs(chainCommitmentDelta), `${context}`);
-            
-            if (fee > 0 && btsSide && newOrder.type === (btsSide === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL)) {
-                this.adjustTotalBalance(newOrder.type, -fee, `${context}-fee`);
-            }
+        // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
+        if (commitmentDelta > 0) {
+            this.tryDeductFromChainFree(newOrder.type, commitmentDelta, `${context}`);
+        } else if (commitmentDelta < 0) {
+            this.addToChainFree(oldOrder.type, Math.abs(commitmentDelta), `${context}`);
+        }
+
+        // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
+        if (fee > 0 && btsSide) {
+            const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            this.adjustTotalBalance(btsOrderType, -fee, `${context}-fee`);
         }
     }
 
