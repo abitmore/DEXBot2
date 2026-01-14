@@ -1264,10 +1264,7 @@ async function persistGridSnapshot(manager, accountOrders, botKey) {
             { buySideIsDoubled: !!manager.buySideIsDoubled, sellSideIsDoubled: !!manager.sellSideIsDoubled }
         );
 
-        // Also try to persist fees component for redundancy
-        const feesOk = manager._persistBtsFeesOwed?.();
-
-        return (feesOk !== false);
+        return true;
     } catch (e) {
         if (manager.logger) {
             manager.logger.log(`Error during grid persistence: ${e.message}`, 'error');
@@ -1495,7 +1492,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 if (result && result.executed) {
                     manager._gridSidesUpdated.clear();
                     // Re-persist grid after corrections are applied to keep persisted state in sync
-                    persistGridSnapshot(manager, accountOrders, botKey);
+                    await persistGridSnapshot(manager, accountOrders, botKey);
                 } else {
                     manager.logger?.log?.(
                         `Divergence corrections were rejected (precision tolerance). Clearing flags to prevent loop.`,
