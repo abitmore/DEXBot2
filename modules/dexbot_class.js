@@ -1182,14 +1182,24 @@ class DEXBot {
         const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
         const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
         const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
+        const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
 
-         // Restore and consolidate cacheFunds
-         // SAFE: Done during startup before fill listener activates, so no concurrent access yet
-         this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-         if (persistedCacheFunds) {
-             this.manager.funds.cacheFunds.buy += Number(persistedCacheFunds.buy || 0);
-             this.manager.funds.cacheFunds.sell += Number(persistedCacheFunds.sell || 0);
-         }
+        // Restore and consolidate cacheFunds
+        // SAFE: Done during startup before fill listener activates, so no concurrent access yet
+        this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+        if (persistedCacheFunds) {
+            this.manager.funds.cacheFunds.buy += Number(persistedCacheFunds.buy || 0);
+            this.manager.funds.cacheFunds.sell += Number(persistedCacheFunds.sell || 0);
+        }
+
+        // Restore doubled side flags
+        if (persistedDoubleSideFlags) {
+            this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
+            this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
+            if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
+                this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
+            }
+        }
 
         // Use this.accountId which was set during initialize()
         const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);

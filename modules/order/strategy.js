@@ -261,15 +261,36 @@ class StrategyEngine {
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
         // NOTE: Only count FULL fills - partial fills don't spend capital, so they shouldn't count toward budget.
-        const fullFills = fills.filter(f => !f.isPartial).length;
-        const reactionCap = Math.max(1, fullFills);
+        // NEW: Handle double replacement triggers by increasing reaction cap.
+        let reactionCapBuy = 0;
+        let reactionCapSell = 0;
+
+        for (const fill of fills) {
+            // isDoubleReplacementTrigger is only set for full fills in sync_engine
+            if (fill.isPartial && !fill.isDelayedRotationTrigger && !fill.isDoubleReplacementTrigger) continue;
+            
+            const count = fill.isDoubleReplacementTrigger ? 2 : 1;
+            // A SELL fill triggers a BUY replacement
+            if (fill.type === ORDER_TYPES.SELL) reactionCapBuy += count;
+            else reactionCapSell += count;
+        }
+
+        // Always allow at least 1 action if processing any fill
+        if (fills.length > 0) {
+            if (fills.some(f => f.type === ORDER_TYPES.SELL)) reactionCapBuy = Math.max(reactionCapBuy, 1);
+            if (fills.some(f => f.type === ORDER_TYPES.BUY)) reactionCapSell = Math.max(reactionCapSell, 1);
+        } else {
+            // Periodic rebalance (no fills) - allow 1 action per side
+            reactionCapBuy = 1;
+            reactionCapSell = 1;
+        }
  
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
         // ════════════════════════════════════════════════════════════════════════════════
  
-        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCap, fills);
-        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCap, fills);
+        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCapBuy, fills);
+        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCapSell, fills);
 
         // Apply all state updates to manager with batched fund recalculation
         mgr.pauseFundRecalc();
@@ -467,11 +488,14 @@ class StrategyEngine {
             const isDust = partial.size < threshold;
 
             if (isDust) {
-                // Dust partial: Consolidate by updating to ideal size + dust size
-                const consolidatedSize = targetSize + partial.size;
-                 mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(targetSize)}). Updating to merge: ${Format.formatAmount8(consolidatedSize)}.`, 'info');
-                ordersToUpdate.push({ partialOrder: { ...partial }, newSize: consolidatedSize });
-                stateUpdates.push({ ...partial, size: consolidatedSize, state: ORDER_STATES.ACTIVE });
+                // Dust partial: Set side doubled flag and update to ideal size
+                mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(targetSize)}). Updating to target and flagging side as doubled.`, 'info');
+                
+                if (type === ORDER_TYPES.BUY) mgr.buySideIsDoubled = true;
+                else mgr.sellSideIsDoubled = true;
+
+                ordersToUpdate.push({ partialOrder: { ...partial }, newSize: targetSize });
+                stateUpdates.push({ ...partial, size: targetSize, state: ORDER_STATES.ACTIVE });
                 handledPartialIds.add(partial.id);
                 budgetRemaining--;
             } else {

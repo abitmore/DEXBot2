@@ -11,8 +11,10 @@
  *     "botkey": {
  *       "meta": { name, assetA, assetB, active, index },
  *       "grid": [ { id, type, state, price, size, orderId }, ... ],
- *       "cacheFunds": { buy: number, sell: number },  // All unallocated funds (fill proceeds + surplus)
- *       "btsFeesOwed": number,
+  *       "cacheFunds": { buy: number, sell: number },  // All unallocated funds (fill proceeds + surplus)
+  *       "buySideIsDoubled": boolean,
+  *       "sellSideIsDoubled": boolean,
+  *       "btsFeesOwed": number,
  *       "createdAt": "ISO timestamp",
  *       "lastUpdated": "ISO timestamp"
  *     }
@@ -298,9 +300,10 @@ class AccountOrders {
   * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
   * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
    * @param {number} boundaryIdx - Optional master boundary index for StrategyEngine
-   * @param {Object} assets - Optional asset metadata { assetA, assetB }
-   */
-  async storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null, boundaryIdx = null, assets = null) {
+  * @param {Object} assets - Optional asset metadata { assetA, assetB }
+  * @param {Object} doubleSideFlags - Optional { buySideIsDoubled, sellSideIsDoubled }
+  */
+  async storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null, boundaryIdx = null, assets = null, doubleSideFlags = null) {
     if (!botKey) return;
 
     // Use AsyncLock to serialize read-modify-write operations (fixes Issue #1, #5)
@@ -318,6 +321,8 @@ class AccountOrders {
           meta,
           grid: snapshot,
           cacheFunds: cacheFunds || { buy: 0, sell: 0 },
+          buySideIsDoubled: doubleSideFlags ? !!doubleSideFlags.buySideIsDoubled : false,
+          sellSideIsDoubled: doubleSideFlags ? !!doubleSideFlags.sellSideIsDoubled : false,
           btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
           boundaryIdx: Number.isFinite(boundaryIdx) ? boundaryIdx : null,
           assets: assets || null,
@@ -329,6 +334,11 @@ class AccountOrders {
         this.data.bots[botKey].grid = snapshot;
         if (cacheFunds) {
           this.data.bots[botKey].cacheFunds = cacheFunds;
+        }
+
+        if (doubleSideFlags) {
+          this.data.bots[botKey].buySideIsDoubled = !!doubleSideFlags.buySideIsDoubled;
+          this.data.bots[botKey].sellSideIsDoubled = !!doubleSideFlags.sellSideIsDoubled;
         }
 
         if (Number.isFinite(btsFeesOwed)) {
@@ -501,6 +511,49 @@ class AccountOrders {
         return;
       }
       this.data.bots[botKey].btsFeesOwed = btsFeesOwed || 0;
+      this.data.lastUpdated = nowIso();
+      this._persist();
+    });
+  }
+
+  /**
+   * Load doubled side flags for a bot.
+   * @param {string} botKey - Bot identifier key
+   * @param {boolean} forceReload - If true, reload from disk
+   * @returns {Object} { buySideIsDoubled, sellSideIsDoubled }
+   */
+  loadDoubleSideFlags(botKey, forceReload = false) {
+    if (forceReload) {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+    }
+
+    if (this.data && this.data.bots && this.data.bots[botKey]) {
+      const botData = this.data.bots[botKey];
+      return {
+        buySideIsDoubled: !!botData.buySideIsDoubled,
+        sellSideIsDoubled: !!botData.sellSideIsDoubled
+      };
+    }
+    return { buySideIsDoubled: false, sellSideIsDoubled: false };
+  }
+
+  /**
+   * Update (persist) doubled side flags for a bot.
+   * @param {string} botKey - Bot identifier key
+   * @param {boolean} buySideIsDoubled - Buy side doubled flag
+   * @param {boolean} sellSideIsDoubled - Sell side doubled flag
+   */
+  async updateDoubleSideFlags(botKey, buySideIsDoubled, sellSideIsDoubled) {
+    if (!botKey) return;
+
+    await this._persistenceLock.acquire(async () => {
+      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
+
+      if (!this.data || !this.data.bots || !this.data.bots[botKey]) {
+        return;
+      }
+      this.data.bots[botKey].buySideIsDoubled = !!buySideIsDoubled;
+      this.data.bots[botKey].sellSideIsDoubled = !!sellSideIsDoubled;
       this.data.lastUpdated = nowIso();
       this._persist();
     });
@@ -731,31 +784,9 @@ class AccountOrders {
     };
 
     // NEW: Persist Anchor & Refill strategy fields
-    // isDoubleOrder: marks partial orders that have merged dust (Case A: Dust Refill)
-    if (order.isDoubleOrder) {
-      serialized.isDoubleOrder = true;
-    }
-
-    // mergedDustSize: amount of dust merged into this order's new allocation
-    if (order.mergedDustSize !== undefined && order.mergedDustSize !== null) {
-      const mergedDustValue = Number(order.mergedDustSize);
-      if (Number.isFinite(mergedDustValue) && mergedDustValue > 0) {
-        serialized.mergedDustSize = mergedDustValue;
-      }
-    }
-
-    // filledSinceRefill: accumulated fill progress toward clearing the dust debt
-    if (order.filledSinceRefill !== undefined && order.filledSinceRefill !== null) {
-      const filledValue = Number(order.filledSinceRefill);
-      if (Number.isFinite(filledValue) && filledValue > 0) {
-        serialized.filledSinceRefill = filledValue;
-      }
-    }
-
-    // pendingRotation: marks when rotation is delayed until fill threshold is reached
-    if (order.pendingRotation) {
-      serialized.pendingRotation = true;
-    }
+    // NOTE: individual order fields (isDoubleOrder, mergedDustSize, etc.) are deprecated
+    // but kept for backward compatibility during rollout if needed.
+    // Cleanup of these fields will happen in StrategyEngine.
 
     return serialized;
   }

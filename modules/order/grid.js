@@ -741,7 +741,6 @@ class Grid {
         const filterForRms = (orders, type) => {
             const result = Array.isArray(orders) ? orders.filter(o => o && o.type === type && o.state === ORDER_STATES.ACTIVE) : [];
             return result
-                .filter(o => !o.isDoubleOrder)
                 .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
         };
         

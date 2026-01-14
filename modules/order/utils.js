@@ -1260,7 +1260,8 @@ async function persistGridSnapshot(manager, accountOrders, botKey) {
             manager.funds.cacheFunds,
             manager.funds.btsFeesOwed,
             manager.boundaryIdx,
-            manager.assets || null
+            manager.assets || null,
+            { buySideIsDoubled: !!manager.buySideIsDoubled, sellSideIsDoubled: !!manager.sellSideIsDoubled }
         );
 
         // Also try to persist fees component for redundancy
@@ -1995,7 +1996,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
         const persOrder = persistedMap.get(calcOrder.id);
         if (persOrder) {
             const calcSize = toFiniteNumber(calcOrder.size);
-            const comparisonTarget = toFiniteNumber(persOrder.size) + (persOrder.isDoubleOrder ? toFiniteNumber(persOrder.mergedDustSize) : 0);
+            const comparisonTarget = toFiniteNumber(calcOrder.size); // Always compare to ideal size in simplified strategy
 
             if (comparisonTarget > 0) {
                 const relativeDiff = (calcSize - comparisonTarget) / comparisonTarget;

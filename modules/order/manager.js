@@ -73,6 +73,8 @@ class OrderManager {
             [ORDER_TYPES.SPREAD]: new Set()
         };
         this.resetFunds();
+        this.buySideIsDoubled = false;
+        this.sellSideIsDoubled = false;
         this.targetSpreadCount = 0;
         this.currentSpreadCount = 0;
         this.outOfSpread = false;

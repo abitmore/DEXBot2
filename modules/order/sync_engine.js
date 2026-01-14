@@ -483,6 +483,17 @@ class SyncEngine {
                           historyId: historyId,
                           isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
                       };
+
+                      // NEW: Simplified Double-Side Strategy (Full Fill)
+                      const side = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+                      const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
+                      if (isDoubled) {
+                          mgr.logger.log(`[SYNC] Full fill on doubled side (${side}). Resetting flag and triggering double replacement.`, 'info');
+                          if (side === 'buy') mgr.buySideIsDoubled = false;
+                          else mgr.sellSideIsDoubled = false;
+                          filledOrder.isDoubleReplacementTrigger = true;
+                      }
+
                       const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
                       mgr._updateOrder(spreadOrder);
                       filledOrders.push(filledOrder);
@@ -500,38 +511,26 @@ class SyncEngine {
                       updatedOrder.state = ORDER_STATES.PARTIAL;
                       applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
 
-                      if (updatedOrder.isDoubleOrder && updatedOrder.mergedDustSize) {
-                          const mergedDustSize = Number(updatedOrder.mergedDustSize);
-                          const priorFilledSinceRefill = Number(updatedOrder.filledSinceRefill) || 0;
-                          const newFilledSinceRefill = priorFilledSinceRefill + filledAmount;
-                          
-                          // CRITICAL: Cap filledSinceRefill to prevent unbounded accumulation
-                          // Cannot exceed mergedDustSize, so we clamp to that maximum
-                          updatedOrder.filledSinceRefill = Math.min(newFilledSinceRefill, mergedDustSize);
+                      // NEW: Simplified Double-Side Strategy (Partial Fill)
+                      const side = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+                      const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
 
-                          // Double order stays ACTIVE while size >= original core size (before dust merged)
-                          // Once it drops below original core size, it becomes PARTIAL
-                          const originalCoreSize = (Number(matchedGridOrder.size) || 0) - mergedDustSize;
-                          const currentSize = Number(updatedOrder.size) || 0;
-
-                          if (currentSize < originalCoreSize) {
-                              // Order has filled below the original core size - become PARTIAL
-                              updatedOrder.state = ORDER_STATES.PARTIAL;
-                          } else {
-                              // Still at or above original core size - stay ACTIVE
-                              updatedOrder.state = ORDER_STATES.ACTIVE;
-                          }
-
-                          // When accumulated fills reach mergedDustSize, trigger delayed rotation
-                          // Note: With the cap above, filledSinceRefill will never exceed mergedDustSize
-                          // so this comparison is safe from overflow
-                          if (updatedOrder.filledSinceRefill >= mergedDustSize) {
-                              filledPortion.isDelayedRotationTrigger = true;
-                              updatedOrder.isDoubleOrder = false;
-                              updatedOrder.pendingRotation = false;
-                              updatedOrder.filledSinceRefill = 0;
-                          }
+                      if (isDoubled) {
+                          mgr.logger.log(`[SYNC] Partial fill on doubled side (${side}). Resetting flag.`, 'info');
+                          if (side === 'buy') mgr.buySideIsDoubled = false;
+                          else mgr.sellSideIsDoubled = false;
+                          // Note: partial fill on doubled side does NOT trigger double replacement
                       }
+                      
+                      // DEPRECATED: Old DoubleOrder special handling (kept for backward compat during transition)
+                      if (updatedOrder.isDoubleOrder && updatedOrder.mergedDustSize) {
+                          // Clean up deprecated fields if they exist
+                          updatedOrder.isDoubleOrder = false;
+                          updatedOrder.mergedDustSize = 0;
+                          updatedOrder.filledSinceRefill = 0;
+                          updatedOrder.pendingRotation = false;
+                      }
+
                       mgr._updateOrder(updatedOrder);
                       updatedOrders.push(updatedOrder);
                       filledOrders.push(filledPortion);
