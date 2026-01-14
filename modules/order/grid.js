@@ -559,7 +559,6 @@ class Grid {
 
         await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
         manager.resetFunds();
-        manager.funds.cacheFunds = { buy: 0, sell: 0 };
 
         await manager.persistGrid();
         await Grid.initializeGrid(manager);

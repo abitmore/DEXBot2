@@ -564,7 +564,7 @@ class Accountant {
 
             // Deduct from cacheFunds first if available
             if (cacheDeduction > 0) {
-                mgr.funds.cacheFunds[side] -= cacheDeduction;
+                await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
             }
 
             // CRITICAL: Always deduct remaining fees from chainFree to reflect real balance

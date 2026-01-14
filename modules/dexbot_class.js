@@ -1186,10 +1186,10 @@ class DEXBot {
 
         // Restore and consolidate cacheFunds
         // SAFE: Done during startup before fill listener activates, so no concurrent access yet
-        this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+        this.manager.resetFunds();
         if (persistedCacheFunds) {
-            this.manager.funds.cacheFunds.buy += Number(persistedCacheFunds.buy || 0);
-            this.manager.funds.cacheFunds.sell += Number(persistedCacheFunds.sell || 0);
+            await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
+            await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
         }
 
         // Restore doubled side flags
