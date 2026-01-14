@@ -225,8 +225,9 @@ class StrategyEngine {
         // funds.available already has BTS fees and other reserves subtracted
         // In some test environments, accountTotals might be mocked directly while funds is not.
         // Fallback to manager.accountTotals for robustness during testing if funds available is not set.
-        const availablePoolBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0) + (mgr.funds?.cacheFunds?.buy ?? 0);
-        const availablePoolSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0) + (mgr.funds?.cacheFunds?.sell ?? 0);
+        // NOTE: available already includes cacheFunds physically, so no addition needed.
+        const availablePoolBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0);
+        const availablePoolSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0);
 
         if (mgr.logger.level === 'debug') {
             mgr.logger.log(`[BUDGET] Unified Sizing: Buy=${Format.formatAmount8(budgetBuy)}, Sell=${Format.formatAmount8(budgetSell)} (Respects botFunds % and Fees)`, 'debug');

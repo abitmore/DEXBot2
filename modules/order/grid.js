@@ -603,7 +603,7 @@ class Grid {
         for (const s of sides) {
             if (s.grid <= 0) continue;
             const avail = calculateAvailableFundsValue(s.name, manager.accountTotals, manager.funds, manager.config.assetA, manager.config.assetB, manager.config.activeOrders);
-            const totalPending = s.cache + avail;
+            const totalPending = avail;
             const allocated = s.name === 'buy' ? snap.allocatedBuy : snap.allocatedSell;
             const denominator = (allocated > 0) ? allocated : (s.grid + totalPending);
             const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
@@ -1082,9 +1082,9 @@ class Grid {
         if (candidate) {
             const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType, snap);
             const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-            // Include cacheFunds in availability check
+            // Include available funds in correction check
             // FIX: Use optional chaining for consistent null safety
-            const availableFund = (manager.funds?.available?.[sideName] || 0) + (manager.funds?.cacheFunds?.[sideName] || 0);
+            const availableFund = (manager.funds?.available?.[sideName] || 0);
 
             if (size && size <= availableFund) {
                 // Check if available funds would create a dust-sized order (below dust threshold of ideal size)

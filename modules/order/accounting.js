@@ -220,32 +220,42 @@ class Accountant {
         // 2. Percentage-based tolerance to handle market fees and timing offsets
         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
-        // INVARIANT 1: chainTotal = chainFree + chainCommitted (BUY side)
-        const chainTotalBuy = mgr.funds.total.chain.buy;
+        // INVARIANT 1: chainTotal matches blockchain snapshot (with bot-only view limitation)
         const expectedBuy = chainFreeBuy + chainBuy;
-        const diffBuy = Math.abs(chainTotalBuy - expectedBuy);
-        const allowedBuyTolerance = Math.max(precisionSlackBuy, chainTotalBuy * PERCENT_TOLERANCE);
+        const actualBuy = mgr.accountTotals?.buy ?? expectedBuy; // Use snapshotted total if available
+        const diffBuy = Math.abs(actualBuy - expectedBuy);
+        const allowedBuyTolerance = Math.max(precisionSlackBuy, actualBuy * PERCENT_TOLERANCE);
 
-        if (diffBuy > allowedBuyTolerance) {
+        if (diffBuy > allowedBuyTolerance && mgr.accountTotals?.buy !== null) {
             if (mgr._metrics?.invariantViolations) mgr._metrics.invariantViolations.buy++;
              mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (BUY): chainTotal (${Format.formatAmount8(chainTotalBuy)}) != chainFree (${Format.formatAmount8(chainFreeBuy)}) + chainCommitted (${Format.formatAmount8(chainBuy)}) = ${Format.formatAmount8(expectedBuy)} (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`,
+                 `WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)}). May indicate non-bot activity or missed fills.`,
                  'warn'
              );
         }
 
-        // INVARIANT 1: chainTotal = chainFree + chainCommitted (SELL side)
-        const chainTotalSell = mgr.funds.total.chain.sell;
+        // INVARIANT 1: chainTotal (SELL side)
         const expectedSell = chainFreeSell + chainSell;
-        const diffSell = Math.abs(chainTotalSell - expectedSell);
-        const allowedSellTolerance = Math.max(precisionSlackSell, chainTotalSell * PERCENT_TOLERANCE);
+        const actualSell = mgr.accountTotals?.sell ?? expectedSell;
+        const diffSell = Math.abs(actualSell - expectedSell);
+        const allowedSellTolerance = Math.max(precisionSlackSell, actualSell * PERCENT_TOLERANCE);
 
-        if (diffSell > allowedSellTolerance) {
+        if (diffSell > allowedSellTolerance && mgr.accountTotals?.sell !== null) {
             if (mgr._metrics?.invariantViolations) mgr._metrics.invariantViolations.sell++;
              mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (SELL): chainTotal (${Format.formatAmount8(chainTotalSell)}) != chainFree (${Format.formatAmount8(chainFreeSell)}) + chainCommitted (${Format.formatAmount8(chainSell)}) = ${Format.formatAmount8(expectedSell)} (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`,
+                 `WARNING: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)}). May indicate non-bot activity or missed fills.`,
                  'warn'
              );
+        }
+
+        // INVARIANT 4: Cache funds should not exceed physical free funds
+        const cacheBuy = mgr.funds?.cacheFunds?.buy || 0;
+        const cacheSell = mgr.funds?.cacheFunds?.sell || 0;
+        if (cacheBuy > chainFreeBuy + allowedBuyTolerance) {
+             mgr.logger?.log?.(`WARNING: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmount8(cacheBuy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`, 'warn');
+        }
+        if (cacheSell > chainFreeSell + allowedSellTolerance) {
+             mgr.logger?.log?.(`WARNING: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'warn');
         }
 
         // INVARIANT 2: Available should not exceed chainFree
@@ -265,15 +275,15 @@ class Accountant {
         // INVARIANT 3: Grid committed should not exceed chain total
         const gridCommittedBuy = mgr.funds.committed.grid.buy;
         const gridCommittedSell = mgr.funds.committed.grid.sell;
-        if (gridCommittedBuy > chainTotalBuy + allowedBuyTolerance) {
+        if (gridCommittedBuy > expectedBuy + allowedBuyTolerance) {
              mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (BUY grid): gridCommitted (${Format.formatAmount8(gridCommittedBuy)}) > chainTotal (${Format.formatAmount8(chainTotalBuy)})`,
+                 `WARNING: Fund invariant violation (BUY grid): gridCommitted (${Format.formatAmount8(gridCommittedBuy)}) > chainTotal (${Format.formatAmount8(expectedBuy)})`,
                  'warn'
              );
         }
-        if (gridCommittedSell > chainTotalSell + allowedSellTolerance) {
+        if (gridCommittedSell > expectedSell + allowedSellTolerance) {
              mgr.logger?.log?.(
-                 `WARNING: Fund invariant violation (SELL grid): gridCommitted (${Format.formatAmount8(gridCommittedSell)}) > chainTotal (${Format.formatAmount8(chainTotalSell)})`,
+                 `WARNING: Fund invariant violation (SELL grid): gridCommitted (${Format.formatAmount8(gridCommittedSell)}) > chainTotal (${Format.formatAmount8(expectedSell)})`,
                  'warn'
              );
         }

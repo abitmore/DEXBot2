@@ -268,7 +268,10 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
 
-    return Math.max(0, chainFree - virtual - inFlight - cacheFunds - currentFeesOwed - btsFeesReservation);
+    // Available funds: chainFree minus all known internal reservations and obligations.
+    // NOTE: cacheFunds is NOT subtracted here because it is physically part of chainFree.
+    // It is kept as a separate reporting metric but does not diminish spending power.
+    return Math.max(0, chainFree - virtual - inFlight - currentFeesOwed - btsFeesReservation);
 }
 
 /**
