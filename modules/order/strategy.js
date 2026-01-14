@@ -752,11 +752,6 @@ class StrategyEngine {
                     } else {
                         mgr.logger.log(`[RACE] Slot ${filledOrder.id} reused (curr=${currentSlot.orderId} != fill=${filledOrder.orderId}). Skipping VIRTUAL update.`, 'info');
                     }
-
-                    // CRITICAL: _updateOrder(VIRTUAL) treats this as a cancellation and refunds chainFree.
-                    // Since this is a FILL, the funds were spent. We must re-deduct them immediately.
-                    mgr.accountant.tryDeductFromChainFree(filledOrder.type, filledOrder.size, 'fill-consumption');
-                    mgr.logger.log(`[FUNDS] Consumed refunded capital for fill ${filledOrder.id}: ${filledOrder.size}`, 'debug');
                 }
 
                 let rawProceeds = 0;
