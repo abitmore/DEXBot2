@@ -37,34 +37,6 @@ class StrategyEngine {
     }
 
     /**
-     * Calculate BTS fee reservations for BUY and SELL sides (if asset is BTS).
-     * Returns object with btsFeeReservationBuy and btsFeeReservationSell.
-     */
-    calculateBtsFeeReservations(hasBtsPair, config) {
-        let btsFeeReservationBuy = 0;
-        let btsFeeReservationSell = 0;
-
-        if (hasBtsPair && config.activeOrders) {
-            const targetBuy = Math.max(0, config.activeOrders.buy || 0);
-            const targetSell = Math.max(0, config.activeOrders.sell || 0);
-            const totalTargetOrders = targetBuy + targetSell;
-
-            if (totalTargetOrders > 0) {
-                const btsFeeData = getAssetFees('BTS', 1);
-                const totalBtsReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
-
-                if (config.assetB === "BTS") {
-                    btsFeeReservationBuy = totalBtsReservation;
-                } else if (config.assetA === "BTS") {
-                    btsFeeReservationSell = totalBtsReservation;
-                }
-            }
-        }
-
-        return { btsFeeReservationBuy, btsFeeReservationSell };
-    }
-
-    /**
      * Unified rebalancing entry point.
      * 
      * ALGORITHM: Boundary-Crawl Rebalancing
