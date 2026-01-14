@@ -116,7 +116,8 @@ class StrategyEngine {
         if (fills.length === 0) {
             const currentSpread = mgr.calculateCurrentSpread();
             const baseTarget = mgr.config.targetSpreadPercent + (mgr.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-            const targetSpread = baseTarget + (Array.from(mgr.orders.values()).some(o => o.isDoubleOrder) ? mgr.config.incrementPercent : 0);
+            const doubledSideCount = (mgr.buySideIsDoubled ? 1 : 0) + (mgr.sellSideIsDoubled ? 1 : 0);
+            const targetSpread = baseTarget + (doubledSideCount * mgr.config.incrementPercent);
             const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
             const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
             mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);

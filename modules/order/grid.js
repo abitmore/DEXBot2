@@ -881,8 +881,9 @@ class Grid {
             const currentSpread = Grid.calculateCurrentSpread(manager);
             // Base target widens spread beyond nominal value to account for order density and price movement
             const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-            // If double orders exist (fills causing overlaps), add extra spread tolerance to prevent over-correction
-            const targetSpread = baseTarget + (Array.from(manager.orders.values()).some(o => o.isDoubleOrder) ? manager.config.incrementPercent : 0);
+            // If double sides exist (merged dust awaiting rotation), add extra spread tolerance per side to prevent over-correction
+            const doubledSideCount = (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
+            const targetSpread = baseTarget + (doubledSideCount * manager.config.incrementPercent);
 
             const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
             const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);

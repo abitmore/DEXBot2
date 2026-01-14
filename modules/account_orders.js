@@ -783,11 +783,6 @@ class AccountOrders {
       orderId
     };
 
-    // NEW: Persist Anchor & Refill strategy fields
-    // NOTE: individual order fields (isDoubleOrder, mergedDustSize, etc.) are deprecated
-    // but kept for backward compatibility during rollout if needed.
-    // Cleanup of these fields will happen in StrategyEngine.
-
     return serialized;
   }
 }

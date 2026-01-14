@@ -376,30 +376,21 @@ class SyncEngine {
      * 1. Find the grid order matching this fill's orderId
      * 2. Calculate how much of the order was filled (based on asset paid)
      * 3. Update grid size: newSize = currentSize - filledAmount
-     * 4. Determine if fill is complete or partial
-     * 5. For DoubleOrders, track accumulated fills and trigger delayed rotations
-     *
-     * PRECISION HANDLING:
+      * 4. Determine if fill is complete or partial
+      * 5. For doubled sides, reset flag and trigger double replacement rotations
+      *
+      * PRECISION HANDLING:
      * Fill amounts must be converted using the same blockchain precision as the order.
      * For SELL orders: check paysAsset == assetA (what we sold)
      * For BUY orders: check paysAsset == assetB (what we paid)
      * Use floatToBlockchainInt/blockchainToFloat to ensure consistency.
      *
-     * DOUBLEORDER SPECIAL HANDLING:
-     * DoubleOrders are created when the innermost partial absorbs residual capital
-     * from other partials during consolidation. They have a mergedDustSize field
-     * tracking how much "extra" size was merged in.
-     *
-     * Delayed Rotation Logic:
-     * - Track filledSinceRefill: cumulative fills since consolidation
-     * - When filledSinceRefill >= mergedDustSize:
-     *   * Mark fill as isDelayedRotationTrigger (signals later rotation)
-     *   * Clear isDoubleOrder flag
-     *   * Reset filledSinceRefill to 0
-     *   * Return to ACTIVE state for rotation
-     * - This prevents premature rotations while the merged dust is still useful
-     *
-     * COMPLETE vs PARTIAL FILL:
+      * DOUBLE-SIDE STRATEGY:
+      * When a side is marked as "doubled" (e.g. after a dust merge), the next
+      * full fill on that side triggers a double replacement rotation to 
+      * account for the combined capital.
+      *
+      * COMPLETE vs PARTIAL FILL:
      * - Complete: newSize <= 0 → convert to SPREAD placeholder
      * - Partial: newSize > 0 → stay in PARTIAL state, track remaining
      *
@@ -520,15 +511,6 @@ class SyncEngine {
                           if (side === 'buy') mgr.buySideIsDoubled = false;
                           else mgr.sellSideIsDoubled = false;
                           // Note: partial fill on doubled side does NOT trigger double replacement
-                      }
-                      
-                      // DEPRECATED: Old DoubleOrder special handling (kept for backward compat during transition)
-                      if (updatedOrder.isDoubleOrder && updatedOrder.mergedDustSize) {
-                          // Clean up deprecated fields if they exist
-                          updatedOrder.isDoubleOrder = false;
-                          updatedOrder.mergedDustSize = 0;
-                          updatedOrder.filledSinceRefill = 0;
-                          updatedOrder.pendingRotation = false;
                       }
 
                       mgr._updateOrder(updatedOrder);

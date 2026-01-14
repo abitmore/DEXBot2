@@ -159,7 +159,7 @@ async function runPartialHandlingScenario() {
     const dustSlot = mgr.orders.get(dustId);
     const isMergedInRotation = resDust.ordersToRotate.some(r => r.oldOrder.id === dustId && r.newSize > idealSize);
     
-    assert(dustSlot.isDoubleOrder || isMergedInRotation, 'Dust partial should be merged');
+    assert(mgr.sellSideIsDoubled || isMergedInRotation, 'Dust partial should be merged and flag sellSideIsDoubled');
     console.log('    ✓ Dust correctly merged.');
 }
 

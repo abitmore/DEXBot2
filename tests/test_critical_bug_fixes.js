@@ -82,49 +82,48 @@ async function testSpreadSortingForRotation() {
 }
 
 // ============================================================================
-// TEST 2: STATE TRANSITION STABILITY - DOUBLEORDER STAYS ACTIVE AT 100%
+// TEST 2: STATE TRANSITION STABILITY - ORDERS STAY ACTIVE AT 100%
 // ============================================================================
-async function testDoubleOrderStateTransitionStability() {
-    console.log('\n[Test 2] DoubleOrder state transition stays ACTIVE when size >= 100%');
+async function testOrderStateTransitionStability() {
+    console.log('\n[Test 2] Order state transition stays ACTIVE when size >= 100%');
     console.log('-'.repeat(80));
 
     const mgr = setupManager();
 
-    // Create a DoubleOrder with size = idealSize * 1.02 (102% of ideal)
-    const doubleOrder = {
-        id: 'double-sell',
-        orderId: 'chain-double-sell',
+    // Create an order with size = idealSize * 1.02 (102% of ideal)
+    const activeOrder = {
+        id: 'test-sell',
+        orderId: 'chain-test-sell',
         type: ORDER_TYPES.SELL,
         price: 1.20,
         size: 10.2, // 102% of ideal (10)
-        state: ORDER_STATES.ACTIVE,
-        isDoubleOrder: true
+        state: ORDER_STATES.ACTIVE
     };
 
-    mgr.orders.set(doubleOrder.id, doubleOrder);
-    mgr._updateOrder(doubleOrder);
+    mgr.orders.set(activeOrder.id, activeOrder);
+    mgr._updateOrder(activeOrder);
 
     // Verify it's in ACTIVE state
-    const before = mgr.orders.get('double-sell');
+    const before = mgr.orders.get('test-sell');
     assert(before.state === ORDER_STATES.ACTIVE, `Should start as ACTIVE, got ${before.state}`);
 
     // Simulate some fills and state transitions
     // The state should remain ACTIVE as long as size >= 100% (10.0)
-    const updatedOrder = { ...doubleOrder, size: 10.0, state: ORDER_STATES.ACTIVE };
+    const updatedOrder = { ...activeOrder, size: 10.0, state: ORDER_STATES.ACTIVE };
     mgr._updateOrder(updatedOrder);
 
-    const after = mgr.orders.get('double-sell');
+    const after = mgr.orders.get('test-sell');
     assert(after.state === ORDER_STATES.ACTIVE, `Should remain ACTIVE when size=100%, got ${after.state}`);
     assert(after.size === 10.0, `Size should be 10.0, got ${after.size}`);
 
     // Now test transition to PARTIAL when size < 100%
-    const partialOrder = { ...doubleOrder, size: 5.0, state: ORDER_STATES.PARTIAL };
+    const partialOrder = { ...activeOrder, size: 5.0, state: ORDER_STATES.PARTIAL };
     mgr._updateOrder(partialOrder);
 
-    const final = mgr.orders.get('double-sell');
+    const final = mgr.orders.get('test-sell');
     assert(final.state === ORDER_STATES.PARTIAL, `Should transition to PARTIAL when size < 100%, got ${final.state}`);
 
-    console.log('✓ DoubleOrder state transitions correctly based on size threshold');
+    console.log('✓ Order state transitions correctly based on size threshold');
 }
 
 // ============================================================================
@@ -337,7 +336,7 @@ async function testGhostVirtualizationRestoresStates() {
 (async () => {
     try {
         await testSpreadSortingForRotation();
-        await testDoubleOrderStateTransitionStability();
+        await testOrderStateTransitionStability();
         await testGhostVirtualTargetSizingAccuracy();
         await testSpreadSortingForBuyRotation();
         await testPartialStateTransitionBelow100();
