@@ -133,6 +133,36 @@ class OrderManager {
     resetFunds() { return this.accountant.resetFunds(); }
 
     /**
+     * Deduct an amount from the optimistic chainFree balance.
+     * Proxy for accountant.tryDeductFromChainFree used by dexbot_class.js.
+     */
+    _deductFromChainFree(orderType, size, operation) {
+        return this.accountant.tryDeductFromChainFree(orderType, size, operation);
+    }
+
+    /**
+     * Add an amount back to the optimistic chainFree balance.
+     * Proxy for accountant.addToChainFree used by dexbot_class.js.
+     */
+    _addToChainFree(orderType, size, operation) {
+        return this.accountant.addToChainFree(orderType, size, operation);
+    }
+
+    /**
+     * Safe access to cache funds for a specific side.
+     */
+    _getCacheFunds(side) {
+        return this.funds?.cacheFunds?.[side] || 0;
+    }
+
+    /**
+     * Safe access to grid totals for a specific side.
+     */
+    _getGridTotal(side) {
+        return (this.funds?.committed?.grid?.[side] || 0) + (this.funds?.virtual?.[side] || 0);
+    }
+
+    /**
      * Recalculates all fund values based on current order states.
      * @returns {void}
      */
@@ -801,6 +831,16 @@ class OrderManager {
         const { persistGridSnapshot } = require('./utils');
         return await persistGridSnapshot(this, this.accountOrders, this.config.botKey);
     }
+
+    /**
+     * Alias for persistGrid to satisfy legacy callers.
+     */
+    async _persistCacheFunds() { return await this.persistGrid(); }
+
+    /**
+     * Alias for persistGrid to satisfy legacy callers.
+     */
+    async _persistBtsFeesOwed() { return await this.persistGrid(); }
 }
 
 module.exports = { OrderManager };
