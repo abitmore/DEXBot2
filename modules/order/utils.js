@@ -235,6 +235,13 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
 
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
     const virtual = toFiniteNumber(side === 'buy' ? funds.virtual?.buy : funds.virtual?.sell);
+    
+    // In-Flight Funds: Capital committed to ACTIVE grid orders that aren't yet confirmed on-chain (no orderId)
+    // Subtracting these prevents availability spikes during the VIRTUAL -> ACTIVE transition gap.
+    const committedGrid = toFiniteNumber(side === 'buy' ? funds.committed?.grid?.buy : funds.committed?.grid?.sell);
+    const committedChain = toFiniteNumber(side === 'buy' ? funds.committed?.chain?.buy : funds.committed?.chain?.sell);
+    const inFlight = Math.max(0, committedGrid - committedChain);
+
     const cacheFunds = toFiniteNumber(side === 'buy' ? funds.cacheFunds?.buy : funds.cacheFunds?.sell);
     const btsFeesOwed = toFiniteNumber(funds.btsFeesOwed);
 
@@ -261,7 +268,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
 
-    return Math.max(0, chainFree - virtual - cacheFunds - currentFeesOwed - btsFeesReservation);
+    return Math.max(0, chainFree - virtual - inFlight - cacheFunds - currentFeesOwed - btsFeesReservation);
 }
 
 /**
