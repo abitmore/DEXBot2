@@ -218,7 +218,7 @@ class StrategyEngine {
         const budgetBuy = buyCtx.budget;
         const budgetSell = sellCtx.budget;
 
-        // Ensure availablePool is calculated with current allocations (respects botFunds %)
+        // Ensure funds are calculated with current allocations (respects botFunds %)
         if (mgr.applyBotFundsAllocation) mgr.applyBotFundsAllocation();
 
         // Available funds for net capital increases (e.g., placing new orders)
@@ -577,7 +577,7 @@ class StrategyEngine {
         // STEP 4: PLACEMENTS (Activate Outer Edges)
         // ════════════════════════════════════════════════════════════════════════════════
         // Use remaining budget to place new orders at the edge of the grid window.
-        // CRITICAL: Cap placement sizes to respect availablePool (liquid funds only).
+        // CRITICAL: Cap placement sizes to respect available funds.
         // Ideal sizes are calculated from totalSideBudget (distributed across all slots),
         // but actual placements can only use available liquid funds.
         let totalNewPlacementSize = 0;
@@ -586,9 +586,6 @@ class StrategyEngine {
             // Reverse them to target Furthest First (Outer Edges).
             // Use shortageIdx since it tracks how many shortages were consumed/skipped in rotation phase
             const outerShortages = filteredShortages.slice(shortageIdx).reverse();
-
-            // Track remaining available funds for placements (only needed if increasing size)
-            let remainingAvailable = availablePool;
 
             const placeCount = Math.min(outerShortages.length, budgetRemaining);
             for (let i = 0; i < placeCount; i++) {
@@ -606,7 +603,7 @@ class StrategyEngine {
 
                 // CRITICAL: VIRTUAL orders already have capital allocated in idealSize.
                 // Only cap if we're INCREASING the size beyond what was allocated.
-                // If slot has no size (truly empty), it needs capital from availablePool.
+                // If slot has no size (truly empty), it needs capital from available funds.
                 // If slot already has size allocated (VIRTUAL), use the full idealSize.
                 const currentSize = slot.size || 0;
                 const sizeIncrease = Math.max(0, idealSize - currentSize);
