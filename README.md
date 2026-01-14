@@ -155,17 +155,10 @@ DEXBot2 now supports global parameter management via the interactive editor (`de
 - **Grid Cache Regeneration %**: Threshold for resizing the grid when proceeds accumulate (Default: `3%`).
 - **RMS Divergence Threshold %**: Maximum allowed deviation between in-memory and persisted grid state (Default: `14.3%`).
 - **Partial Dust Threshold %**: Threshold for identifying small "dust" orders for geometric refilling (Default: `5%`).
-- **Blockchain Fetch Interval**: Frequency of full account balance refreshes (Default: `240 min`).
-- **Sync Delay**: Polling delay for blockchain synchronization (Default: `500ms`).
-- **Lock Timeout**: Order lock auto-expiry timeout (Default: `10s`).
-- **Fill Dedupe Window**: Window for deduplicating same fill events (Default: `5s`).
-- **Fill Cleanup Interval**: Frequency for cleaning old fill records (Default: `10s`).
-- **Fill Record Retention**: Duration to keep persisted fill records (Default: `60 min`).
+- **Timing (Core)**: **Blockchain Fetch Interval**: Frequency of full account balance refreshes (Default: `240 min`); **Sync Delay**: Polling delay for blockchain synchronization (Default: `500ms`); **Lock Timeout**: Order lock auto-expiry timeout (Default: `10s`).
+- **Timing (Fill)**: **Fill Dedupe Window**: Window for deduplicating same fill events (Default: `5s`); **Fill Cleanup Interval**: Frequency for cleaning old fill records (Default: `10s`); **Fill Record Retention**: Duration to keep persisted fill records (Default: `60 min`).
 - **Log Level**: Global verbosity control (`debug`, `info`, `warn`, `error`).
-- **Updater Active**: Toggle daily automated repository updates (Default: `ON`).
-- **Updater Branch**: Branch to track for updates (`auto`, `main`, `dev`, `test`).
-- **Updater Interval**: Frequency of automated updates in days (Default: `1 day`).
-- **Updater Time**: Specific time of day to run the update (Default: `00:00`).
+- **Updater**: **Updater Active**: Toggle daily automated repository updates (Default: `ON`); **Updater Branch**: Branch to track for updates (`auto`, `main`, `dev`, `test`); **Updater Interval**: Frequency of automated updates in days (Default: `1 day`); **Updater Time**: Specific time of day to run the update (Default: `00:00`).
 
 ## 🎯 PM2 Process Management (Recommended for Production)
 
