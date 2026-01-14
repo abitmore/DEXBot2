@@ -334,6 +334,13 @@ class Accountant {
 
         // Deduct: Now that we've passed the check, deduct
         mgr.accountTotals[key] = Math.max(0, current - size);
+
+        // Optimistically update the total balance field to maintain invariant until next fetch
+        const totalKey = isBuy ? 'buy' : 'sell';
+        if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
+            mgr.accountTotals[totalKey] = Math.max(0, mgr.accountTotals[totalKey] - size);
+        }
+
         return true;
     }
 
@@ -369,9 +376,16 @@ class Accountant {
              return false;
          }
 
-         mgr.accountTotals[key] = oldFree + size;
+          mgr.accountTotals[key] = oldFree + size;
 
-         if (mgr.logger && mgr.logger.level === 'debug') {
+          // Optimistically update the total balance field to maintain invariant until next fetch
+          const totalKey = isBuy ? 'buy' : 'sell';
+          if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
+              mgr.accountTotals[totalKey] = mgr.accountTotals[totalKey] + size;
+          }
+
+          if (mgr.logger && mgr.logger.level === 'debug') {
+
               mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])}`, 'debug');
          }
          
