@@ -279,15 +279,11 @@ class StrategyEngine {
 
         // BUY placements: Deduct from cacheFunds.buy
         if (buyResult.totalNewPlacementSize > 0) {
-            const oldCache = mgr.funds.cacheFunds.buy || 0;
-            mgr.funds.cacheFunds.buy = Math.max(0, oldCache - buyResult.totalNewPlacementSize);
-             mgr.logger.log(`[CACHEFUNDS] buy: ${Format.formatAmount8(oldCache)} - ${Format.formatAmount8(buyResult.totalNewPlacementSize)} (new-placements) = ${Format.formatAmount8(mgr.funds.cacheFunds.buy)}`, 'debug');
+            await mgr.modifyCacheFunds('buy', -buyResult.totalNewPlacementSize, 'new-placements');
         }
         // SELL placements: Deduct from cacheFunds.sell
         if (sellResult.totalNewPlacementSize > 0) {
-            const oldCache = mgr.funds.cacheFunds.sell || 0;
-            mgr.funds.cacheFunds.sell = Math.max(0, oldCache - sellResult.totalNewPlacementSize);
-             mgr.logger.log(`[CACHEFUNDS] sell: ${Format.formatAmount8(oldCache)} - ${Format.formatAmount8(sellResult.totalNewPlacementSize)} (new-placements) = ${Format.formatAmount8(mgr.funds.cacheFunds.sell)}`, 'debug');
+            await mgr.modifyCacheFunds('sell', -sellResult.totalNewPlacementSize, 'new-placements');
         }
 
         mgr.recalculateFunds();
@@ -797,9 +793,7 @@ class StrategyEngine {
                 const spendSide = isSell ? 'sell' : 'buy';
                 const receiveType = isSell ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
 
-                const oldCache = mgr.funds.cacheFunds[receiveSide] || 0;
-                mgr.funds.cacheFunds[receiveSide] = oldCache + netProceeds;
-                 mgr.logger.log(`[FUNDS] cacheFunds.${receiveSide} updated: ${Format.formatMetric5(oldCache)} -> ${Format.formatMetric5(mgr.funds.cacheFunds[receiveSide])}`, "debug");
+                await mgr.modifyCacheFunds(receiveSide, netProceeds, 'fill-proceeds');
 
                 mgr.accountant.addToChainFree(receiveType, netProceeds, 'fill-proceeds');
                 

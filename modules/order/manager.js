@@ -168,6 +168,16 @@ class OrderManager {
     }
 
     /**
+     * Safely modify cache funds using semaphore protection.
+     * @param {string} side - 'buy' or 'sell'
+     * @param {number} delta - Amount to add/subtract
+     * @param {string} op - Operation name
+     */
+    async modifyCacheFunds(side, delta, op) {
+        return await this.accountant.modifyCacheFunds(side, delta, op);
+    }
+
+    /**
      * Recalculates all fund values based on current order states.
      * @returns {void}
      */

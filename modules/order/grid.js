@@ -116,16 +116,9 @@ class Grid {
      * @private
      */
     static async _updateCacheFundsAtomic(manager, sideName, newValue) {
-        // If manager has fund semaphore, use it; otherwise execute directly
-        if (manager._fundsSemaphore?.acquire) {
-            return await manager._fundsSemaphore.acquire(() => {
-                Grid._ensureCacheFundsInitialized(manager);
-                manager.funds.cacheFunds[sideName] = newValue;
-            });
-        } else {
-            Grid._ensureCacheFundsInitialized(manager);
-            manager.funds.cacheFunds[sideName] = newValue;
-        }
+        const current = manager.funds?.cacheFunds?.[sideName] || 0;
+        const delta = newValue - current;
+        return await manager.modifyCacheFunds(sideName, delta, 'recalculate-remainder');
     }
 
     /**

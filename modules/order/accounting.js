@@ -365,14 +365,45 @@ class Accountant {
               mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])}`, 'debug');
          }
          
-         return true;
-     }
+          return true;
+      }
 
+    /**
+     * Safely modify cache funds using the manager's fund semaphore.
+     * Prevents race conditions during concurrent fill/rotation processing.
+     * 
+     * @param {string} side - 'buy' or 'sell'
+     * @param {number} delta - Amount to add (positive) or subtract (negative)
+     * @param {string} [operation='update'] - Operation name for logging
+     * @returns {Promise<number>} New cache fund value
+     */
+    async modifyCacheFunds(side, delta, operation = 'update') {
+        const mgr = this.manager;
+        if (!mgr.funds.cacheFunds) {
+            mgr.funds.cacheFunds = { buy: 0, sell: 0 };
+        }
 
+        const executeUpdate = () => {
+            const oldValue = mgr.funds.cacheFunds[side] || 0;
+            const newValue = Math.max(0, oldValue + delta);
+            mgr.funds.cacheFunds[side] = newValue;
+            
+            if (mgr.logger && mgr.logger.level === 'debug') {
+                mgr.logger.log(`[CACHEFUNDS] ${side} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
+            }
+            return newValue;
+        };
 
+        if (mgr._fundsSemaphore?.acquire) {
+            return await mgr._fundsSemaphore.acquire(executeUpdate);
+        } else {
+            return executeUpdate();
+        }
+    }
 
-      /**
-       * Update optimistic free balance during order state transitions.
+    /**
+     * Update optimistic free balance during order state transitions.
+
        * This is CRITICAL for preventing "fund leaks" where locked capital is never released.
        *
        * @param {Object} oldOrder - The original order object.
