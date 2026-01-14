@@ -182,7 +182,7 @@ stateDiagram-v2
 | VIRTUAL | ACTIVE | Order placed | Deduct from `chainFree` |
 | ACTIVE | PARTIAL | Partial fill | Reduce `committed` by filled amount |
 | ACTIVE | VIRTUAL | Order cancelled | Add back to `chainFree` |
-| PARTIAL | ACTIVE | Consolidation | Lock additional funds if needed |
+| PARTIAL | ACTIVE | Consolidation | Update to `idealSize` (releases dust to `cacheFunds`) |
 | PARTIAL | VIRTUAL | Order moved | Release funds, re-reserve |
 
 ---
@@ -323,9 +323,9 @@ sequenceDiagram
     Sync->>Strat: processFilledOrders([fills])
     
     Strat->>Acct: Add proceeds to cacheFunds
-        Strat->>Strat: Check for dust on both sides
-        alt Dust on both sides
-            Strat->>Strat: Trigger Rebalance (Consolidate Dust)
+        Strat->>Strat: Check for side-wide Double Token
+        alt Side is Doubled
+            Strat->>Strat: Trigger Double Replacement (2 slots)
         end
     
     Strat->>Grid: Shift boundary

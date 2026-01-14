@@ -103,38 +103,40 @@ When creating an order, the bot does not just "add it to the list". It performs 
 
 ---
 
-## 5. Partial Order Handling: Merge, Split & Anchoring
-Partial orders (state `PARTIAL`) are on-chain orders that have partially filled. The system manages these using "Anchor" logic to prevent capital fragmentation.
+## 5. Partial Order Handling: Merge & Split
+Partial orders (state `PARTIAL`) are on-chain orders that have partially filled. The system manages these using a "Side-Wide Double-Order" strategy to prevent capital fragmentation and divergence errors.
 
 ### The Dust Threshold (5%)
-The system uses a hardcoded threshold to distinguish between "significant" partial orders and "dust":
+The system uses a threshold (defined in `constants.js`) to distinguish between "significant" partial orders and "dust":
 - **Dust Criterion**: $Size < SizeIdeal \times 0.05$ (5%).
-- **Impact**: Dust orders are prioritized for cancellation and "Merging" back into the liquidity pool to keep the grid clean.
+- **Impact**: Dust orders are prioritized for merging back into the liquidity pool to keep the grid clean.
 
-### Merge Logic (Consolidation)
-"Merging" is the process of combining small fragments of capital (dust) into a single target size.
-- **Trigger**: When a slot is assigned a $SizeIdeal$ but already contains a `PARTIAL` order, or when nearby dust is consolidated.
-- **Size Limit (Oversizing)**: Unlike normal placements, a Merged order **CAN exceed 100% of the ideal slot size**.
-    - If a slot needs $SizeIdeal$ and absorbs $SizeDust$, the result is a **Double Order** with $SizeTotal = SizeIdeal + SizeDust$.
-- **Double Order State**:
-    - The order is marked as `isDoubleOrder`.
-    - It stays in the `ACTIVE` state even while filling, as long as its remaining size is greater than its original "Core" size ($SizeIdeal$).
-    - This allows the bot to "work through" the extra dust without triggering a premature rotation.
-- **Promotion**: If the new size is $\geq 99\%$ of the (potentially oversized) target, the state is promoted to `ACTIVE`.
+### Merge Logic (Side-Wide Strategy)
+"Merging" is the process of absorbing small fragments of capital (dust) back into the grid's standard sizing.
+- **Trigger**: When a slot is assigned an $SizeIdeal$ but already contains a `PARTIAL` dust order.
+- **Process**:
+    1. The partial order is updated on-chain to **exactly** $SizeIdeal$ (the "extra" dust capital is released into `cacheFunds`).
+    2. The side (Buy or Sell) is flagged as **Doubled** (`sideIsDoubled = true`).
+- **Benefit**: Unlike the previous "Double Order" strategy, the on-chain order size remains standard. This prevents the "Squeeze" effect where the divergence engine would fight against intentionally oversized orders.
 
-### Split Logic (Surplus Extraction)
-"Splitting" occurs when a partial order contains *more* capital than its slot currently requires.
+### Double-Side State & Reactions
+The `sideIsDoubled` flag acts as a pending "bonus" for the opposite side's reaction logic:
+- **State Reset**: The flag is reset immediately after the *first* fill (partial or full) occurs on that side.
+- **Partial Fill**: Triggers **one** replacement order on the opposite side (normal behavior).
+- **Full Fill**: Triggers **two** replacement orders on the opposite side (the "Double Replacement").
+    - One replacement represents the filled order itself.
+    - The second replacement utilizes the "released" dust capital from the earlier merge.
+
+### Split Logic (Substantial Partials)
+If a partial order is **not** dust (significant capital), the system "Splits" it:
 - **Trigger**: Usually after a grid recalculation where a slot's ideal size decreases.
-- **Process**: The bot "splits" the order:
-    - $SizeNew = SizeIdeal$
-    - $Surplus = SizeOld - SizeIdeal$
-- **Outcome**: The `Surplus` is returned to `CacheFunds`, and the order remains on-chain with the reduced $SizeNew$.
+- **Process**: 
+    1. The on-chain order is resized down to $SizeIdeal$.
+    2. The "overflow" capital is placed as a **new order** at the spread or the next available slot.
+- **Result**: This anchors the fill in its current position while allowing the excess capital to continue working elsewhere.
 
 ### Dual-Side Dust Consolidation
-A unique safeguard in `processFilledOrders` triggers a mandatory rebalance if dust exists on both sides:
-- If **Buy Side has Dust** AND **Sell Side has Dust**:
-- The strategy will prioritize canceling the dust and merging it into a new, target-sized order.
-- This ensures capital doesn't remain "fragmented" in tiny partials that are too small to be meaningful.
+A unique safeguard in `processFilledOrders` triggers a mandatory rebalance if dust exists on both sides simultaneously. The strategy will prioritize canceling the dust on both sides to consolidate it into target-sized orders, ensuring capital doesn't remain fragmented in tiny remnants.
 
 ### Moving Partial Orders
 During rotations, a `PARTIAL` order can be moved to a new slot:
@@ -183,7 +185,7 @@ When actual fees are charged on-chain, they are tracked in `btsFeesOwed`. During
 | **Rotation** | Sliding Window | Greedy Crawl | Capital closer to price action. |
 | **Accounting**| Optimistic | Atomic (Check-and-Deduct) | No race conditions/negative balances. |
 | **Topology** | Rigid Buying/Selling | Master Rail + Dynamic Boundary | Smoother role transitions. |
-| **Partials** | Stationary | Anchor, Move, and Merge | Prevents dust accumulation. |
+| **Partials** | Stationary | Side-Wide Double-Order Strategy | Prevents dust accumulation without grid squeezing. |
 | **Safety** | Logs only | Invariant Enforcement | Detects leaks and double-spends. |
 
 ---
