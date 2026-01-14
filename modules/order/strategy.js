@@ -248,10 +248,12 @@ class StrategyEngine {
             else reactionCapSell += count;
         }
 
-        // Always allow at least 1 action if processing any fill
+        // Always allow at least 1 action per side if processing any fill
+        // CRITICAL: In boundary-crawl, both sides MUST crawl whenever the boundary shifts.
+        // Restricting one side causes it to fall out of the target window.
         if (fills.length > 0) {
-            if (fills.some(f => f.type === ORDER_TYPES.SELL)) reactionCapBuy = Math.max(reactionCapBuy, 1);
-            if (fills.some(f => f.type === ORDER_TYPES.BUY)) reactionCapSell = Math.max(reactionCapSell, 1);
+            reactionCapBuy = Math.max(reactionCapBuy, 1);
+            reactionCapSell = Math.max(reactionCapSell, 1);
         } else {
             // Periodic rebalance (no fills) - allow 1 action per side
             reactionCapBuy = 1;
@@ -745,7 +747,7 @@ class StrategyEngine {
                     const slotReused = currentSlot && currentSlot.orderId && currentSlot.orderId !== filledOrder.orderId;
 
                     if (!slotReused) {
-                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, orderId: null });
+                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null });
                     } else {
                         mgr.logger.log(`[RACE] Slot ${filledOrder.id} reused (curr=${currentSlot.orderId} != fill=${filledOrder.orderId}). Skipping VIRTUAL update.`, 'info');
                     }
