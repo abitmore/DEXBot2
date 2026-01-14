@@ -159,12 +159,11 @@ class Accountant {
         // Set virtual (grid orders not on-chain yet)
         mgr.funds.virtual = { buy: virtualBuy, sell: virtualSell };
 
-        // Set totals based on accountable funds only (chainFree + chainCommitted from on-chain orders)
-        // Do NOT use blockchain-reported totals as they may include vesting balances, call orders,
-        // or settlements that are outside our trading view and would violate the invariant.
-        // For trading purposes: chainTotal = chainFree (unallocated) + chainCommitted (in orders)
-        const chainTotalBuy = chainFreeBuy + chainBuy;
-        const chainTotalSell = chainFreeSell + chainSell;
+        // Set totals based on accountable funds only (chainFree + gridCommitted)
+        // We use gridCommitted because chainFree is optimistically reduced by all ACTIVE grid orders,
+        // even those without an orderId yet (in-flight). This ensures the sum remains stable.
+        const chainTotalBuy = chainFreeBuy + gridBuy;
+        const chainTotalSell = chainFreeSell + gridSell;
 
         mgr.funds.total.chain = {
             buy: chainTotalBuy,
@@ -178,7 +177,7 @@ class Accountant {
 
         // Verify fund invariants to catch leaks early - but only if not in a batch update
         if (mgr._pauseFundRecalcDepth === 0) {
-            this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
+            this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, gridBuy, gridSell);
 
             // Capture fund snapshot for audit trail (non-intrusive, only in batch-completion mode)
             try {
@@ -207,9 +206,9 @@ class Accountant {
      * both chainFree and chainCommitted are calculated independently and may
      * each have minor rounding differences.
      */
-    _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
+    _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, gridBuy, gridSell) {
          // 1. Dynamic tolerance based on asset precision (slack for rounding)
-         //    Since chainFree and chainCommitted are calculated independently,
+         //    Since chainFree and gridCommitted are calculated independently,
          //    each may have minor rounding differences. We allow 2 units of slack
          //    (one from each operand). Example: asset precision 8 → slack of 2e-8
          const buyPrecision = mgr.assets?.assetB?.precision;
@@ -221,7 +220,8 @@ class Accountant {
         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
         // INVARIANT 1: chainTotal matches blockchain snapshot (with bot-only view limitation)
-        const expectedBuy = chainFreeBuy + chainBuy;
+        // We use gridCommitted because chainFree is optimistically reduced by all ACTIVE grid orders.
+        const expectedBuy = chainFreeBuy + gridBuy;
         const actualBuy = mgr.accountTotals?.buy ?? expectedBuy; // Use snapshotted total if available
         const diffBuy = Math.abs(actualBuy - expectedBuy);
         const allowedBuyTolerance = Math.max(precisionSlackBuy, actualBuy * PERCENT_TOLERANCE);
@@ -235,7 +235,7 @@ class Accountant {
         }
 
         // INVARIANT 1: chainTotal (SELL side)
-        const expectedSell = chainFreeSell + chainSell;
+        const expectedSell = chainFreeSell + gridSell;
         const actualSell = mgr.accountTotals?.sell ?? expectedSell;
         const diffSell = Math.abs(actualSell - expectedSell);
         const allowedSellTolerance = Math.max(precisionSlackSell, actualSell * PERCENT_TOLERANCE);
