@@ -594,9 +594,34 @@ class SyncEngine {
                             });
                         } catch (err) { /* ignore */ }
 
+                        // Check if this chain order already exists on grid (rotation case)
+                        // If so, fee was already paid when original order was placed - don't deduct again
+                        // CRITICAL: Look for ANY order with this orderId, even if it's been transitioned to VIRTUAL
+                        const existingOrder = Array.from(mgr.orders.values()).find(
+                            o => o.orderId === chainOrderId && o.id !== gridOrderId
+                        );
+                        const isRotation = !!existingOrder;
+
+                        // For rotation: transition the old order to VIRTUAL, freeing its capital
+                        if (isRotation && existingOrder) {
+                            // Only transition if not already VIRTUAL
+                            if (existingOrder.state !== ORDER_STATES.VIRTUAL) {
+                                const oldVirtualOrder = { ...existingOrder, state: ORDER_STATES.VIRTUAL, orderId: null, size: 0 };
+                                mgr.accountant.updateOptimisticFreeBalance(existingOrder, oldVirtualOrder, 'rotation');
+                                mgr._updateOrder(oldVirtualOrder);
+                            } else if (existingOrder.orderId) {
+                                // Already VIRTUAL but still has orderId (from rebalance)
+                                // Just clear the orderId to reflect blockchain state
+                                const clearedOrder = { ...existingOrder, orderId: null, size: 0 };
+                                mgr._updateOrder(clearedOrder);
+                            }
+                        }
+
                         const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
                         const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
-                        mgr.accountant.updateOptimisticFreeBalance(gridOrder, updatedOrder, 'createOrder', fee);
+                        // For rotations, pass fee=0 to prevent double-deduction
+                        const actualFee = isRotation ? 0 : fee;
+                        mgr.accountant.updateOptimisticFreeBalance(gridOrder, updatedOrder, 'createOrder', actualFee);
                         mgr._updateOrder(updatedOrder);
                     }
                 } finally {

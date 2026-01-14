@@ -95,7 +95,8 @@ class OrderManager {
          this._recentlyRotatedOrderIds = new Set();
 
         this._gridSidesUpdated = new Set();
-        this._pauseFundRecalcDepth = 0;  // Counter for safe nested pausing (not boolean)
+        this._pauseFundRecalcDepth = 0;
+        this._recalcLoggingDepth = 0;
         this._persistenceWarning = null;
 
         // Metrics for observability
@@ -609,6 +610,24 @@ class OrderManager {
         }
         if (this._pauseFundRecalcDepth === 0) {
             this.recalculateFunds();
+        }
+    }
+
+    /**
+     * Pause recalculation logging during high-frequency operations.
+     * Uses a depth counter to safely support nested pauses.
+     * Use with resumeRecalcLogging() to optimize grid initialization.
+     */
+    pauseRecalcLogging() {
+        this._recalcLoggingDepth++;
+    }
+
+    /**
+     * Resume recalculation logging after high-frequency operations.
+     */
+    resumeRecalcLogging() {
+        if (this._recalcLoggingDepth > 0) {
+            this._recalcLoggingDepth--;
         }
     }
 

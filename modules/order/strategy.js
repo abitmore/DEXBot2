@@ -570,19 +570,23 @@ class StrategyEngine {
             const finalSize = currentSize + cappedIncrease;
 
             if (finalSize > 0) {
-                ordersToRotate.push({ 
-                    oldOrder: { ...currentSurplus }, 
-                    newPrice: shortageSlot.price, 
-                    newSize: finalSize, 
-                    newGridId: shortageSlot.id, 
+                ordersToRotate.push({
+                    oldOrder: { ...currentSurplus },
+                    newPrice: shortageSlot.price,
+                    newSize: finalSize,
+                    newGridId: shortageSlot.id,
                     type: type,
                     from: { ...currentSurplus },
                     to: { ...shortageSlot, size: finalSize }
                 });
-                const vacatedUpdate = { ...currentSurplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
-                stateUpdates.push(vacatedUpdate);
-                stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
-                
+                // CRITICAL: Do NOT update old order state during rebalance!
+                // The blockchain still has it as a live order. When synchronizeWithChain completes,
+                // it will detect the rotation and properly transition the old order to VIRTUAL.
+                // Updating it here would cause double-counting (blockchain has it, but we released it).
+
+                // New rotated order must stay VIRTUAL until blockchain confirms (synchronizeWithChain will activate it)
+                stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });
+
                 mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(currentSize)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'debug');
 
                 totalNewPlacementSize += cappedIncrease;

@@ -1129,10 +1129,10 @@ class DEXBot {
                 const slot = this.manager.orders.get(newGridId) || { id: newGridId, type, price: newPrice, size: 0, state: ORDER_STATES.VIRTUAL };
                 const isPartialPlacement = slot.size > 0 && newSize < slot.size;
 
-                this.manager.completeOrderRotation(oldOrder);
-                
                 const updatedSlot = { ...slot, id: newGridId, type, size: newSize, price: newPrice, state: ORDER_STATES.VIRTUAL, orderId: null };
                 this.manager._updateOrder(updatedSlot);
+
+                this.manager.completeOrderRotation(oldOrder);
 
                 try {
                     await this.manager.synchronizeWithChain({

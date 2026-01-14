@@ -397,9 +397,16 @@ class Grid {
             manager.logger?.log?.(`Restored boundary index: ${boundaryIdx}`, 'info');
         }
 
-        // RC-2: Use atomic order updates to prevent concurrent state corruption
-        for (const order of grid) {
-            await Grid._updateOrderAtomic(manager, order);
+        manager.pauseRecalcLogging();
+        manager.pauseFundRecalc();
+        try {
+            // RC-2: Use atomic order updates to prevent concurrent state corruption
+            for (const order of grid) {
+                await Grid._updateOrderAtomic(manager, order);
+            }
+        } finally {
+            manager.resumeFundRecalc();
+            manager.resumeRecalcLogging();
         }
         // FIX: Use consistent optional chaining pattern for logger calls
         manager.logger?.log?.(`Loaded ${manager.orders.size} orders from persisted grid.`, 'info');
@@ -510,14 +517,21 @@ class Grid {
              manager.logger?.log?.("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
          }
 
-         // RC-2: Use atomic clear to prevent concurrent modifications
-         await Grid._clearOrderCachesAtomic(manager);
-         manager.resetFunds();
+          // RC-2: Use atomic clear to prevent concurrent modifications
+          await Grid._clearOrderCachesAtomic(manager);
+          manager.resetFunds();
 
-        // RC-2: Use atomic order updates to prevent concurrent state corruption
-        for (const order of sizedOrders) {
-            await Grid._updateOrderAtomic(manager, order);
-        }
+         manager.pauseRecalcLogging();
+         manager.pauseFundRecalc();
+         try {
+             // RC-2: Use atomic order updates to prevent concurrent state corruption
+             for (const order of sizedOrders) {
+                 await Grid._updateOrderAtomic(manager, order);
+             }
+         } finally {
+             manager.resumeFundRecalc();
+             manager.resumeRecalcLogging();
+         }
 
         // RC-6: Wrap spread count updates in atomic operation to prevent races
         if (manager._spreadCountLock?.acquire) {
@@ -646,8 +660,13 @@ class Grid {
             0, 
             ctx.precision
         );
-        Grid._updateOrdersForSide(manager, orderType, newSizes, orders);
-        manager.recalculateFunds();
+        manager.pauseRecalcLogging();
+        try {
+            Grid._updateOrdersForSide(manager, orderType, newSizes, orders);
+            manager.recalculateFunds();
+        } finally {
+            manager.resumeRecalcLogging();
+        }
 
          // Calculate remaining cache for this side only (independent per side)
          const totalInputInt = floatToBlockchainInt(ctx.budget, ctx.precision);

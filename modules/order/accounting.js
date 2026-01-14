@@ -110,8 +110,8 @@ class Accountant {
         mgr.funds.committed.chain = { buy: chainBuy, sell: chainSell };
         mgr.funds.virtual = { buy: virtualBuy, sell: virtualSell };
 
-        const chainTotalBuy = chainFreeBuy + gridBuy;
-        const chainTotalSell = chainFreeSell + gridSell;
+        const chainTotalBuy = chainFreeBuy + chainBuy;
+        const chainTotalSell = chainFreeSell + chainSell;
 
         mgr.funds.total.chain = { buy: chainTotalBuy, sell: chainTotalSell };
         mgr.funds.total.grid = { buy: gridBuy + virtualBuy, sell: gridSell + virtualSell };
@@ -119,20 +119,20 @@ class Accountant {
         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
 
-        if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0) {
+        if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0 && (mgr._recalcLoggingDepth === 0 || mgr._recalcLoggingDepth === undefined)) {
             mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmount8(chainTotalBuy)} (Free=${Format.formatAmount8(chainFreeBuy)}, Grid=${Format.formatAmount8(gridBuy)})`, 'debug');
             mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmount8(chainTotalSell)} (Free=${Format.formatAmount8(chainFreeSell)}, Grid=${Format.formatAmount8(gridSell)})`, 'debug');
         }
 
         if (mgr._pauseFundRecalcDepth === 0) {
-            this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, gridBuy, gridSell);
+            this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
         }
     }
 
     /**
      * Verify critical fund tracking invariants.
      */
-    _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, gridBuy, gridSell) {
+    _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
          const buyPrecision = mgr.assets?.assetB?.precision || 8;
          const sellPrecision = mgr.assets?.assetA?.precision || 8;
          const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
@@ -140,7 +140,7 @@ class Accountant {
          const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
         // INVARIANT 1: Drift detection
-        const expectedBuy = chainFreeBuy + gridBuy;
+        const expectedBuy = chainFreeBuy + chainBuy;
         const actualBuy = mgr.accountTotals?.buy ?? expectedBuy;
         const diffBuy = Math.abs(actualBuy - expectedBuy);
         const allowedBuyTolerance = Math.max(precisionSlackBuy, actualBuy * PERCENT_TOLERANCE);
@@ -149,7 +149,7 @@ class Accountant {
              mgr.logger?.log?.(`WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'warn');
         }
 
-        const expectedSell = chainFreeSell + gridSell;
+        const expectedSell = chainFreeSell + chainSell;
         const actualSell = mgr.accountTotals?.sell ?? expectedSell;
         const diffSell = Math.abs(actualSell - expectedSell);
         const allowedSellTolerance = Math.max(precisionSlackSell, actualSell * PERCENT_TOLERANCE);
@@ -234,8 +234,11 @@ class Accountant {
 
     /**
      * Update optimistic balance during transitions.
-     * CRITICAL: Use isActive state (ACTIVE/PARTIAL) to determine commitment, NOT orderId.
-     * Using orderId causes double-deduction when an in-flight order receives its ID.
+     * CRITICAL: Use isActive state (ACTIVE/PARTIAL) to determine COMMITMENT, NOT orderId.
+     * Using orderId for commitment causes double-deduction when an in-flight order receives its ID.
+     *
+     * HOWEVER: Fee deduction MUST use orderId check to prevent double-deduction.
+     * Fees should only be charged when order is PLACED on-chain (receives orderId).
      */
     updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
         const mgr = this.manager;
@@ -245,11 +248,18 @@ class Accountant {
         const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
         const oldSize = Number(oldOrder.size) || 0;
         const newSize = Number(newOrder.size) || 0;
-        
-        // Change in commitment level (based on GRID state, not blockchain ID)
+
+        // For COMMITMENT: Use GRID state (isActive), not blockchain ID
+        // This correctly tracks funds locked in grid vs free for use
         const oldGridCommitted = oldIsActive ? oldSize : 0;
         const newGridCommitted = newIsActive ? newSize : 0;
         const commitmentDelta = newGridCommitted - oldGridCommitted;
+
+        // For FEE deduction: Must check if order is being PLACED on-chain (receives orderId)
+        // Fees are only charged once per order placement, not on every state transition
+        const oldOnChain = oldIsActive && !!oldOrder.orderId;
+        const newOnChain = newIsActive && !!newOrder.orderId;
+        const isBecomingOnChain = newOnChain && !oldOnChain;
 
         const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
 
@@ -261,7 +271,8 @@ class Accountant {
         }
 
         // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
-        if (fee > 0 && btsSide) {
+        // ONLY deduct fee when order is being placed on-chain (receiving orderId for first time)
+        if (fee > 0 && btsSide && isBecomingOnChain) {
             const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
             this.adjustTotalBalance(btsOrderType, -fee, `${context}-fee`);
         }
