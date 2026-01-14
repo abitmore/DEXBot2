@@ -221,13 +221,10 @@ class StrategyEngine {
         // Ensure availablePool is calculated with current allocations (respects botFunds %)
         if (mgr.applyBotFundsAllocation) mgr.applyBotFundsAllocation();
 
-        // Available Pool: Liquid funds for net capital increases
-        // funds.available already has BTS fees and other reserves subtracted
-        // In some test environments, accountTotals might be mocked directly while funds is not.
-        // Fallback to manager.accountTotals for robustness during testing if funds available is not set.
-        // NOTE: available already includes cacheFunds physically, so no addition needed.
-        const availablePoolBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0);
-        const availablePoolSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0);
+        // Available funds for net capital increases (e.g., placing new orders)
+        // This unified metric already accounts for reservations, fees, and in-flight capital.
+        const availBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0);
+        const availSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0);
 
         if (mgr.logger.level === 'debug') {
             mgr.logger.log(`[BUDGET] Unified Sizing: Buy=${Format.formatAmount8(budgetBuy)}, Sell=${Format.formatAmount8(budgetSell)} (Respects botFunds % and Fees)`, 'debug');
@@ -265,8 +262,8 @@ class StrategyEngine {
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
         // ════════════════════════════════════════════════════════════════════════════════
  
-        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availablePoolBuy, excludeIds, reactionCapBuy, fills);
-        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availablePoolSell, excludeIds, reactionCapSell, fills);
+        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availBuy, excludeIds, reactionCapBuy, fills);
+        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availSell, excludeIds, reactionCapSell, fills);
 
         // Apply all state updates to manager with batched fund recalculation
         mgr.pauseFundRecalc();
@@ -319,7 +316,7 @@ class StrategyEngine {
      * 2. Placements (Creations): Place new orders in the FURTHEST outer gaps (edges).
      * 3. Naturally results in 'Refill at Spread' and 'Activate at Edge' reactions.
      */
-    async rebalanceSideRobust(type, allSlots, sideSlots, direction, totalSideBudget, availablePool, excludeIds, reactionCap, fills = []) {
+    async rebalanceSideRobust(type, allSlots, sideSlots, direction, totalSideBudget, availSide, excludeIds, reactionCap, fills = []) {
         if (sideSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
 
         const mgr = this.manager;
@@ -513,7 +510,7 @@ class StrategyEngine {
         const filteredShortages = shortages.filter(idx => !handledPartialIds.has(allSlots[idx].id));
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 3: ROTATIONS (Refill Inner Gaps)
+        // STEP 4: ROTATIONS (Refill Inner Gaps)
         // ════════════════════════════════════════════════════════════════════════════════
         // Move furthest active orders to fill inner gaps (closest to market).
         // Note: shortages is derived from sortedSideSlots, so it is already sorted Closest First.
@@ -521,6 +518,7 @@ class StrategyEngine {
         let surplusIdx = 0;
         let shortageIdx = 0;
         let rotationsPerformed = 0;
+        let remainingAvail = availSide;
 
         while (surplusIdx < filteredSurpluses.length &&
                shortageIdx < filteredShortages.length &&
@@ -616,15 +614,15 @@ class StrategyEngine {
                 if (sizeIncrease > 0) {
                     // Only cap the INCREASE, not the full order
                     const remainingOrders = placeCount - i;
-                    const cappedIncrease = Math.min(sizeIncrease, remainingAvailable / remainingOrders);
+                    const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
                     const finalSize = currentSize + cappedIncrease;
 
                     if (finalSize > 0) {
                         ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
                         stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
                         totalNewPlacementSize += cappedIncrease;  // Track capital allocated to new placements
-                        // FIX: Ensure remainingAvailable stays non-negative (Issue #7)
-                        remainingAvailable = Math.max(0, remainingAvailable - cappedIncrease);
+                        // FIX: Ensure remainingAvail stays non-negative (Issue #7)
+                        remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                         budgetRemaining--;
                     }
                 } else {
