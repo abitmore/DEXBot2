@@ -266,17 +266,19 @@ class StrategyEngine {
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availSell, excludeIds, reactionCapSell, fills);
 
         // Apply all state updates to manager with batched fund recalculation
+        // ATOMIC BLOCK: All fund changes happen before recalculation and resume
         mgr.pauseFundRecalc();
         const allUpdates = [...stateUpdates, ...buyResult.stateUpdates, ...sellResult.stateUpdates];
+
+        // Step 1: Apply state transitions (reduces chainFree via updateOptimisticFreeBalance)
         allUpdates.forEach(upd => {
             mgr._updateOrder(upd);
         });
 
-        // Deduct cacheFunds AFTER state updates are applied (atomic with state transitions)
+        // Step 2: Deduct cacheFunds (while still paused)
         // CRITICAL: Only deduct from cacheFunds for the side that USES the fill proceeds
         // - proceeds from SELL fills populate cacheFunds.buy → used for BUY placements
         // - proceeds from BUY fills populate cacheFunds.sell → used for SELL placements
-
         // BUY placements: Deduct from cacheFunds.buy
         if (buyResult.totalNewPlacementSize > 0) {
             await mgr.modifyCacheFunds('buy', -buyResult.totalNewPlacementSize, 'new-placements');
@@ -286,6 +288,7 @@ class StrategyEngine {
             await mgr.modifyCacheFunds('sell', -sellResult.totalNewPlacementSize, 'new-placements');
         }
 
+        // Step 3: Recalculate all funds (everything is now in sync)
         mgr.recalculateFunds();
         mgr.resumeFundRecalc();
 
