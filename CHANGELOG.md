@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.3] - 2026-01-15 - Rotation Logic & Fund Update Atomicity
+
+### Fixed
+- **Buy Order Rotation Logic** (commit 182c43c)
+  - Fixed `calculateAvailableFundsValue()` double-deduction of fill proceeds in available funds calculation
+  - Removed redundant `inFlight` subtraction that was causing "Available = 0" even with capital present
+  - **Impact:** Rotations were being skipped when capital was actually available
+  - **Solution:** chainFree is already "optimistic" and accounts for pending orders; no need for separate inFlight tracking
+
+- **Startup Fund Invariant Violations** (commit 182c43c)
+  - Added `isBootstrapping` guard to `_verifyFundInvariants()` to prevent false warnings during initial sync
+  - Invariants now only checked once bootstrap phase completes (`mgr.isBootstrapping === false`)
+  - **Impact:** Eliminates spurious warnings that mask actual issues
+
+- **Fund-Neutral Rotation Sizing** (commit 182c43c)
+  - Fixed rotation sizing formula to account for source order capital being released
+  - New formula: `netRequired = idealSize - (sourceSize + destinationSize)`
+  - **Impact:** Allows rotations to proceed even when liquid available funds are zero, using released source capital
+
+### Added
+- **Fill Accounting Processing** (commit 182c43c)
+  - New `processFillAccounting()` method in Accountant for atomic pays/receives handling
+  - Called from sync_engine when fills are detected
+  - Ensures internal state stays synchronized with blockchain state
+
+- **Priority-Based Fill Processing** (commit fe14898)
+  - Implemented priority queue for fill processing during bootstrap phase
+  - Prevents race conditions during initial synchronization
+
+### Refactored
+- **Fund Update Atomicity Documentation** (commit 55c2326)
+  - Made atomic fund update sequence explicit with step-by-step comments in `rebalance()`
+  - **Step 1:** Apply state transitions (reduces chainFree via updateOptimisticFreeBalance)
+  - **Step 2:** Deduct cacheFunds (while pauseFundRecalc still active)
+  - **Step 3:** Recalculate all funds (everything now in sync)
+  - Improves maintainability by making it clear that all fund state is consistent before any calculation
+
+---
+
 ## [0.6.0-patch.2] - 2026-01-15 - Fund Accounting Fixes & Startup Optimization
 
 ### Fixed
