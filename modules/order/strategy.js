@@ -564,10 +564,12 @@ class StrategyEngine {
             }
 
             // CRITICAL: Rotations that INCREASE size must be capped by available funds
-            const currentSize = currentSurplus.size || 0;
-            const sizeIncrease = Math.max(0, idealSize - currentSize);
-            const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
-            const finalSize = currentSize + cappedIncrease;
+            // NOTE: Use DESTINATION slot size (shortageSlot), not source order size (currentSurplus)
+            // This ensures we cap the FULL grid difference (grid impact), not just the blockchain update
+            const destinationSize = shortageSlot.size || 0;
+            const gridDifference = Math.max(0, idealSize - destinationSize);
+            const cappedIncrease = Math.min(gridDifference, remainingAvail);
+            const finalSize = destinationSize + cappedIncrease;
 
             if (finalSize > 0) {
                 ordersToRotate.push({
@@ -587,7 +589,7 @@ class StrategyEngine {
                 // New rotated order must stay VIRTUAL until blockchain confirms (synchronizeWithChain will activate it)
                 stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });
 
-                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(currentSize)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'debug');
+                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(currentSurplus.size)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'debug');
 
                 totalNewPlacementSize += cappedIncrease;
                 remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
@@ -596,7 +598,7 @@ class StrategyEngine {
                 rotationsPerformed++;
                 budgetRemaining--;
             } else {
-                // Should not happen if idealSize > 0 and currentSize > 0
+                // Should not happen if idealSize > 0 or destinationSize > 0
                 surplusIdx++;
                 continue;
             }

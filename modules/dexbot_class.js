@@ -281,52 +281,6 @@ class DEXBot {
                             if (correctionResult.failed > 0) this.manager.logger.log(`${correctionResult.failed} corrections failed`, 'error');
                         }
 
-                        // 5. Sequential Rebalance Loop (Interruptible)
-                        if (allFilledOrders.length > 0) {
-                            this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders sequentially...`, 'info');
-
-                            let anyRotations = false;
-
-                            let i = 0;
-                            while (i < allFilledOrders.length) {
-                                const filledOrder = allFilledOrders[i];
-                                i++;
-
-                                this.manager.logger.log(`>>> Processing sequential fill for order ${filledOrder.id} (${i}/${allFilledOrders.length})`, 'info');
-
-                                // Create an exclusion set from OTHER pending fills in the worklist
-                                // to prevent the rebalancer from picking an order that is about to be processed.
-                                // CRITICAL: Do NOT exclude the current order we are processing!
-                                const fullExcludeSet = new Set();
-                                for (const other of allFilledOrders) {
-                                    // Skip the current fill - we WANT to process it
-                                    if (other === filledOrder) continue;
-
-                                    if (other.orderId) fullExcludeSet.add(other.orderId);
-                                    if (other.id) fullExcludeSet.add(other.id);
-                                }
-
-                                // Log funding state before processing this fill
-                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill ${filledOrder.id}`);
-
-                                const rebalanceResult = await this.manager.processFilledOrders([filledOrder], fullExcludeSet);
-
-                                // Log funding state after rebalance calculation (before actual placement)
-                                this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for ${filledOrder.id} (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
-
-                                const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
-
-                                if (batchResult.hadRotation) {
-                                    anyRotations = true;
-                                    // Log funding state after rotation completes
-                                    this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${filledOrder.id}`);
-                                }
-                                await this.manager.persistGrid();
-
-                                // NOTE: Interrupt logic removed to prevent stale chain state race conditions.
-                                // New fills accumulating in _incomingFillQueue will be processed in the next consumer cycle.
-                            }
-                        }
                     } finally {
                         this.manager.recalculateFunds();
                         this.manager.resumeFundRecalc();
