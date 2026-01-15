@@ -161,13 +161,18 @@ class DEXBot {
              return;
          }
 
-         // Don't process fills during bootstrap phase
-         if (this.manager.isBootstrapping) {
-             return;
-         }
-
          try {
-             // Non-blocking check: if lock already has waiters, don't add more
+             // BOOTSTRAP OPTIMIZATION: During bootstrap, prioritize fill processing over grid-wide checks
+             // Process fills immediately with side-only rebalancing (no expensive full grid recalculations)
+             if (this.manager.isBootstrapping) {
+                 // During bootstrap: skip lock contention checks, process fills directly
+                 await this.manager._fillProcessingLock.acquire(async () => {
+                     await this._processFillsWithBootstrapMode(chainOrders);
+                 });
+                 return;
+             }
+
+             // NORMAL MODE: Non-blocking check if lock already has waiters
              // This prevents unbounded queue growth while still ensuring processing
              // Note: We DO proceed if lock is held but has no waiters - we'll wait our turn
              if (this.manager._fillProcessingLock.getQueueLength() > 0) {
@@ -449,6 +454,155 @@ class DEXBot {
                  }
              }));
          }
+    }
+
+    /**
+     * Process fills during bootstrap phase using simple rotation.
+     *
+     * BOOTSTRAP MODE STRATEGY:
+     * - Use pre-calculated grid sizes (no new math)
+     * - When fill occurs: rotate opposite-side capital to cover the gap
+     * - When BUY fills → rotate highest active BUY to next SELL slot
+     * - When SELL fills → rotate highest active SELL to next BUY slot
+     * - Maintain grid coverage with original slot sizes
+     * - No rebalancing, no resizing - just rotation
+     *
+     * This ensures:
+     * - Opposite-side reaction immediate (inventory balance)
+     * - Grid sizes stay consistent with startup calculation
+     * - Fast response during bootstrap without expensive calculations
+     *
+     * @param {Object} chainOrders - Chain orders instance for broadcasting
+     * @returns {Promise<void>}
+     */
+    async _processFillsWithBootstrapMode(chainOrders) {
+        if (this._incomingFillQueue.length === 0) return;
+
+        const startTime = Date.now();
+        const fills = this._incomingFillQueue.splice(0);
+        const validFills = [];
+        const processedFillKeys = new Set();
+        const ORDER_TYPES = require('./order/constants').ORDER_TYPES;
+
+        // 1. Validate and deduplicate fills
+        for (const fill of fills) {
+            if (!fill || fill.op?.[0] !== 4) continue;
+
+            const fillOp = fill.op[1];
+            const gridOrder = this.manager.orders.get(fillOp.order_id) ||
+                Array.from(this.manager.orders.values()).find(o => o.orderId === fillOp.order_id);
+
+            if (!gridOrder) {
+                this.manager.logger.log(`[BOOTSTRAP] Skipping fill for unknown order ${fillOp.order_id}`, 'debug');
+                continue;
+            }
+
+            const fillKey = `${fillOp.order_id}:${fill.block_num}:${fill.id || ''}`;
+            if (processedFillKeys.has(fillKey)) continue;
+
+            processedFillKeys.add(fillKey);
+            validFills.push({ ...fill, gridOrder });
+
+            const fillType = gridOrder.type === 'BUY' ? 'BUY' : 'SELL';
+            this._log(`[BOOTSTRAP] Fill detected: ${fillType} order (${fillOp.is_maker ? 'maker' : 'taker'})`);
+        }
+
+        if (validFills.length === 0) return;
+
+        // 2. Process fills with simple rotation (use pre-calculated sizes)
+        try {
+            this._log(`[BOOTSTRAP] Processing ${validFills.length} fill(s) with simple rotation`, 'info');
+
+            const ordersToPlace = [];
+
+            for (const fill of validFills) {
+                const filledOrder = fill.gridOrder;
+                const filledType = filledOrder.type;
+                const oppositeType = filledType === ORDER_TYPES.BUY ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
+
+                // Mark filled slot as VIRTUAL (released)
+                this.manager._updateOrder({
+                    ...filledOrder,
+                    state: 'VIRTUAL',
+                    size: 0,
+                    orderId: null
+                });
+
+                // Find highest active order on opposite side (closest to market)
+                const allOrders = Array.from(this.manager.orders.values());
+                const activeOpposite = allOrders.filter(o =>
+                    o.type === oppositeType &&
+                    o.orderId &&
+                    o.state === 'ACTIVE'
+                );
+
+                if (activeOpposite.length === 0) {
+                    this._log(`[BOOTSTRAP] No active ${oppositeType} orders to rotate`, 'debug');
+                    continue;
+                }
+
+                // Sort to find market-closest (highest price for SELL, lowest price for BUY)
+                activeOpposite.sort((a, b) =>
+                    oppositeType === ORDER_TYPES.SELL ? a.price - b.price : b.price - a.price
+                );
+
+                const surplusOrder = activeOpposite[0];
+
+                // Find empty slot on opposite side (VIRTUAL with no orderId)
+                const emptySlotsOpposite = allOrders.filter(o =>
+                    o.type === oppositeType &&
+                    !o.orderId &&
+                    o.state === 'VIRTUAL'
+                );
+
+                if (emptySlotsOpposite.length === 0) {
+                    this._log(`[BOOTSTRAP] No empty ${oppositeType} slots to rotate into`, 'debug');
+                    continue;
+                }
+
+                // Sort to find best slot (closest to market)
+                emptySlotsOpposite.sort((a, b) =>
+                    oppositeType === ORDER_TYPES.SELL ? a.price - b.price : b.price - a.price
+                );
+
+                const targetSlot = emptySlotsOpposite[0];
+
+                // Use the pre-calculated size from the grid
+                const rotationSize = targetSlot.size;
+
+                this._log(`[BOOTSTRAP] Rotating ${surplusOrder.id} → ${targetSlot.id} (${oppositeType} ${rotationSize.toFixed(8)})`, 'info');
+
+                // Mark surplus as released
+                this.manager._updateOrder({
+                    ...surplusOrder,
+                    state: 'VIRTUAL',
+                    size: 0,
+                    orderId: null
+                });
+
+                // Create rotation order with pre-calculated size
+                ordersToPlace.push({
+                    id: targetSlot.id,
+                    type: oppositeType,
+                    price: targetSlot.price,
+                    size: rotationSize
+                });
+            }
+
+            // Broadcast rotation orders
+            if (ordersToPlace.length > 0) {
+                const sizes = ordersToPlace.map(o => `${o.type}:${o.size?.toFixed(8) || '0'}`).join(' ');
+                this._log(`[BOOTSTRAP] Broadcasting ${ordersToPlace.length} rotation order(s) - sizes: ${sizes}`, 'info');
+                await this.updateOrdersOnChainBatch(ordersToPlace);
+            }
+
+            this._metrics.fillsProcessed += validFills.length;
+            this._metrics.fillProcessingTimeMs += Date.now() - startTime;
+
+        } catch (err) {
+            this._warn(`[BOOTSTRAP] Error processing fills: ${err.message}`);
+            this.manager.logger.log(`[BOOTSTRAP] Fill error: ${err.message}`, 'error');
+        }
     }
 
     /**
