@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.2] - 2026-01-15 - Fund Accounting Fixes & Startup Optimization
+
+### Fixed
+- **Fund Accounting Double-Counting Bug** (commit 5b4fc2f)
+  - Fixed `Grid.determineOrderSideByFunds()` incorrectly adding cacheFunds to available funds
+  - **Issue:** cacheFunds is already part of chainFree; adding it again inflates available by 100%+
+  - **Impact:** Spread correction would overestimate available capital, potentially leading to over-allocation
+  - **Solution:** Use only `available` in fund ratio calculations; cacheFunds is a reporting metric, not a deduction
+  - **Reference:** See `docs/fund_movement_logic.md` section 4 for corrected accounting model
+
+- **Rotation State Transitions** (commit 5b4fc2f)
+  - Fixed `strategy.js` to properly transition old rotated orders to `VIRTUAL` state with `size: 0`
+  - Ensures orders are properly cleaned up during rebalancing without requiring blockchain sync
+  - `sync_engine.js` safely handles orders already in VIRTUAL state
+
+### Optimized
+- **Startup Fill Processing Lock** (commit c7e7188)
+  - Replaced heavy `_fillProcessingLock.acquire()` wrapper during entire startup (~1-5 seconds) with `isBootstrapping` flag
+  - **Benefit:** Fills still queue safely but processing is deferred until bootstrap completes
+  - **Result:** Eliminates lock contention while maintaining all TOCTOU race prevention
+  - **Implementation:** Check `isBootstrapping` in fill consumer loop to skip processing during startup
+
+### Updated Documentation
+- **docs/fund_movement_logic.md**
+  - Corrected Available Funds formula: removed cacheFunds subtraction
+  - Added detailed explanation of fund components and their purpose
+  - Clarified cacheFunds lifecycle: it's part of chainFree, not a separate deduction
+  - Added new section 5.1 on Rotation State Management with examples
+  - Includes code examples showing proper state transitions during rotation
+
+### All Tests Pass ✓
+- 25+ test suites including fund accounting, partial orders, and rotation scenarios
+- Multi-fill opposite partial order tests verify rotation state transitions
+
+---
+
 ## [0.6.0] - 2026-01-04 - Physical Rail Strategy, Merge/Split Consolidation & Engine Modularization (Updated 2026-01-14)
 
 ### Commit Statistics (v0.5.1 → v0.6.0)

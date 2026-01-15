@@ -442,6 +442,18 @@ Price            Type            State           Size
 ===============================================
 ```
 
+## 📚 Documentation
+
+For comprehensive guides on architecture, fund accounting, rotation mechanics, and development, see the **[docs/](docs/)** folder.
+
+Key documents:
+- **[FUND_ACCOUNTING_AND_ROTATION.md](docs/FUND_ACCOUNTING_AND_ROTATION.md)** - Fund accounting model, rotation mechanics, and best practices
+- **[fund_movement_logic.md](docs/fund_movement_logic.md)** - Technical architecture of grid and fund systems
+- **[architecture.md](docs/architecture.md)** - System design and testing strategy
+- **[developer_guide.md](docs/developer_guide.md)** - Development guide with examples
+
+---
+
 ## 📦 Modules
 
 Below is a short summary of the modules in this repository and what they provide. You can paste these lines elsewhere if you need a quick reference.
