@@ -570,21 +570,15 @@ class StrategyEngine {
                 continue;
             }
 
-            // CRITICAL FIX: Rotations should be fund-neutral if capital is simply moving.
-            // We only need to cap the NET INCREASE between the old order and the new target size.
-            // This allows rotations to proceed even when liquid available funds are zero.
-            const sourceSize = currentSurplus.size || 0;
+            // CRITICAL: Rotations cap against available funds, not against source order size.
+            // Available funds ALREADY include fill proceeds via cacheFunds.
+            // Only use DESTINATION slot size (shortageSlot), not source order size (currentSurplus).
+            // This ensures we cap the FULL grid difference (grid impact), not just the blockchain update.
+            // The source order's release is handled separately via fill accounting (cacheFunds).
             const destinationSize = shortageSlot.size || 0; // Usually 0 for a new slot
-
-            // 1. Calculate how much NEW capital we need (beyond what we are releasing from the surplus order)
-            // netRequired = idealSize - (sourceSize + destinationSize)
-            const netRequired = Math.max(0, idealSize - (sourceSize + destinationSize));
-
-            // 2. Cap the increase based on remaining liquid availability
-            const cappedIncrease = Math.min(netRequired, remainingAvail);
-
-            // 3. Final size = existing capital (source + dest) + permitted increase
-            const finalSize = (sourceSize + destinationSize) + cappedIncrease;
+            const gridDifference = Math.max(0, idealSize - destinationSize);
+            const cappedIncrease = Math.min(gridDifference, remainingAvail);
+            const finalSize = destinationSize + cappedIncrease;
 
             if (finalSize > 0) {
                 ordersToRotate.push({
@@ -603,7 +597,7 @@ class StrategyEngine {
                 // New rotated order must stay VIRTUAL until blockchain confirms
                 stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });
 
-                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(sourceSize)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'info');
+                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(currentSurplus.size)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'info');
 
                 totalNewPlacementSize += cappedIncrease;
                 remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
