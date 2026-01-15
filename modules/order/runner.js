@@ -10,10 +10,10 @@
  * 
  * Fund model overview (see manager.js for full details):
  * - available = max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
- * - cacheFunds = fill proceeds and rotation surplus (kept separate, added to available for rebalancing)
- * - virtual = sum of VIRTUAL order sizes (reserved for placement)
- * - committed.grid = sum of ACTIVE order sizes
- * - committed.chain = sum of ACTIVE orders with orderId on-chain
+ * - cacheFunds = fill proceeds and rotation surplus (tracked separately, part of chainFree)
+ * - virtual = sum of VIRTUAL and in-flight ACTIVE order sizes (reserved, not yet on-chain)
+ * - committed.grid = total sum of all grid order sizes (active + partial + virtual)
+ * - committed.chain = sum of ACTIVE or PARTIAL orders that have an orderId on-chain
  * 
  * Usage: CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e \"require('./runner').runOrderManagerCalculation()\"
  */
@@ -74,7 +74,7 @@ async function runOrderManagerCalculation() {
                 const m = await deriveMarketPrice(BitShares, symA, symB);
                 if (m !== null) runtimeConfig.startPrice = m;
             } catch (err) { console.warn('Market-based price lookup failed:', err.message); }
-    } else { throw new Error('No startPrice provided and neither "pool" nor "market" were set in bots.json \u2014 define at least one to derive price.'); }
+        } else { throw new Error('No startPrice provided and neither "pool" nor "market" were set in bots.json \u2014 define at least one to derive price.'); }
 
         try {
             const { BitShares } = require('../bitshares_client');

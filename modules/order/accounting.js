@@ -10,7 +10,8 @@ const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const {
     computeChainFundTotals,
     calculateAvailableFundsValue,
-    getAssetFees
+    getAssetFees,
+    blockchainToFloat
 } = require('./utils');
 const Format = require('./format');
 
@@ -69,37 +70,22 @@ class Accountant {
         // AUTO-SYNC SPREAD COUNT
         mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
 
-        const activePartialIds = [
-            ...(mgr._ordersByState[ORDER_STATES.ACTIVE] || new Set()),
-            ...(mgr._ordersByState[ORDER_STATES.PARTIAL] || new Set())
-        ];
-        const virtualIds = [...(mgr._ordersByState[ORDER_STATES.VIRTUAL] || new Set())];
-
-        for (const orderId of activePartialIds) {
-            const order = mgr.orders.get(orderId);
-            if (!order) continue;
+        for (const order of Array.from(mgr.orders.values())) {
+            const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
+            const isVirtual = (order.state === ORDER_STATES.VIRTUAL);
             const size = Number(order.size) || 0;
             if (size <= 0) continue;
+
+            const hasOrderId = !!order.orderId;
 
             if (order.type === ORDER_TYPES.BUY) {
                 gridBuy += size;
-                if (order.orderId) chainBuy += size;
+                if (isActive && hasOrderId) chainBuy += size;
+                if (isVirtual || (isActive && !hasOrderId)) virtualBuy += size;
             } else if (order.type === ORDER_TYPES.SELL) {
                 gridSell += size;
-                if (order.orderId) chainSell += size;
-            }
-        }
-
-        for (const orderId of virtualIds) {
-            const order = mgr.orders.get(orderId);
-            if (!order) continue;
-            const size = Number(order.size) || 0;
-            if (size <= 0) continue;
-
-            if (order.type === ORDER_TYPES.BUY) {
-                virtualBuy += size;
-            } else if (order.type === ORDER_TYPES.SELL) {
-                virtualSell += size;
+                if (isActive && hasOrderId) chainSell += size;
+                if (isVirtual || (isActive && !hasOrderId)) virtualSell += size;
             }
         }
 
@@ -124,7 +110,7 @@ class Accountant {
             mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmount8(chainTotalSell)} (Free=${Format.formatAmount8(chainFreeSell)}, Grid=${Format.formatAmount8(gridSell)})`, 'debug');
         }
 
-        if (mgr._pauseFundRecalcDepth === 0) {
+        if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping) {
             this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
         }
     }
@@ -133,11 +119,11 @@ class Accountant {
      * Verify critical fund tracking invariants.
      */
     _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
-         const buyPrecision = mgr.assets?.assetB?.precision || 8;
-         const sellPrecision = mgr.assets?.assetA?.precision || 8;
-         const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
-         const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
-         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
+        const buyPrecision = mgr.assets?.assetB?.precision || 8;
+        const sellPrecision = mgr.assets?.assetA?.precision || 8;
+        const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
+        const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
+        const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
         // INVARIANT 1: Drift detection
         const expectedBuy = chainFreeBuy + chainBuy;
@@ -146,7 +132,7 @@ class Accountant {
         const allowedBuyTolerance = Math.max(precisionSlackBuy, actualBuy * PERCENT_TOLERANCE);
 
         if (diffBuy > allowedBuyTolerance && mgr.accountTotals?.buy !== null) {
-             mgr.logger?.log?.(`WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'warn');
+            mgr.logger?.log?.(`WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'warn');
         }
 
         const expectedSell = chainFreeSell + chainSell;
@@ -155,17 +141,17 @@ class Accountant {
         const allowedSellTolerance = Math.max(precisionSlackSell, actualSell * PERCENT_TOLERANCE);
 
         if (diffSell > allowedSellTolerance && mgr.accountTotals?.sell !== null) {
-             mgr.logger?.log?.(`WARNING: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'warn');
+            mgr.logger?.log?.(`WARNING: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'warn');
         }
 
         // INVARIANT 2: Surplus check
         const cacheBuy = mgr.funds?.cacheFunds?.buy || 0;
         const cacheSell = mgr.funds?.cacheFunds?.sell || 0;
         if (cacheBuy > chainFreeBuy + allowedBuyTolerance) {
-             mgr.logger?.log?.(`WARNING: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmount8(cacheBuy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`, 'warn');
+            mgr.logger?.log?.(`WARNING: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmount8(cacheBuy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`, 'warn');
         }
         if (cacheSell > chainFreeSell + allowedSellTolerance) {
-             mgr.logger?.log?.(`WARNING: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'warn');
+            mgr.logger?.log?.(`WARNING: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'warn');
         }
     }
 
@@ -181,11 +167,16 @@ class Accountant {
 
         const current = Number(mgr.accountTotals[key]) || 0;
         if (current < size) {
-             mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
+            mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
             return false;
         }
 
+        const oldValue = mgr.accountTotals[key];
         mgr.accountTotals[key] = Math.max(0, current - size);
+
+        if (mgr.logger && mgr.logger.level === 'debug') {
+            mgr.logger.log(`[ACCOUNTING] ${key} -${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldValue)})`, 'debug');
+        }
         return true;
     }
 
@@ -193,19 +184,19 @@ class Accountant {
      * Add an amount back to the optimistic chainFree balance (FREE portion only).
      */
     addToChainFree(orderType, size, operation = 'release') {
-         const mgr = this.manager;
-         const isBuy = orderType === ORDER_TYPES.BUY;
-         const key = isBuy ? 'buyFree' : 'sellFree';
+        const mgr = this.manager;
+        const isBuy = orderType === ORDER_TYPES.BUY;
+        const key = isBuy ? 'buyFree' : 'sellFree';
 
-         if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
+        if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
 
-         const oldFree = Number(mgr.accountTotals[key]) || 0;
-         mgr.accountTotals[key] = oldFree + size;
+        const oldFree = Number(mgr.accountTotals[key]) || 0;
+        mgr.accountTotals[key] = oldFree + size;
 
-         if (mgr.logger && mgr.logger.level === 'debug') {
-              mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])}`, 'debug');
-         }
-         return true;
+        if (mgr.logger && mgr.logger.level === 'debug') {
+            mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldFree)})`, 'debug');
+        }
+        return true;
     }
 
     /**
@@ -250,13 +241,15 @@ class Accountant {
         const newSize = Number(newOrder.size) || 0;
 
         // For COMMITMENT: Use GRID state (isActive), not blockchain ID
-        // This correctly tracks funds locked in grid vs free for use
         const oldGridCommitted = oldIsActive ? oldSize : 0;
         const newGridCommitted = newIsActive ? newSize : 0;
         const commitmentDelta = newGridCommitted - oldGridCommitted;
 
+        if (mgr.logger && mgr.logger.level === 'debug') {
+            mgr.logger.log(`[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, state=${oldOrder.state}->${newOrder.state}, size=${oldSize}->${newSize}, delta=${Format.formatAmount8(commitmentDelta)}, context=${context}`, 'debug');
+        }
+
         // For FEE deduction: Must check if order is being PLACED on-chain (receives orderId)
-        // Fees are only charged once per order placement, not on every state transition
         const oldOnChain = oldIsActive && !!oldOrder.orderId;
         const newOnChain = newIsActive && !!newOrder.orderId;
         const isBecomingOnChain = newOnChain && !oldOnChain;
@@ -271,7 +264,6 @@ class Accountant {
         }
 
         // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
-        // ONLY deduct fee when order is being placed on-chain (receiving orderId for first time)
         if (fee > 0 && btsSide && isBecomingOnChain) {
             const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
             this.adjustTotalBalance(btsOrderType, -fee, `${context}-fee`);
@@ -313,6 +305,47 @@ class Accountant {
             mgr.logger.log(`[CACHEFUNDS] ${side} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
         }
         return newValue;
+    }
+
+    /**
+     * Process the fund impact of an order fill.
+     * Atomically updates accountTotals to keep internal state in sync with blockchain.
+     */
+    processFillAccounting(fillOp) {
+        const mgr = this.manager;
+        const pays = fillOp.pays;
+        const receives = fillOp.receives;
+
+        const assetAId = mgr.assets?.assetA?.id;
+        const assetBId = mgr.assets?.assetB?.id;
+
+        const assetAPrecision = mgr.assets?.assetA?.precision;
+        const assetBPrecision = mgr.assets?.assetB?.precision;
+
+        if (assetAPrecision === undefined || assetBPrecision === undefined) return;
+
+        // 1. Deduct PAYS amount from both TOTAL and FREE
+        // Free balance adjustment is temporary; _updateOrder will release it 
+        // back to Free once the order transitions to VIRTUAL/SPREAD.
+        if (pays.asset_id === assetAId) {
+            const amount = blockchainToFloat(pays.amount, assetAPrecision, true);
+            this.adjustTotalBalance(ORDER_TYPES.SELL, -amount, 'fill-pays');
+        } else if (pays.asset_id === assetBId) {
+            const amount = blockchainToFloat(pays.amount, assetBPrecision, true);
+            this.adjustTotalBalance(ORDER_TYPES.BUY, -amount, 'fill-pays');
+        }
+
+        // 2. Add RECEIVES amount to both TOTAL and FREE
+        // Also add to cacheFunds for the rebalancer to use
+        if (receives.asset_id === assetAId) {
+            const amount = blockchainToFloat(receives.amount, assetAPrecision, true);
+            this.adjustTotalBalance(ORDER_TYPES.SELL, amount, 'fill-receives');
+            this.modifyCacheFunds('sell', amount, 'fill-proceeds');
+        } else if (receives.asset_id === assetBId) {
+            const amount = blockchainToFloat(receives.amount, assetBPrecision, true);
+            this.adjustTotalBalance(ORDER_TYPES.BUY, amount, 'fill-receives');
+            this.modifyCacheFunds('buy', amount, 'fill-proceeds');
+        }
     }
 }
 

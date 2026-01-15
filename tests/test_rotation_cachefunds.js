@@ -45,7 +45,7 @@ function seedGridForRotation(mgr, targetType) {
     mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.1', price: 85, size: 50 });
     mgr._updateOrder({ id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.2', price: 75, size: 50 });
     
-    // Total budget = available (100) + cacheFunds (100) = 200
+    // Set up funds (cacheFunds is part of chainFree, not added separately)
     mgr.funds.available.buy = 100;
     mgr.funds.cacheFunds.buy = 100;
     mgr.recalculateFunds();

@@ -81,18 +81,18 @@ class OrderManager {
         this.assets = null;
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;
-         this.ordersNeedingPriceCorrection = [];
-         this.ordersPendingCancellation = [];
-         this.shadowOrderIds = new Map();
-         this._correctionsLock = new AsyncLock();
-         this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
-         this._fillProcessingLock = new AsyncLock();  // Prevents concurrent fill processing
-          this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
-         this._accountTotalsLock = new AsyncLock();  // Prevents race condition in waitForAccountTotals
-         this._gridLock = new AsyncLock();  // Prevents concurrent grid mutations
-         this._fundsSemaphore = new AsyncLock();  // Prevents concurrent fund updates
-         this._spreadCountLock = new AsyncLock();  // Prevents concurrent spread count updates
-         this._recentlyRotatedOrderIds = new Set();
+        this.ordersNeedingPriceCorrection = [];
+        this.ordersPendingCancellation = [];
+        this.shadowOrderIds = new Map();
+        this._correctionsLock = new AsyncLock();
+        this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
+        this._fillProcessingLock = new AsyncLock();  // Prevents concurrent fill processing
+        this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
+        this._accountTotalsLock = new AsyncLock();  // Prevents race condition in waitForAccountTotals
+        this._gridLock = new AsyncLock();  // Prevents concurrent grid mutations
+        this._fundsSemaphore = new AsyncLock();  // Prevents concurrent fund updates
+        this._spreadCountLock = new AsyncLock();  // Prevents concurrent spread count updates
+        this._recentlyRotatedOrderIds = new Set();
 
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalcDepth = 0;
@@ -454,20 +454,20 @@ class OrderManager {
      * @param {number} [timeoutMs=TIMING.ACCOUNT_TOTALS_TIMEOUT_MS] - Timeout in milliseconds.
      * @returns {Promise<void>}
      */
-     async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
-          if (hasValidAccountTotals(this.accountTotals, false)) return;
-          // CRITICAL: Await inside lock to prevent race where promise is created inside lock
-          // but awaited outside (allowing overwrites between check and wait)
-          await this._accountTotalsLock.acquire(async () => {
-              // Double-check after acquiring lock
-              if (hasValidAccountTotals(this.accountTotals, false)) return;
-              if (!this._accountTotalsPromise) {
-                  this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
-              }
-              // Await inside lock to ensure atomic creation and wait (prevents promise overwrite race)
-              await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
-          });
-      }
+    async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
+        if (hasValidAccountTotals(this.accountTotals, false)) return;
+        // CRITICAL: Await inside lock to prevent race where promise is created inside lock
+        // but awaited outside (allowing overwrites between check and wait)
+        await this._accountTotalsLock.acquire(async () => {
+            // Double-check after acquiring lock
+            if (hasValidAccountTotals(this.accountTotals, false)) return;
+            if (!this._accountTotalsPromise) {
+                this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
+            }
+            // Await inside lock to ensure atomic creation and wait (prevents promise overwrite race)
+            await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
+        });
+    }
 
     /**
      * Fetch account totals from the blockchain.
@@ -529,9 +529,13 @@ class OrderManager {
      * @param {number} order.size - Order size in base asset units
      * @param {number} order.price - Order price
      * @param {string} [order.orderId] - Blockchain order ID (if on-chain)
+     * @param {Object} order - Order object to update/insert
+     * @param {number} [fee=0] - Optional fee for on-chain placement
+     * @param {Object} [options={}] - Additional options for the update
+     * @param {boolean} [options.skipAccounting=false] - If true, do not trigger optimistic accounting updates
      * @returns {void}
      */
-    _updateOrder(order) {
+    _updateOrder(order, fee = 0, options = {}) {
         // Input validation
         if (order.id === undefined || order.id === null) return;
         if (typeof order.size === 'number' && order.size < 0) {
@@ -547,15 +551,20 @@ class OrderManager {
         if (order.state === undefined) {
             this.logger.log(`Debug: Skipping order ${order.id} - state not set`, 'debug');
             return;
-         }
+        }
 
-         const existing = this.orders.get(order.id);
+        const existing = this.orders.get(order.id);
 
-         // Ensure we store a clean clone to prevent external modification races
-         const updatedOrder = { ...order };
-         const id = updatedOrder.id;
+        // Ensure we store a clean clone to prevent external modification races
+        const updatedOrder = { ...order };
+        const id = updatedOrder.id;
 
-         // CRITICAL: Robust index cleanup.
+        // Trigger optimistic accounting on state/size transitions
+        if (existing && this.accountant && options.skipAccounting !== true) {
+            this.accountant.updateOptimisticFreeBalance(existing, order, 'updateOrder', fee);
+        }
+
+        // CRITICAL: Robust index cleanup.
         // Remove ID from ALL state and type sets to prevent duplicates if objects 
         // were modified in-place before this call. This ensures indices remain 
         // strictly 1:1 with the orders Map even if state transition logic was bypassed.
@@ -581,7 +590,7 @@ class OrderManager {
     _logAvailable(label = '') {
         const avail = this.funds?.available || { buy: 0, sell: 0 };
         const cache = this.funds?.cacheFunds || { buy: 0, sell: 0 };
-         this.logger.log(`Available [${label}]: buy=${Format.formatAmount8(avail.buy || 0)}, sell=${Format.formatAmount8(avail.sell || 0)}, cacheFunds buy=${Format.formatAmount8(cache.buy || 0)}, sell=${Format.formatAmount8(cache.sell || 0)}`, 'info');
+        this.logger.log(`Available [${label}]: buy=${Format.formatAmount8(avail.buy || 0)}, sell=${Format.formatAmount8(avail.sell || 0)}, cacheFunds buy=${Format.formatAmount8(cache.buy || 0)}, sell=${Format.formatAmount8(cache.sell || 0)}`, 'info');
     }
 
     /**

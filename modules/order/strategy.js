@@ -127,7 +127,7 @@ class StrategyEngine {
 
             if (bestBuyIdx !== -1) {
                 mgr.boundaryIdx = bestBuyIdx;
-                 mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from market-closest BUY order (distance=${Format.formatAmount8(bestBuyDistance)} from startPrice).`, "info");
+                mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from market-closest BUY order (distance=${Format.formatAmount8(bestBuyDistance)} from startPrice).`, "info");
             } else {
                 // 2. Fallback to startPrice-based initialization (Initial or Recovery)
                 mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
@@ -204,7 +204,7 @@ class StrategyEngine {
         // STEP 4: BUDGET CALCULATION (Total Capital with BTS Fee Deduction)
         // ════════════════════════════════════════════════════════════════════════════════
         // Total Side Budget = (ChainFree + Committed) - BTS_Fees (if asset is BTS)
-        // Available Pool = funds.available + cacheFunds
+        // Available = funds.available (already includes fill proceeds via chainFree)
 
         const Grid = require('./grid');
         const buyCtx = Grid._getSizingContext(mgr, 'buy');
@@ -239,7 +239,7 @@ class StrategyEngine {
         for (const fill of fills) {
             // isDoubleReplacementTrigger is only set for full fills in sync_engine
             if (fill.isPartial && !fill.isDelayedRotationTrigger && !fill.isDoubleReplacementTrigger) continue;
-            
+
             const count = fill.isDoubleReplacementTrigger ? 2 : 1;
             // A SELL fill triggers a BUY replacement
             if (fill.type === ORDER_TYPES.SELL) reactionCapBuy += count;
@@ -257,11 +257,11 @@ class StrategyEngine {
             reactionCapBuy = 1;
             reactionCapSell = 1;
         }
- 
+
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
         // ════════════════════════════════════════════════════════════════════════════════
- 
+
         const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availBuy, excludeIds, reactionCapBuy, fills);
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availSell, excludeIds, reactionCapSell, fills);
 
@@ -328,7 +328,7 @@ class StrategyEngine {
         const ordersToUpdate = [];
 
         const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : sideSlots.length;
-        
+
         // Consider an extra order slot when out of spread
         const finalTargetCount = mgr.outOfSpread ? targetCount + 1 : targetCount;
 
@@ -374,12 +374,12 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 2: IDENTIFY SHORTAGES AND SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
-         const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId))));
+        const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId))));
         const activeThisSide = activeOnChain.filter(s => s.type === type);
 
-         const shortages = targetIndices.filter(idx => {
-             const slot = allSlots[idx];
-             if (excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId))) return false;
+        const shortages = targetIndices.filter(idx => {
+            const slot = allSlots[idx];
+            if (excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId))) return false;
             if (!slot.orderId && finalIdealSizes[idx] > 0) return true;
 
             // Dust detection: Treat slot as shortage if it has a dust order
@@ -409,7 +409,7 @@ class StrategyEngine {
 
             return false;
         });
-        
+
         // Prioritize PARTIAL orders for rotation, then sort by distance (furthest first)
         // Prioritize PARTIAL orders for rotation, then sort by distance (INNER FIRST)
         // This ensures OUTER surpluses are left over for cancellation
@@ -469,13 +469,13 @@ class StrategyEngine {
 
                 if (finalSize > 0) {
                     mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and flagging side as doubled.`, 'info');
-                    
+
                     if (type === ORDER_TYPES.BUY) mgr.buySideIsDoubled = true;
                     else mgr.sellSideIsDoubled = true;
 
                     ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
                     stateUpdates.push({ ...partial, size: finalSize, state: ORDER_STATES.ACTIVE });
-                    
+
                     totalNewPlacementSize += cappedIncrease;
                     remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                     handledPartialIds.add(partial.id);
@@ -538,9 +538,13 @@ class StrategyEngine {
         let shortageIdx = 0;
         let rotationsPerformed = 0;
 
+        if (mgr.logger.level === 'debug') {
+            mgr.logger.log(`[REBALANCE] ${side.toUpperCase()} planning: ${filteredShortages.length} shortages, ${filteredSurpluses.length} surpluses, budget=${budgetRemaining}, avail=${Format.formatAmount8(remainingAvail)}`, 'debug');
+        }
+
         while (surplusIdx < filteredSurpluses.length &&
-               shortageIdx < filteredShortages.length &&
-               budgetRemaining > 0) {
+            shortageIdx < filteredShortages.length &&
+            budgetRemaining > 0) {
 
             const surplus = filteredSurpluses[surplusIdx];
             const shortageSlotIdx = filteredShortages[shortageIdx];
@@ -563,13 +567,21 @@ class StrategyEngine {
                 continue;
             }
 
-            // CRITICAL: Rotations that INCREASE size must be capped by available funds
-            // NOTE: Use DESTINATION slot size (shortageSlot), not source order size (currentSurplus)
-            // This ensures we cap the FULL grid difference (grid impact), not just the blockchain update
-            const destinationSize = shortageSlot.size || 0;
-            const gridDifference = Math.max(0, idealSize - destinationSize);
-            const cappedIncrease = Math.min(gridDifference, remainingAvail);
-            const finalSize = destinationSize + cappedIncrease;
+            // CRITICAL FIX: Rotations should be fund-neutral if capital is simply moving.
+            // We only need to cap the NET INCREASE between the old order and the new target size.
+            // This allows rotations to proceed even when liquid available funds are zero.
+            const sourceSize = currentSurplus.size || 0;
+            const destinationSize = shortageSlot.size || 0; // Usually 0 for a new slot
+
+            // 1. Calculate how much NEW capital we need (beyond what we are releasing from the surplus order)
+            // netRequired = idealSize - (sourceSize + destinationSize)
+            const netRequired = Math.max(0, idealSize - (sourceSize + destinationSize));
+
+            // 2. Cap the increase based on remaining liquid availability
+            const cappedIncrease = Math.min(netRequired, remainingAvail);
+
+            // 3. Final size = existing capital (source + dest) + permitted increase
+            const finalSize = (sourceSize + destinationSize) + cappedIncrease;
 
             if (finalSize > 0) {
                 ordersToRotate.push({
@@ -581,15 +593,14 @@ class StrategyEngine {
                     from: { ...currentSurplus },
                     to: { ...shortageSlot, size: finalSize }
                 });
-                // CRITICAL: Do NOT update old order state during rebalance!
-                // The blockchain still has it as a live order. When synchronizeWithChain completes,
-                // it will detect the rotation and properly transition the old order to VIRTUAL.
-                // Updating it here would cause double-counting (blockchain has it, but we released it).
 
-                // New rotated order must stay VIRTUAL until blockchain confirms (synchronizeWithChain will activate it)
+                // Transition old order to VIRTUAL with size 0 (it's being replaced by the new order)
+                stateUpdates.push({ ...currentSurplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null });
+
+                // New rotated order must stay VIRTUAL until blockchain confirms
                 stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });
 
-                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(currentSurplus.size)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'debug');
+                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(sourceSize)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'info');
 
                 totalNewPlacementSize += cappedIncrease;
                 remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
@@ -598,7 +609,6 @@ class StrategyEngine {
                 rotationsPerformed++;
                 budgetRemaining--;
             } else {
-                // Should not happen if idealSize > 0 or destinationSize > 0
                 surplusIdx++;
                 continue;
             }
@@ -678,13 +688,13 @@ class StrategyEngine {
         const mgr = this.manager;
         const Grid = require('./grid');
         const type = side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-        
+
         // 1. Get centralized sizing context (respects botFunds % allocation and fees)
         const ctx = Grid._getSizingContext(mgr, side);
         if (!ctx || ctx.budget <= 0) return false;
 
         const allOrders = Array.from(mgr.orders.values());
-        
+
         // 2. Slots must be sorted Market-to-Edge to match geometric weight distribution
         const slots = allOrders.filter(o => o.type === type)
             .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
@@ -694,12 +704,12 @@ class StrategyEngine {
         // 3. Calculate geometric ideals for the ENTIRE side (all slots)
         // This ensures the dust threshold matches the exact target size for each slot.
         const idealSizes = allocateFundsByWeights(
-            ctx.budget, 
-            slots.length, 
-            mgr.config.weightDistribution[side], 
-            mgr.config.incrementPercent / 100, 
-            type === ORDER_TYPES.BUY, 
-            0, 
+            ctx.budget,
+            slots.length,
+            mgr.config.weightDistribution[side],
+            mgr.config.incrementPercent / 100,
+            type === ORDER_TYPES.BUY,
+            0,
             ctx.precision
         );
 
@@ -789,20 +799,10 @@ class StrategyEngine {
                     }
                 }
 
-                 mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${Format.formatAmount8(netProceeds)} ${assetForFee}`, "debug");
+                mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${Format.formatAmount8(netProceeds)} ${assetForFee}`, "debug");
 
-                // SELL fills → proceeds go to buy side; BUY fills → proceeds go to sell side
-                const isSell = filledOrder.type === ORDER_TYPES.SELL;
-                const receiveSide = isSell ? 'buy' : 'sell';
-                const spendSide = isSell ? 'sell' : 'buy';
-                const receiveType = isSell ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-
-                await mgr.modifyCacheFunds(receiveSide, netProceeds, 'fill-proceeds');
-
-                // Record the physical arrival of proceeds and the physical departure of the filled asset.
-                // This updates both 'free' and 'total' balances to maintain account invariants.
-                mgr.accountant.adjustTotalBalance(receiveType, netProceeds, 'fill-proceeds');
-                mgr.accountant.adjustTotalBalance(filledOrder.type, -filledOrder.size, 'fill-consumption');
+                // Note: fill proceeds and consumption are now handled by SyncEngine/Accountant.processFillAccounting
+                // to ensure consistency between fill detection and rebalance cycle.
             }
 
             if (hasBtsPair && fillsToSettle > 0) {
@@ -852,9 +852,9 @@ class StrategyEngine {
 
             // Log detailed fund state before entering rebalance
             if (mgr.logger.level === 'debug') {
-                 mgr.logger.log(`[PRE-REBALANCE] Available: buy=${Format.formatMetric5(mgr.funds.available.buy)}, sell=${Format.formatMetric5(mgr.funds.available.sell)}`, 'debug');
-                 mgr.logger.log(`[PRE-REBALANCE] CacheFunds: buy=${Format.formatMetric5(mgr.funds.cacheFunds.buy)}, sell=${Format.formatMetric5(mgr.funds.cacheFunds.sell)}`, 'debug');
-                 mgr.logger.log(`[PRE-REBALANCE] ChainFree: buy=${Format.formatMetric5(mgr.accountTotals.buyFree)}, sell=${Format.formatMetric5(mgr.accountTotals.sellFree)}`, 'debug');
+                mgr.logger.log(`[PRE-REBALANCE] Available: buy=${Format.formatMetric5(mgr.funds.available.buy)}, sell=${Format.formatMetric5(mgr.funds.available.sell)}`, 'debug');
+                mgr.logger.log(`[PRE-REBALANCE] CacheFunds: buy=${Format.formatMetric5(mgr.funds.cacheFunds.buy)}, sell=${Format.formatMetric5(mgr.funds.cacheFunds.sell)}`, 'debug');
+                mgr.logger.log(`[PRE-REBALANCE] ChainFree: buy=${Format.formatMetric5(mgr.accountTotals.buyFree)}, sell=${Format.formatMetric5(mgr.accountTotals.sellFree)}`, 'debug');
             }
 
             const result = await this.rebalance(filledOrders, excludeOrderIds);

@@ -147,14 +147,14 @@ function resolveRelativePrice(value, startPrice, mode = 'min') {
         if (/^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value)) {
             // Parse the numeric part before the 'x'
             const multiplier = parseFloat(value.trim().toLowerCase().slice(0, -1));
-            
+
             // Validate multiplier and start price
             if (!Number.isNaN(multiplier) && Number.isFinite(startPrice) && multiplier !== 0) {
                 return mode === 'min' ? startPrice / multiplier : startPrice * multiplier;
             }
         }
     }
-    
+
     return null;
 }
 
@@ -207,20 +207,25 @@ function computeChainFundTotals(accountTotals, committedChain) {
 /**
  * Calculates available funds for a specific side (buy/sell).
  *
- * FORMULA: available = max(0, chainFree - virtual - cacheFunds - btsFeesOwed - btsFeesReservation)
+ * FORMULA: available = max(0, chainFree - virtual - btsFeesOwed - btsFeesReservation)
  *
  * NOTE ON CACHEFUNDS:
- * cacheFunds (unspent fill proceeds and rotation surpluses) is subtracted from available.
- * This is because cacheFunds represents capital that is "claimed" by the grid rotation
- * logic. Subtracting it ensures that 'available' reflects only true surplus funds that
- * are not yet earmarked for any grid purpose (including profit reinvestment).
+ * cacheFunds is NOT subtracted from available because it is physically part of chainFree.
+ * When fills occur, proceeds are added to both chainFree (via adjustTotalBalance) and
+ * cacheFunds (via modifyCacheFunds). cacheFunds is a reporting metric that tracks
+ * fill proceeds separately, but does not diminish spending power since those funds
+ * are already reflected in chainFree.
+ *
+ * NOTE ON IN-FLIGHT ORDERS:
+ * In-flight capital (ACTIVE orders without orderId) is now tracked as part of the
+ * 'virtual' total in recalculateFunds(). This consolidation prevents double-deduction
+ * since chainFree is already "optimistic" and accounts for pending orders.
  *
  * FUND COMPONENTS:
- * - chainFree: Unallocated funds on blockchain (includes cacheFunds proceeds)
- * - virtual: Funds reserved for VIRTUAL grid orders (not yet on-chain)
- * - btsFeesOwed: Accumulated BTS fees waiting to be settled from cacheFunds
+ * - chainFree: Unallocated funds on blockchain (optimistic, includes fill proceeds)
+ * - virtual: Funds reserved for VIRTUAL and in-flight orders (off-chain commitments)
+ * - btsFeesOwed: Accumulated BTS fees waiting to be settled
  * - btsFeesReservation: Buffer reserved for future order creation fees
- * - cacheFunds: Fill proceeds and rotation surplus (tracked as part of chainFree)
  *
  * @param {string} side - 'buy' or 'sell'
  * @param {Object} accountTotals - Account totals with buyFree/sellFree
@@ -228,21 +233,14 @@ function computeChainFundTotals(accountTotals, committedChain) {
  * @param {string} assetA - Asset A symbol (to determine BTS side)
  * @param {string} assetB - Asset B symbol (to determine BTS side)
  * @param {Object} activeOrders - Target order counts (for BTS fee reservation)
- * @returns {number} Available funds for the side (chainFree minus reserved/owed/cache), always >= 0
+ * @returns {number} Available funds for the side, always >= 0
  */
 function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null) {
     if (side !== 'buy' && side !== 'sell') return 0;
 
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
     const virtual = toFiniteNumber(side === 'buy' ? funds.virtual?.buy : funds.virtual?.sell);
-    
-    // In-Flight Funds: Capital committed to ACTIVE grid orders that aren't yet confirmed on-chain (no orderId)
-    // Subtracting these prevents availability spikes during the VIRTUAL -> ACTIVE transition gap.
-    const committedGrid = toFiniteNumber(side === 'buy' ? funds.committed?.grid?.buy : funds.committed?.grid?.sell);
-    const committedChain = toFiniteNumber(side === 'buy' ? funds.committed?.chain?.buy : funds.committed?.chain?.sell);
-    const inFlight = Math.max(0, committedGrid - committedChain);
 
-    const cacheFunds = toFiniteNumber(side === 'buy' ? funds.cacheFunds?.buy : funds.cacheFunds?.sell);
     const btsFeesOwed = toFiniteNumber(funds.btsFeesOwed);
 
     // Determine which side actually has BTS as the asset
@@ -268,10 +266,8 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     // Subtract btsFeesOwed from the side that holds BTS to prevent over-allocation
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
 
-    // Available funds: chainFree minus all known internal reservations and obligations.
-    // NOTE: cacheFunds is NOT subtracted here because it is physically part of chainFree.
-    // It is kept as a separate reporting metric but does not diminish spending power.
-    return Math.max(0, chainFree - virtual - inFlight - currentFeesOwed - btsFeesReservation);
+    // Available funds: chainFree minus all reservations (virtual, fees, fee buffer)
+    return Math.max(0, chainFree - virtual - currentFeesOwed - btsFeesReservation);
 }
 
 /**
@@ -385,22 +381,22 @@ function floatToBlockchainInt(floatValue, precision) {
  * @returns {number|null} The price tolerance or null if inputs are invalid.
  */
 function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
-     // Ensure we have numeric grid price and order size
-     if (!isValidNumber(gridPrice) || !isValidNumber(orderSize)) {
-         return null;
-     }
+    // Ensure we have numeric grid price and order size
+    if (!isValidNumber(gridPrice) || !isValidNumber(orderSize)) {
+        return null;
+    }
 
-     if (!assets) {
-         throw new Error("CRITICAL: Assets object required for calculatePriceTolerance");
-     }
+    if (!assets) {
+        throw new Error("CRITICAL: Assets object required for calculatePriceTolerance");
+    }
 
-     const precisionA = assets.assetA?.precision;
-     const precisionB = assets.assetB?.precision;
+    const precisionA = assets.assetA?.precision;
+    const precisionB = assets.assetB?.precision;
 
-     // When precision is missing/invalid, bot cannot operate safely on this pair
-     if (typeof precisionA !== 'number' || typeof precisionB !== 'number') {
-         throw new Error(`CRITICAL: Missing precision for price tolerance (A=${precisionA}, B=${precisionB})`);
-     }
+    // When precision is missing/invalid, bot cannot operate safely on this pair
+    if (typeof precisionA !== 'number' || typeof precisionB !== 'number') {
+        throw new Error(`CRITICAL: Missing precision for price tolerance (A=${precisionA}, B=${precisionB})`);
+    }
 
     if (!orderSize || orderSize <= 0) {
         return null;
@@ -491,9 +487,9 @@ function parseChainOrder(chainOrder, assets) {
                 size = blockchainToFloat(Number(chainOrder.for_sale), bPrec);
             }
         }
-    } catch (e) { 
+    } catch (e) {
         console.error(`[utils.js] parseChainOrder failed: ${e.message}`);
-        return null; 
+        return null;
     }
 
     return { orderId: chainOrder.id, price, type, size };
@@ -521,12 +517,12 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
     const chainPrice = toFiniteNumber(parsedChainOrder.price);
     const isSell = parsedChainOrder.type === ORDER_TYPES.SELL;
     const precision = isSell ? assets?.assetA?.precision : assets?.assetB?.precision;
-    
+
     if (typeof precision !== 'number') {
         logger?.log?.(`Cannot match chain order ${parsedChainOrder.orderId}: missing precision for ${isSell ? 'assetA' : 'assetB'}`, 'warn');
         return null;
     }
-    
+
     const chainInt = floatToBlockchainInt(chainSize, precision);
 
     let bestMatch = null;
@@ -545,7 +541,7 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
         // Size check: compare in blockchain integer units
         // During startup/sync, we allow the chain size to be SMALLER than grid size (partial fill occurred)
         const gridInt = floatToBlockchainInt(gridOrder.size, precision);
-        const sizeMismatch = opts?.allowSmallerChainSize 
+        const sizeMismatch = opts?.allowSmallerChainSize
             ? (chainInt > gridInt + 1) // Chain size cannot be GREATER than grid size
             : (Math.abs(gridInt - chainInt) > 1); // Normal case: must match exactly
 
@@ -635,10 +631,10 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
         manager.logger?.log?.(`Skipping chain size apply for non-ACTIVE/PARTIAL order ${gridOrder.id} (state=${gridOrder.state})`, 'debug');
         return;
     }
-    
+
     // Get precision EARLY for dynamic threshold check
     const precision = (gridOrder.type === ORDER_TYPES.SELL) ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
-    
+
     // DOUBLE-CONVERSION PREVENTION: Sanity check that chainSize is a float, not an int
     // Uses dynamic threshold based on asset precision (not a fixed value).
     // If chainSize * 10^precision > 1e15, it's almost certainly a blockchain integer passed by mistake.
@@ -649,7 +645,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     if (Number.isFinite(precision) && Number.isFinite(Number(chainSize))) {
         const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
         const suspiciousThreshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, precision);
-        
+
         if (Math.abs(Number(chainSize)) > suspiciousThreshold) {
             manager.logger?.log?.(
                 `CRITICAL: applyChainSizeToGridOrder received suspicious chainSize=${chainSize} for order ${gridOrder.id}. ` +
@@ -661,7 +657,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
             return; // Reject the update to prevent grid corruption
         }
     }
-    
+
     const oldSize = Number(gridOrder.size || 0);
     const newSize = Number.isFinite(Number(chainSize)) ? Number(chainSize) : oldSize;
 
@@ -677,7 +673,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     const oldInt = floatToBlockchainInt(oldSize, precision);
     const newInt = floatToBlockchainInt(newSize, precision);
     if (oldInt === newInt) { gridOrder.size = newSize; return; }
-     manager.logger?.log?.(`Order ${gridOrder.id} size adjustment: ${Format.formatAmount8(oldSize)} -> ${Format.formatAmount8(newSize)} (delta: ${Format.formatAmount8(delta)})`, 'debug');
+    manager.logger?.log?.(`Order ${gridOrder.id} size adjustment: ${Format.formatAmount8(oldSize)} -> ${Format.formatAmount8(newSize)} (delta: ${Format.formatAmount8(delta)})`, 'debug');
     gridOrder.size = newSize;
     try { manager._updateOrder(gridOrder); } catch (e) { /* best-effort */ }
 
@@ -768,17 +764,17 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
 function getMinOrderSize(orderType, assets, factor = 50) {
     const f = Number(factor);
     if (!f || !Number.isFinite(f) || f <= 0) return 0;
-    
+
     let precision = null;
     if (assets) {
         if ((orderType === ORDER_TYPES.SELL) && assets.assetA) precision = assets.assetA.precision;
         else if ((orderType === ORDER_TYPES.BUY) && assets.assetB) precision = assets.assetB.precision;
     }
-    
+
     if (typeof precision !== 'number') {
         throw new Error(`CRITICAL: Cannot determine minimum order size for ${orderType} - missing precision`);
     }
-    
+
     const smallestUnit = Math.pow(10, -precision);
     return Number(f) * smallestUnit;
 }
@@ -897,7 +893,7 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
                     if (matches.length) allMatches.push(...matches);
                     if (pools.length < API_LIMITS.POOL_BATCH_SIZE || startId === pools[pools.length - 1].id) break;
-                    
+
                     startId = pools[pools.length - 1].id;
                     batchCount++;
                 }
@@ -980,7 +976,7 @@ const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
 
         const aId = aMeta.id, bId = bMeta.id;
         const getOrders = (id1, id2) => BitShares.db?.get_limit_orders?.(id1, id2, API_LIMITS.LIMIT_ORDERS_BATCH);
-        
+
         let orders = await getOrders(aId, bId).catch(() => null);
         if (!orders?.length) orders = await getOrders(bId, aId).catch(() => null);
         if (!orders?.length) return null;
@@ -989,7 +985,7 @@ const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
         for (const o of orders) {
             if (!o.sell_price) continue;
             const { base, quote } = o.sell_price;
-            
+
             const getPrec = async (id) => {
                 if (BitShares.assets?.[id]?.precision !== undefined) return BitShares.assets[id].precision;
                 const [a] = await BitShares.db.get_assets([id]).catch(() => []);
@@ -1005,7 +1001,7 @@ const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
 
             const price = (quoteAmt / baseAmt) * Math.pow(10, basePrec - quotePrec);
             const size = Number(o.for_sale) / Math.pow(10, basePrec);
-            
+
             let priceInDesired = null;
             if (base.asset_id === aId && quote.asset_id === bId) priceInDesired = price;
             else if (base.asset_id === bId && quote.asset_id === aId && price !== 0) priceInDesired = 1 / price;
@@ -1365,31 +1361,31 @@ async function runGridComparisons(manager, accountOrders, botKey) {
             'debug'
         );
 
-         // Step 2: Quadratic comparison (if simple check didn't trigger)
-          // Detects deeper structural divergence and also populates _gridSidesUpdated
-          if (!simpleCheckResult.buyUpdated && !simpleCheckResult.sellUpdated) {
-              const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGrid, manager, manager.funds.cacheFunds);
- 
-             // Safety check: ensure comparisonResult has valid structure before accessing metric
-             if (comparisonResult?.buy?.metric !== undefined && comparisonResult?.sell?.metric !== undefined) {
-                  manager.logger?.log?.(
-                      `Quadratic comparison complete: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}, buyUpdated=${comparisonResult.buy.updated}, sellUpdated=${comparisonResult.sell.updated}`,
-                      'debug'
-                  );
- 
-                 if (comparisonResult.buy.metric > 0 || comparisonResult.sell.metric > 0) {
-                      manager.logger?.log?.(
-                          `Grid divergence detected after rotation: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`,
-                          'info'
-                      );
-                 }
-             } else {
-                 manager.logger?.log?.(
-                     `Warning: Grid comparison returned invalid structure: ${JSON.stringify(comparisonResult)}`,
-                     'warn'
-                 );
-             }
-         } else {
+        // Step 2: Quadratic comparison (if simple check didn't trigger)
+        // Detects deeper structural divergence and also populates _gridSidesUpdated
+        if (!simpleCheckResult.buyUpdated && !simpleCheckResult.sellUpdated) {
+            const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGrid, manager, manager.funds.cacheFunds);
+
+            // Safety check: ensure comparisonResult has valid structure before accessing metric
+            if (comparisonResult?.buy?.metric !== undefined && comparisonResult?.sell?.metric !== undefined) {
+                manager.logger?.log?.(
+                    `Quadratic comparison complete: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}, buyUpdated=${comparisonResult.buy.updated}, sellUpdated=${comparisonResult.sell.updated}`,
+                    'debug'
+                );
+
+                if (comparisonResult.buy.metric > 0 || comparisonResult.sell.metric > 0) {
+                    manager.logger?.log?.(
+                        `Grid divergence detected after rotation: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`,
+                        'info'
+                    );
+                }
+            } else {
+                manager.logger?.log?.(
+                    `Warning: Grid comparison returned invalid structure: ${JSON.stringify(comparisonResult)}`,
+                    'warn'
+                );
+            }
+        } else {
             manager.logger?.log?.(
                 `Simple check triggered grid updates, skipping quadratic comparison`,
                 'debug'
@@ -1657,13 +1653,13 @@ function getPrecisionByOrderType(assets, orderType) {
     const { ORDER_TYPES } = require('../constants');
     const asset = orderType === ORDER_TYPES.SELL ? assets?.assetA : assets?.assetB;
     const side = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
-    
+
     if (typeof asset?.precision !== 'number') {
         const errorMsg = `CRITICAL: Asset precision missing for ${side} orders. Asset: ${asset?.symbol || '(unknown)'}. Cannot determine blockchain precision.`;
         console.error(`[getPrecisionByOrderType] ${errorMsg}`);
         throw new Error(errorMsg);
     }
-    
+
     return asset.precision;
 }
 
@@ -1677,13 +1673,13 @@ function getPrecisionByOrderType(assets, orderType) {
 function getPrecisionForSide(assets, side) {
     const asset = side === 'buy' ? assets?.assetB : assets?.assetA;
     const sideUpper = side === 'buy' ? 'BUY' : 'SELL';
-    
+
     if (typeof asset?.precision !== 'number') {
         const errorMsg = `CRITICAL: Asset precision missing for ${sideUpper} side. Asset: ${asset?.symbol || '(unknown)'}. Cannot determine blockchain precision.`;
         console.error(`[getPrecisionForSide] ${errorMsg}`);
         throw new Error(errorMsg);
     }
-    
+
     return asset.precision;
 }
 
@@ -1699,13 +1695,13 @@ function getPrecisionsForManager(assets) {
         console.error(`[getPrecisionsForManager] ${errorMsg}`);
         throw new Error(errorMsg);
     }
-    
+
     if (typeof assets?.assetB?.precision !== 'number') {
         const errorMsg = `CRITICAL: Asset precision missing for assetB (${assets?.assetB?.symbol || '(unknown)'}). Cannot determine blockchain precision.`;
         console.error(`[getPrecisionsForManager] ${errorMsg}`);
         throw new Error(errorMsg);
     }
-    
+
     return {
         A: assets.assetA.precision,
         B: assets.assetB.precision
@@ -2014,12 +2010,12 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
                 sumSquaredDiff += relativeDiff * relativeDiff;
                 matchCount++;
             } else if (calcSize > 0) {
-                 trackDeviation(calcOrder.id, '0.00000000', Format.formatAmount8(calcSize), 'Infinity');
+                trackDeviation(calcOrder.id, '0.00000000', Format.formatAmount8(calcSize), 'Infinity');
             } else {
                 matchCount++;
             }
         } else {
-             trackDeviation(calcOrder.id, 'NOT_FOUND', Format.formatAmount8(toFiniteNumber(calcOrder.size)), 'Unmatched');
+            trackDeviation(calcOrder.id, 'NOT_FOUND', Format.formatAmount8(toFiniteNumber(calcOrder.size)), 'Unmatched');
             unmatchedCount++;
         }
     }
@@ -2027,7 +2023,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     // Check for missing orders
     for (const persOrder of persistedOrders) {
         if (!calculatedOrders.some(c => c.id === persOrder.id)) {
-             trackDeviation(persOrder.id, Format.formatAmount8(toFiniteNumber(persOrder.size)), 'NOT_FOUND', 'Unmatched');
+            trackDeviation(persOrder.id, Format.formatAmount8(toFiniteNumber(persOrder.size)), 'NOT_FOUND', 'Unmatched');
             unmatchedCount++;
         }
     }
@@ -2037,7 +2033,7 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     const rmsThreshold = (GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE || 14.3) / 100;
 
     if (metric > rmsThreshold) {
-         console.debug(`\nDEBUG [${sideName}] Divergence Breakdown: RMS=${Format.formatPercent2(metric * 100)}% (Threshold: ${Format.formatMetric2(rmsThreshold * 100)}%) Matches: ${matchCount} Unmatched: ${unmatchedCount}`);
+        console.debug(`\nDEBUG [${sideName}] Divergence Breakdown: RMS=${Format.formatPercent2(metric * 100)}% (Threshold: ${Format.formatMetric2(rmsThreshold * 100)}%) Matches: ${matchCount} Unmatched: ${unmatchedCount}`);
         if (largeDeviations.length) {
             console.debug(`  Large deviations (>10%): ${largeDeviations.length}`);
             largeDeviations.forEach(dev => {
@@ -2102,7 +2098,7 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
     const sellKey = checkFree ? 'sellFree' : 'sell';
     return isValidNumber(accountTotals[buyKey]) && isValidNumber(accountTotals[sellKey]);
 }
-        
+
 /**
  * Determine if the spread is too wide and should be flagged for rebalancing. * Pure calculation: checks if spread exceeds threshold AND both sides have orders.
   *
@@ -2115,7 +2111,7 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
 function shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount) {
     // If one side is completely missing, the grid is structurally incomplete and needs correction
     if (buyCount === 0 || sellCount === 0) return true;
-    
+
     // Otherwise, check if current spread exceeds target (which includes widening tolerance)
     return currentSpread > targetSpread;
 }
@@ -2135,26 +2131,26 @@ function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
     const threshold = toFiniteNumber(thresholdPercent, GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 3);
     const current = toFiniteNumber(currentSize);
     const proposed = toFiniteNumber(newSize);
-    
+
     if (current <= 0) {
         // If current is 0 or invalid, any positive new size is significant
         return {
             isSignificant: proposed > 0,
             percentChange: proposed > 0 ? 100 : 0,
-            message: current === 0 
-                ? `Size change from 0 to ${Format.formatAmount8(proposed)} is significant (100%)` 
+            message: current === 0
+                ? `Size change from 0 to ${Format.formatAmount8(proposed)} is significant (100%)`
                 : `Size change with invalid current size (${current})`
         };
     }
-    
+
     const diff = Math.abs(proposed - current);
     const percentChange = (diff / current) * 100;
     const isSignificant = percentChange >= threshold;
-    
+
     return {
         isSignificant,
         percentChange,
-         message: `Size change ${Format.formatPercent4(percentChange)}% ${isSignificant ? '>=' : '<'} threshold ${threshold}% (current: ${Format.formatAmount8(current)}, new: ${Format.formatAmount8(proposed)})`
+        message: `Size change ${Format.formatPercent4(percentChange)}% ${isSignificant ? '>=' : '<'} threshold ${threshold}% (current: ${Format.formatAmount8(current)}, new: ${Format.formatAmount8(proposed)})`
     };
 }
 
@@ -2172,12 +2168,12 @@ function hasSignificantSizeChange(currentSize, newSize, thresholdPercent) {
     const threshold = toFiniteNumber(thresholdPercent, GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 3);
     const current = toFiniteNumber(currentSize);
     const proposed = toFiniteNumber(newSize);
-    
+
     if (current <= 0) {
         // If current is 0, any positive new size is significant
         return proposed > 0;
     }
-    
+
     const diff = Math.abs(proposed - current);
     const percentChange = (diff / current) * 100;
     return percentChange >= threshold;
@@ -2273,8 +2269,8 @@ module.exports = {
     // Formatting
     convertToSpreadPlaceholder,
 
-     // Validation helpers
-     hasValidAccountTotals,
-     shouldFlagOutOfSpread,
-     isSignificantSizeChange
- };
+    // Validation helpers
+    hasValidAccountTotals,
+    shouldFlagOutOfSpread,
+    isSignificantSizeChange
+};

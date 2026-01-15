@@ -87,7 +87,38 @@ Accounting in `dev` uses an **Atomic Check-and-Deduct** model to prevent race co
 
 ### Available Funds Calculation
 Available funds are calculated defensively in `utils.js`:
-$$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{Cache} - \text{FeesOwed} - \text{FeesReserveration})$$
+$$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{InFlight} - \text{FeesOwed} - \text{FeesReservation})$$
+
+**Critical Note:** `CacheFunds` is **NOT** subtracted from available because it is **physically part of ChainFree**.
+
+### Fund Components Explained
+
+| Component | Definition | Purpose |
+|-----------|-----------|---------|
+| **ChainFree** | Unallocated funds on blockchain | Total liquid capital available |
+| **Virtual** | Funds reserved for VIRTUAL orders (not yet on-chain) | Prevents over-allocation to new orders |
+| **InFlight** | Committed to ACTIVE orders not yet confirmed on-chain | Bridges VIRTUAL→ACTIVE gap |
+| **CacheFunds** | Separate tracking metric for fill proceeds (subset of ChainFree) | Reporting only - does NOT reduce spending power |
+| **FeesOwed** | Accumulated BTS fees from trades | Hard liability that must be settled |
+| **FeesReservation** | Buffer reserved for future order creation fees | Safety margin for operations |
+
+### Understanding CacheFunds
+
+`CacheFunds` is a **reporting metric**, not a deduction:
+
+```
+When a fill occurs:
+1. Blockchain balance increases by proceeds → ChainFree increases
+2. modifyCacheFunds() also increases by same amount → CacheFunds increases
+3. Available = ChainFree - Virtual - InFlight - ... (NO cacheFunds subtraction)
+
+Result: Available already includes fill proceeds via ChainFree.
+```
+
+**Why not subtract CacheFunds?** Because it's already included in ChainFree. Subtracting it would:
+- **Double-count** the same capital as both "free" and "reserved"
+- **Artificially restrict** the bot's spending power
+- **Break invariants** between chainFree and available calculations
 
 ### Atomic Deduction (`tryDeductFromChainFree`)
 When creating an order, the bot does not just "add it to the list". It performs an atomic update:
@@ -95,11 +126,13 @@ When creating an order, the bot does not just "add it to the list". It performs 
 2. If yes: Subtract $OrderSize$ from $Available$, add to $VirtualReserved$.
 3. If no: Fail the placement (preventing overdrafts).
 
-### Cache Funds Logic
-`CacheFunds` act as an optimistic "transit bucket":
-- **Incoming:** Fill proceeds (Sell size * Price) are added to `CacheFunds`.
-- **Outgoing:** Used as the first source of funding for new placements/rotations.
-- **Persistence:** Persisted to `account.json` to ensure no money is "lost" across bot restarts.
+### CacheFunds Lifecycle
+
+`CacheFunds` tracks fill proceeds and rotation surpluses separately:
+- **Incoming:** Fill proceeds (Sell size × Price) are added to `CacheFunds` and simultaneously to `ChainFree`
+- **Reporting:** Provides visibility into "profit" available from trading activity
+- **Persistence:** Persisted to `account.json` to ensure capital tracking survives restarts
+- **Settlement:** Used as the first source for paying BTS transaction fees
 
 ---
 
@@ -142,6 +175,81 @@ A unique safeguard in `processFilledOrders` triggers a mandatory rebalance if du
 During rotations, a `PARTIAL` order can be moved to a new slot:
 - It retains its `PARTIAL` state if the capital moved is still less than the target slot's $SizeIdeal$.
 - The movement is handled as an **atomic transition** (Vacate old ID → Occupy new ID) to ensure the accountant never loses track of the committed capital.
+
+---
+
+## 5.1 Rotation State Management
+
+During order rotation, orders transition through states to ensure proper accounting and blockchain synchronization.
+
+### Rotation State Lifecycle
+
+```
+ACTIVE (old surplus order)
+    ↓
+VIRTUAL (marked for replacement)
+    ↓
+[On-chain cancellation broadcast]
+    ↓
+synchronizeWithChain() confirms cancellation
+    ↓
+Capital released, available for new placement
+```
+
+### State Transition During Rotation
+
+When a rotation occurs (moving capital from surplus to shortage):
+
+1. **Old Order Transition:**
+   - Current state: `ACTIVE` with `orderId` (on-chain)
+   - Rotation action: Transition to `VIRTUAL` with `size: 0` and `orderId: null`
+   - Purpose: Signals that the order is no longer active and capital has been released
+   - Blockchain confirmation: `synchronizeWithChain()` verifies the order is cancelled
+
+2. **New Order Placement:**
+   - Creates a new order in `VIRTUAL` state
+   - Size: Calculated based on available funds and grid demand
+   - State: Remains `VIRTUAL` until blockchain confirms creation
+   - Blockchain confirmation: `synchronizeWithChain()` transitions to `ACTIVE` when confirmed
+
+### Why State Transitions Matter
+
+| Scenario | Handling |
+|----------|----------|
+| **State not updated** | Bot thinks capital is still committed; refuses to use it elsewhere → Grid stops growing |
+| **State updated too early** | Bot might double-spend before blockchain confirms → Fund violations |
+| **State with wrong size** | Available fund calculations corrupt; grid becomes over/under-sized |
+
+### Protection Mechanisms
+
+1. **Atomic Transitions:** Both old and new order states are updated within the same rebalance operation
+2. **Blockchain Sync:** `synchronizeWithChain()` verifies actual on-chain state matches memory
+3. **Fund Recalculation:** After any state change, `recalculateFunds()` recomputes available to prevent leaks
+
+### Example: Proper Rotation with Partial Orders
+
+```javascript
+// Old rotated order (was ACTIVE, now being replaced)
+stateUpdates.push({
+    id: 'slot-5',                    // Old slot
+    state: ORDER_STATES.VIRTUAL,    // Marked as no longer active
+    size: 0,                          // Capital released
+    orderId: null                     // Blockchain reference cleared
+});
+
+// New placement order (will be ACTIVE after sync)
+stateUpdates.push({
+    id: 'slot-9',                    // New slot (closer to market)
+    type: ORDER_TYPES.SELL,
+    state: ORDER_STATES.VIRTUAL,     // Not yet on blockchain
+    size: 451.13066,                 // Size calculated from available funds
+    orderId: null                     // Will be assigned after blockchain confirms
+});
+
+// After broadcast and synchronizeWithChain():
+// - slot-5: VIRTUAL with orderId cleared (blockchain confirmed)
+// - slot-9: ACTIVE with new orderId (blockchain confirmed)
+```
 
 ---
 
@@ -192,6 +300,15 @@ When actual fees are charged on-chain, they are tracked in `btsFeesOwed`. During
 
 ## Related Documentation
 
+### Understanding Fund Accounting & Rotation
+- **[FUND_ACCOUNTING_AND_ROTATION.md](FUND_ACCOUNTING_AND_ROTATION.md)** - Comprehensive guide (START HERE)
+  - Fund accounting model and core principles
+  - Why cacheFunds is NOT subtracted from available
+  - Order rotation state transitions
+  - Protection against race conditions
+  - Best practices and debugging
+  - Common mistakes to avoid
+
 ### Testing & Validation
 - **[TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md)** - Complete test coverage for fund calculations
   - 23 test cases covering all formulas and invariants
@@ -207,6 +324,7 @@ When actual fees are charged on-chain, they are tracked in `btsFeesOwed`. During
 ### Reference Documentation
 - **[architecture.md](architecture.md)** - System architecture and testing strategy
 - **[developer_guide.md](developer_guide.md)** - Complete developer guide with fund examples
+- **[FUND_SNAPSHOT_GUIDE.md](FUND_SNAPSHOT_GUIDE.md)** - Fund snapshot history and debugging
 
 ---
 
