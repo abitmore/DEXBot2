@@ -306,9 +306,9 @@ DEXBot automatically regenerates grid order sizes when market conditions or cach
 
 **Two Independent Triggering Mechanisms:**
 
-1. **Cache & Available Funds Threshold** (3% by default)
-   - Monitors cached funds (proceeds from fills) + newly available funds (deposits)
-   - Triggers when `(cacheFunds + availableFunds) ≥ 3%` of allocated grid capital on either side
+1. **Available Funds Threshold** (3% by default)
+   - Monitors available funds (includes fill proceeds and new deposits)
+   - Triggers when `availableFunds ≥ 3%` of allocated grid capital on either side
    - Example: Grid 1000 BTS + new deposit 200 BTS available → ratio 20% → triggers update
    - Enables **automatic fund cycling**: new deposits are immediately resized into grid
    - Updates buy and sell sides independently based on their respective ratios

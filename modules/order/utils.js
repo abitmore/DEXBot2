@@ -207,20 +207,21 @@ function computeChainFundTotals(accountTotals, committedChain) {
 /**
  * Calculates available funds for a specific side (buy/sell).
  *
- * FORMULA: available = max(0, chainFree - virtual - cacheFunds - btsFeesOwed - btsFeesReservation)
+ * FORMULA: available = max(0, chainFree - virtual - inFlight - btsFeesOwed - btsFeesReservation)
  *
  * NOTE ON CACHEFUNDS:
- * cacheFunds (unspent fill proceeds and rotation surpluses) is subtracted from available.
- * This is because cacheFunds represents capital that is "claimed" by the grid rotation
- * logic. Subtracting it ensures that 'available' reflects only true surplus funds that
- * are not yet earmarked for any grid purpose (including profit reinvestment).
+ * cacheFunds is NOT subtracted from available because it is physically part of chainFree.
+ * When fills occur, proceeds are added to both chainFree (via adjustTotalBalance) and
+ * cacheFunds (via modifyCacheFunds). cacheFunds is a reporting metric that tracks
+ * fill proceeds separately, but does not diminish spending power since those funds
+ * are already reflected in chainFree.
  *
  * FUND COMPONENTS:
- * - chainFree: Unallocated funds on blockchain (includes cacheFunds proceeds)
+ * - chainFree: Unallocated funds on blockchain (includes fill proceeds)
  * - virtual: Funds reserved for VIRTUAL grid orders (not yet on-chain)
- * - btsFeesOwed: Accumulated BTS fees waiting to be settled from cacheFunds
+ * - inFlight: Capital committed to ACTIVE grid orders not yet confirmed on-chain
+ * - btsFeesOwed: Accumulated BTS fees waiting to be settled
  * - btsFeesReservation: Buffer reserved for future order creation fees
- * - cacheFunds: Fill proceeds and rotation surplus (tracked as part of chainFree)
  *
  * @param {string} side - 'buy' or 'sell'
  * @param {Object} accountTotals - Account totals with buyFree/sellFree
@@ -228,7 +229,7 @@ function computeChainFundTotals(accountTotals, committedChain) {
  * @param {string} assetA - Asset A symbol (to determine BTS side)
  * @param {string} assetB - Asset B symbol (to determine BTS side)
  * @param {Object} activeOrders - Target order counts (for BTS fee reservation)
- * @returns {number} Available funds for the side (chainFree minus reserved/owed/cache), always >= 0
+ * @returns {number} Available funds for the side, always >= 0
  */
 function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null) {
     if (side !== 'buy' && side !== 'sell') return 0;

@@ -1013,10 +1013,9 @@ class Grid {
         const reqBuy = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.BUY);
         const reqSell = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.SELL);
         
-        // Use available + cacheFunds to allow checking against total liquid capital
-        // FIX: Use optional chaining for consistent null safety
-        const buyAvailable = (manager.funds?.available?.buy || 0) + (manager.funds?.cacheFunds?.buy || 0);
-        const sellAvailable = (manager.funds?.available?.sell || 0) + (manager.funds?.cacheFunds?.sell || 0);
+        // Available funds already include fill proceeds (cacheFunds is part of chainFree)
+        const buyAvailable = (manager.funds?.available?.buy || 0);
+        const sellAvailable = (manager.funds?.available?.sell || 0);
 
         const buyRatio = reqBuy ? (buyAvailable / reqBuy) : 0;
         const sellRatio = reqSell ? (sellAvailable / reqSell) : 0;

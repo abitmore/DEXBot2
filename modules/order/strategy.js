@@ -204,7 +204,7 @@ class StrategyEngine {
         // STEP 4: BUDGET CALCULATION (Total Capital with BTS Fee Deduction)
         // ════════════════════════════════════════════════════════════════════════════════
         // Total Side Budget = (ChainFree + Committed) - BTS_Fees (if asset is BTS)
-        // Available Pool = funds.available + cacheFunds
+        // Available = funds.available (already includes fill proceeds via chainFree)
 
         const Grid = require('./grid');
         const buyCtx = Grid._getSizingContext(mgr, 'buy');
@@ -581,10 +581,10 @@ class StrategyEngine {
                     from: { ...currentSurplus },
                     to: { ...shortageSlot, size: finalSize }
                 });
-                // CRITICAL: Do NOT update old order state during rebalance!
-                // The blockchain still has it as a live order. When synchronizeWithChain completes,
-                // it will detect the rotation and properly transition the old order to VIRTUAL.
-                // Updating it here would cause double-counting (blockchain has it, but we released it).
+
+                // Transition old order to VIRTUAL with size 0 (it's being replaced by the new order)
+                // sync_engine will see it's already VIRTUAL and just clear the orderId if needed
+                stateUpdates.push({ ...currentSurplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null });
 
                 // New rotated order must stay VIRTUAL until blockchain confirms (synchronizeWithChain will activate it)
                 stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });
