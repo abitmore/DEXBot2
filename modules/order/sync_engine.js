@@ -6,12 +6,12 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');
-const { 
-    blockchainToFloat, 
-    floatToBlockchainInt, 
-    calculatePriceTolerance, 
-    findMatchingGridOrderByOpenOrder, 
-    applyChainSizeToGridOrder, 
+const {
+    blockchainToFloat,
+    floatToBlockchainInt,
+    calculatePriceTolerance,
+    findMatchingGridOrderByOpenOrder,
+    applyChainSizeToGridOrder,
     convertToSpreadPlaceholder,
     hasValidAccountTotals
 } = require('./utils');
@@ -89,10 +89,11 @@ class SyncEngine {
     /**
      * Synchronize grid orders with blockchain open orders snapshot.
      * @param {Array|null} chainOrders - Array of blockchain order objects
-     * @param {Object|null} fillInfo - Optional fill information metadata
+     * @param {Object} [options={}] - Sync options (e.g., { skipAccounting: true })
+     * @param {Object|null} fillInfo - Optional fill information metadata (deprecated, use options)
      * @returns {Promise<Object>} Result with filledOrders, updatedOrders, ordersNeedingCorrection
      */
-    async syncFromOpenOrders(chainOrders, fillInfo = null) {
+    async syncFromOpenOrders(chainOrders, options = {}, fillInfo = null) {
         const mgr = this.manager;
 
         if (!mgr) {
@@ -105,7 +106,7 @@ class SyncEngine {
 
         // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
         return await mgr._syncLock.acquire(async () => {
-            return this._doSyncFromOpenOrders(chainOrders, fillInfo);
+            return this._doSyncFromOpenOrders(chainOrders, options, fillInfo);
         });
     }
 
@@ -113,17 +114,21 @@ class SyncEngine {
      * Internal method that performs the actual sync logic.
      * Called within _syncLock to guarantee exclusive execution.
      * @param {Array|null} chainOrders - Array of blockchain order objects
+     * @param {Object} options - Sync options
      * @param {Object|null} fillInfo - Optional metadata
      * @returns {Promise<Object>} Sync result
      * @private
      */
-    async _doSyncFromOpenOrders(chainOrders, fillInfo = null) {
+    async _doSyncFromOpenOrders(chainOrders, options, fillInfo = null) {
         const mgr = this.manager;
 
         // Validate inputs
         if (!mgr) {
             throw new Error('manager required');
         }
+
+        // Optimistically update account totals if fill info is provided
+        if (fillInfo) mgr.accountant.processFillAccounting(fillInfo);
         if (!chainOrders || !Array.isArray(chainOrders)) {
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
@@ -201,20 +206,20 @@ class SyncEngine {
         // Lock orders before reconciliation
         mgr.lockOrders([...orderIdsToLock]);
 
-         // Set up lock refresh mechanism to prevent timeout during long reconciliation
-         // Refreshes every LOCK_TIMEOUT_MS/2 to keep locks alive
-         //
-         // DESIGN NOTE: The refresh mechanism ensures that long-running reconciliations
-         // don't lose their locks mid-operation. If reconciliation completes normally,
-         // clearInterval() in the finally block stops the refresh. If the process crashes
-         // before finally executes, the locks will eventually expire after LOCK_TIMEOUT_MS,
-         // allowing orders to be unlocked and traded again in the next bot instance.
-         //
-         // RACE WINDOW: There is a small theoretical race between clearing the interval
-         // and unlocking (if another thread reads shadowOrderIds in that window). This is
-         // acceptable because: (1) it's microseconds-long, (2) worst case is a lock held
-         // slightly too long (safe), not released too early (unsafe), and (3) only matters
-         // on path to process crash which already breaks invariants.
+        // Set up lock refresh mechanism to prevent timeout during long reconciliation
+        // Refreshes every LOCK_TIMEOUT_MS/2 to keep locks alive
+        //
+        // DESIGN NOTE: The refresh mechanism ensures that long-running reconciliations
+        // don't lose their locks mid-operation. If reconciliation completes normally,
+        // clearInterval() in the finally block stops the refresh. If the process crashes
+        // before finally executes, the locks will eventually expire after LOCK_TIMEOUT_MS,
+        // allowing orders to be unlocked and traded again in the next bot instance.
+        //
+        // RACE WINDOW: There is a small theoretical race between clearing the interval
+        // and unlocking (if another thread reads shadowOrderIds in that window). This is
+        // acceptable because: (1) it's microseconds-long, (2) worst case is a lock held
+        // slightly too long (safe), not released too early (unsafe), and (3) only matters
+        // on path to process crash which already breaks invariants.
         const lockRefreshInterval = setInterval(() => {
             const now = Date.now();
             for (const id of orderIdsToLock) {
@@ -227,7 +232,7 @@ class SyncEngine {
             mgr.pauseFundRecalc();
             // Reconciliation logic moved below in the try block
             this._performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
-                                            chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection);
+                chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection, options);
         } finally {
             mgr.resumeFundRecalc();
             // Stop refresh interval first
@@ -248,7 +253,7 @@ class SyncEngine {
      * - rawChainOrders: Raw blockchain data - keep for reference
      */
     _performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
-                               chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection) {
+        chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection, options) {
 
         for (const gridOrder of mgr.orders.values()) {
             if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) {
@@ -257,22 +262,20 @@ class SyncEngine {
                 chainOrderIdsOnGrid.add(gridOrder.orderId);
                 matchedGridOrderIds.add(gridOrder.id);
 
-                 // Calculate price tolerance for comparison
-                 // Returns null if: assets missing, gridPrice is 0/null, orderSize is 0/null, or precision is undefined
-                 // In those cases, we assume tolerance of 0 (strict price matching required)
-                 const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets) ?? 0;
-                 
-                 // Flag order if chain price exceeds the tolerance threshold
-                 if (Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
-                     ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
-                 }
+                // Calculate price tolerance for comparison
+                const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets) ?? 0;
+
+                // Flag order if chain price exceeds the tolerance threshold
+                if (Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
+                    ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
+                }
 
                 const precision = (gridOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const currentSizeInt = floatToBlockchainInt(gridOrder.size, precision);
                 const chainSizeInt = floatToBlockchainInt(chainOrder.size, precision);
 
                 if (currentSizeInt !== chainSizeInt) {
-                    const newSize = blockchainToFloat(chainSizeInt, precision, true); // tag=true for type safety
+                    const newSize = blockchainToFloat(chainSizeInt, precision, true);
                     const newInt = floatToBlockchainInt(newSize, precision);
 
                     if (newInt > 0) {
@@ -281,7 +284,6 @@ class SyncEngine {
                             updatedOrder.state = ORDER_STATES.PARTIAL;
                         }
                     } else {
-                        // Capture snapshot before converting filled order to SPREAD
                         try {
                             mgr.logger?.captureSnapshot(mgr, 'order_filled', gridOrder.orderId, {
                                 gridId: gridOrder.id,
@@ -292,48 +294,46 @@ class SyncEngine {
                         } catch (err) { /* ignore */ }
 
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        mgr._updateOrder(spreadOrder);
+                        mgr._updateOrder(spreadOrder, 0, options);
                         filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                         continue;
                     }
                 }
-                mgr._updateOrder(updatedOrder);
+                mgr._updateOrder(updatedOrder, 0, options);
                 updatedOrders.push(updatedOrder);
-             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
-                 // CRITICAL: Re-verify orderId after lock is held to prevent TOCTOU race
-                 // Another thread could have cleared orderId between the loop check and execution
-                 const currentGridOrder = mgr.orders.get(gridOrder.id);
-                 if (currentGridOrder?.orderId && !parsedChainOrders.has(currentGridOrder.orderId)) {
-                     const filledOrder = { ...currentGridOrder };
-                     const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                     mgr._updateOrder(spreadOrder);
-                     filledOrders.push(filledOrder);
-                 }
-             }
+            } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
+                const currentGridOrder = mgr.orders.get(gridOrder.id);
+                if (currentGridOrder?.orderId && !parsedChainOrders.has(currentGridOrder.orderId)) {
+                    const filledOrder = { ...currentGridOrder };
+                    const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
+                    mgr._updateOrder(spreadOrder, 0, options);
+                    filledOrders.push(filledOrder);
+                }
+            }
         }
 
-         for (const [chainOrderId, chainOrder] of parsedChainOrders) {
-             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
-             
-             let match = findMatchingGridOrderByOpenOrder(
-                 { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size }, 
-                 { 
-                     orders: mgr.orders, 
-                     assets: mgr.assets, 
-                     calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), 
-                     logger: mgr.logger,
-                     allowSmallerChainSize: true 
-                 }
-             );
+        for (const [chainOrderId, chainOrder] of parsedChainOrders) {
+            if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
 
-             // CRITICAL: Check matchedGridOrderIds BEFORE assigning to prevent double-processing
-             // If another chain order already claimed this grid order, skip silently but log
-             if (match && !matchedGridOrderIds.has(match.id)) {
-                 const bestMatch = { ...match }; // CLONE HERE
-                 bestMatch.orderId = chainOrderId;
-                 bestMatch.state = ORDER_STATES.ACTIVE;
-                 matchedGridOrderIds.add(bestMatch.id);
+            let match = findMatchingGridOrderByOpenOrder(
+                { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },
+                {
+                    orders: mgr.orders,
+                    assets: mgr.assets,
+                    calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets),
+                    logger: mgr.logger,
+                    allowSmallerChainSize: true
+                }
+            );
+
+            // CRITICAL: Check matchedGridOrderIds BEFORE assigning to prevent double-processing
+            // If another chain order already claimed this grid order, skip silently but log
+            if (match && !matchedGridOrderIds.has(match.id)) {
+                const bestMatch = { ...match }; // CLONE HERE
+                bestMatch.orderId = chainOrderId;
+                bestMatch.state = ORDER_STATES.ACTIVE;
+                matchedGridOrderIds.add(bestMatch.id);
 
                 const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 if (floatToBlockchainInt(bestMatch.size, precision) !== floatToBlockchainInt(chainOrder.size, precision)) {
@@ -344,26 +344,26 @@ class SyncEngine {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
                         // bestMatch should not be updated further if it became a spread
-                        mgr._updateOrder(spreadOrder);
+                        mgr._updateOrder(spreadOrder, 0, options);
                         updatedOrders.push(spreadOrder);
                         chainOrderIdsOnGrid.add(chainOrderId);
                         continue;
                     }
                 }
-                 mgr._updateOrder(bestMatch);
-                 updatedOrders.push(bestMatch);
-                 chainOrderIdsOnGrid.add(chainOrderId);
-             } else if (match) {
-                 // Chain order found a grid match, but another chain order already claimed it
-                 // This indicates potential data corruption or race condition in blockchain state
-                 mgr.logger?.log?.(
-                     `Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, ` +
-                     `but grid order was already matched to another chain order. Skipping to prevent double-assignment.`,
-                     'warn'
-                 );
-             }
-         }
-     }
+                mgr._updateOrder(bestMatch);
+                updatedOrders.push(bestMatch);
+                chainOrderIdsOnGrid.add(chainOrderId);
+            } else if (match) {
+                // Chain order found a grid match, but another chain order already claimed it
+                // This indicates potential data corruption or race condition in blockchain state
+                mgr.logger?.log?.(
+                    `Warning: Orphan chain order ${chainOrderId} matched grid order ${match.id}, ` +
+                    `but grid order was already matched to another chain order. Skipping to prevent double-assignment.`,
+                    'warn'
+                );
+            }
+        }
+    }
 
     /**
      * Process a single fill history operation (incremental update).
@@ -400,131 +400,135 @@ class SyncEngine {
      * - partialFill: true if fill was partial (order still on chain), false if complete
      */
     syncFromFillHistory(fill) {
-         const mgr = this.manager;
-         if (!fill || !fill.op || !fill.op[1]) return { filledOrders: [], updatedOrders: [], partialFill: false };
+        const mgr = this.manager;
+        if (!fill || !fill.op || !fill.op[1]) return { filledOrders: [], updatedOrders: [], partialFill: false };
 
-         const fillOp = fill.op[1];
-         const blockNum = fill.block_num;
-         const historyId = fill.id;
-         const isMaker = fillOp.is_maker === true;  // Preserve maker/taker flag for fee calculation
-         const orderId = fillOp.order_id;
+        const fillOp = fill.op[1];
+        const blockNum = fill.block_num;
+        const historyId = fill.id;
+        const isMaker = fillOp.is_maker === true;  // Preserve maker/taker flag for fee calculation
+        const orderId = fillOp.order_id;
 
-          // Lock the order to prevent concurrent modifications from createOrder/cancelOrder/sync
-          // This is critical to prevent TOCTOU races where fill processing updates a stale order
-          const orderIdsToLock = new Set([orderId]);
-          mgr.lockOrders([...orderIdsToLock]);
+        // Optimistically update account totals to reflect the fill
+        // This prevents fund invariant violations during the window between fill detection and next blockchain fetch
+        mgr.accountant.processFillAccounting(fillOp);
 
-          try {
-              mgr.pauseFundRecalc();
-              try {
-                 const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
-                 const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
+        // Lock the order to prevent concurrent modifications from createOrder/cancelOrder/sync
+        // This is critical to prevent TOCTOU races where fill processing updates a stale order
+        const orderIdsToLock = new Set([orderId]);
+        mgr.lockOrders([...orderIdsToLock]);
 
-                 const assetAPrecision = mgr.assets?.assetA?.precision;
-                 const assetBPrecision = mgr.assets?.assetB?.precision;
+        try {
+            mgr.pauseFundRecalc();
+            try {
+                const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
+                const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
 
-                 if (assetAPrecision === undefined || assetBPrecision === undefined) {
-                     mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistory', 'error');
-                     return { filledOrders: [], updatedOrders: [], partialFill: false };
-                 }
+                const assetAPrecision = mgr.assets?.assetA?.precision;
+                const assetBPrecision = mgr.assets?.assetB?.precision;
 
-                 let matchedGridOrder = null;
-                 for (const gridOrder of mgr.orders.values()) {
-                     if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
-                         matchedGridOrder = gridOrder;
-                         break;
-                     }
-                 }
+                if (assetAPrecision === undefined || assetBPrecision === undefined) {
+                    mgr.logger?.log?.('Error: manager.assets precision missing in syncFromFillHistory', 'error');
+                    return { filledOrders: [], updatedOrders: [], partialFill: false };
+                }
 
-                  if (!matchedGridOrder) return { filledOrders: [], updatedOrders: [], partialFill: false };
+                let matchedGridOrder = null;
+                for (const gridOrder of mgr.orders.values()) {
+                    if (gridOrder.orderId === orderId && (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL)) {
+                        matchedGridOrder = gridOrder;
+                        break;
+                    }
+                }
 
-                  const orderType = matchedGridOrder.type;
-                  const currentSize = Number(matchedGridOrder.size || 0);
-                  let filledAmount = 0;
-                  if (orderType === ORDER_TYPES.SELL) {
-                      if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, assetAPrecision, true); // tag=true
-                  } else {
-                      if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, assetBPrecision, true); // tag=true
-                  }
+                if (!matchedGridOrder) return { filledOrders: [], updatedOrders: [], partialFill: false };
 
-                  const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                  const currentSizeInt = floatToBlockchainInt(currentSize, precision);
-                  const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
-                  const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
-                  const newSize = blockchainToFloat(newSizeInt, precision, true); // tag=true for type safety
+                const orderType = matchedGridOrder.type;
+                const currentSize = Number(matchedGridOrder.size || 0);
+                let filledAmount = 0;
+                if (orderType === ORDER_TYPES.SELL) {
+                    if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, assetAPrecision, true); // tag=true
+                } else {
+                    if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, assetBPrecision, true); // tag=true
+                }
 
-                  const filledOrders = [];
-                  const updatedOrders = [];
-                  if (newSizeInt <= 0) {
-                      // Capture snapshot before converting filled order to SPREAD
-                      try {
-                          mgr.logger?.captureSnapshot(mgr, 'order_filled_history', orderId, {
-                              gridId: matchedGridOrder.id,
-                              type: orderType,
-                              filledAmount: filledAmount,
-                              filledAt: 'syncFromFillHistory',
-                              blockNum: blockNum,
-                              historyId: historyId
-                          });
-                      } catch (err) { /* ignore */ }
+                const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                const currentSizeInt = floatToBlockchainInt(currentSize, precision);
+                const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
+                const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
+                const newSize = blockchainToFloat(newSizeInt, precision, true); // tag=true for type safety
 
-                      const filledOrder = {
-                          ...matchedGridOrder,
-                          blockNum: blockNum,
-                          historyId: historyId,
-                          isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
-                      };
+                const filledOrders = [];
+                const updatedOrders = [];
+                if (newSizeInt <= 0) {
+                    // Capture snapshot before converting filled order to SPREAD
+                    try {
+                        mgr.logger?.captureSnapshot(mgr, 'order_filled_history', orderId, {
+                            gridId: matchedGridOrder.id,
+                            type: orderType,
+                            filledAmount: filledAmount,
+                            filledAt: 'syncFromFillHistory',
+                            blockNum: blockNum,
+                            historyId: historyId
+                        });
+                    } catch (err) { /* ignore */ }
 
-                      // NEW: Simplified Double-Side Strategy (Full Fill)
-                      const side = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-                      const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
-                      if (isDoubled) {
-                          mgr.logger.log(`[SYNC] Full fill on doubled side (${side}). Resetting flag and triggering double replacement.`, 'info');
-                          if (side === 'buy') mgr.buySideIsDoubled = false;
-                          else mgr.sellSideIsDoubled = false;
-                          filledOrder.isDoubleReplacementTrigger = true;
-                      }
+                    const filledOrder = {
+                        ...matchedGridOrder,
+                        blockNum: blockNum,
+                        historyId: historyId,
+                        isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
+                    };
 
-                      const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
-                      mgr._updateOrder(spreadOrder);
-                      filledOrders.push(filledOrder);
-                      return { filledOrders, updatedOrders, partialFill: false };
-                  } else {
-                      const filledPortion = {
-                          ...matchedGridOrder,
-                          size: filledAmount,
-                          isPartial: true,
-                          blockNum: blockNum,
-                          historyId: historyId,
-                          isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
-                      };
-                      const updatedOrder = { ...matchedGridOrder };
-                      updatedOrder.state = ORDER_STATES.PARTIAL;
-                      applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
+                    // NEW: Simplified Double-Side Strategy (Full Fill)
+                    const side = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+                    const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
+                    if (isDoubled) {
+                        mgr.logger.log(`[SYNC] Full fill on doubled side (${side}). Resetting flag and triggering double replacement.`, 'info');
+                        if (side === 'buy') mgr.buySideIsDoubled = false;
+                        else mgr.sellSideIsDoubled = false;
+                        filledOrder.isDoubleReplacementTrigger = true;
+                    }
 
-                      // NEW: Simplified Double-Side Strategy (Partial Fill)
-                      const side = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-                      const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
+                    const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
+                    mgr._updateOrder(spreadOrder);
+                    filledOrders.push(filledOrder);
+                    return { filledOrders, updatedOrders, partialFill: false };
+                } else {
+                    const filledPortion = {
+                        ...matchedGridOrder,
+                        size: filledAmount,
+                        isPartial: true,
+                        blockNum: blockNum,
+                        historyId: historyId,
+                        isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
+                    };
+                    const updatedOrder = { ...matchedGridOrder };
+                    updatedOrder.state = ORDER_STATES.PARTIAL;
+                    applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
 
-                      if (isDoubled) {
-                          mgr.logger.log(`[SYNC] Partial fill on doubled side (${side}). Resetting flag.`, 'info');
-                          if (side === 'buy') mgr.buySideIsDoubled = false;
-                          else mgr.sellSideIsDoubled = false;
-                          // Note: partial fill on doubled side does NOT trigger double replacement
-                      }
+                    // NEW: Simplified Double-Side Strategy (Partial Fill)
+                    const side = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+                    const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
 
-                      mgr._updateOrder(updatedOrder);
-                      updatedOrders.push(updatedOrder);
-                      filledOrders.push(filledPortion);
-                      return { filledOrders, updatedOrders, partialFill: true };
-                  }
-              } finally {
-                  mgr.resumeFundRecalc();
-              }
-          } finally {
-              mgr.unlockOrders([...orderIdsToLock]);
-          }
-     }
+                    if (isDoubled) {
+                        mgr.logger.log(`[SYNC] Partial fill on doubled side (${side}). Resetting flag.`, 'info');
+                        if (side === 'buy') mgr.buySideIsDoubled = false;
+                        else mgr.sellSideIsDoubled = false;
+                        // Note: partial fill on doubled side does NOT trigger double replacement
+                    }
+
+                    mgr._updateOrder(updatedOrder);
+                    updatedOrders.push(updatedOrder);
+                    filledOrders.push(filledPortion);
+                    return { filledOrders, updatedOrders, partialFill: true };
+                }
+            } finally {
+                mgr.resumeFundRecalc();
+            }
+        } finally {
+            mgr.unlockOrders([...orderIdsToLock]);
+        }
+    }
 
     /**
      * High-level dispatcher for different blockchain synchronization sources.
@@ -607,7 +611,6 @@ class SyncEngine {
                             // Only transition if not already VIRTUAL
                             if (existingOrder.state !== ORDER_STATES.VIRTUAL) {
                                 const oldVirtualOrder = { ...existingOrder, state: ORDER_STATES.VIRTUAL, orderId: null, size: 0 };
-                                mgr.accountant.updateOptimisticFreeBalance(existingOrder, oldVirtualOrder, 'rotation');
                                 mgr._updateOrder(oldVirtualOrder);
                             } else if (existingOrder.orderId) {
                                 // Already VIRTUAL but still has orderId (from rebalance)
@@ -621,8 +624,7 @@ class SyncEngine {
                         const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
                         // For rotations, pass fee=0 to prevent double-deduction
                         const actualFee = isRotation ? 0 : fee;
-                        mgr.accountant.updateOptimisticFreeBalance(gridOrder, updatedOrder, 'createOrder', actualFee);
-                        mgr._updateOrder(updatedOrder);
+                        mgr._updateOrder(updatedOrder, actualFee);
                     }
                 } finally {
                     mgr.unlockOrders([gridOrderId]);
@@ -641,7 +643,6 @@ class SyncEngine {
                         const currentGridOrder = mgr.orders.get(gridOrder.id);
                         if (currentGridOrder && currentGridOrder.orderId === orderId) {
                             const updatedOrder = { ...currentGridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
-                            mgr.accountant.updateOptimisticFreeBalance(currentGridOrder, updatedOrder, 'cancelOrder');
                             mgr._updateOrder(updatedOrder);
                         }
                     } finally {
@@ -652,7 +653,7 @@ class SyncEngine {
             }
             case 'readOpenOrders':
             case 'periodicBlockchainFetch': {
-                return this.syncFromOpenOrders(chainData);
+                return this.syncFromOpenOrders(chainData, { skipAccounting: true });
             }
         }
         return { newOrders: [], ordersNeedingCorrection: [] };
