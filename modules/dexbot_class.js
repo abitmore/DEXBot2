@@ -161,6 +161,11 @@ class DEXBot {
              return;
          }
 
+         // Don't process fills during bootstrap phase
+         if (this.manager.isBootstrapping) {
+             return;
+         }
+
          try {
              // Non-blocking check: if lock already has waiters, don't add more
              // This prevents unbounded queue growth while still ensuring processing
@@ -1186,10 +1191,11 @@ class DEXBot {
              }
          }
 
-        // CRITICAL: Wrap entire startup grid initialization in fill processing lock to prevent TOCTOU races
-        // This protects cacheFunds restore, fill listener activation, and any fill processing during startup
-        // Fills arriving during listener activation are queued and processed serially after initialization completes
-        await this.manager._fillProcessingLock.acquire(async () => {
+        // CRITICAL: Set bootstrap flag to defer fill processing until startup completes
+        // This prevents TOCTOU races during cacheFunds restore, fill listener activation, and grid operations
+        // Fills arriving during startup are queued in _incomingFillQueue but not processed until isBootstrapping=false
+        this.manager.isBootstrapping = true;
+        try {
            const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
            const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
            const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
@@ -1445,7 +1451,11 @@ class DEXBot {
                this._warn(`Error checking spread condition at startup: ${err.message}`);
            }
 
-        });
+        } finally {
+            // CRITICAL: Mark bootstrap complete - allow fill processing to resume
+            this.manager.isBootstrapping = false;
+            this._log('Bootstrap phase complete - fill processing resumed', 'info');
+        }
         /**
          * Perform a full grid resync: cancel orphan orders and regenerate grid.
          * Triggered by the presence of a `recalculate.<botKey>.trigger` file.
