@@ -77,16 +77,19 @@ Available = 1000 - 0 - 0 = 1000 BTS   ← The 100 BTS is PART of the 1000
 ```javascript
 // In utils.js calculateAvailableFundsValue()
 const available = Math.max(0,
-    chainFree         // 1000 BTS
-    - virtual         // Funds reserved for new orders
-    - inFlight        // Funds committed but not yet confirmed
-    - btsFeesOwed     // Hard fees to pay
-    - btsFeesReservation  // Buffer for future fees
+    chainFree                // Unallocated funds on blockchain
+    - virtual                // Funds reserved for VIRTUAL orders (off-chain)
+    - btsFeesOwed            // Hard BTS fees to pay
+    - btsFeesReservation     // Buffer reserved for future order creation fees
     // NO cacheFunds subtraction!
 );
 ```
 
-CacheFunds is purely **reporting**—it tells you "of the ChainFree, this much came from fills"—but doesn't change the calculation.
+**Key Points:**
+- **ChainFree is already "optimistic"** — it accounts for pending orders and in-flight capital
+- **CacheFunds is purely reporting** — it tells you "of the ChainFree, this much came from fills"—but doesn't change the calculation
+- **Virtual** tracks VIRTUAL orders that haven't been placed on-chain yet
+- **No inFlight deduction** — in-flight capital is consolidated into the virtual tracking
 
 ---
 

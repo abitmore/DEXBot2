@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.4] - 2026-01-15 - Rotation Sizing Formula Fix
+
+### Fixed
+- **Rotation Sizing Formula** (commit 63cdb02)
+  - Reverted back to grid-difference formula: `gridDifference = idealSize - destinationSize`
+  - Previous "fund-neutral" formula incorrectly credited source order size against new order budget
+  - **Problem:** sourceSize credit breaks accounting when fill proceeds are already in available funds via cacheFunds
+  - **Impact:** Rotation sizing now correctly caps against actual available funds on the rebalance side
+  - **Formula:** `finalSize = destinationSize + min(gridDifference, remainingAvail)`
+  - **Key Insight:** Available funds already include fill proceeds, source order release is handled separately in fund accounting
+  - **Tests:** All 24+ rotation and fund accounting tests pass ✓
+
+### Updated Documentation
+- **docs/fund_movement_logic.md**
+  - Added new section "Rotation Sizing Formula" with mathematical explanation
+  - Documented the gridDifference formula and why it's correct
+  - Clarified relationship between available funds and rotation capital allocation
+  - Explained how fill accounting via cacheFunds integrates with rotation sizing
+
+---
+
 ## [0.6.0-patch.3] - 2026-01-15 - Rotation Logic & Fund Update Atomicity
 
 ### Fixed
@@ -17,11 +38,6 @@ All notable changes to this project will be documented in this file.
   - Added `isBootstrapping` guard to `_verifyFundInvariants()` to prevent false warnings during initial sync
   - Invariants now only checked once bootstrap phase completes (`mgr.isBootstrapping === false`)
   - **Impact:** Eliminates spurious warnings that mask actual issues
-
-- **Fund-Neutral Rotation Sizing** (commit 182c43c)
-  - Fixed rotation sizing formula to account for source order capital being released
-  - New formula: `netRequired = idealSize - (sourceSize + destinationSize)`
-  - **Impact:** Allows rotations to proceed even when liquid available funds are zero, using released source capital
 
 ### Added
 - **Fill Accounting Processing** (commit 182c43c)

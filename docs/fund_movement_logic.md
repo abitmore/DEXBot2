@@ -80,6 +80,29 @@ Order rotation in `dev` is fluid. Instead of a strict sliding window, it uses **
 
 This creates a "Contiguous Rail" where capital actively follows the price action even if the window hasn't shifted entirely.
 
+### Rotation Sizing Formula
+
+When a rotation occurs, the new order size is calculated using the **Grid Difference** formula:
+
+$$\text{gridDifference} = \max(0, \text{idealSize} - \text{destinationSize})$$
+
+$$\text{cappedIncrease} = \min(\text{gridDifference}, \text{remainingAvail})$$
+
+$$\text{finalSize} = \text{destinationSize} + \text{cappedIncrease}$$
+
+**Key Points:**
+- **destinationSize**: Any existing order size at the target slot (usually 0 for empty slots)
+- **idealSize**: The target size for this slot based on grid weighting
+- **remainingAvail**: Available funds remaining in the budget for this side
+- **gridDifference**: The actual capital increase needed to reach ideal size
+- **cappedIncrease**: The increase we can actually afford with available funds
+
+**Why this formula is correct:**
+- Available funds (`remainingAvail`) already include fill proceeds via `cacheFunds`
+- The source order's release from ACTIVE→VIRTUAL is handled separately through fund accounting
+- We cap rotation size against the full grid difference, not against source order size
+- This ensures capital allocation respects the actual available funds at rebalance time
+
 ---
 
 ## 4. Fund Accounting & Safety
@@ -150,7 +173,7 @@ The system uses a threshold (defined in `constants.js`) to distinguish between "
 - **Process**:
     1. The partial order is updated on-chain to **exactly** $SizeIdeal$ (the "extra" dust capital is released into `cacheFunds`).
     2. The side (Buy or Sell) is flagged as **Doubled** (`sideIsDoubled = true`).
-- **Benefit**: Unlike the previous "Double Order" strategy, the on-chain order size remains standard. This prevents the "Squeeze" effect where the divergence engine would fight against intentionally oversized orders.
+- **Benefit**: The side is flagged as "doubled" to allow additional rebalancing capacity. The on-chain order size remains standard, preventing inconsistencies between internal tracking and blockchain state.
 
 ### Double-Side State & Reactions
 The `sideIsDoubled` flag acts as a pending "bonus" for the opposite side's reaction logic:

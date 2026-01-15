@@ -383,7 +383,7 @@ Environment variables:
 - `CALC_CYCLES` - Number of calculation passes (default: 1)
 - `CALC_DELAY_MS` - Delay between cycles in milliseconds (default: 0)
 
-## 📚 Technical Details
+## 🔬 Technical Details
 
 For users interested in understanding the math and mechanics behind DEXBot's order generation and grid algorithms:
 

@@ -70,14 +70,14 @@ Follow this path through the codebase:
 | **Surplus** | Order outside the active window that can be rotated |
 | **Hard Surplus** | Order beyond the configured `activeOrders` count |
 | **Dust** | Partial order < 5% of ideal size |
-| **Double Order** | Merged order updated to ideal size; triggers double replacement on fills |
+| **Doubled Side** | Flag set when a dust partial is updated to ideal size; allows additional rebalancing actions on that side |
 
 ### Operations
 
 | Term | Meaning |
 |------|---------|
 | **Rotation** | Moving an order from one price level to another |
-| **Consolidation** | Merging dust partials and flagging the side for double replacement |
+| **Consolidation** | Updating dust partials to ideal size and flagging the side as "doubled" for additional rebalancing capacity |
 | **Rebalancing** | Adjusting order sizes based on current funds |
 | **Global Side Capping** | Scaling order sizes when insufficient funds |
 | **Atomic Check-and-Deduct** | Verify funds + deduct in single operation |
