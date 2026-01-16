@@ -464,7 +464,7 @@ Below is a short summary of the modules in this repository and what they provide
 
 ### 📍 Entry Points
 
-- `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, stop, reset, drystart) and management commands (keys, bots, --cli-examples). Includes full DEXBot2 class with grid management, fill processing, and account operations.
+- `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, drystart, reset, disable) and management commands (keys, bots, export, --cli-examples). Includes full DEXBot2 class with grid management, fill processing, and account operations. Export command generates CSV/JSON files for QTradeX backtesting.
 - `pm2.js`: Unified PM2 launcher. Orchestrates BitShares connection, PM2 check/install, ecosystem config generation from `profiles/bots.json`, master password authentication, and bot startup with automatic restart policies.
 - `bot.js`: PM2-friendly per-bot entry point. Loads bot config by name from `profiles/bots.json`, authenticates via master password (from environment or interactive prompt), initializes DEXBot instance, and runs the trading loop.
 
@@ -498,8 +498,7 @@ Core order generation, management, and grid algorithms:
 - `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers). Includes grid utility functions (filter, sum, precision handling, fee calculation), price correction utilities, and fill deduplication.
 - `modules/order/startup_reconcile.js`: Startup grid reconciliation and synchronization. Compares persisted grid state with on-chain open orders to detect offline fills, process pending state changes, and decide recovery strategy (reload vs. continue). Ensures grid state matches blockchain reality on startup before trading resumes.
 - `modules/order/format.js`: Numeric formatting utilities for consistent decimal precision display across logs and output.
-- `modules/order/fund_snapshot.js`: Fund snapshot system. Captures detailed immutable fund state and grid metrics at critical points for post-mortem analysis and anomaly detection.
-- `modules/order/fund_snapshot_persistence.js`: Persistence and analysis engine for fund snapshots. Handles JSONL-based streaming storage, disk loading, and automated auditing/reporting.
+- `modules/order/export.js`: QTradeX export module. Parses PM2 log files to extract trading fills and fees, generates CSV export compatible with QTradeX backtesting system, and exports sanitized bot settings (without private keys).
 
 ## 🔐 Environment Variables
 
