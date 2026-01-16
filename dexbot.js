@@ -52,7 +52,7 @@ function ensureProfilesDirectory() {
 }
 
 
-const CLI_COMMANDS = ['start', 'reset', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update'];
+const CLI_COMMANDS = ['start', 'reset', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export'];
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -63,7 +63,8 @@ const CLI_EXAMPLES = [
     { title: 'Manage keys', command: 'dexbot keys', notes: 'Runs modules/chain_keys.js to add or update master passwords.' },
     { title: 'Edit bot definitions', command: 'dexbot bots', notes: 'Launches the interactive modules/account_bots.js helper for the JSON config.' },
     { title: 'Start bots with PM2', command: 'dexbot pm2', notes: 'Generates ecosystem config, authenticates, and starts PM2.' },
-    { title: 'Update DEXBot2', command: 'node dexbot update', notes: 'Fetches latest code, updates dependencies, and reloads PM2.' }
+    { title: 'Update DEXBot2', command: 'node dexbot update', notes: 'Fetches latest code, updates dependencies, and reloads PM2.' },
+    { title: 'Export bot trades for QTradeX', command: 'dexbot export bot-name', notes: 'Exports trading history and settings to CSV/JSON for backtesting.' }
 ];
 const cliArgs = process.argv.slice(2);
 
@@ -77,6 +78,7 @@ function printCLIUsage() {
     console.log('  drystart <bot>    Same as start but forces dry-run execution.');
     console.log('  reset <bot>       Trigger a grid reset (auto-reloads if running, or applies on next start).');
     console.log('  disable <bot>     Mark the bot inactive in config.');
+    console.log('  export <bot>      Export bot trades and settings for QTradeX backtesting.');
     console.log('  keys              Launch the chain key helper (modules/chain_keys.js).');
     console.log('  bots              Launch the interactive bot configurator (modules/account_bots.js).');
     console.log('  pm2               Start all active bots with PM2 (authenticate + generate config + start).');
@@ -538,8 +540,62 @@ async function resetBotByName(botName) {
 }
 
 /**
+ * Export bot trading history and settings for QTradeX
+ * @param {string} botName - Bot name to export
+ */
+async function exportBotTrades(botName) {
+    if (!botName) {
+        console.error('Please specify a bot name: dexbot export <bot-name>');
+        process.exit(1);
+    }
+
+    try {
+        const { readBotsFileSync } = require('./modules/bots_file_lock');
+        const exporter = require('./modules/order/export');
+
+        // Load bots configuration
+        const botsData = readBotsFileSync();
+        const bot = botsData.bots.find(b => b.name === botName);
+
+        if (!bot) {
+            console.error(`Bot '${botName}' not found in profiles/bots.json`);
+            process.exit(1);
+        }
+
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`Exporting bot: ${botName}`);
+        console.log(`${'='.repeat(60)}\n`);
+
+        // Create bot key from bot name (lowercase, replace spaces with hyphens)
+        const botKey = botName.toLowerCase().replace(/\s+/g, '-');
+
+        // Export trades and settings
+        const result = await exporter.exportBotTrades(botKey, bot, './exports');
+
+        if (result.success) {
+            console.log(`\n${'='.repeat(60)}`);
+            console.log(`✓ Export successful!`);
+            console.log(`${'='.repeat(60)}`);
+            console.log(`Bot:              ${botName}`);
+            console.log(`Trades exported:  ${result.trades_exported}`);
+            console.log(`CSV file:         ${result.csv_path}`);
+            console.log(`Settings file:    ${result.settings_path}`);
+            console.log(`Output directory: ${result.output_dir}`);
+            console.log(`Timestamp:        ${result.timestamp}`);
+            console.log(`\nYou can now use these files with QTradeX for backtesting.\n`);
+        } else {
+            console.error(`\n✗ Export failed: ${result.error || 'Unknown error'}\n`);
+            process.exit(1);
+        }
+    } catch (err) {
+        console.error(`\nExport error: ${err.message}\n`);
+        process.exit(1);
+    }
+}
+
+/**
  * Parse and execute CLI commands.
- * Supported commands: start, drystart, reset, stop, keys, bots
+ * Supported commands: start, drystart, reset, stop, keys, bots, export
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -594,6 +650,11 @@ async function handleCLICommands() {
         case 'update':
             setSuppressConnectionLog(true);
             require('./scripts/update.js');
+            return true;
+        case 'export':
+            setSuppressConnectionLog(true);
+            await exportBotTrades(target);
+            process.exit(0);
             return true;
         default:
             printCLIUsage();
