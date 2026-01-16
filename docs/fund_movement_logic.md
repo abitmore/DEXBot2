@@ -172,27 +172,28 @@ The system uses a threshold (defined in `constants.js`) to distinguish between "
 - **Trigger**: When a slot is assigned an $SizeIdeal$ but already contains a `PARTIAL` dust order.
 - **Process**:
     1. The partial order is updated on-chain to **exactly** $SizeIdeal$ (the "extra" dust capital is released into `cacheFunds`).
-    2. The side (Buy or Sell) is flagged as **Doubled** (`sideIsDoubled = true`).
+    2. The side (Buy or Sell) is flagged as **Doubled** (`buySideIsDoubled = true` or `sellSideIsDoubled = true`).
 - **Benefit**: The side is flagged as "doubled" to allow additional rebalancing capacity. The on-chain order size remains standard, preventing inconsistencies between internal tracking and blockchain state.
 
 ### Double-Side State & Reactions
-The `sideIsDoubled` flag acts as a pending "bonus" for the opposite side's reaction logic:
-- **State Reset**: The flag is reset immediately after the *first* fill (partial or full) occurs on that side.
-- **Partial Fill**: Triggers **one** replacement order on the opposite side (normal behavior).
-- **Full Fill**: Triggers **two** replacement orders on the opposite side (the "Double Replacement").
-    - One replacement represents the filled order itself.
-    - The second replacement utilizes the "released" dust capital from the earlier merge.
+The `buySideIsDoubled` and `sellSideIsDoubled` flags act as pending "bonuses" for the opposite side's reaction logic:
+- **State Reset**: The flag is reset immediately after ANY fill (partial or full) occurs on that side.
+- **Partial Fill**: Simply resets the doubled flag. Does **not** trigger additional replacement orders on the opposite side.
+- **Full Fill**: Triggers the "Double Replacement" mechanism on the opposite side:
+    - The opposite side receives a reaction cap of **2** (instead of 1), allowing up to 2 placement or rotation actions in the same rebalance cycle
+    - One action represents the normal fill replacement
+    - The second action utilizes the "released" dust capital from the earlier merge
 
 ### Split Logic (Substantial Partials)
 If a partial order is **not** dust (significant capital), the system "Splits" it:
-- **Trigger**: Usually after a grid recalculation where a slot's ideal size decreases.
-- **Process**: 
-    1. The on-chain order is resized down to $SizeIdeal$.
-    2. The "overflow" capital is placed as a **new order** at the spread or the next available slot.
-- **Result**: This anchors the fill in its current position while allowing the excess capital to continue working elsewhere.
+- **Trigger**: During active rebalance operations (STEP 2.5) when a partial order's ideal size is recalculated.
+- **Process**:
+    1. The on-chain partial order is resized to $SizeIdeal$.
+    2. The "overflow" capital from the original partial is placed as a **new replacement order** at the adjacent slot (next price level away from market).
+- **Result**: This keeps the original fill anchored at its current position while allowing the excess capital to continue working at a new price level.
 
 ### Dual-Side Dust Consolidation
-A unique safeguard in `processFilledOrders` triggers a mandatory rebalance if dust exists on both sides simultaneously. The strategy will prioritize canceling the dust on both sides to consolidate it into target-sized orders, ensuring capital doesn't remain fragmented in tiny remnants.
+A unique safeguard in `processFilledOrders` triggers a mandatory rebalance **only if dust exists on BOTH sides simultaneously** (not either/or). This prevents unnecessary churn while ensuring capital doesn't remain fragmented across both sides. When triggered, the strategy prioritizes consolidating dust partials on both sides into target-sized orders.
 
 ### Moving Partial Orders
 During rotations, a `PARTIAL` order can be moved to a new slot:
