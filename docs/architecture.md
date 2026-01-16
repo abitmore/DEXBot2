@@ -516,7 +516,6 @@ DEXBot2 employs a comprehensive testing strategy to ensure reliability and preve
 graph LR
     A["Unit Tests<br/>(tests/unit/)"]
     B["Integration Tests<br/>(tests/)"]
-    C["Fund Snapshot<br/>Auditing"]
 
     A -->|Manager, State Machine| A1["manager.test.js"]
     A -->|Fund Tracking| A2["accounting.test.js"]
@@ -527,10 +526,6 @@ graph LR
     B -->|Multi-step Scenarios| B1["Integration Tests"]
     B -->|Edge Cases| B2["Partial Order Tests"]
     B -->|Real-world Scenarios| B3["Fund Cycling Tests"]
-
-    C -->|Automatic Capture| C1["fund_snapshot.js"]
-    C -->|Analysis Tools| C2["analyze_fund_snapshots.js"]
-    C -->|Anomaly Detection| C3["Invariant Verification"]
 ```
 
 ### Test Suite Summary
@@ -616,34 +611,6 @@ npx jest --watch tests/unit/
 - Enhanced accounting tests with fee validation
 - Added fund precision and delta tests
 
-### Continuous Auditing: Fund Snapshots
-
-The system includes an automatic fund snapshot system that captures fund state during execution:
-
-```bash
-# Enable snapshots (debug mode)
-"logLevel": "debug"  // in profiles/bots.json
-
-# Analyze snapshots
-node scripts/analyze_fund_snapshots.js --bot=botname
-
-# Detect anomalies
-node scripts/analyze_fund_snapshots.js --bot=botname | grep "Anomalies"
-
-# Export for analysis
-node scripts/analyze_fund_snapshots.js --bot=botname --export
-```
-
-**What Snapshots Capture:**
-- Timestamp and event type
-- All 8 fund pools (virtual, committed, available, cache, etc.)
-- Account totals (on-chain balances)
-- Grid state (order counts, boundary index)
-- Invariant violations (if any)
-- Event context (orderId, size, fee, etc.)
-
-For details, see [SNAPSHOT_QUICK_REFERENCE.md](SNAPSHOT_QUICK_REFERENCE.md).
-
 ### Testing Best Practices
 
 **For Developers:**
@@ -666,9 +633,9 @@ For details, see [SNAPSHOT_QUICK_REFERENCE.md](SNAPSHOT_QUICK_REFERENCE.md).
 
 4. **Use debug mode for problematic scenarios**
    ```javascript
-   manager.logger.level = 'debug';  // Enable snapshots
+   manager.logger.level = 'debug';  // Enable detailed logging
    // ... run scenario ...
-   // Analyze with: node scripts/analyze_fund_snapshots.js
+   // Check console output for detailed fund tracking
    ```
 
 ### Test Documentation References

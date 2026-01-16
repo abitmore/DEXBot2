@@ -348,7 +348,6 @@ When actual fees are charged on-chain, they are tracked in `btsFeesOwed`. During
 ### Reference Documentation
 - **[architecture.md](architecture.md)** - System architecture and testing strategy
 - **[developer_guide.md](developer_guide.md)** - Complete developer guide with fund examples
-- **[FUND_SNAPSHOT_GUIDE.md](FUND_SNAPSHOT_GUIDE.md)** - Fund snapshot history and debugging
 
 ---
 

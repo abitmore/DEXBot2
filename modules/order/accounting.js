@@ -226,7 +226,7 @@ class Accountant {
     /**
      * Update optimistic balance during transitions.
      * CRITICAL: Use isActive state (ACTIVE/PARTIAL) to determine COMMITMENT, NOT orderId.
-     * Using orderId for commitment causes double-deduction when an in-flight order receives its ID.
+     * Using orderId for commitment causes double-deduction when an order is placed on-chain (receives orderId).
      *
      * HOWEVER: Fee deduction MUST use orderId check to prevent double-deduction.
      * Fees should only be charged when order is PLACED on-chain (receives orderId).

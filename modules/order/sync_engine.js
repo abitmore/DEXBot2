@@ -284,7 +284,6 @@ class SyncEngine {
                             updatedOrder.state = ORDER_STATES.PARTIAL;
                         }
                     } else {
-                        // Snapshot capture moved to fund_snapshot_persistence module
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         mgr._updateOrder(spreadOrder, 0, options);
                         filledOrders.push(spreadOrder);
@@ -452,7 +451,6 @@ class SyncEngine {
                 const filledOrders = [];
                 const updatedOrders = [];
                 if (newSizeInt <= 0) {
-                    // Snapshot capture moved to fund_snapshot_persistence module
                     const filledOrder = {
                         ...matchedGridOrder,
                         blockNum: blockNum,
@@ -568,8 +566,6 @@ class SyncEngine {
                 try {
                     const gridOrder = mgr.orders.get(gridOrderId);
                     if (gridOrder) {
-                        // Snapshot capture moved to fund_snapshot_persistence module
-
                         // Check if this chain order already exists on grid (rotation case)
                         // If so, fee was already paid when original order was placed - don't deduct again
                         // CRITICAL: Look for ANY order with this orderId, even if it's been transitioned to VIRTUAL
