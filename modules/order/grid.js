@@ -606,19 +606,23 @@ class Grid {
      */
     static checkAndUpdateGridIfNeeded(manager, cacheFunds = { buy: 0, sell: 0 }) {
         const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 1;
-        const snap = Grid._getFundSnapshot(manager);
+        const chainSnap = manager.getChainFundsSnapshot();
+        const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
+        const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
+        const cacheBuy = Number(manager.funds?.cacheFunds?.buy || 0);
+        const cacheSell = Number(manager.funds?.cacheFunds?.sell || 0);
         const result = { buyUpdated: false, sellUpdated: false };
 
         const sides = [
-            { name: 'buy', grid: snap.gridBuy, cache: cacheFunds.buy || snap.cacheBuy, orderType: ORDER_TYPES.BUY },
-            { name: 'sell', grid: snap.gridSell, cache: cacheFunds.sell || snap.cacheSell, orderType: ORDER_TYPES.SELL }
+            { name: 'buy', grid: gridBuy, cache: cacheFunds.buy || cacheBuy, orderType: ORDER_TYPES.BUY },
+            { name: 'sell', grid: gridSell, cache: cacheFunds.sell || cacheSell, orderType: ORDER_TYPES.SELL }
         ];
 
         for (const s of sides) {
             if (s.grid <= 0) continue;
             const avail = calculateAvailableFundsValue(s.name, manager.accountTotals, manager.funds, manager.config.assetA, manager.config.assetB, manager.config.activeOrders);
             const totalPending = avail;
-            const allocated = s.name === 'buy' ? snap.allocatedBuy : snap.allocatedSell;
+            const allocated = s.name === 'buy' ? chainSnap.allocatedBuy : chainSnap.allocatedSell;
             const denominator = (allocated > 0) ? allocated : (s.grid + totalPending);
             const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
 
@@ -1146,16 +1150,6 @@ class Grid {
         });
     }
 
-    /**
-     * Get a snapshot of current funds including grid and cache.
-     * @param {OrderManager} manager - The manager instance.
-     * @returns {Object} Fund snapshot.
-     * @private
-     */
-    static _getFundSnapshot(manager) {
-        const snap = manager.getChainFundsSnapshot();
-        return { ...snap, gridBuy: Number(manager.funds?.total?.grid?.buy || 0), gridSell: Number(manager.funds?.total?.grid?.sell || 0), cacheBuy: Number(manager.funds?.cacheFunds?.buy || 0), cacheSell: Number(manager.funds?.cacheFunds?.sell || 0) };
-    }
 }
 
 module.exports = Grid;
