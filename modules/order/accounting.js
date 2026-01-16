@@ -272,27 +272,56 @@ class Accountant {
 
     /**
      * Deduct BTS fees using adjustTotalBalance.
+     *
+     * Strategy: Accumulate fees in btsFeesOwed, then settle when sufficient funds available.
+     * - Fees are part of chainFree (not separate capital)
+     * - Full fee amount must reduce chainFree
+     * - Cache is drawn down first, then base capital
+     * - Defers settlement if insufficient funds (will retry when funds become available)
      */
     async deductBtsFees(requestedSide = null) {
         const mgr = this.manager;
-        if (!mgr.funds.btsFeesOwed || mgr.funds.btsFeesOwed <= 0) return;
+
+        // Early returns for no work needed
+        if (!mgr.funds || !mgr.funds.btsFeesOwed || mgr.funds.btsFeesOwed <= 0) return;
+        if (!mgr.accountTotals) return;
 
         const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
         const side = requestedSide || btsSide;
 
-        if (side && mgr.funds.btsFeesOwed > 0) {
-            const fees = mgr.funds.btsFeesOwed;
-            const cache = mgr.funds.cacheFunds?.[side] || 0;
-            const cacheDeduction = Math.min(fees, cache);
-            const chainDeduction = fees - cacheDeduction;
+        if (!side) return;
 
-            if (cacheDeduction > 0) await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
-            if (chainDeduction > 0) {
-                const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-                this.adjustTotalBalance(orderType, -chainDeduction, 'bts-fee-settlement');
+        const fees = mgr.funds.btsFeesOwed;
+        const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+        const freeKey = (side === 'buy') ? 'buyFree' : 'sellFree';
+        const chainFree = mgr.accountTotals[freeKey] || 0;
+
+        // SUFFICIENCY CHECK: Defer if insufficient funds
+        if (chainFree < fees) {
+            if (mgr.logger && mgr.logger.level === 'debug') {
+                mgr.logger.log(`[BTS-FEE] Deferring settlement: need ${Format.formatAmount8(fees)}, have ${Format.formatAmount8(chainFree)}`, 'debug');
             }
-            mgr.funds.btsFeesOwed = 0;
+            return;
         }
+
+        // SETTLEMENT: Deduct from cache first, then base capital
+        const cache = mgr.funds.cacheFunds?.[side] || 0;
+        const cacheDeduction = Math.min(fees, cache);
+
+        if (cacheDeduction > 0) {
+            await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
+        }
+
+        // FULL DEDUCTION from chainFree (cache is part of chainFree, so always deduct full amount)
+        this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
+
+        if (mgr.logger && mgr.logger.level === 'debug') {
+            const baseCapitalDeduction = fees - cacheDeduction;
+            mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS (${Format.formatAmount8(cacheDeduction)} from cache, ${Format.formatAmount8(baseCapitalDeduction)} from base capital)`, 'debug');
+        }
+
+        // Reset fees after successful settlement
+        mgr.funds.btsFeesOwed = 0;
     }
 
     async modifyCacheFunds(side, delta, operation = 'update') {

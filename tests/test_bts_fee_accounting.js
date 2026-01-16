@@ -100,8 +100,144 @@ async function testFeeAccounting() {
     }
 }
 
-testFeeAccounting().catch(err => {
-    console.error('Test failed!');
-    console.error(err);
-    process.exit(1);
-});
+async function testFeeSettlementCorrectness() {
+    console.log('\nTesting Fee Settlement Correctness (Bug Fix)...');
+
+    const manager = new OrderManager({
+        assetA: 'BTS',
+        assetB: 'USD',
+        startPrice: 1.0,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 5, sell: 5 },
+        incrementPercent: 1
+    });
+
+    manager.assets = {
+        assetA: { id: '1.3.0', symbol: 'BTS', precision: 5 },
+        assetB: { id: '1.3.121', symbol: 'USD', precision: 5 }
+    };
+
+    manager.setAccountTotals({
+        buy: 1000,
+        sell: 1000,
+        buyFree: 1000,
+        sellFree: 1000
+    });
+
+    // Initialize funds
+    manager.funds.cacheFunds = { buy: 0, sell: 0 };
+    manager.funds.btsFeesOwed = 0;
+
+    // THE BUG SCENARIO:
+    // Setup: 50 BTS owed, 30 in cache, 1000 chainFree
+    // OLD (WRONG): chainFree reduced by (50-30) = 20 BTS
+    // NEW (CORRECT): chainFree reduced by full 50 BTS
+    const feesOwed = 50;
+    const cacheAmount = 30;
+    const baseCapitalBefore = manager.accountTotals.sellFree;
+
+    manager.funds.btsFeesOwed = feesOwed;
+    manager.funds.cacheFunds.sell = cacheAmount;
+
+    console.log(`  Setup: ${feesOwed} BTS owed, ${cacheAmount} in cache, ${baseCapitalBefore} base capital`);
+
+    // Execute settlement
+    await manager.accountant.deductBtsFees('sell');
+
+    const baseCapitalAfter = manager.accountTotals.sellFree;
+    const baseCapitalReduction = baseCapitalBefore - baseCapitalAfter;
+    const cacheAfter = manager.funds.cacheFunds.sell;
+
+    console.log(`  Result: Cache ${cacheAmount} → ${cacheAfter}, Base capital reduced by ${baseCapitalReduction}`);
+
+    // Verify the fix
+    const expectedCacheReduction = cacheAmount;
+    const expectedBaseCapitalReduction = feesOwed; // FULL amount, not remainder
+
+    const cacheCorrect = (cacheAfter === 0);
+    const baseCapitalCorrect = (baseCapitalReduction === expectedBaseCapitalReduction);
+    const feesReset = (manager.funds.btsFeesOwed === 0);
+
+    if (cacheCorrect && baseCapitalCorrect && feesReset) {
+        console.log(`  ✓ Fee settlement is CORRECT:`);
+        console.log(`    - Cache reduced by: ${cacheAmount} (expected: ${expectedCacheReduction})`);
+        console.log(`    - Base capital reduced by: ${baseCapitalReduction} (expected: ${expectedBaseCapitalReduction})`);
+        console.log(`    - Fees reset: ${manager.funds.btsFeesOwed === 0}`);
+    } else {
+        console.warn(`  ✗ Fee settlement is INCORRECT:`);
+        if (!cacheCorrect) {
+            console.warn(`    - Cache issue: ${cacheAfter} (expected: 0)`);
+        }
+        if (!baseCapitalCorrect) {
+            console.warn(`    - Base capital reduction: ${baseCapitalReduction} (expected: ${expectedBaseCapitalReduction}) - BUG STILL PRESENT!`);
+        }
+        if (!feesReset) {
+            console.warn(`    - Fees not reset: ${manager.funds.btsFeesOwed} (expected: 0)`);
+        }
+        throw new Error('Fee settlement correctness test failed');
+    }
+}
+
+async function testInsufficientFundsDeferral() {
+    console.log('\nTesting Insufficient Funds Deferral...');
+
+    const manager = new OrderManager({
+        assetA: 'BTS',
+        assetB: 'USD',
+        startPrice: 1.0,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 5, sell: 5 },
+        incrementPercent: 1
+    });
+
+    manager.assets = {
+        assetA: { id: '1.3.0', symbol: 'BTS', precision: 5 },
+        assetB: { id: '1.3.121', symbol: 'USD', precision: 5 }
+    };
+
+    // Setup: 50 BTS owed, 30 in cache, but only 40 chainFree
+    manager.setAccountTotals({
+        buy: 1000,
+        sell: 40,  // Less than fees owed (50)
+        buyFree: 1000,
+        sellFree: 40
+    });
+
+    manager.funds.cacheFunds = { buy: 0, sell: 30 };
+    manager.funds.btsFeesOwed = 50;
+
+    const sellFreeBefore = manager.accountTotals.sellFree;
+    const cacheBeforeBefore = manager.funds.cacheFunds.sell;
+
+    console.log(`  Setup: 50 BTS owed, 30 in cache, 40 chainFree (insufficient)`);
+
+    // Attempt settlement
+    await manager.accountant.deductBtsFees('sell');
+
+    // Verify deferral
+    const deferred = (manager.funds.btsFeesOwed === 50) &&
+                     (manager.accountTotals.sellFree === sellFreeBefore) &&
+                     (manager.funds.cacheFunds.sell === cacheBeforeBefore);
+
+    if (deferred) {
+        console.log(`  ✓ Settlement correctly deferred (fees still owed, cache untouched)`);
+    } else {
+        console.warn(`  ✗ Settlement was not deferred correctly`);
+        throw new Error('Insufficient funds deferral test failed');
+    }
+}
+
+async function runAllTests() {
+    try {
+        await testFeeAccounting();
+        await testFeeSettlementCorrectness();
+        await testInsufficientFundsDeferral();
+        console.log('\n✓ All tests passed!');
+    } catch (err) {
+        console.error('\n✗ Tests failed!');
+        console.error(err);
+        process.exit(1);
+    }
+}
+
+runAllTests();

@@ -645,4 +645,124 @@ describe('Accountant - Fund Tracking', () => {
              expect(manager.funds.total.chain.sell).toBeGreaterThan(0);
          });
      });
+
+     describe('BTS Fee Invariants', () => {
+         beforeEach(() => {
+             // Setup for fee tests
+             manager.setAccountTotals({
+                 buy: 10000,
+                 sell: 1000,
+                 buyFree: 10000,
+                 sellFree: 1000
+             });
+             manager.funds.cacheFunds = { buy: 0, sell: 0 };
+             manager.funds.btsFeesOwed = 0;
+         });
+
+         it('should maintain cacheFunds <= chainFree after settlement', async () => {
+             // Setup: Some cache funds and fees
+             manager.funds.cacheFunds.sell = 200;
+             manager.funds.btsFeesOwed = 150;
+
+             // Execute settlement
+             await manager.accountant.deductBtsFees('sell');
+
+             // Verify invariant: cache <= chainFree
+             const cache = manager.funds.cacheFunds.sell;
+             const chainFree = manager.accountTotals.sellFree;
+
+             expect(cache).toBeLessThanOrEqual(chainFree + 0.00001);
+         });
+
+         it('should maintain chainTotal = chainFree + chainCommitted after settlement', async () => {
+             // Create some orders to have committed capital
+             manager.pauseFundRecalc();
+
+             manager._updateOrder({
+                 id: 'order-1',
+                 state: ORDER_STATES.ACTIVE,
+                 type: ORDER_TYPES.SELL,
+                 size: 100,
+                 price: 1.0,
+                 orderId: 'chain-001'
+             });
+
+             manager.resumeFundRecalc();
+
+             // Setup fees
+             manager.funds.cacheFunds.sell = 100;
+             manager.funds.btsFeesOwed = 150;
+
+             const chainTotalBefore = manager.funds.total.chain.sell;
+
+             // Execute settlement
+             await manager.accountant.deductBtsFees('sell');
+
+             const chainFreeAfter = manager.accountTotals.sellFree;
+             const chainCommittedAfter = manager.funds.committed.chain.sell;
+             const chainTotalAfter = manager.funds.total.chain.sell;
+
+             // Invariant: chainTotal = chainFree + chainCommitted
+             const calculatedTotal = chainFreeAfter + chainCommittedAfter;
+             expect(Math.abs(chainTotalAfter - calculatedTotal)).toBeLessThan(0.01);
+
+             // Also verify total was reduced by fee amount
+             expect(chainTotalBefore - chainTotalAfter).toBe(150);
+         });
+
+         it('should correctly deduct full fees from chainFree (bug fix)', async () => {
+             // This is the critical bug fix test
+             // Setup: 50 BTS owed, 30 in cache, 1000 chainFree
+             // OLD: chainFree reduced by (50-30) = 20 BTS
+             // NEW: chainFree reduced by full 50 BTS
+             manager.funds.btsFeesOwed = 50;
+             manager.funds.cacheFunds.sell = 30;
+             manager.setAccountTotals({
+                 buy: 10000,
+                 sell: 1000,
+                 buyFree: 10000,
+                 sellFree: 1000
+             });
+
+             const chainFreeBefore = manager.accountTotals.sellFree;
+
+             await manager.accountant.deductBtsFees('sell');
+
+             const chainFreeAfter = manager.accountTotals.sellFree;
+             const chainFreeReduction = chainFreeBefore - chainFreeAfter;
+
+             // CRITICAL: Full fee amount must reduce chainFree
+             expect(chainFreeReduction).toBe(50);
+             expect(manager.funds.cacheFunds.sell).toBe(0);
+             expect(manager.funds.btsFeesOwed).toBe(0);
+         });
+
+         it('should defer settlement and preserve invariants when insufficient funds', async () => {
+             // Setup: 50 BTS owed, 30 in cache, but only 40 chainFree
+             manager.funds.btsFeesOwed = 50;
+             manager.funds.cacheFunds.sell = 30;
+             manager.setAccountTotals({
+                 buy: 10000,
+                 sell: 40,  // Insufficient
+                 buyFree: 10000,
+                 sellFree: 40
+             });
+
+             const chainFreeBefore = manager.accountTotals.sellFree;
+             const cacheBefore = manager.funds.cacheFunds.sell;
+
+             // Attempt settlement
+             await manager.accountant.deductBtsFees('sell');
+
+             // Should be deferred - no changes
+             expect(manager.accountTotals.sellFree).toBe(chainFreeBefore);
+             expect(manager.funds.cacheFunds.sell).toBe(cacheBefore);
+             expect(manager.funds.btsFeesOwed).toBe(50);
+
+             // Invariants should still hold
+             const cache = manager.funds.cacheFunds.sell;
+             const chainFree = manager.accountTotals.sellFree;
+             expect(cache).toBeLessThanOrEqual(chainFree + 0.00001);
+         });
+     });
  });
