@@ -1,37 +1,61 @@
 /**
  * Logger - Color-coded console logger for OrderManager
- * 
+ *
  * Provides structured logging with:
  * - Log levels: debug, info, warn, error
  * - Color coding for order types (buy=green, sell=red, spread=yellow)
  * - Color coding for order states (virtual=gray, active=green)
  * - Formatted order grid display
- * - Fund status display (logFundsStatus)
- * 
- * Fund display (logFundsStatus) shows:
+ * - Fund status display with change detection
+ * - Configuration-driven output (enable/disable categories)
+ *
+ * Configuration (LOGGING_CONFIG in constants.js):
+ * - changeTracking: Smart detection of changes (only log what changed)
+ * - categories: Enable/disable specific log categories (fundChanges, orderStateChanges, etc.)
+ * - display: Control optional displays (gridDiagnostics, fundStatus, statusSummary)
+ *
+ * Fund display shows:
  * - available: max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
- * - cacheFunds: fill proceeds and rotation surplus (added to available for rebalancing decisions)
+ * - cacheFunds: fill proceeds and rotation surplus
  * - total.chain: chainFree + committed.chain (on-chain balance)
  * - total.grid: committed.grid + virtual (grid allocation)
  * - virtual: VIRTUAL order sizes (reserved for future placement)
  * - committed.grid: ACTIVE order sizes (internal tracking)
  * - committed.chain: ACTIVE orders with orderId (confirmed on-chain)
- * 
+ *
  * @class
  */
 
 const Format = require('./format');
+const LoggerState = require('./logger_state');
+const { LOGGING_CONFIG } = require('../constants');
 
 class Logger {
     /**
      * Create a new Logger instance.
      * @param {string} level - Minimum log level to display ('debug', 'info', 'warn', 'error')
+     * @param {Object} configOverride - Optional config override (uses LOGGING_CONFIG from constants if not provided)
      */
-    constructor(level = 'info') {
+    constructor(level = 'info', configOverride = null) {
         this.levels = { debug: 0, info: 1, warn: 2, error: 3 };
         this.level = level;
+
+        // Load configuration (with override support)
+        this.config = configOverride || LOGGING_CONFIG;
+
+        // Initialize change tracking
+        this.state = new LoggerState();
+
         // Only use colors if stdout is a TTY (terminal), not when piped to files
-        const useColors = process.stdout.isTTY;
+        // Can be overridden via config
+        let useColors = process.stdout.isTTY;
+        if (this.config.display.colors.enabled === false) {
+            useColors = false;
+        } else if (this.config.display.colors.enabled === true) {
+            useColors = true;
+        }
+        // else: use auto-detection (current behavior)
+
         this.colors = useColors ? {
             reset: '\x1b[0m',
             buy: '\x1b[32m', sell: '\x1b[31m', spread: '\x1b[33m',
@@ -42,6 +66,8 @@ class Logger {
             debug: '', info: '', warn: '', error: '',
             virtual: '', active: '', partial: ''
         };
+
+        this.marketName = null;
     }
 
     /**
@@ -140,15 +166,13 @@ class Logger {
      * Print a summary of fund status for diagnostics with optional context.
      *
      * BEHAVIOR:
-     * - Always shows: Simple one-liner with available buy/sell
-     * - In debug + critical events: Shows detailed breakdown
+     * - Respects config setting: display.fundStatus.enabled
+     * - Uses change detection: only logs if funds changed
+     * - In debug + critical events: Can show detailed breakdown (if config enabled)
      *
      * Critical events (trigger detailed output):
      * - 'order_filled', 'order_created', 'anomaly', 'violation'
      * - Explicit detailed flag
-     *
-     * Routine operations (simple output only):
-     * - Recalculation, rebalancing, grid checks
      *
      * @param {OrderManager} manager - OrderManager instance to read funds from
      * @param {string} context - Optional context string (e.g., "AFTER fill", "BEFORE rotation")
@@ -157,22 +181,22 @@ class Logger {
     logFundsStatus(manager, context = '', forceDetailed = false) {
         if (!manager) return;
 
-        const isDebugMode = manager.logger?.level === 'debug';
+        // Check if fund logging is enabled in config
+        if (!this.config.display.fundStatus.enabled && !forceDetailed) return;
+
+        const isDebugMode = this.level === 'debug';
         const buyName = manager.config?.assetB || 'quote';
         const sellName = manager.config?.assetA || 'base';
         const headerContext = context ? ` [${context}]` : '';
 
-         // Available funds
-         const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
-         const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
-
-        const c = this.colors;
-        const buy = c.buy;
-        const sell = c.sell;
-        const reset = c.reset;
-
-        // ALWAYS show simple one-liner
-        this.log(`Funds${headerContext}: ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`, 'info');
+        // Extract fund state for change detection
+        const fundState = {
+            availableBuy: manager.funds?.available?.buy,
+            availableSell: manager.funds?.available?.sell,
+            cacheFundsBuy: manager.funds?.cacheFunds?.buy,
+            cacheFundsSell: manager.funds?.cacheFunds?.sell,
+            btsFeesOwed: manager.funds?.btsFeesOwed
+        };
 
         // Check if this is a critical event requiring detailed output
         const isCriticalEvent = forceDetailed ||
@@ -183,8 +207,30 @@ class Logger {
             context.includes('violation') ||
             context.includes('ERROR');
 
+        // Use change detection: only log if funds changed
+        if (this.config.changeTracking.enabled) {
+            const { isNew, changes } = this.state.detectChanges('funds', fundState);
+
+            // Skip if not critical and no changes
+            if (!isNew && !Object.keys(changes).length && !isCriticalEvent) {
+                return;
+            }
+        }
+
+        // Available funds
+        const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
+        const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
+
+        const c = this.colors;
+        const buy = c.buy;
+        const sell = c.sell;
+        const reset = c.reset;
+
+        // Show simple one-liner (if enabled or forced)
+        this.log(`Funds${headerContext}: ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`, 'info');
+
         // Only show detailed breakdown in debug mode on critical events
-        if (isDebugMode && isCriticalEvent) {
+        if (isDebugMode && isCriticalEvent && this.config.display.fundStatus.showDetailed) {
             this._logDetailedFunds(manager, headerContext);
         }
     }
@@ -260,10 +306,16 @@ class Logger {
 
     /**
      * Print a comprehensive status summary using manager state.
+     * Respects config: display.statusSummary.enabled
+     *
      * @param {OrderManager} manager - The manager instance.
+     * @param {boolean} forceOutput - Force output even if disabled in config
      */
-    displayStatus(manager) {
+    displayStatus(manager, forceOutput = false) {
         if (!manager) return;
+
+        // Check if status summary is enabled (unless forced)
+        if (!this.config.display.statusSummary.enabled && !forceOutput) return;
         const market = manager.marketName || manager.config?.market || 'unknown';
         const activeOrders = manager.getOrdersByTypeAndState(null, 'active');
         const partialOrders = manager.getOrdersByTypeAndState(null, 'partial');
@@ -313,9 +365,15 @@ class Logger {
     /**
      * Log detailed grid diagnostic: ACTIVE, SPREAD, PARTIAL orders and first VIRTUAL on boundary
      * Used to trace grid mutations during fill/rotation/spread-correction cycles
+     *
+     * Respects config: display.gridDiagnostics.enabled
+     * Can be called explicitly even if disabled (for on-demand diagnostics)
      */
-    logGridDiagnostics(manager, context = '') {
+    logGridDiagnostics(manager, context = '', forceOutput = false) {
         if (!manager) return;
+
+        // Check if grid diagnostics is enabled (unless forced)
+        if (!this.config.display.gridDiagnostics.enabled && !forceOutput) return;
 
         const { ORDER_TYPES, ORDER_STATES } = require('../constants');
         const c = this.colors;
@@ -388,82 +446,22 @@ class Logger {
     }
 
     /**
-     * Capture and log a fund snapshot at critical points in the trading cycle.
-     * This is lightweight and should be called frequently for comprehensive history.
+     * Deprecated: Snapshot capture is now handled by fund_snapshot_persistence module
+     * This method is kept for backward compatibility but is a no-op.
      *
-     * @param {OrderManager} manager - OrderManager instance
-     * @param {string} eventType - Type of event ('fill_detected', 'order_created', 'recalc', etc.)
-     * @param {string|null} eventId - ID of the triggering event (orderId, fillId, etc.)
-     * @param {Object} extraContext - Additional context to include in snapshot
-     * @returns {FundSnapshot} The captured snapshot
+     * The fund_snapshot module handles all snapshot capture and persistence.
+     * The logger focuses on: what to log, how to filter redundancy, change detection.
+     * The fund_snapshot focuses on: persisting fund state at critical points.
+     *
+     * @deprecated Use fund_snapshot.js and fund_snapshot_persistence.js instead
+     * @returns {null}
      */
     captureSnapshot(manager, eventType, eventId = null, extraContext = {}) {
-        try {
-            const { FundSnapshot } = require('./fund_snapshot');
-            const snapshot = FundSnapshot.capture(manager, eventType, eventId, extraContext);
-
-            // Add to manager's history if it exists
-            if (manager._snapshotHistory) {
-                manager._snapshotHistory.add(snapshot);
-            }
-
-            return snapshot;
-        } catch (err) {
-            this.log(`Warning: Failed to capture fund snapshot: ${err.message}`, 'warn');
-            return null;
-        }
+        // This is now a no-op. Fund snapshot capture is handled separately.
+        // Keeping this method for backward compatibility only.
+        return null;
     }
 
-    /**
-     * Log a fund snapshot with optional detail level.
-     * @param {FundSnapshot} snapshot - The snapshot to log.
-     * @param {boolean} [detailed=false] - Whether to show detailed info.
-     */
-    logSnapshot(snapshot, detailed = false) {
-        if (!snapshot) return;
-        console.log(snapshot.toString(detailed));
-    }
-
-    /**
-     * Log a detailed comparison between two snapshots.
-     * @param {FundSnapshot} snapshot1 - The first snapshot.
-     * @param {FundSnapshot} snapshot2 - The second snapshot.
-     */
-    logSnapshotComparison(snapshot1, snapshot2) {
-        if (!snapshot1 || !snapshot2) return;
-
-        const { FundSnapshotHistory } = require('./fund_snapshot');
-        const diff = FundSnapshotHistory.getDifference(snapshot1, snapshot2);
-
-        const c = this.colors;
-        const reset = c.reset;
-        const buy = c.buy;
-        const sell = c.sell;
-
-        const ts1 = new Date(diff.timestamp1).toISOString();
-        const ts2 = new Date(diff.timestamp2).toISOString();
-
-        console.log(`\n${buy}═══ SNAPSHOT COMPARISON ═══${reset}`);
-        console.log(`From: ${ts1}`);
-        console.log(`To:   ${ts2}`);
-        console.log(`Delta: ${diff.timeDeltaMs}ms`);
-
-         console.log(`\n${buy}Available Change:${reset}`);
-         console.log(`  Buy:  ${diff.availableChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.availableChange.buy)}`);
-         console.log(`  Sell: ${diff.availableChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.availableChange.sell)}`);
-
-         console.log(`\n${buy}ChainTotal Change:${reset}`);
-         console.log(`  Buy:  ${diff.chainTotalChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainTotalChange.buy)}`);
-         console.log(`  Sell: ${diff.chainTotalChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainTotalChange.sell)}`);
-
-         console.log(`\n${buy}ChainCommitted Change:${reset}`);
-         console.log(`  Buy:  ${diff.chainCommittedChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainCommittedChange.buy)}`);
-         console.log(`  Sell: ${diff.chainCommittedChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.chainCommittedChange.sell)}`);
-
-         console.log(`\n${buy}CacheFunds Change:${reset}`);
-         console.log(`  Buy:  ${diff.cacheFundsChange.buy >= 0 ? '+' : ''}${Format.formatAmount8(diff.cacheFundsChange.buy)}`);
-         console.log(`  Sell: ${diff.cacheFundsChange.sell >= 0 ? '+' : ''}${Format.formatAmount8(diff.cacheFundsChange.sell)}`);
-    }
 }
 
 module.exports = Logger;

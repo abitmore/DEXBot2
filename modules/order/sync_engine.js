@@ -284,15 +284,7 @@ class SyncEngine {
                             updatedOrder.state = ORDER_STATES.PARTIAL;
                         }
                     } else {
-                        try {
-                            mgr.logger?.captureSnapshot(mgr, 'order_filled', gridOrder.orderId, {
-                                gridId: gridOrder.id,
-                                type: gridOrder.type,
-                                size: gridOrder.size,
-                                filledAt: 'syncFromOpenOrders'
-                            });
-                        } catch (err) { /* ignore */ }
-
+                        // Snapshot capture moved to fund_snapshot_persistence module
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         mgr._updateOrder(spreadOrder, 0, options);
                         filledOrders.push(spreadOrder);
@@ -460,18 +452,7 @@ class SyncEngine {
                 const filledOrders = [];
                 const updatedOrders = [];
                 if (newSizeInt <= 0) {
-                    // Capture snapshot before converting filled order to SPREAD
-                    try {
-                        mgr.logger?.captureSnapshot(mgr, 'order_filled_history', orderId, {
-                            gridId: matchedGridOrder.id,
-                            type: orderType,
-                            filledAmount: filledAmount,
-                            filledAt: 'syncFromFillHistory',
-                            blockNum: blockNum,
-                            historyId: historyId
-                        });
-                    } catch (err) { /* ignore */ }
-
+                    // Snapshot capture moved to fund_snapshot_persistence module
                     const filledOrder = {
                         ...matchedGridOrder,
                         blockNum: blockNum,
@@ -587,16 +568,7 @@ class SyncEngine {
                 try {
                     const gridOrder = mgr.orders.get(gridOrderId);
                     if (gridOrder) {
-                        // Capture snapshot before order activation
-                        try {
-                            mgr.logger?.captureSnapshot(mgr, 'order_created', chainOrderId, {
-                                gridId: gridOrderId,
-                                type: gridOrder.type,
-                                size: gridOrder.size,
-                                price: gridOrder.price,
-                                fee: fee
-                            });
-                        } catch (err) { /* ignore */ }
+                        // Snapshot capture moved to fund_snapshot_persistence module
 
                         // Check if this chain order already exists on grid (rotation case)
                         // If so, fee was already paid when original order was placed - don't deduct again

@@ -36,8 +36,8 @@ const mgrStub = {
 	calculateCurrentSpread: () => 3.1415
 };
 
-logger.logFundsStatus(mgrStub);
-logger.displayStatus(mgrStub);
+logger.logFundsStatus(mgrStub, '', true);  // Force display for testing (forceDetailed=true)
+logger.displayStatus(mgrStub, true);  // Force display for testing (forceOutput=true)
 
 // Restore console.log
 console.log = origLog;

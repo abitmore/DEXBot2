@@ -157,7 +157,7 @@ DEXBot2 now supports global parameter management via the interactive editor (`de
 - **Partial Dust Threshold %**: Threshold for identifying small "dust" orders for geometric refilling (Default: `5%`).
 - **Timing (Core)**: **Blockchain Fetch Interval**: Frequency of full account balance refreshes (Default: `240 min`); **Sync Delay**: Polling delay for blockchain synchronization (Default: `500ms`); **Lock Timeout**: Order lock auto-expiry timeout (Default: `10s`).
 - **Timing (Fill)**: **Fill Dedupe Window**: Window for deduplicating same fill events (Default: `5s`); **Fill Cleanup Interval**: Frequency for cleaning old fill records (Default: `10s`); **Fill Record Retention**: Duration to keep persisted fill records (Default: `60 min`).
-- **Log Level**: Global verbosity control (`debug`, `info`, `warn`, `error`).
+- **Log Level**: Global verbosity control (`debug`, `info`, `warn`, `error`). Advanced logging configuration with fine-grained category control is available in `LOGGING_CONFIG` (see [Logging System](#-logging-system) below).
 - **Updater**: **Updater Active**: Toggle daily automated repository updates (Default: `ON`); **Updater Branch**: Branch to track for updates (`auto`, `main`, `dev`, `test`); **Updater Interval**: Frequency of automated updates in days (Default: `1 day`); **Updater Time**: Specific time of day to run the update (Default: `00:00`).
 
 ## 🎯 PM2 Process Management (Recommended for Production)
@@ -452,6 +452,10 @@ Key documents:
 - **[architecture.md](docs/architecture.md)** - System design and testing strategy
 - **[developer_guide.md](docs/developer_guide.md)** - Development guide with examples
 
+Logging documentation:
+- **[LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md)** - Hybrid centralized architecture, categories, change detection
+- **[LOGGING_MIGRATION_GUIDE.md](LOGGING_MIGRATION_GUIDE.md)** - Configuration presets and testing procedures
+
 ---
 
 ## 📦 Modules
@@ -480,9 +484,10 @@ Below is a short summary of the modules in this repository and what they provide
 
 Core order generation, management, and grid algorithms:
 
-- `modules/constants.js`: Centralized configuration hub with order constants (types: `SELL`, `BUY`, `SPREAD`; states: `VIRTUAL`, `ACTIVE`, `PARTIAL`), timing constants, grid limits, precision defaults, fee parameters, API limits, fill processing config, maintenance settings, and `DEFAULT_CONFIG`. Loads user overrides from `profiles/general.settings.json`.
+- `modules/constants.js`: Centralized configuration hub with order constants (types: `SELL`, `BUY`, `SPREAD`; states: `VIRTUAL`, `ACTIVE`, `PARTIAL`), timing constants, grid limits, precision defaults, fee parameters, API limits, fill processing config, maintenance settings, `DEFAULT_CONFIG`, and `LOGGING_CONFIG`. Loads user overrides from `profiles/general.settings.json`.
 - `modules/order/index.js`: Public entry point: exports `OrderManager` and `runOrderManagerCalculation()` (dry-run helper).
-- `modules/order/logger.js`: Colored console logger and `logOrderGrid()` helper for formatted output.
+- `modules/order/logger.js`: Centralized logging with configuration-driven control, change detection, and color-coded output. See [Logging System](#-logging-system) section.
+- `modules/order/logger_state.js`: Smart change detection engine for logging — tracks state changes and prevents duplicate logs.
 - `modules/order/async_lock.js`: Queue-based AsyncLock utility for race condition prevention. Provides FIFO mutual exclusion for protecting critical sections across the codebase. Used by all modules that require atomic operations.
 - `modules/order/manager.js`: `OrderManager` class — Core coordinator and state machine. Maintains virtual order grid state (Map + indices), manages fund tracking, and delegates specialized operations to three engines. Persistence methods are async with AsyncLock protection. Lock system prevents concurrent modifications during async operations.
 - `modules/order/accounting.js`: `Accountant` engine — Fund tracking, available balance calculation, fee deduction, and committed fund management. Handles deductions/refunds as orders transition between states.

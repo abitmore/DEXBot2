@@ -633,6 +633,20 @@ async function bootstrap() {
         console.log('Welcome to DEXBot2!');
         console.log('='.repeat(50));
         console.log();
+
+        // Generate default general.settings.json for new installations
+        const SETTINGS_FILE = path.join(PROFILES_DIR, 'general.settings.json');
+        const { LOG_LEVEL, GRID_LIMITS, TIMING, UPDATER } = require('./modules/constants');
+        const defaultSettings = {
+            LOG_LEVEL,
+            GRID_LIMITS: { ...GRID_LIMITS },
+            TIMING: { ...TIMING },
+            UPDATER: { ...UPDATER }
+        };
+        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(defaultSettings, null, 2) + '\n', 'utf8');
+        console.log('✓ Created default general.settings.json');
+        console.log();
+
         console.log('To get started, you need to configure your master password.');
         console.log('This password will encrypt your private keys.');
         console.log();

@@ -201,6 +201,84 @@ let MAINTENANCE = {
 // - 'error': Critical errors only.
 let LOG_LEVEL = 'info';
 
+// Fine-grained Logging Configuration
+// Controls what gets logged at each level and which categories are enabled
+// Can be overridden in profiles/general.settings.json via LOGGING_CONFIG
+let LOGGING_CONFIG = {
+    changeTracking: {
+        enabled: true,
+        ignoreMinor: {
+            fundPrecision: 8,      // Ignore fund changes smaller than 0.00000001
+            pricePrecision: 4      // Ignore price changes smaller than 0.0001
+        }
+    },
+    categories: {
+        fundChanges: {
+            enabled: true,
+            level: "debug",
+            options: {
+                onlyChanges: true,
+                aggregateSmall: true,
+                hideComponentBreakdown: true
+            }
+        },
+        orderStateChanges: {
+            enabled: true,
+            level: "info",
+            options: {
+                onlyChanges: true,
+                compactFormat: true
+            }
+        },
+        fillEvents: {
+            enabled: true,
+            level: "info",
+            options: {
+                onlyChanges: true,
+                aggregateFees: true
+            }
+        },
+        boundaryEvents: {
+            enabled: true,
+            level: "info",
+            options: {
+                onlyChanges: true
+            }
+        },
+        errorWarnings: {
+            enabled: true,
+            level: "warn",
+            options: {
+                alwaysLog: true
+            }
+        },
+        edgeCases: {
+            enabled: true,
+            level: "warn",
+            options: {
+                alwaysLog: true
+            }
+        }
+    },
+    display: {
+        gridDiagnostics: {
+            enabled: false,
+            showOnDemandOnly: true
+        },
+        fundStatus: {
+            enabled: false,
+            showDetailed: false,
+            compactFormat: true
+        },
+        statusSummary: {
+            enabled: false
+        },
+        colors: {
+            enabled: "auto"
+        }
+    }
+};
+
 // Updater Configuration
 let UPDATER = {
     // Whether the automated updater is enabled
@@ -276,6 +354,22 @@ if (fs.existsSync(SETTINGS_FILE)) {
         if (settings.UPDATER) {
             UPDATER = { ...UPDATER, ...settings.UPDATER };
         }
+
+        if (settings.LOGGING_CONFIG) {
+            // Deep merge logging config to preserve defaults not specified in settings
+            const mergeConfig = (target, source) => {
+                for (const key in source) {
+                    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+                        target[key] = { ...target[key], ...source[key] };
+                        mergeConfig(target[key], source[key]);
+                    } else {
+                        target[key] = source[key];
+                    }
+                }
+                return target;
+            };
+            LOGGING_CONFIG = mergeConfig({ ...LOGGING_CONFIG }, settings.LOGGING_CONFIG);
+        }
     } catch (err) {
         console.warn(`[WARN] Failed to load local settings from ${SETTINGS_FILE}: ${err.message}`);
     }
@@ -293,5 +387,6 @@ Object.freeze(API_LIMITS);
 Object.freeze(FILL_PROCESSING);
 Object.freeze(MAINTENANCE);
 Object.freeze(UPDATER);
+Object.freeze(LOGGING_CONFIG);
 
-module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, UPDATER };
+module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, UPDATER };
