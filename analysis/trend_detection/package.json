@@ -1,0 +1,29 @@
+{
+  "name": "trend-detection",
+  "version": "1.0.0",
+  "description": "High-precision dual-AMA trend detection system optimized for up/downtrend identification",
+  "main": "trend_analyzer.js",
+  "scripts": {
+    "fetch": "node fetch_1day_candles.js",
+    "optimize": "node optimizer_trend_detection.js",
+    "chart": "node generate_trend_chart.js",
+    "backtest": "node backtest_trend_detection.js",
+    "test": "node tests/test_trend_analyzer.js"
+  },
+  "keywords": [
+    "AMA",
+    "trend-detection",
+    "Kaufman",
+    "uptrend",
+    "downtrend",
+    "trading",
+    "indicator"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {},
+  "devDependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
