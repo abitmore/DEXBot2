@@ -34,6 +34,8 @@ class DualAMA {
 
         // History for analysis
         this.priceHistory = [];
+        this.highHistory = [];
+        this.lowHistory = [];
         this.fastHistory = [];
         this.slowHistory = [];
         this.maxHistoryLength = 500; // Keep last 500 candles for ratio analysis
@@ -45,27 +47,35 @@ class DualAMA {
     }
 
     /**
-     * Update both AMAs with new price
+     * Update both AMAs with new price (and high/low for price action)
      * @param {number} price - Current closing price
+     * @param {number} high - Current high price (for price action filter)
+     * @param {number} low - Current low price (for price action filter)
      * @returns {Object} Current state {fastAMA, slowAMA, price}
      */
-    update(price) {
+    update(price, high = price, low = price) {
         const fastAMA = this.fastAMA.update(price);
         const slowAMA = this.slowAMA.update(price);
 
         this.priceHistory.push(price);
+        this.highHistory.push(high);
+        this.lowHistory.push(low);
         this.fastHistory.push(fastAMA);
         this.slowHistory.push(slowAMA);
 
         // Maintain history buffer
         if (this.priceHistory.length > this.maxHistoryLength) {
             this.priceHistory.shift();
+            this.highHistory.shift();
+            this.lowHistory.shift();
             this.fastHistory.shift();
             this.slowHistory.shift();
         }
 
         return {
             price,
+            high,
+            low,
             fastAMA,
             slowAMA,
         };
@@ -260,12 +270,41 @@ class DualAMA {
     }
 
     /**
+     * Check price action confirmation (higher highs/lower lows)
+     * @returns {Object} {isUptrend, isDowntrend, confirmsUp, confirmsDown}
+     */
+    getPriceActionConfirmation() {
+        if (this.highHistory.length < 2) {
+            return {
+                isUptrend: false,
+                isDowntrend: false,
+                confirmsUp: false,
+                confirmsDown: false,
+            };
+        }
+
+        const currentHigh = this.highHistory[this.highHistory.length - 1];
+        const previousHigh = this.highHistory[this.highHistory.length - 2];
+        const currentLow = this.lowHistory[this.lowHistory.length - 1];
+        const previousLow = this.lowHistory[this.lowHistory.length - 2];
+
+        return {
+            isUptrend: currentHigh > previousHigh && currentLow > previousLow,  // Higher highs AND higher lows
+            isDowntrend: currentHigh < previousHigh && currentLow < previousLow,  // Lower highs AND lower lows
+            confirmsUp: currentHigh > previousHigh,  // Just new high
+            confirmsDown: currentLow < previousLow,  // Just new low
+        };
+    }
+
+    /**
      * Reset the indicator
      */
     reset() {
         this.fastAMA = new AMA(40, 5, 15);
         this.slowAMA = new AMA(20, 2, 30);
         this.priceHistory = [];
+        this.highHistory = [];
+        this.lowHistory = [];
         this.fastHistory = [];
         this.slowHistory = [];
         this.prevTrendState = null;

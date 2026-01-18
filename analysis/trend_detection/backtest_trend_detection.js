@@ -67,10 +67,11 @@ function getBestConfiguration() {
 /**
  * Run backtest
  */
-function runBacktest(candles, bestConfig) {
+function runBacktest(candles, bestConfig, usePriceActionFilter = false) {
     const analyzer = new TrendAnalyzer({
         lookbackBars: 20,
-        dualAMAConfig: bestConfig.config
+        dualAMAConfig: bestConfig.config,
+        usePriceActionFilter: usePriceActionFilter
     });
 
     const trades = [];
@@ -96,7 +97,7 @@ function runBacktest(candles, bestConfig) {
     // Backtest loop
     for (let i = 0; i < candles.length; i++) {
         const candle = candles[i];
-        const analysis = analyzer.update(candle.close);
+        const analysis = analyzer.update(candle.close, candle.high, candle.low);
 
         if (!analysis.isReady) continue;
 
@@ -381,28 +382,73 @@ function backtest() {
     }
     console.log(`✓ Loaded ${candles.length} candles\n`);
 
-    // Run backtest
-    console.log('🔄 Running backtest...');
-    const backtest_result = runBacktest(candles, bestConfig);
+    // Run backtest WITHOUT price action filter (baseline)
+    console.log('🔄 Running backtest (BASELINE - no price action filter)...');
+    const backtest_result = runBacktest(candles, bestConfig, false);
     console.log(`✓ Backtest complete\n`);
 
-    // Calculate metrics
+    // Run backtest WITH price action filter
+    console.log('🔄 Running backtest (WITH PRICE ACTION FILTER)...');
+    const backtest_result_paf = runBacktest(candles, bestConfig, true);
+    console.log(`✓ Backtest with price action filter complete\n`);
+
+    // Calculate metrics for both versions
     console.log('📊 Calculating metrics...');
-    const metrics = calculateMetrics(backtest_result);
+    const metrics_baseline = calculateMetrics(backtest_result);
+    const metrics_paf = calculateMetrics(backtest_result_paf);
     console.log(`✓ Metrics calculated\n`);
 
-    // Generate report
-    console.log('📝 Generating report...');
-    const report = generateReport(backtest_result, metrics);
+    // Generate reports
+    console.log('📝 Generating reports...');
+    const report_baseline = generateReport(backtest_result, metrics_baseline);
+    const report_paf = generateReport(backtest_result_paf, metrics_paf);
+
+    // Create comparison report
+    let comparison_report = '';
+    comparison_report += '═══════════════════════════════════════════════════════════════\n';
+    comparison_report += 'PRICE ACTION FILTER - COMPARISON REPORT\n';
+    comparison_report += '═══════════════════════════════════════════════════════════════\n\n';
+
+    comparison_report += 'BASELINE (No Price Action Filter)\n';
+    comparison_report += '─────────────────────────────────────────────────────────────────\n';
+    comparison_report += `Total Trades:        ${metrics_baseline.totalTrades}\n`;
+    comparison_report += `Win Rate:            ${metrics_baseline.winRate}%\n`;
+    comparison_report += `Total Return:        ${metrics_baseline.totalReturnPercent}%\n`;
+    comparison_report += `Profit Factor:       ${metrics_baseline.profitFactor}\n\n`;
+
+    comparison_report += 'WITH PRICE ACTION FILTER\n';
+    comparison_report += '─────────────────────────────────────────────────────────────────\n';
+    comparison_report += `Total Trades:        ${metrics_paf.totalTrades}\n`;
+    comparison_report += `Win Rate:            ${metrics_paf.winRate}%\n`;
+    comparison_report += `Total Return:        ${metrics_paf.totalReturnPercent}%\n`;
+    comparison_report += `Profit Factor:       ${metrics_paf.profitFactor}\n\n`;
+
+    comparison_report += 'IMPROVEMENT\n';
+    comparison_report += '─────────────────────────────────────────────────────────────────\n';
+    const returnDiff = parseFloat(metrics_paf.totalReturnPercent) - parseFloat(metrics_baseline.totalReturnPercent);
+    const tradeDiff = metrics_paf.totalTrades - metrics_baseline.totalTrades;
+    const pfDiff = (metrics_paf.profitFactor !== 'Inf' && metrics_baseline.profitFactor !== 'Inf')
+        ? parseFloat(metrics_paf.profitFactor) - parseFloat(metrics_baseline.profitFactor)
+        : 0;
+
+    comparison_report += `Return Change:      ${returnDiff > 0 ? '+' : ''}${returnDiff.toFixed(2)}%\n`;
+    comparison_report += `Trade Count Change:  ${tradeDiff > 0 ? '+' : ''}${tradeDiff}\n`;
+    comparison_report += `Profit Factor Change: ${pfDiff > 0 ? '+' : ''}${pfDiff.toFixed(2)}\n\n`;
+
+    comparison_report += '═══════════════════════════════════════════════════════════════\n\n';
 
     // Save results
-    fs.writeFileSync(BACKTEST_OUTPUT, JSON.stringify(backtest_result, null, 2));
-    fs.writeFileSync(REPORT_OUTPUT, report);
+    fs.writeFileSync(BACKTEST_OUTPUT, JSON.stringify({
+        baseline: backtest_result,
+        with_price_action_filter: backtest_result_paf
+    }, null, 2));
+    fs.writeFileSync(REPORT_OUTPUT, comparison_report + '\n\n' + report_baseline + '\n\n' + report_paf);
 
-    // Print report
-    console.log(report);
+    // Print comparison
+    console.log(comparison_report);
+    console.log(report_baseline);
 
-    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('\n\n═══════════════════════════════════════════════════════════════');
     console.log('✅ BACKTEST COMPLETE\n');
     console.log(`   📄 Report: ${path.basename(REPORT_OUTPUT)}`);
     console.log(`   📊 Data:   ${path.basename(BACKTEST_OUTPUT)}`);

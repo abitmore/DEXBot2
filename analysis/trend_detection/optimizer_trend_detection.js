@@ -34,8 +34,15 @@ function loadData() {
     const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
     console.log(`✓ Loaded ${data.length} 1-day candles`);
 
-    // Extract closing prices
-    return data.map(candle => candle[4]); // close price
+    // Return full candle structure: [timestamp, open, high, low, close, volume]
+    return data.map(candle => ({
+        timestamp: candle[0],
+        open: candle[1],
+        high: candle[2],
+        low: candle[3],
+        close: candle[4],
+        volume: candle[5]
+    }));
 }
 
 /**
@@ -43,24 +50,24 @@ function loadData() {
  * True trend = compare current price to 20-day median
  * This is based on REAL market data, not arbitrary thresholds
  */
-function calculateTrueTrend(closes, lookbackPeriod = 20) {
+function calculateTrueTrend(candles, lookbackPeriod = 20) {
     const trueTrends = [];
 
-    for (let i = 0; i < closes.length; i++) {
+    for (let i = 0; i < candles.length; i++) {
         if (i < lookbackPeriod) {
             trueTrends.push('NEUTRAL');
             continue;
         }
 
         // Get median of last N closes (excluding current)
-        const priceWindow = closes.slice(i - lookbackPeriod, i);
+        const priceWindow = candles.slice(i - lookbackPeriod, i).map(c => c.close);
         const sorted = [...priceWindow].sort((a, b) => a - b);
         const mid = Math.floor(sorted.length / 2);
         const medianPrice = sorted.length % 2
             ? sorted[mid]
             : (sorted[mid - 1] + sorted[mid]) / 2;
 
-        const currentPrice = closes[i];
+        const currentPrice = candles[i].close;
 
         // Tolerance: 0.2% to avoid noise at median
         const tolerance = medianPrice * 0.002;
@@ -80,11 +87,12 @@ function calculateTrueTrend(closes, lookbackPeriod = 20) {
 /**
  * Test a single parameter combination
  */
-function testConfiguration(closes, config) {
+function testConfiguration(candles, config, usePriceActionFilter = false) {
     try {
         const analyzer = new TrendAnalyzer({
             lookbackBars: 20,
             dualAMAConfig: config.dualAMAConfig,
+            usePriceActionFilter: usePriceActionFilter,
         });
 
         const detectedTrends = [];
@@ -92,9 +100,9 @@ function testConfiguration(closes, config) {
         let trendChangeCount = 0;
         let lastTrend = 'NEUTRAL';
 
-        // Feed all closes
-        for (const price of closes) {
-            analyzer.update(price);
+        // Feed all candles with high/low data
+        for (const candle of candles) {
+            analyzer.update(candle.close, candle.high, candle.low);
             const analysis = analyzer.getAnalysis();
 
             if (analysis.isReady) {
@@ -228,11 +236,11 @@ async function optimize() {
 
     // Load data
     console.log('Loading data...');
-    const closes = loadData();
+    const candles = loadData();
 
     // Calculate true trends for scoring
     console.log('Calculating reference trends...');
-    const trueTrends = calculateTrueTrend(closes, 10);
+    const trueTrends = calculateTrueTrend(candles, 10);
 
     // Generate configurations
     console.log('\nGenerating parameter combinations...');
@@ -246,8 +254,8 @@ async function optimize() {
     for (let i = 0; i < configs.length; i++) {
         const config = configs[i];
 
-        // Test configuration
-        const testResult = testConfiguration(closes, config);
+        // Test configuration WITHOUT price action filter (baseline)
+        const testResult = testConfiguration(candles, config, false);
 
         if (testResult) {
             // Calculate score

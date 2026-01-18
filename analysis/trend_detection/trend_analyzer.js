@@ -13,10 +13,12 @@ class TrendAnalyzer {
      * @param {Object} config - Configuration
      * @param {number} config.lookbackBars - Price ratio lookback bars (default: 20)
      * @param {Object} config.dualAMAConfig - DualAMA configuration
+     * @param {boolean} config.usePriceActionFilter - Use price action confirmation (default: false)
      */
     constructor(config = {}) {
         this.dualAMA = new DualAMA(config.dualAMAConfig || {});
         this.priceRatio = new PriceRatio(config.lookbackBars || 20);
+        this.usePriceActionFilter = config.usePriceActionFilter || false;
 
         // State tracking
         this.updateCount = 0;
@@ -25,11 +27,13 @@ class TrendAnalyzer {
     /**
      * Update analyzer with new candle
      * @param {number} price - Closing price
+     * @param {number} high - Candle high (for price action filter)
+     * @param {number} low - Candle low (for price action filter)
      * @returns {Object} Analysis result
      */
-    update(price) {
-        // Update both components
-        this.dualAMA.update(price);
+    update(price, high = price, low = price) {
+        // Update both components with price action data
+        this.dualAMA.update(price, high, low);
 
         // Get AMAs for price ratio update
         const fastAMA = this.dualAMA.fastHistory[this.dualAMA.fastHistory.length - 1];
@@ -60,13 +64,32 @@ class TrendAnalyzer {
         const confirmed = this.dualAMA.getConfirmedTrend();
         const priceRatioData = this.priceRatio.getSnapshot();
 
+        // Get price action confirmation if enabled
+        let finalTrend = confirmed.trend;
+        let priceActionConfirms = true;
+
+        if (this.usePriceActionFilter && confirmed.isConfirmed) {
+            const priceAction = this.dualAMA.getPriceActionConfirmation();
+
+            // Only confirm if price action agrees with AMA signal
+            if (confirmed.trend === 'UP' && !priceAction.confirmsUp) {
+                finalTrend = 'NEUTRAL';  // AMA says UP but price action doesn't
+                priceActionConfirms = false;
+            } else if (confirmed.trend === 'DOWN' && !priceAction.confirmsDown) {
+                finalTrend = 'NEUTRAL';  // AMA says DOWN but price action doesn't
+                priceActionConfirms = false;
+            }
+        }
+
         return {
             isReady: true,
-            trend: confirmed.trend,
+            trend: finalTrend,
             confidence: confirmed.confidence,
-            isConfirmed: confirmed.isConfirmed,
+            isConfirmed: confirmed.isConfirmed && priceActionConfirms,
             rawTrend: confirmed.rawTrend,
             barsInTrend: confirmed.barsInTrend,
+            priceActionFilterUsed: this.usePriceActionFilter,
+            priceActionConfirms: priceActionConfirms,
             amaSeparation: {
                 percent: confirmed.separation,
             },
