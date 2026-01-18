@@ -78,7 +78,7 @@ class Logger {
     log(message, level = 'info') {
         if (this.levels[level] >= this.levels[this.level]) {
             const color = this.colors[level] || '';
-            console.log(`${color}[${new Date().toISOString()}] [${level.toUpperCase()}] ${message}${this.colors.reset}`);
+            console.log(`${color}[${level.toUpperCase()}] ${message}${this.colors.reset}`);
         }
     }
 

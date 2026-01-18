@@ -1020,6 +1020,16 @@ class DEXBot {
 
             if (!validation.isValid) {
                 this.manager.logger.log(`Skipping batch broadcast: ${validation.violations.length} fund violation(s) detected`, 'warn');
+                
+                // Trigger sync to revert optimistic state on validation failure
+                try {
+                    this.manager.logger.log('Triggering state recovery sync...', 'info');
+                    const openOrders = await chainOrders.readOpenOrders(this.accountId);
+                    await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
+                } catch (syncErr) {
+                    this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
+                }
+
                 return { executed: false, hadRotation: false };
             }
 
@@ -1040,6 +1050,16 @@ class DEXBot {
 
         } catch (err) {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
+            
+            // Trigger sync to revert optimistic state on execution failure
+            try {
+                this.manager.logger.log('Triggering state recovery sync...', 'info');
+                const openOrders = await chainOrders.readOpenOrders(this.accountId);
+                await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
+            } catch (syncErr) {
+                this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
+            }
+
             return { executed: false, hadRotation: false };
         } finally {
             this.manager.unlockOrders(idsToLock);
