@@ -1,0 +1,13 @@
+{
+  "name": "ama_fitting",
+  "version": "1.0.0",
+  "description": "Tools for fitting AMA parameters to market data",
+  "main": "optimizer.js",
+  "scripts": {
+    "fetch": "node fetch_data.js",
+    "optimize": "node optimizer.js"
+  },
+  "dependencies": {
+    "ccxt": "^4.0.0"
+  }
+}

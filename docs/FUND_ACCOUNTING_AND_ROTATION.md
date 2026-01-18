@@ -86,10 +86,10 @@ const available = Math.max(0,
 ```
 
 **Key Points:**
-- **ChainFree is already "optimistic"** — it accounts for pending orders and in-flight capital
+- **ChainFree is already "optimistic"** — it accounts for pending orders and reserved capital
 - **CacheFunds is purely reporting** — it tells you "of the ChainFree, this much came from fills"—but doesn't change the calculation
-- **Virtual** tracks VIRTUAL orders that haven't been placed on-chain yet
-- **No inFlight deduction** — in-flight capital is consolidated into the virtual tracking
+- **Virtual** tracks VIRTUAL orders and ACTIVE orders that haven't been placed on-chain yet
+- **Consolidated virtual tracking** — all reserved, off-chain capital is consolidated into virtual funds
 
 ---
 

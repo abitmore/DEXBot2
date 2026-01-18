@@ -11,7 +11,7 @@
  * Fund model overview (see manager.js for full details):
  * - available = max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
  * - cacheFunds = fill proceeds and rotation surplus (tracked separately, part of chainFree)
- * - virtual = sum of VIRTUAL and in-flight ACTIVE order sizes (reserved, not yet on-chain)
+ * - virtual = sum of VIRTUAL orders and ACTIVE orders without orderId (reserved, not yet on-chain)
  * - committed.grid = total sum of all grid order sizes (active + partial + virtual)
  * - committed.chain = sum of ACTIVE or PARTIAL orders that have an orderId on-chain
  * 

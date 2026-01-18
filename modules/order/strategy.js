@@ -222,7 +222,7 @@ class StrategyEngine {
         if (mgr.applyBotFundsAllocation) mgr.applyBotFundsAllocation();
 
         // Available funds for net capital increases (e.g., placing new orders)
-        // This unified metric already accounts for reservations, fees, and in-flight capital.
+        // This unified metric already accounts for reservations, fees, and virtual (reserved) capital.
         const availBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0);
         const availSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0);
 

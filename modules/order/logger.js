@@ -445,23 +445,6 @@ class Logger {
         }
     }
 
-    /**
-     * Deprecated: Snapshot capture is now handled by fund_snapshot_persistence module
-     * This method is kept for backward compatibility but is a no-op.
-     *
-     * The fund_snapshot module handles all snapshot capture and persistence.
-     * The logger focuses on: what to log, how to filter redundancy, change detection.
-     * The fund_snapshot focuses on: persisting fund state at critical points.
-     *
-     * @deprecated Use fund_snapshot.js and fund_snapshot_persistence.js instead
-     * @returns {null}
-     */
-    captureSnapshot(manager, eventType, eventId = null, extraContext = {}) {
-        // This is now a no-op. Fund snapshot capture is handled separately.
-        // Keeping this method for backward compatibility only.
-        return null;
-    }
-
 }
 
 module.exports = Logger;

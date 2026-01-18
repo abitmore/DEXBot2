@@ -223,7 +223,7 @@ function computeChainFundTotals(accountTotals, committedChain) {
  *
  * FUND COMPONENTS:
  * - chainFree: Unallocated funds on blockchain (optimistic, includes fill proceeds)
- * - virtual: Funds reserved for VIRTUAL and in-flight orders (off-chain commitments)
+ * - virtual: Funds reserved for VIRTUAL orders and ACTIVE orders without orderId (off-chain commitments)
  * - btsFeesOwed: Accumulated BTS fees waiting to be settled
  * - btsFeesReservation: Buffer reserved for future order creation fees
  *
