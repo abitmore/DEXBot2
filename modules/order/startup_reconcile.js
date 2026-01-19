@@ -491,6 +491,15 @@ async function reconcileStartupOrders({
               await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
           } catch (err) {
               logger && logger.log && logger.log(`Startup: Failed to update SELL ${chainOrder.id}: ${err.message}`, 'error');
+              // CRITICAL: On update failure, resync from blockchain to catch order-not-found or other state mismatches
+              // This prevents grid/chain desync where grid expects update succeeded but chain order still exists/differs
+              try {
+                  logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL update failure`, 'warn');
+                  const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
+                  await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'startupReconcileFailure' });
+              } catch (syncErr) {
+                  logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
+              }
           }
       }
 
@@ -536,7 +545,7 @@ async function reconcileStartupOrders({
         const parsedUnmatchedSells = unmatchedSells
             .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
             .filter(x => x.parsed)
-            .sort((a, b) => (b.parsed.price || 0) - (a.parsed.price || 0));
+            .sort((a, b) => (a.parsed.price || 0) - (b.parsed.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
 
         for (const x of parsedUnmatchedSells) {
             if (sellCancelCount <= 0) break;
@@ -553,7 +562,7 @@ async function reconcileStartupOrders({
         if (sellCancelCount > 0) {
             const activeSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE)
                 .filter(o => o && o.orderId)
-                .sort((a, b) => (b.price || 0) - (a.price || 0));
+                .sort((a, b) => (a.price || 0) - (b.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
 
             for (const o of activeSells) {
                 if (sellCancelCount <= 0) break;
@@ -640,6 +649,15 @@ async function reconcileStartupOrders({
               await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
           } catch (err) {
               logger && logger.log && logger.log(`Startup: Failed to update BUY ${chainOrder.id}: ${err.message}`, 'error');
+              // CRITICAL: On update failure, resync from blockchain to catch order-not-found or other state mismatches
+              // This prevents grid/chain desync where grid expects update succeeded but chain order still exists/differs
+              try {
+                  logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY update failure`, 'warn');
+                  const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
+                  await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'startupReconcileFailure' });
+              } catch (syncErr) {
+                  logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
+              }
           }
       }
 
@@ -685,7 +703,7 @@ async function reconcileStartupOrders({
         const parsedUnmatchedBuys = unmatchedBuys
             .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
             .filter(x => x.parsed)
-            .sort((a, b) => (a.parsed.price || 0) - (b.parsed.price || 0));
+            .sort((a, b) => (b.parsed.price || 0) - (a.parsed.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
 
         for (const x of parsedUnmatchedBuys) {
             if (buyCancelCount <= 0) break;
@@ -702,7 +720,7 @@ async function reconcileStartupOrders({
         if (buyCancelCount > 0) {
             const activeBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
                 .filter(o => o && o.orderId)
-                .sort((a, b) => (a.price || 0) - (b.price || 0));
+                .sort((a, b) => (b.price || 0) - (a.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
 
             for (const o of activeBuys) {
                 if (buyCancelCount <= 0) break;
