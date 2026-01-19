@@ -856,12 +856,6 @@ class StrategyEngine {
 
             const result = await this.rebalance(filledOrders, excludeOrderIds);
 
-            if (hasBtsPair && (result.ordersToRotate.length > 0 || result.ordersToUpdate.length > 0)) {
-                const btsFeeData = getAssetFees("BTS", 0);
-                const updateCount = result.ordersToRotate.length + result.ordersToUpdate.length;
-                mgr.funds.btsFeesOwed += updateCount * btsFeeData.updateFee;
-            }
-
             mgr.recalculateFunds();
             return result;
         } finally {

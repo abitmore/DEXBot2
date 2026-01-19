@@ -805,12 +805,6 @@ class DEXBot {
         const { blockchainToFloat, floatToBlockchainInt } = require('./order/utils');
         const snap = this.manager.getChainFundsSnapshot();
         const maxOrderSize = this._getMaxOrderSize();
-
-        const availableFunds = {
-            [assetA.id]: snap.chainFreeSell || 0,
-            [assetB.id]: snap.chainFreeBuy || 0
-        };
-
         const requiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
         const orderSizeViolations = [];
 
@@ -867,6 +861,15 @@ class DEXBot {
                 }
             }
         }
+
+        // Calculate available funds by adding back the required funds to the current free balance.
+        // The current free balance (snap.chainFree) has ALREADY been reduced by these operations
+        // via optimistic updates in _updateOrder. To validate if we *had* enough funds, we must
+        // reconstruct the pre-operation balance.
+        const availableFunds = {
+            [assetA.id]: (snap.chainFreeSell || 0) + (requiredFunds[assetA.id] || 0),
+            [assetB.id]: (snap.chainFreeBuy || 0) + (requiredFunds[assetB.id] || 0)
+        };
 
         // Check for order size violations
         if (orderSizeViolations.length > 0) {
@@ -1286,11 +1289,6 @@ class DEXBot {
                     this.manager.logger.log(`ERROR: Sync failed for rotation ${oldOrder.orderId} -> ${newGridId}`, 'error');
                 }
             }
-        }
-
-        if (updateOperationCount > 0 && (this.manager.config.assetA === 'BTS' || this.manager.config.assetB === 'BTS')) {
-            const feePerUpdate = Number(btsFeeData.updateFee) || 0;
-            this.manager.funds.btsFeesOwed += feePerUpdate * updateOperationCount;
         }
 
         return { executed: true, hadRotation };
