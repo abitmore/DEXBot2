@@ -510,8 +510,9 @@ async function reconcileStartupOrders({
          }
      }
 
-     // Remove processed orders from the unmatched list (account for cancelled order if present)
-     const sellProcessedCount = sellUpdates + (cancelledSellIndex !== null ? 1 : 0);
+     // Remove processed orders from the unmatched list
+     // NOTE: cancelledSellIndex is already within the sellUpdates range, don't add 1
+     const sellProcessedCount = sellUpdates;
      unmatchedSells = sortedUnmatchedSells.slice(sellProcessedCount);
 
     const chainSellCount = chainSells.length;
@@ -658,8 +659,9 @@ async function reconcileStartupOrders({
          }
      }
 
-     // Remove processed orders from the unmatched list (account for cancelled order if present)
-     const buyProcessedCount = buyUpdates + (cancelledBuyIndex !== null ? 1 : 0);
+     // Remove processed orders from the unmatched list
+     // NOTE: cancelledBuyIndex is already within the buyUpdates range, don't add 1
+     const buyProcessedCount = buyUpdates;
      unmatchedBuys = sortedUnmatchedBuys.slice(buyProcessedCount);
 
     const chainBuyCount = chainBuys.length;
