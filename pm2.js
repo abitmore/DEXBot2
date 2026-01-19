@@ -518,13 +518,9 @@ async function main(botNameFilter = null) {
     }
 
     // Step 2: Generate ecosystem config
-    console.log('Generating ecosystem configuration...');
     const apps = generateEcosystemConfig(botNameFilter);
     const botCount = apps.filter(a => a.name !== 'updater').length;
     console.log(`Number active bots: ${botCount}`);
-    if (apps.some(a => a.name === 'updater')) {
-        console.log(`Updater scheduled: ${UPDATER.SCHEDULE}`);
-    }
     console.log();
 
     // Step 3: Authenticate
