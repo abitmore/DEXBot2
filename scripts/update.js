@@ -75,6 +75,16 @@ try {
 
     log('Updates available. Proceeding with update process...');
 
+    // List changes
+    console.log('\n----------------------------------------------------------------');
+    console.log('Incoming Changes:');
+    try {
+        execSync(`git log --oneline --graph --decorate ${localHash}..${remoteHash}`, { stdio: 'inherit', cwd: ROOT });
+    } catch (e) {
+        log('Warning: Could not list changes.');
+    }
+    console.log('----------------------------------------------------------------\n');
+
     // Step 3: Prepare working directory
     log('Cleaning working directory...');
     run('git reset --hard');
