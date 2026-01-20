@@ -974,33 +974,8 @@ class DEXBot {
             await this._buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts);
             await this._buildSizeUpdateOps(ordersToUpdate, operations, opContexts);
 
-            // Create function to compute virtual state snapshot for rotation ops
-            // This applies pending size updates to current open orders to prevent false "unmet" rotations
-            // Virtual state is recomputed on each rotation attempt to avoid staleness
-            const computeVirtualOpenOrders = async () => {
-                if (!ordersToUpdate || ordersToUpdate.length === 0) {
-                    return null;
-                }
-                const currentOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                const virtual = currentOpenOrders.map(order => {
-                    const update = ordersToUpdate.find(u => u.partialOrder.orderId === order.id);
-                    if (update) {
-                        return { ...order, size: update.newSize };
-                    }
-                    return order;
-                });
-                return virtual;
-            };
-
-            // Compute virtual state snapshot for rotation ops
-            // This applies pending size updates to current open orders to prevent false "unmet" rotations
-            const virtualOpenOrders = await computeVirtualOpenOrders();
-            if (virtualOpenOrders) {
-                this.manager.logger.log(`[ROTATION] Using virtual state with ${ordersToUpdate.length} pending size update(s)`, 'debug');
-            }
-
             // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
-            const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts, virtualOpenOrders);
+            const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts);
 
             // Convert unmet rotations to placements so we still fill the grid gaps
             if (unmetRotations.length > 0) {
@@ -1109,7 +1084,7 @@ class DEXBot {
                     args.minToReceive, args.receiveAssetId, null
                 );
                 operations.push(op);
-                opContexts.push({ kind: 'create', order });
+                opContexts.push({ kind: 'create', order, args });
             } catch (err) {
                 this.manager.logger.log(`Failed to prepare create op for ${order.type} order ${order.id}: ${err.message}`, 'error');
             }
@@ -1128,26 +1103,21 @@ class DEXBot {
         if (!ordersToUpdate || ordersToUpdate.length === 0) return;
         this.manager.logger.log(`[SPLIT UPDATE] Processing ${ordersToUpdate.length} size update(s)`, 'info');
 
-        const openOrders = await chainOrders.readOpenOrders(this.accountId);
         for (const updateInfo of ordersToUpdate) {
             try {
                 const { partialOrder, newSize } = updateInfo;
                 if (!partialOrder.orderId) continue;
-                const chainOrder = openOrders.find(o => o.id === partialOrder.orderId);
 
-                if (!chainOrder) {
-                    this.manager.logger.log(`[SPLIT UPDATE] Skipping: Order ${partialOrder.orderId} missing on-chain`, 'warn');
-                    continue;
-                }
-
-                const op = await chainOrders.buildUpdateOrderOp(
+                const buildResult = await chainOrders.buildUpdateOrderOp(
                     this.account, partialOrder.orderId,
-                    { amountToSell: newSize, orderType: partialOrder.type }
+                    { amountToSell: newSize, orderType: partialOrder.type },
+                    partialOrder.rawOnChain // Use cached raw order to avoid redundant fetch
                 );
 
-                if (op) {
+                if (buildResult) {
+                    const { op, finalInts } = buildResult;
                     operations.push(op);
-                    opContexts.push({ kind: 'size-update', updateInfo });
+                    opContexts.push({ kind: 'size-update', updateInfo, finalInts });
                 }
             } catch (err) {
                 this.manager.logger.log(`[SPLIT UPDATE] Failed to prepare size update op: ${err.message}`, 'error');
@@ -1168,12 +1138,10 @@ class DEXBot {
      * @returns {Array} Unmet rotations (fallback to placements)
      * @private
      */
-    async _buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts, virtualOpenOrders = null) {
+    async _buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts) {
         if (!ordersToRotate || ordersToRotate.length === 0) return [];
 
         const seenOrderIds = new Set();
-        // Use virtual state if provided (reflects pending size updates), otherwise read current state from chain
-        const openOrders = virtualOpenOrders || await chainOrders.readOpenOrders(this.accountId);
         const unmetRotations = [];  // Track rotations that couldn't be executed
 
         for (const rotation of ordersToRotate) {
@@ -1181,29 +1149,32 @@ class DEXBot {
             if (!oldOrder.orderId || seenOrderIds.has(oldOrder.orderId)) continue;
             seenOrderIds.add(oldOrder.orderId);
 
-            const chainOrder = openOrders.find(o => o.id === oldOrder.orderId);
-            if (!chainOrder) {
-                this.manager.logger.log(`Rotation fallback to creation: Order ${oldOrder.orderId} missing on-chain (was filled or cancelled)`, 'warn');
-                // Track this as an unmet rotation so we can create the new order as a placement instead
-                unmetRotations.push({ newGridId, newPrice, newSize, type });
-                continue;
-            }
-
+            // Trust internal grid state: if orderId exists and no rawOnChain cache, 
+            // it's likely a newly placed order. buildUpdateOrderOp will handle 
+            // the fetch if cache is missing.
             try {
                 const { amountToSell, minToReceive } = buildCreateOrderArgs({ type, size: newSize, price: newPrice }, assetA, assetB);
-                const op = await chainOrders.buildUpdateOrderOp(
+                const buildResult = await chainOrders.buildUpdateOrderOp(
                     this.account, oldOrder.orderId,
-                    { amountToSell, minToReceive, newPrice, orderType: type }
+                    { amountToSell, minToReceive, newPrice, orderType: type },
+                    oldOrder.rawOnChain // Use cached raw order to avoid redundant fetch
                 );
 
-                if (op) {
+                if (buildResult) {
+                    const { op, finalInts } = buildResult;
                     operations.push(op);
-                    opContexts.push({ kind: 'rotation', rotation });
+                    opContexts.push({ kind: 'rotation', rotation, finalInts });
                 } else {
                     this.manager.logger.log(`Skipping rotation of ${oldOrder.orderId}: no blockchain change needed`, 'debug');
                 }
             } catch (err) {
-                this.manager.logger.log(`Failed to prepare rotation op: ${err.message}`, 'error');
+                // If the error indicates the order is missing, treat as unmet rotation
+                if (err.message.includes('not found')) {
+                    this.manager.logger.log(`Rotation fallback to creation: Order ${oldOrder.orderId} not found (assuming filled or cancelled)`, 'warn');
+                    unmetRotations.push({ newGridId, newPrice, newSize, type });
+                } else {
+                    this.manager.logger.log(`Failed to prepare rotation op: ${err.message}`, 'error');
+                }
             }
         }
 
@@ -1237,13 +1208,44 @@ class DEXBot {
             }
             else if (ctx.kind === 'size-update') {
                 const ord = this.manager.orders.get(ctx.updateInfo.partialOrder.id);
-                if (ord) this.manager._updateOrder({ ...ord, size: ctx.updateInfo.newSize }, btsFeeData.updateFee);
+                if (ord) {
+                    const updatedSlot = { ...ord, size: ctx.updateInfo.newSize };
+                    // Update rawOnChain cache with new integers
+                    if (ctx.finalInts) {
+                        updatedSlot.rawOnChain = {
+                            id: ord.orderId,
+                            for_sale: String(ctx.finalInts.sell),
+                            sell_price: {
+                                base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                                quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                            }
+                        };
+                    }
+                    this.manager._updateOrder(updatedSlot, btsFeeData.updateFee);
+                }
                 this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
                 updateOperationCount++;
             }
             else if (ctx.kind === 'create') {
                 const chainOrderId = res && res[1];
                 if (chainOrderId) {
+                    const gridOrder = this.manager.orders.get(ctx.order.id);
+                    if (gridOrder) {
+                        const updatedOrder = { ...gridOrder };
+                        // Populate rawOnChain cache for newly created order
+                        if (ctx.args) {
+                            updatedOrder.rawOnChain = {
+                                id: chainOrderId,
+                                for_sale: String(ctx.args.amountToSell),
+                                sell_price: {
+                                    base: { amount: String(ctx.args.amountToSell), asset_id: ctx.args.sellAssetId },
+                                    quote: { amount: String(ctx.args.minToReceive), asset_id: ctx.args.receiveAssetId }
+                                }
+                            };
+                        }
+                        this.manager._updateOrder(updatedOrder);
+                    }
+
                     await this.manager.synchronizeWithChain({
                         gridOrderId: ctx.order.id, chainOrderId, fee: btsFeeData.createFee
                     }, 'createOrder');
@@ -1260,7 +1262,21 @@ class DEXBot {
                 if (!newGridId) {
                     // Size correction only
                     const ord = this.manager.orders.get(oldOrder.id || rotation.id);
-                    if (ord) this.manager._updateOrder({ ...ord, size: newSize }, btsFeeData.updateFee);
+                    if (ord) {
+                        const updatedSlot = { ...ord, size: newSize };
+                        // Update rawOnChain cache with new integers
+                        if (ctx.finalInts) {
+                            updatedSlot.rawOnChain = {
+                                id: ord.orderId,
+                                for_sale: String(ctx.finalInts.sell),
+                                sell_price: {
+                                    base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                                    quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                                }
+                            };
+                        }
+                        this.manager._updateOrder(updatedSlot, btsFeeData.updateFee);
+                    }
 
                     updateOperationCount++;
                     continue;
@@ -1271,6 +1287,19 @@ class DEXBot {
                 const isPartialPlacement = slot.size > 0 && newSize < slot.size;
 
                 const updatedSlot = { ...slot, id: newGridId, type, size: newSize, price: newPrice, state: ORDER_STATES.VIRTUAL, orderId: null };
+                
+                // Update rawOnChain cache for the rotated order
+                if (ctx.finalInts) {
+                    updatedSlot.rawOnChain = {
+                        id: oldOrder.orderId,
+                        for_sale: String(ctx.finalInts.sell),
+                        sell_price: {
+                            base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                            quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                        }
+                    };
+                }
+                
                 this.manager._updateOrder(updatedSlot);
 
                 this.manager.completeOrderRotation(oldOrder);

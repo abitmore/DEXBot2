@@ -260,7 +260,8 @@ class SyncEngine {
                 const chainOrder = parsedChainOrders.get(gridOrder.orderId);
                 const updatedOrder = { ...gridOrder };
                 chainOrderIdsOnGrid.add(gridOrder.orderId);
-                matchedGridOrderIds.add(gridOrder.id);
+                // Store raw blockchain data in grid slot for later update calculation
+                updatedOrder.rawOnChain = rawChainOrders.get(gridOrder.orderId);
 
                 // Calculate price tolerance for comparison
                 const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets) ?? 0;
@@ -349,6 +350,7 @@ class SyncEngine {
                 const bestMatch = { ...match }; // CLONE HERE
                 bestMatch.orderId = chainOrderId;
                 bestMatch.state = ORDER_STATES.ACTIVE;
+                bestMatch.rawOnChain = rawChainOrders.get(chainOrderId);
                 matchedGridOrderIds.add(bestMatch.id);
 
                 const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
@@ -508,6 +510,13 @@ class SyncEngine {
                     };
                     const updatedOrder = { ...matchedGridOrder };
                     updatedOrder.state = ORDER_STATES.PARTIAL;
+                    
+                    // Update cached raw order integer instead of deleting it
+                    if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
+                        const currentForSale = Number(updatedOrder.rawOnChain.for_sale);
+                        updatedOrder.rawOnChain.for_sale = String(Math.max(0, currentForSale - filledAmountInt));
+                    }
+                    
                     applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
 
                     // NEW: Simplified Double-Side Strategy (Partial Fill)
