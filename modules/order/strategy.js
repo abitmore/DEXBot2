@@ -167,6 +167,12 @@ class StrategyEngine {
             }
         }
 
+        // Validate boundary index before clamping
+        if (!Number.isFinite(mgr.boundaryIdx)) {
+             mgr.logger.log(`[BOUNDARY] Invalid boundary index detected (NaN/Infinity). Resetting to center.`, 'warn');
+             mgr.boundaryIdx = Math.floor(allSlots.length / 2);
+        }
+
         // Clamp boundary to valid range
         mgr.boundaryIdx = Math.max(0, Math.min(allSlots.length - 1, mgr.boundaryIdx));
         const boundaryIdx = mgr.boundaryIdx;
@@ -509,20 +515,20 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
                 const finalSize = oldSize + cappedIncrease;
 
-                if (finalSize > 0) {
-                    mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
-                    ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
-                    stateUpdates.push({ ...partial, size: finalSize, state: ORDER_STATES.ACTIVE });
-
-                    ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
-                    stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.ACTIVE });
-
-                    totalNewPlacementSize += cappedIncrease;
-                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
-                    handledPartialIds.add(partial.id);
-                    budgetRemaining--;
-                }
-            }
+                                    if (finalSize > 0) {
+                                        mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
+                                        ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
+                                        stateUpdates.push({ ...partial, size: finalSize, state: ORDER_STATES.ACTIVE });
+                
+                                        // NEW: Set new split order to VIRTUAL until confirmed on-chain
+                                        ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
+                                        stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
+                
+                                        totalNewPlacementSize += cappedIncrease;
+                                        remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                                        handledPartialIds.add(partial.id);
+                                        budgetRemaining--;
+                                    }            }
         }
 
         // Remove handled partials from surpluses so they aren't rotated to other slots
@@ -637,15 +643,17 @@ class StrategyEngine {
                     const finalSize = currentSize + cappedIncrease;
 
                     if (finalSize > 0) {
-                        ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
-                        stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.ACTIVE });
+                        // NEW: Set new placement to VIRTUAL until confirmed on-chain
+                        ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
+                        stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
                         totalNewPlacementSize += cappedIncrease;
                         remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                         budgetRemaining--;
                     }
                 } else if (idealSize > 0) {
-                    ordersToPlace.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
-                    stateUpdates.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.ACTIVE });
+                    // NEW: Set new placement to VIRTUAL until confirmed on-chain
+                    ordersToPlace.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.VIRTUAL });
+                    stateUpdates.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.VIRTUAL });
                     budgetRemaining--;
                 }
             }

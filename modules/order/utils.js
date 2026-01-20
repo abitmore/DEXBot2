@@ -2179,10 +2179,46 @@ function hasSignificantSizeChange(currentSize, newSize, thresholdPercent) {
     return percentChange >= threshold;
 }
 
+/**
+ * Execute an async function with retries and exponential backoff.
+ * @param {Function} fn - Async function to execute
+ * @param {Object} options - Retry options
+ * @returns {Promise<*>} Result of the function
+ */
+async function withRetry(fn, options = {}) {
+    const {
+        maxAttempts = 3,
+        baseDelayMs = 1000,
+        maxDelayMs = 10000,
+        logger = null,
+        operationName = 'operation'
+    } = options;
+
+    let lastError;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastError = err;
+            if (attempt === maxAttempts) {
+                logger?.log?.(`${operationName} failed after ${attempt} attempts: ${err.message}`, 'error');
+                throw err;
+            }
+            const delayMs = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
+            logger?.log?.(`${operationName} attempt ${attempt}/${maxAttempts} failed. Retrying in ${delayMs}ms...`, 'warn');
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+    throw lastError;
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 module.exports = {
+    // Retry helper
+    withRetry,
+
     // Parsing
     isPercentageString,
     parsePercentageString,

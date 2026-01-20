@@ -402,6 +402,13 @@ class Grid {
         try {
             // RC-2: Use atomic order updates to prevent concurrent state corruption
             for (const order of grid) {
+                // SANITY CHECK: If order is ACTIVE/PARTIAL but has no orderId, downgrade to VIRTUAL
+                // This fixes "Wrong active order" bugs where state gets corrupted
+                if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !order.orderId) {
+                    manager.logger?.log?.(`Sanitizing corrupted order ${order.id}: ACTIVE/PARTIAL without orderId -> VIRTUAL`, 'warn');
+                    order.state = ORDER_STATES.VIRTUAL;
+                    // Keep size as-is for debug context, _updateOrder handles state transitions correctly
+                }
                 await Grid._updateOrderAtomic(manager, order);
             }
         } finally {

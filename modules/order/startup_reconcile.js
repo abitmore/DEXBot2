@@ -243,6 +243,16 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             isPartialPlacement: false,
             fee: btsFeeData.createFee
         }, 'createOrder');
+    } else {
+        // CRITICAL FIX: Recovery sync if order extraction fails
+        const logger = manager && manager.logger;
+        logger?.log?.(`[_createOrderFromGrid] CRITICAL: createOrder succeeded but chainOrderId extraction failed`, 'error');
+        try {
+            const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
+            await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'chainOrderIdExtractionFailure' });
+        } catch (syncErr) {
+            logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${syncErr.message}`, 'error');
+        }
     }
 }
 
@@ -397,6 +407,25 @@ async function reconcileStartupOrders({
      const chainBuys = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
      const chainSells = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
 
+    // CRITICAL FIX: Sanitize phantom orders - grid orders that claim to be active with an ID,
+    // but that ID is missing from the chain. Downgrade to VIRTUAL so they don't block
+    // new orders or cause balance invariants.
+    const chainIds = new Set(chainOpenOrders.map(o => o.id));
+    for (const order of manager.orders.values()) {
+        if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && order.orderId) {
+            if (!chainIds.has(order.orderId)) {
+                logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
+                // Use manager._updateOrder to maintain indices
+                manager._updateOrder({
+                    ...order,
+                    state: ORDER_STATES.VIRTUAL,
+                    orderId: "",
+                    // Keep size, will be handled by reconciliation logic if reactivated
+                });
+            }
+        }
+    }
+
      // CRITICAL FIX: Compute unmatched orders by finding which chain orders do NOT match the grid
      // The sync result doesn't tell us which orders didn't match - we need to compute this ourselves.
      // An order is unmatched if:
@@ -515,6 +544,14 @@ async function reconcileStartupOrders({
                  await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
              } catch (err) {
                  logger && logger.log && logger.log(`Startup: Failed to create SELL for cancelled slot: ${err.message}`, 'error');
+                 // CRITICAL FIX: Recovery sync
+                 try {
+                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL creation failure`, 'warn');
+                     const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
+                     await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'phase3CreationFailure' });
+                 } catch (syncErr) {
+                     logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
+                 }
              }
          }
      }
@@ -673,6 +710,14 @@ async function reconcileStartupOrders({
                  await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
              } catch (err) {
                  logger && logger.log && logger.log(`Startup: Failed to create BUY for cancelled slot: ${err.message}`, 'error');
+                 // CRITICAL FIX: Recovery sync
+                 try {
+                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY creation failure`, 'warn');
+                     const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
+                     await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'phase3CreationFailure' });
+                 } catch (syncErr) {
+                     logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
+                 }
              }
          }
      }

@@ -769,15 +769,26 @@ class AccountOrders {
   _serializeOrder(order = {}) {
     const priceValue = Number(order.price !== undefined && order.price !== null ? order.price : 0);
     const sizeValue = Number(order.size !== undefined && order.size !== null ? order.size : 0);
-    // Preserve orderId for both ACTIVE and PARTIAL orders
-    // CRITICAL: NEVER use slot id as fallback for orderId. 
-    // This was causing grid corruption where virtual orders were treated as on-chain.
-    const orderId = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) ? (order.orderId || '') : '';
+    
+    // SANITY CHECK: If order is ACTIVE/PARTIAL but has no orderId, it's corrupted.
+    // Downgrade to VIRTUAL to prevent persisting phantom active orders.
+    // This fixes the root cause of "Active No ID" state in JSON files.
+    let state = order.state || null;
+    let orderId = '';
+    
+    if (state === ORDER_STATES.ACTIVE || state === ORDER_STATES.PARTIAL) {
+        if (order.orderId) {
+            orderId = order.orderId;
+        } else {
+            // Corrupted state: ACTIVE but no ID. Revert to VIRTUAL.
+            state = ORDER_STATES.VIRTUAL;
+        }
+    }
 
     const serialized = {
       id: order.id || null,
       type: order.type || null,
-      state: order.state || null,
+      state: state,
       price: Number.isFinite(priceValue) ? priceValue : 0,
       size: Number.isFinite(sizeValue) ? sizeValue : 0,
       orderId

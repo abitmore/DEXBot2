@@ -388,6 +388,12 @@ async function testStartupDualDustTrigger() {
     };
 
     // Run reconcile (partially mocked inputs)
+    // FIX: Provide matching chain orders so they aren't detected as phantoms and cleared
+    const chainDustOrders = [
+        { id: '1.7.100', sell_price: { base: { asset_id: '1.3.5537', amount: 1000 }, quote: { asset_id: '1.3.0', amount: 1900 } }, for_sale: 1000 },
+        { id: '1.7.200', sell_price: { base: { asset_id: '1.3.0', amount: 8500 }, quote: { asset_id: '1.3.5537', amount: 5000 } }, for_sale: 8500 }
+    ];
+
     await reconcileStartupOrders({
         manager: mgr,
         config: mgr.config,
@@ -398,7 +404,7 @@ async function testStartupDualDustTrigger() {
             cancelOrder: async () => {},
             createOrder: async () => [[{ trx: { operation_results: [[null, 'test-order-id']] } }]]
         },
-        chainOpenOrders: [],
+        chainOpenOrders: chainDustOrders,
         syncResult: { unmatchedChainOrders: [] }
     });
 
