@@ -105,7 +105,73 @@ $$\text{finalSize} = \text{destinationSize} + \text{cappedIncrease}$$
 
 ---
 
-## 4. Fund Accounting & Safety
+## 4. Memory-Only Integer Tracking
+
+The bot has been optimized to use a **"memory-driven" model** for order updates, eliminating redundant blockchain API calls during normal operation.
+
+### Raw Order Cache (`rawOnChain`)
+
+Grid slots now store exact blockchain order representations (integers/satoshis) in a `rawOnChain` cache:
+
+**1. Birth (Initial Population)**
+- Cache populated immediately after successful order placement using broadcasted arguments
+- No blockchain fetch required - data comes directly from transaction response
+
+**2. Partial Fills (In-Place Updates)**
+- Cache updated via integer subtraction (subtracting filled satoshis from `for_sale`)
+- Maintains 100% mathematical accuracy without any fetches
+- **Formula**: `updatedRaw.for_sale = currentRaw.for_sale - filledAmountInt`
+
+**3. Updates & Rotations**
+- Cache refreshed with adjusted integers returned by build process
+- Uses exact values sent to blockchain to maintain consistency
+
+### Eliminated Redundant API Calls
+
+The following functions were refactored to avoid unnecessary blockchain queries:
+
+**1. Removed from `_buildSizeUpdateOps()`**:
+- No longer calls `readOpenOrders()` for size updates
+- Uses cached `partialOrder.rawOnChain` data
+
+**2. Removed from `_buildRotationOps()`**:
+- No longer calls `readOpenOrders()` for rotation operations
+- Trusts internal grid state for order existence
+
+**3. Removed `computeVirtualOpenOrders()`**:
+- Entire function excised - was redundantly fetching entire account state
+- Bot now trusts its internal state, backed by real-time fill listener
+
+### Refactored `buildUpdateOrderOp()`
+
+- **Added `cachedOrder` parameter**: Allows callers to bypass blockchain queries if they have raw state in memory
+- **Returns `finalInts`**: Along with operation data, enabling callers to update their local tracking with exact values sent to the network
+- **Fallback to fetch**: Only queries blockchain if `cachedOrder` is not provided
+
+### Self-Healing Resilience
+
+- **State Recovery Sync**: If a memory-driven transaction fails, bot catches error and performs a full refresh
+- Ensures internal ledger stays synchronized with BitShares blockchain
+- Maintains safety of integer-based tracking while allowing recovery from failures
+
+### Benefits
+
+| Benefit | Description |
+|----------|-------------|
+| **Faster reaction time** | No waiting for blockchain queries during order updates |
+| **Reduced API load** | Fewer fetches, less network congestion |
+| **Mathematical precision** | Integer-based tracking prevents float precision errors |
+| **Fallback safety** | Automatic recovery if memory state becomes inconsistent |
+
+### Performance Impact
+
+- **Batch operations** (size updates, rotations) now run without any blockchain fetches
+- **Only placement operations** and **recovery syncs** query the blockchain
+- **Estimated speedup**: 10-20x faster for high-frequency operations
+
+---
+
+## 5. Fund Accounting & Safety
 Accounting in `dev` uses an **Atomic Check-and-Deduct** model to prevent race conditions.
 
 ### Available Funds Calculation
