@@ -582,7 +582,7 @@ async function reconcileStartupOrders({
         const parsedUnmatchedSells = unmatchedSells
             .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
             .filter(x => x.parsed)
-            .sort((a, b) => (a.parsed.price || 0) - (b.parsed.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
+            .sort((a, b) => (b.parsed.price || 0) - (a.parsed.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
 
         for (const x of parsedUnmatchedSells) {
             if (sellCancelCount <= 0) break;
@@ -599,7 +599,7 @@ async function reconcileStartupOrders({
         if (sellCancelCount > 0) {
             const activeSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE)
                 .filter(o => o && o.orderId)
-                .sort((a, b) => (a.price || 0) - (b.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
+                .sort((a, b) => (b.price || 0) - (a.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
 
             for (const o of activeSells) {
                 if (sellCancelCount <= 0) break;
@@ -748,7 +748,7 @@ async function reconcileStartupOrders({
         const parsedUnmatchedBuys = unmatchedBuys
             .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
             .filter(x => x.parsed)
-            .sort((a, b) => (b.parsed.price || 0) - (a.parsed.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
+            .sort((a, b) => (a.parsed.price || 0) - (b.parsed.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
 
         for (const x of parsedUnmatchedBuys) {
             if (buyCancelCount <= 0) break;
@@ -765,7 +765,7 @@ async function reconcileStartupOrders({
         if (buyCancelCount > 0) {
             const activeBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
                 .filter(o => o && o.orderId)
-                .sort((a, b) => (b.price || 0) - (a.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
+                .sort((a, b) => (a.price || 0) - (b.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
 
             for (const o of activeBuys) {
                 if (buyCancelCount <= 0) break;
