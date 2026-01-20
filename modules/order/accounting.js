@@ -264,7 +264,8 @@ class Accountant {
         }
 
         // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
-        if (fee > 0 && btsSide && isBecomingOnChain) {
+        // Deduct whenever a fee is provided, assuming caller only passes it for actual chain operations.
+        if (fee > 0 && btsSide) {
             const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
             this.adjustTotalBalance(btsOrderType, -fee, `${context}-fee`);
         }

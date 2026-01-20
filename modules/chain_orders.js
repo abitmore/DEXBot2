@@ -386,17 +386,21 @@ async function listenForFills(accountRef, callback) {
  * @param {number} [newParams.newPrice] - New price.
  * @param {string} [newParams.orderType] - Type of the order ('buy' or 'sell').
  * @param {string} [newParams.expiration] - New expiration date.
+ * @param {Object} [cachedOrder=null] - Optional already-fetched raw chain order.
  * @returns {Promise<Object|null>} Operation object or null if no change.
  * @throws {Error} If account or order not found, or if amounts exceed limits.
  */
-async function buildUpdateOrderOp(accountName, orderId, newParams) {
+async function buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder = null) {
     const accId = await resolveAccountId(accountName);
     if (!accId) throw new Error(`Account ${accountName} not found`);
 
-    // We can't use the account client here easily for reading, but we need raw reads anyway.
-    // However, existing updateOrder logic uses readOpenOrders which just needs an ID.
-    const orders = await readOpenOrders(accId);
-    const order = orders.find(o => o.id === orderId);
+    // Use cached order if provided, otherwise fetch fresh from blockchain
+    let order = cachedOrder;
+    if (!order) {
+        const orders = await readOpenOrders(accId);
+        order = orders.find(o => o.id === orderId);
+    }
+    
     if (!order) throw new Error(`Order ${orderId} not found`);
 
     const sellAssetId = order.sell_price.base.asset_id;
@@ -551,34 +555,29 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
         );
     }
 
-    const op = {
-        op_name: 'limit_order_update',
-        op_data: {
-            fee: { amount: 0, asset_id: '1.3.0' },
-            seller: accId,
-            order: orderId,
-            new_price: {
-                base: {
-                    amount: adjustedSellInt,
-                    asset_id: sellAssetId
+    return {
+        op: {
+            op_name: 'limit_order_update',
+            op_data: {
+                fee: { amount: 0, asset_id: '1.3.0' },
+                seller: accId,
+                order: orderId,
+                new_price: {
+                    base: {
+                        amount: adjustedSellInt,
+                        asset_id: sellAssetId
+                    },
+                    quote: {
+                        amount: newReceiveInt,
+                        asset_id: receiveAssetId
+                    }
                 },
-                quote: {
-                    amount: newReceiveInt,
-                    asset_id: receiveAssetId
-                }
+                ...(deltaSellInt !== 0 ? { delta_amount_to_sell: { amount: deltaSellInt, asset_id: sellAssetId } } : {}),
+                ...(newParams.expiration ? { expiration: newParams.expiration } : {})
             }
-        }
+        },
+        finalInts: { sell: adjustedSellInt, receive: newReceiveInt, sellAssetId, receiveAssetId }
     };
-    // Only include delta_amount_to_sell if non-zero (BitShares rejects zero delta)
-    if (deltaSellInt !== 0) {
-        op.op_data.delta_amount_to_sell = {
-            amount: deltaSellInt,
-            asset_id: sellAssetId
-        };
-    }
-    if (newParams.expiration) op.op_data.expiration = newParams.expiration;
-
-    return op;
 }
 
 /**
@@ -592,12 +591,13 @@ async function buildUpdateOrderOp(accountName, orderId, newParams) {
  */
 async function updateOrder(accountName, privateKey, orderId, newParams) {
     try {
-        const op = await buildUpdateOrderOp(accountName, orderId, newParams);
-        if (!op) {
+        const buildResult = await buildUpdateOrderOp(accountName, orderId, newParams);
+        if (!buildResult) {
             console.log(`Delta is 0; skipping limit_order_update (no change to amount_to_sell)`);
             return null;
         }
 
+        const { op } = buildResult;
         const acc = createAccountClient(accountName, privateKey);
         await acc.initPromise;
         const tx = acc.newTx();
@@ -606,13 +606,6 @@ async function updateOrder(accountName, privateKey, orderId, newParams) {
         if (typeof tx.limit_order_update === 'function') {
             tx.limit_order_update(op.op_data);
         } else {
-            // Fallback for some library versions or if method is missing
-            console.warn(`tx.limit_order_update not found, trying add_operation logic or throwing`);
-            if (typeof tx.add_operation === 'function') {
-                // Reconstruct full op object if needed? No, btsdex add_operation usually takes ID + data
-                // But let's assume limit_order_update exists if create exists
-                throw new Error(`Transaction builder does not support limit_order_update`);
-            }
             throw new Error(`Transaction builder does not support limit_order_update`);
         }
         await tx.broadcast();
