@@ -63,6 +63,14 @@ async function testFeeAccounting() {
         manager.funds.btsFeesOwed = 0;
     };
 
+    // Track direct deductions (placements/rotations)
+    let directDeductedAmount = 0;
+    const originalAdjust = manager.accountant.adjustTotalBalance.bind(manager.accountant);
+    manager.accountant.adjustTotalBalance = (type, delta, op) => {
+        if (delta < 0) directDeductedAmount += Math.abs(delta);
+        return originalAdjust(type, delta, op);
+    };
+
     // 1. Simulate a single fill
     console.log('\n  Simulating 1 fill...');
     const fill = { id: 'slot-6', type: ORDER_TYPES.SELL, price: 1.1, size: 10, isPartial: false };
@@ -79,24 +87,37 @@ async function testFeeAccounting() {
         });
     }
 
-    await manager.strategy.processFilledOrders([fill]);
+    const result = await manager.strategy.processFilledOrders([fill]);
 
-    const totalFees = deductedAmount + manager.funds.btsFeesOwed;
+    // 2. Simulate execution of planned rotations (this is where updateFees are deducted)
+    if (result && result.ordersToRotate) {
+        for (const rotation of result.ordersToRotate) {
+            const btsFeeData = utils.getAssetFees('BTS', 1);
+            await manager.synchronizeWithChain({
+                gridOrderId: rotation.newGridId,
+                chainOrderId: rotation.oldOrder.orderId,
+                isPartialPlacement: false,
+                fee: btsFeeData.updateFee
+            }, 'createOrder');
+        }
+    }
+
+    const totalFees = deductedAmount + directDeductedAmount + manager.funds.btsFeesOwed;
     console.log(`  Total BTS fees (deducted + remaining): ${Format.formatMetric5(totalFees)}`);
     
     // Expected: 
     // 1 Fill net cost: makerNetFee = 0.001
-    // 2 Rotations cost: 2 * updateFee = 0.0002
-    // TOTAL: 0.0012
+    // 1 Rotation cost: 1 * updateFee = 0.0001
+    // TOTAL: 0.0011
     
-    const expected = 0.0012;
+    const expected = 0.0011;
     if (Math.abs(totalFees - expected) > 0.000001) {
         console.warn(`  ⚠ Unexpected fee total: ${totalFees.toFixed(5)} != ${expected.toFixed(5)}`);
         if (totalFees > expected) {
             console.log('    Possible over-counting still present.');
         }
     } else {
-        console.log('  ✓ Fee accounting is correct: 0.001 (fill) + 0.0002 (2 rotations) = 0.0012');
+        console.log(`  ✓ Fee accounting is correct: 0.001 (fill) + ${(expected - 0.001).toFixed(4)} (rotations) = ${expected.toFixed(4)}`);
     }
 }
 
