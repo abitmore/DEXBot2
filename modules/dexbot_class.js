@@ -1621,7 +1621,6 @@ class DEXBot {
 
             // Check spread condition at startup (after grid operations complete)
             // Protected by _fillProcessingLock to respect AsyncLock pattern and prevent races with early fills
-            // PROACTIVE: immediately corrects spread if needed, no waiting for next fill
             try {
                 await this.manager._fillProcessingLock.acquire(async () => {
                     // CRITICAL: Recalculate funds before spread correction to ensure accurate available values
@@ -1819,7 +1818,6 @@ class DEXBot {
 
             // Check spread condition after periodic blockchain fetch
             // Protected by outer _fillProcessingLock - respects AsyncLock pattern
-            // PROACTIVE: immediately corrects spread if needed, no waiting for fills
             // CRITICAL: Recalculate funds before spread correction to ensure accurate state
             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications
             this.manager.recalculateFunds();
