@@ -615,8 +615,8 @@ class SyncEngine {
 
                         const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
                         const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
-                        // For rotations, pass fee=0 to prevent double-deduction
-                        const actualFee = isRotation ? 0 : fee;
+                        // Deduced fee (createFee or updateFee) must always be applied to reflect blockchain cost
+                        const actualFee = fee;
                         mgr._updateOrder(updatedOrder, actualFee);
                     }
                 } finally {

@@ -80,6 +80,9 @@ git checkout main && git pull && git merge --no-ff dev && git push
 - `tests/` - Integration and scenario tests
 
 ## Recent Updates
+- **BTS Fee Accounting Fix**: Corrected under-counting of fees during order rotations and size updates. Unified deduction logic in `Accountant` to handle all on-chain fees via `total` balance reduction.
+- **Rotation Synchronization**: Fixed `SyncEngine` to correctly apply `updateFee` during order rotations, ensuring `synchronizeWithChain` reflects actual blockchain costs.
+- **Unified Resize Accounting**: Migrated manual `chainFree` deductions in `DEXBot` to the centralized `_updateOrder` flow, ensuring consistent tracking of both total and free balances.
 - **Fund Rotation Fix**: Aligned `rebalanceSideRobust` in `strategy.js` with the `main` branch's budgeted rotation model.
 - **Available Funds Bug**: Eliminated double-deduction of `inFlight` funds in `utils.js::calculateAvailableFundsValue`, ensuring rotations proceed when capital is available.
 - **Accounting Stabilization**: Reported `recalculateFunds` in `accounting.js` to match the strict `main` branch structure.

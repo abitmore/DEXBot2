@@ -1237,7 +1237,7 @@ class DEXBot {
             }
             else if (ctx.kind === 'size-update') {
                 const ord = this.manager.orders.get(ctx.updateInfo.partialOrder.id);
-                if (ord) this.manager._updateOrder({ ...ord, size: ctx.updateInfo.newSize });
+                if (ord) this.manager._updateOrder({ ...ord, size: ctx.updateInfo.newSize }, btsFeeData.updateFee);
                 this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
                 updateOperationCount++;
             }
@@ -1260,13 +1260,8 @@ class DEXBot {
                 if (!newGridId) {
                     // Size correction only
                     const ord = this.manager.orders.get(oldOrder.id || rotation.id);
-                    if (ord) this.manager._updateOrder({ ...ord, size: newSize });
+                    if (ord) this.manager._updateOrder({ ...ord, size: newSize }, btsFeeData.updateFee);
 
-                    if (this.manager.config.assetA === 'BTS' || this.manager.config.assetB === 'BTS') {
-                        const btsSide = (this.manager.config.assetA === 'BTS') ? 'sell' : 'buy';
-                        const orderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-                        this.manager._deductFromChainFree(orderType, btsFeeData.updateFee, 'resize-fee');
-                    }
                     updateOperationCount++;
                     continue;
                 }
