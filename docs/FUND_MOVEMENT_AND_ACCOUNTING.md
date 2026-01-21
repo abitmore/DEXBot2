@@ -1,196 +1,187 @@
-# Unified Fund Movement & Accounting Guide
+# DEXBot2 Fund Movement & Accounting Technical Reference
 
-## Overview
+## 1. Core Accounting Model
 
-This document provides a comprehensive technical guide to the fund accounting model, grid topology, order rotation mechanics, and safety systems in DEXBot2. It unifies the architectural logic with practical accounting principles to serve as the "Single Source of Truth" for developers.
+The accounting system is designed around a **Single Source of Truth** principle with **Optimistic Execution**. It prevents double-spending while maximizing capital efficiency by treating pending proceeds as immediately available ("Optimistic ChainFree").
 
----
+### 1.1 Fund Components
 
-## Part 1: Core Fund Accounting Model
+| Component | Code Reference | Definition & Ownership |
+|-----------|----------------|------------------------|
+| **ChainFree** | `accountTotals.buyFree` | **Liquid Capital**. The unallocated balance on the blockchain. <br> *Optimistic:* Includes proceeds from fills immediately, before blockchain confirmation. |
+| **Virtual** | `funds.virtual` | **Reserved Capital**. Sum of sizes for orders in `VIRTUAL` state + `ACTIVE` orders *without* `orderId` (in-flight). <br> *Purpose:* Prevents `ChainFree` from being re-spent while an order is being placed. |
+| **Committed (Chain)** | `funds.committed.chain` | **Locked Capital**. Sum of sizes for `ACTIVE` orders *with* `orderId`. <br> *Source:* Real on-chain orders. |
+| **Committed (Grid)** | `funds.committed.grid` | **Strategy Capital**. Sum of sizes for all `ACTIVE` + `PARTIAL` orders (regardless of `orderId`). |
+| **CacheFunds** | `funds.cacheFunds` | **Reporting Metric**. Cumulative fill proceeds and rotation surpluses. <br> *Note:* Physically part of `ChainFree`. Used for profit tracking and fee deduction prioritization. |
+| **FeesOwed** | `funds.btsFeesOwed` | **Liability**. Accumulated blockchain fees (BTS) that must be settled. |
+| **FeesReservation** | `btsFeesReservation` | **Safety Buffer**. Reserved BTS to ensure future grid operations (creation/cancellation) don't fail. |
 
-### 1.1 The Single Source of Truth
+### 1.2 The Available Funds Formula
 
-**Rule: Each unit of capital has exactly ONE owner at any given time.**
+This formula determines the bot's spending power. It is calculated atomically in `utils.js::calculateAvailableFundsValue`.
 
-Without proper accounting, bots risk insolvency (spending more than they have), double-counting capital, or losing track of proceeds.
+$$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{FeesOwed} - \text{FeesReservation})$$
 
-### 1.2 Fund Components
-
-| Component | Definition | Owner / Purpose |
-|-----------|------------|----------------|
-| **ChainFree** | Unallocated funds on blockchain | **Bot (Liquid Capital)**. The total balance available for new orders. |
-| **Virtual** | Funds reserved for VIRTUAL orders | **Bot (Reserved)**. Capital allocated to orders that are internally tracked but not yet on-chain. |
-| **Committed** | Funds in ACTIVE/PARTIAL orders | **Bot (Locked)**. Capital currently placed in orders on the blockchain. |
-| **CacheFunds** | Reporting metric for fill proceeds | **Bot (Reporting)**. A subset of ChainFree that tracks profit/proceeds from fills. **NOT** a separate pool. |
-| **FeesOwed** | Accumulated BTS fees | **Blockchain (Liability)**. Hard debt that must be paid. |
-| **FeesReservation** | Buffer for future fees | **Bot (Safety)**. Reserved buffer to prevent getting stuck without fee capital. |
-
-### 1.3 The Available Funds Formula
-
-The most critical formula in the system defines what the bot is allowed to spend:
-
-```javascript
-// In utils.js calculateAvailableFundsValue()
-const Available = Math.max(0,
-    ChainFree                // Total unallocated funds on blockchain
-    - Virtual                // - Funds reserved for pending VIRTUAL orders
-    - btsFeesOwed            // - Hard fees waiting to be paid
-    - btsFeesReservation     // - Buffer for future operations
-    // NOTE: CacheFunds is NOT subtracted!
-);
-```
-
-### 1.4 Why CacheFunds Is NOT Subtracted
-
-A common misconception is that `CacheFunds` (fill proceeds) must be subtracted from `ChainFree` to find available funds. This is **incorrect** and leads to double-counting.
-
-**The Logic:**
-1. **Fill Occurs:** Blockchain balance increases by proceeds ($10). `ChainFree` increases by $10.
-2. **Tracking:** `CacheFunds` increases by $10 to record "this $10 came from a fill".
-3. **Calculation:** Since `ChainFree` already contains the $10, we use it directly.
-   - If we subtracted `CacheFunds`, we would remove the capital we just earned: `(100 + 10) - 10 = 100`.
-   - Correct: `(100 + 10) - 0 = 110`. The bot *should* use the proceeds.
-
-### 1.5 Fund Invariants (Safety Checks)
-
-The bot continuously monitors three mathematical invariants to detect leaks:
-
-1.  **Account Equality:** $TotalChain \approx FreeChain + CommittedChain$ (Tolerance: 0.1%)
-2.  **Committed Ceiling:** $CommittedGrid \leq TotalChain$ (Intended usage never exceeds wealth)
-3.  **Available Leak:** $Available \leq FreeChain$ (Derived available never exceeds raw free balance)
+**Critical Invariants:**
+1.  **CacheFunds is NOT subtracted.** Since fill proceeds are added to `ChainFree`, subtracting `CacheFunds` would be double-counting (removing the capital you just earned).
+2.  **Virtual includes In-Flight.** Orders transitioning `VIRTUAL` $\to$ `ACTIVE` remain in `Virtual` until they receive a blockchain `orderId`. This bridges the "gap" during async placement.
 
 ---
 
-## Part 2: Grid Topology & Sizing Logic
+## 2. Grid Topology & Geometric Sizing
 
-### 2.1 Grid Topology & Spread Gap
+The grid is a unified array ("Master Rail") of price levels, not separate Buy/Sell arrays.
 
-The grid is a unified array of `priceLevels` (Master Rail) rather than separate Buy/Sell rails.
+### 2.1 Geometric Weighting Formula
 
--   **Spread Zone:** A buffer of locked slots between the best buy and sell.
-    -   *Gap Size ($G$):* Determined by `incrementPercent` and `targetSpreadPercent`.
--   **Boundary Anchoring:** The grid centers around a `boundaryIdx`.
-    -   **Buy Fill:** Shifts boundary down ($boundaryIdx - 1$).
-    -   **Sell Fill:** Shifts boundary up ($boundaryIdx + 1$).
+Order sizes are calculated using a geometric progression to distribute risk.
 
-### 2.2 Global Side Capping
+**Inputs:**
+-   $N$: Number of orders
+-   $Total$: Total budget for side
+-   $w$: Weight Distribution parameter (`-1` to `2`)
+-   $inc$: Increment factor (`incrementPercent / 100`)
 
-This mechanism ensures the bot never attempts to place orders beyond its liquid reality.
+**Base Factor:**
+$$base = 1 - inc$$
 
-1.  **Budget Ceiling ($B$):** $\min(ConfigBudget, TotalWealth)$
-2.  **Available Pool ($P$):** The fuel for growth.
-    -   $P = ChainFree - Virtual - Fees$
-3.  **Scaling Factor ($S$):** If the total capital increase required ($\Delta Total$) exceeds $P$:
-    -   $S = P / \Delta Total$
-    -   All order increases are multiplied by $S$, shrinking them to fit the wallet.
+**Raw Weight ($W_i$):**
+For each slot $i$ from $0$ to $N-1$:
+$$W_i = base^{(i \times w)}$$
 
----
+**Orientation:**
+-   **SELL Side:** Normal indexing ($i=0$ is market-closest).
+-   **BUY Side:** Reversed indexing ($i=N-1$ is market-closest) to ensure heaviest weights are always near the spread.
 
-## Part 3: Order Rotation Mechanics
+**Final Size ($S_i$):**
+$$S_i = \left( \frac{W_i}{\sum W} \right) \times Total$$
 
-### 3.1 The "Crawl" Strategy
+### 2.2 Spread Gap & Boundary
 
-Rotation moves capital from "Surplus" (orders far from price) to "Shortage" (empty slots near price).
+The grid is divided into zones by a dynamic **Boundary Index**.
 
--   **Trigger:** If $PriceShortage$ is closer to market than $PriceSurplus$.
--   **Action:** Cancel Surplus -> Release Capital -> Place Shortage.
+-   **Gap Size ($G$):** Calculated from `targetSpreadPercent` and `incrementPercent`.
+    $$G = \lceil \frac{\ln(1 + \text{targetSpread})}{\ln(1 + \text{increment})} \rceil$$
+    *(Min capped at `MIN_SPREAD_ORDERS`, usually 2)*
 
-### 3.2 State Transitions (The Critical Path)
-
-Correct state transitions are essential to prevent the "Double Spend" or "Lost Fund" problems.
-
-**The Lifecycle of a Rotation:**
-
-| Step | Old Order (Surplus) | New Order (Shortage) | Accounting Impact |
-|------|---------------------|----------------------|-------------------|
-| **1. Decision** | `ACTIVE` (Size: 100) | `EMPTY` | Capital is locked in Old. |
-| **2. Transition** | `VIRTUAL` (Size: 0, OrderId: null) | `VIRTUAL` (Size: 100) | Old capital released; New capital reserved. |
-| **3. Broadcast** | Cancel Op Sent | Place Op Sent | Blockchain processes changes. |
-| **4. Sync** | Confirmed Cancelled | Confirmed `ACTIVE` | Internal state aligns with Chain. |
-
-**Key Fix (Commit 5b4fc2f):**
-We explicitly set the Old Order to `VIRTUAL` with `size: 0` *before* the New Order consumes funds. This atomic update ensures `Available` is calculated correctly during the transition.
-
-### 3.3 Memory-Only Integer Tracking
-
-To optimize performance and precision, the bot uses a **"memory-driven"** model:
-
--   **Raw Order Cache:** Stores exact satoshi values of on-chain orders.
--   **No Redundant Fetches:** Update/Rotation operations do *not* query the blockchain for current order state. They trust the internal `rawOnChain` cache.
--   **Self-Healing:** If an error occurs (state mismatch), the bot triggers a full `synchronizeWithChain()` to reset.
+-   **Zones:**
+    -   **BUY:** Indices $[0, \text{boundaryIdx}]$
+    -   **SPREAD:** Indices $[	ext{boundaryIdx}+1, \text{boundaryIdx}+G]$
+    -   **SELL:** Indices $[	ext{boundaryIdx}+G+1, N]$
 
 ---
 
-## Part 4: Partial Order Handling
+## 3. The Strategy Engine (Boundary-Crawl Algorithm)
 
-Partial orders (filled < 100%) require special handling to avoid "dust" accumulation and capital fragmentation.
+The rebalancing logic (`strategy.js::rebalanceSideRobust`) executes the "Crawl" strategy.
 
-### 4.1 Dust vs. Significant
+### 3.1 Boundary Shift (The Crawl)
+When a fill occurs, the boundary shifts to "follow" the price.
+-   **BUY Fill:** Market moved down $\to$ `boundaryIdx--` (Shift Left).
+-   **SELL Fill:** Market moved up $\to$ `boundaryIdx++` (Shift Right).
 
--   **Dust Threshold:** $< 5\%$ of Ideal Size.
--   **Action:** Treat as "empty" for logic purposes, merge back into pool when possible.
+### 3.2 Global Side Capping
+Budgets are dynamic. The bot calculates `TotalSideBudget` based on `ChainFree` + `Committed`.
 
-### 4.2 Side-Wide Double-Order Strategy
+**Safety Check:**
+If the calculated ideal grid requires more capital than is available, the *increase* is capped.
+$$Increase_{capped} = \min(Ideal - Current, Available)$$
 
-When a slot has a Partial order but needs to grow or shrink:
+### 3.3 The Rotation Cycle
+Rotations move capital from "Surplus" (useless) to "Shortage" (needed).
 
-1.  **Merge (Dust):**
-    -   If partial is dust, we overwrite it with a new standard-sized order.
-    -   The dust amount is conceptually "released" into `CacheFunds`.
-    -   The side is flagged as `Doubled` to allow an extra reaction order on the opposite side.
-
-2.  **Split (Significant):**
-    -   If partial is large, we resize it to exactly $SizeIdeal$.
-    -   The "overflow" capital is placed as a **new** order at the adjacent slot.
-    -   This keeps the original fill anchored (preserving queue position) while putting excess capital to work.
-
----
-
-## Part 5: Concurrency & Safety
-
-### 5.1 Protecting Against Races (TOCTOU)
-
-**Problem:** Thread A checks funds ($100 avail). Thread B fills an order. Thread A spends $100.
-**Solution:**
-1.  **Atomic Operations:** Calculations and state updates happen synchronously in the event loop.
-2.  **Startup Protection:**
-    -   Flag `isBootstrapping = true` during startup.
-    -   Fills arriving during startup are **queued**.
-    -   Queue processes only after `isBootstrapping = false`.
-
-### 5.2 Fee Management
-
--   **FeesOwed:** Tracked per fill. Deducted from `CacheFunds` first, then `ChainFree`.
--   **FeesReservation:** $N_{orders} \times Fee_{est}$. Subtracted from `Available` to ensure we can always cancel/update.
+1.  **Identify Shortages:** Empty slots *inside* the active window (near boundary).
+2.  **Identify Surpluses:** Active orders *outside* the window (far edges).
+3.  **Sort:**
+    -   Shortages: Closest to market first.
+    -   Surpluses: Furthest from market first.
+4.  **Execute:**
+    For each pair (Surplus $S$, Shortage $T$):
+    -   **Atomic Transition:**
+        -   $S$ state: `ACTIVE` $\to$ `VIRTUAL` (size 0, releases funds).
+        -   $T$ state: `VIRTUAL` (size $S_{size}$, reserves funds).
+    -   **Fund Calculation:**
+        -   The released funds from $S$ are immediately added to `ChainFree`.
+        -   The reserved funds for $T$ are immediately subtracted (added to `Virtual`).
 
 ---
 
-## Part 6: Best Practices & Testing
+## 4. Partial Order Handling
 
-### 6.1 Debugging Fund Issues
+The system treats partial orders differently based on their remaining size relative to the "Ideal" size for that slot.
 
-1.  **Check Invariants:** Search logs for "Fund invariant violation".
-2.  **Trace State:** Ensure `ACTIVE` -> `VIRTUAL` transitions happen atomically with `size: 0`.
-3.  **Verify Formula:** Remember: $Available = ChainFree - Virtual$. Do NOT subtract CacheFunds.
+### 4.1 Dust Detection
+A partial order is "Dust" if:
+$$Size_{current} < Size_{ideal} \times 0.05$$
 
-### 6.2 Running Tests
+### 4.2 Dust Consolidation (Merge)
+**Trigger:** Dust partial exists in a target slot.
+**Action:**
+1.  Calculate `Deficit = Ideal - Current`.
+2.  Cap `Increase = min(Deficit, Available)`.
+3.  Update order size: `NewSize = Current + Increase`.
+4.  **Flag Side as Doubled** (`buySideIsDoubled = true`).
 
-The system has extensive test coverage for these mechanics.
+**Effect of Doubling:**
+The *opposite* side receives a `ReactionCap` bonus (+1). This allows the bot to place an extra order on the other side to "capture" the liquidity provided by this consolidation.
 
-```bash
-# Run all fund-related tests
-npm test
-
-# Test specific mechanics
-node tests/test_rotation_cachefunds.js       # Rotation logic
-node tests/test_multifill_opposite_partial.js # Partial/Double logic
-node tests/test_dust_rebalance_logic.js      # Dust handling
-node tests/unit/accounting.test.js           # Core math
-```
-
-### 6.3 Verification
-
-Enable fund snapshots in `debug` mode to see a tick-by-tick ledger of fund movements in the logs.
+### 4.3 Significant Partial (Split)
+**Trigger:** Non-dust partial exists in a target slot.
+**Action:**
+1.  The existing partial order stays anchored at its price (maintains queue priority).
+2.  The *excess* ideal size (`Ideal - Current`) is treated as a "Split".
+3.  A **New Order** is placed at the *adjacent* price level with the split size.
 
 ---
-*Reference: Merged from `FUND_ACCOUNTING_AND_ROTATION.md` and `fund_movement_logic.md`.*
+
+## 5. Fee Management
+
+The bot manages two types of fees: **Blockchain Fees** (BTS) and **Market Fees** (Asset deduction).
+
+### 5.1 BTS Fees (Blockchain Operations)
+BitShares charges fees for `limit_order_create` and `limit_order_cancel`.
+
+-   **Reservation:**
+    $$Reserve = N_{active} \times Fee_{create} \times Multiplier$$
+    *(Multiplier defaults to ~2.0 to cover rotation cancel+create)*
+
+-   **Settlement (`deductBtsFees`):**
+    1.  Check `Funds.btsFeesOwed`.
+    2.  Deduct from `CacheFunds` first (profit).
+    3.  If insufficient, deduct remainder from `ChainFree` (capital).
+
+### 5.2 Market Fees (Trade Cost)
+These are deducted from the *proceeds* of a fill.
+
+-   **Maker (Limit Orders):** Typically lower fee (e.g., 0.1%).
+    -   **Rebate:** On BitShares, Makers often get a fee rebate on cancellation (vesting).
+-   **Taker (Market Orders):** Typically higher fee.
+-   **Calculation (`processFilledOrders`):**
+    ```javascript
+    GrossProceeds = Size * Price
+    NetProceeds = GrossProceeds - (GrossProceeds * FeePercent)
+    ```
+
+---
+
+## 6. Safety & Invariants
+
+The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference.
+
+### 6.1 The Equality Invariant
+Total funds on chain must equal free plus locked.
+$$Total_{chain} \approx Free_{chain} + Committed_{chain}$$
+*(Tolerance: 0.1% for rounding errors)*
+
+### 6.2 The Ceiling Invariant
+Grid commitment cannot exceed total wealth.
+$$Committed_{grid} \leq Total_{chain}$$
+
+### 6.3 Race Condition Protection (TOCTOU)
+To prevent "Time-of-Check to Time-of-Use" errors:
+1.  **Locking:** `AsyncLock` prevents concurrent updates to the same order.
+2.  **Atomic Deduct:** `tryDeductFromChainFree` checks *and* subtracts in a single synchronous step.
+3.  **Bootstrapping:** Fills arriving during startup (`isBootstrapping=true`) are queued until the grid is fully reconciled.
+
+---
+*Technical Reference for DEXBot2 v0.7+*
