@@ -8,6 +8,7 @@
 - **main**: Production-ready (merged from dev)
 
 ⚠️ **KEY RULE**: Always merge **test → dev**, NEVER dev → test
+⚠️ **KEY RULE**: Do NOT use `npm run pmain` for automated branch synchronization. Always merge and push branches manually or as requested by the user to ensure explicit control over the deployment process.
 
 See `docs/WORKFLOW.md` for detailed workflow guide.
 
