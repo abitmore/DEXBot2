@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.5] - 2026-01-21 - Security, Performance & AMA Integration
+
+### Added
+- **Unix Socket Credential Daemon** (commit 75e9eed)
+  - Eliminates security vulnerability where master passwords were exposed via `MASTER_PASSWORD` environment variables
+  - Implements daemon pattern that authenticates once and serves decrypted private keys securely via JSON-RPC
+  - Password kept in RAM only, never written to disk
+- **High-Precision Dual-AMA Trend Detection** (commit 372167c)
+  - Implements production-ready trend detection using fast/slow Adaptive Moving Averages
+  - Features parameter optimization (6240+ configs), backtesting, and interactive chart generation
+- **QTradeX Export Functionality** (commit e78d676)
+  - New `dexbot export <bot-name>` command to generate backtesting-compatible CSV files
+  - Automatically parses PM2 logs to extract trades, fees, and sanitized settings
+
+### Fixed
+- **'Active No ID' Grid Corruption** (commit b35946a)
+  - Prevents writing corrupted state to disk by downgrading nameless orders to VIRTUAL
+  - Added self-healing logic to sanitize existing corrupted files on load
+  - Orders now transition to ACTIVE only after confirmed blockchain broadcast
+- **BTS Fee Deduction Unification** (commit 160fa9a)
+  - Fixed capital drift by applying fees to all on-chain operations (rotations, size updates)
+  - Ensures internal ledger perfectly matches blockchain total balances
+- **Startup Reconciliation Index Overflow** (commit fc3c31a)
+  - Resolved array index overflow when syncing large numbers of orders during bootstrap
+- **Excess Order Cancellation Sorting** (commit e941aba)
+  - Fixed asymmetry in how excess orders were prioritized for cancellation during grid compression
+
+### Optimized
+- **Memory-Only Integer Tracking** (commit 94dd4fa)
+  - Transitioned from query-driven to memory-driven model using `rawOnChain` integer cache
+  - Eliminates redundant API fetches during rotations and size updates (O(1) local updates)
+  - Significantly improves reaction time and reduces blockchain API load
+- **Logging System Refactor** (commit b44a370)
+  - Consolidated logging logic and reduced CLI verbosity for cleaner PM2 logs
+
+### Updated Documentation
+- **docs/ama_strategies_guide.md**
+  - Added comprehensive guide for the three Adaptive Moving Average strategies
+- **docs/memory_tracking.md**
+  - Documented new integer-based memory tracking architecture
+
+---
+
 ## [0.6.0-patch.4] - 2026-01-15 - Rotation Sizing Formula Fix
 
 ### Fixed
