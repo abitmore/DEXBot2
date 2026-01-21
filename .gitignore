@@ -27,7 +27,7 @@ Thumbs.db
 
 .gemini/
 
-/scripts/repo-stats.html
+*.html
 
 # Test temporary files
 tests/tmp/
