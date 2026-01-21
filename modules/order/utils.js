@@ -1554,7 +1554,13 @@ function buildCreateOrderArgs(order, assetA, assetB) {
     }
 
     // Convert to blockchain int and back to ensure exact precision match
-    const quantizedSize = blockchainToFloat(floatToBlockchainInt(order.size, precision), precision);
+    // DETERMINISTIC: Use rawOnChain if available to avoid any float roundtrips
+    let quantizedSize;
+    if (order.rawOnChain?.for_sale) {
+        quantizedSize = blockchainToFloat(order.rawOnChain.for_sale, precision);
+    } else {
+        quantizedSize = blockchainToFloat(floatToBlockchainInt(order.size, precision), precision);
+    }
 
     let amountToSell, sellAssetId, minToReceive, receiveAssetId;
     if (order.type === 'sell') {

@@ -578,8 +578,8 @@ class DEXBot {
                 // Use the pre-calculated size from the grid
                 const rotationSize = targetSlot.size;
 
-                this._log(`[BOOTSTRAP] Rotating ${surplusOrder.id} → ${targetSlot.id} (${oppositeType} ${rotationSize.toFixed(8)})`, 'info');
-
+                this._log(`[BOOTSTRAP] Rotating ${surplusOrder.id} → ${targetSlot.id} (${oppositeType} ${Format.formatAmount8(rotationSize)})`, 'info');
+                
                 // Mark surplus as released
                 this.manager._updateOrder({
                     ...surplusOrder,
@@ -599,7 +599,7 @@ class DEXBot {
 
             // Broadcast rotation orders
             if (ordersToPlace.length > 0) {
-                const sizes = ordersToPlace.map(o => `${o.type}:${o.size?.toFixed(8) || '0'}`).join(' ');
+                const sizes = ordersToPlace.map(o => `${o.type}:${Format.formatAmount8(o.size)}`).join(' ');
                 this._log(`[BOOTSTRAP] Broadcasting ${ordersToPlace.length} rotation order(s) - sizes: ${sizes}`, 'info');
                 await this.updateOrdersOnChainBatch(ordersToPlace);
             }

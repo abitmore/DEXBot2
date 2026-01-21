@@ -415,12 +415,18 @@ async function reconcileStartupOrders({
         if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && order.orderId) {
             if (!chainIds.has(order.orderId)) {
                 logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
+                
+                // CRITICAL: Clean up rawOnChain cache for phantoms - it is now invalid
+                if (order.rawOnChain) {
+                    logger?.log?.(`Startup: Clearing invalid rawOnChain cache for phantom ${order.id}`, 'debug');
+                }
+
                 // Use manager._updateOrder to maintain indices
                 manager._updateOrder({
                     ...order,
                     state: ORDER_STATES.VIRTUAL,
                     orderId: "",
-                    // Keep size, will be handled by reconciliation logic if reactivated
+                    rawOnChain: null
                 });
             }
         }

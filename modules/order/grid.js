@@ -914,7 +914,7 @@ class Grid {
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
             if (!manager.outOfSpread) return false;
 
-            manager.logger?.log?.(`Spread too wide (${currentSpread.toFixed(2)}%), correcting...`, 'warn');
+            manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)}), correcting...`, 'warn');
 
             const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
             if (!decision.side) return false;

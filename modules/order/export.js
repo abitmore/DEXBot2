@@ -13,6 +13,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const readline = require('readline');
+const Format = require('./format');
 
 /**
  * Parse a fill line from PM2 log file
@@ -134,11 +135,11 @@ async function writeTradesCSV(trades, outputPath) {
         // CSV rows
         const rows = trades.map(trade => [
             trade.timestamp.toFixed(1),
-            trade.price.toFixed(8),
-            trade.amount.toFixed(8),
+            Format.formatPrice8(trade.price),
+            Format.formatAmount8(trade.amount),
             trade.side,
             trade.fee_asset || 'BTS',
-            (trade.fee_amount || 0).toFixed(8),
+            Format.formatAmount8(trade.fee_amount || 0),
             trade.order_id || ''
         ]);
 
