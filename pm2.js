@@ -19,15 +19,17 @@
  *    - Filters only active bots (active !== false)
  *    - If bot-name provided, filters to only that bot
  *
- * 4. Master Password Authentication
- *    - Prompts user interactively for master password
- *    - Suppresses BitShares logs during prompt
- *    - Password kept in RAM only (never saved to disk)
+ * 4. Credential Daemon Startup
+ *    - Starts credential daemon if not already running
+ *    - Prompts user interactively for master password (once)
+ *    - Daemon authenticates and keeps password in RAM
+ *    - Bot processes request keys via Unix socket
+ *    - Master password never exposed to bot processes
  *
  * 5. PM2 Startup
- *    - Passes master password via MASTER_PASSWORD environment variable
- *    - Each bot process receives password from env var
- *    - Spawns configured bots as PM2 managed processes
+ *    - Starts configured bots via PM2
+ *    - Bots request private keys from credential daemon
+ *    - No MASTER_PASSWORD environment variable passed
  *
  * Usage:
  *   node pm2.js              - Full setup and start all active bots
@@ -36,21 +38,23 @@
  *   npm run pm2:unlock-start - Same as 'node pm2.js' via npm script
  *
  * Security:
- *   - Master password never written to disk
- *   - No .env files created
- *   - Password only in process memory
- *   - Cleared when process exits
+ *   - Master password never in environment variables
+ *   - Master password kept only in daemon process
+ *   - Unix socket communication (not exposed in process env)
+ *   - Each bot authenticates via socket request
+ *   - Password never written to disk
  *
  * Output:
  *   - Clean startup messages (BitShares connection status)
  *   - Ecosystem generation confirmation
  *   - Active bot count
+ *   - Daemon startup confirmation
  *   - PM2 management commands reference
  */
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execSync } = require('child_process');
 const { promisify } = require('util');
 const { parseJsonWithComments } = require('./modules/account_bots');
 const { readBotsFileSync, readBotsFileWithLock } = require('./modules/bots_file_lock');
@@ -172,21 +176,74 @@ async function authenticateWithoutWait() {
 }
 
 /**
- * Start PM2 with provided environment and configuration.
- * @param {string} masterPassword - The master password to pass as an environment variable.
+ * Start credential daemon if not already running.
+ * @returns {Promise<void>}
+ * @throws {Error} If daemon fails to start within timeout
+ */
+async function startCredentialDaemon() {
+    const chainKeys = require('./modules/chain_keys');
+    const { authenticateWithChainKeys } = require('./modules/dexbot_class');
+
+    // Kill any existing stale daemon process
+    try {
+        execSync('pkill -f "node credential-daemon.js"', { stdio: 'ignore' });
+        // Clean up socket and ready file
+        try { fs.unlinkSync('/tmp/dexbot-cred-daemon.sock'); } catch (e) { }
+        try { fs.unlinkSync('/tmp/dexbot-cred-daemon.ready'); } catch (e) { }
+        // Brief delay for process cleanup
+        await new Promise(resolve => setTimeout(resolve, 100));
+    } catch (e) {
+        // No existing daemon, that's fine
+    }
+
+    console.log('Starting credential daemon...');
+
+    // Pre-authenticate in parent process (avoids stdin inheritance issues)
+    let masterPassword;
+    try {
+        masterPassword = await chainKeys.authenticate();
+    } catch (error) {
+        console.error('\n❌', error.message);
+        process.exit(1);
+    }
+
+    // Start daemon WITHOUT stdin - it will receive password via env var
+    // This prevents terminal hangs from inherited stdin
+    const daemonProcess = spawn('node', ['credential-daemon.js'], {
+        cwd: ROOT,
+        stdio: ['ignore', 'inherit', 'inherit'],  // Ignore stdin, inherit stdout/stderr
+        detached: true,
+        setsid: true,  // Create new session group (Linux/Mac)
+        env: { ...process.env, DAEMON_PASSWORD: masterPassword }  // Pass password securely
+    });
+
+    // Immediately unref the daemon process
+    daemonProcess.unref();
+
+    // Wait for daemon to initialize (creates ready file)
+    try {
+        await chainKeys.waitForDaemon(5000);  // Wait up to 5 seconds (no user input delay)
+    } catch (error) {
+        console.error('\n❌', error.message);
+        process.exit(1);
+    }
+
+    console.log();
+}
+
+/**
+ * Start PM2 with provided configuration.
  * @returns {Promise<void>}
  */
-function startPM2(masterPassword) {
+function startPM2() {
     return new Promise((resolve, reject) => {
-        const env = { ...process.env, MASTER_PASSWORD: masterPassword };
-        
         // Use 'pm2 start' to handle both cases:
         // 1. First run (processes don't exist yet) - creates new processes
         // 2. Subsequent runs (processes exist) - restarts existing processes gracefully
         // This prevents duplicate processes while supporting both fresh start and restart scenarios
         const pm2 = spawn('pm2', ['start', ECOSYSTEM_FILE], {
             cwd: ROOT,
-            env,
+            env: process.env,
             stdio: 'inherit',
             detached: false,
             shell: process.platform === 'win32'
@@ -523,14 +580,12 @@ async function main(botNameFilter = null) {
     console.log(`Number active bots: ${botCount}`);
     console.log();
 
-    // Step 3: Authenticate
-    console.log('Authenticating master password...');
-    const masterPassword = await authenticateWithoutWait();
-    console.log();
+    // Step 3: Start credential daemon
+    await startCredentialDaemon();
 
-    // Step 3: Start PM2
+    // Step 4: Start PM2
     console.log('Starting PM2...');
-    await startPM2(masterPassword);
+    await startPM2();
 
     console.log();
     console.log('='.repeat(50));

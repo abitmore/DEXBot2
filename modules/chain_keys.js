@@ -644,6 +644,99 @@ async function main() {
     }
 }
 
+/**
+ * Check if credential daemon is ready and responsive
+ * @returns {boolean} True if daemon socket is responsive
+ */
+function isDaemonReady() {
+    try {
+        return fs.existsSync('/tmp/dexbot-cred-daemon.ready') && fs.existsSync('/tmp/dexbot-cred-daemon.sock');
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Wait for credential daemon to be ready
+ * @param {number} maxWaitMs - Maximum time to wait in milliseconds (default 60000)
+ * @returns {Promise<void>} Resolves when daemon is ready
+ * @throws {Error} If daemon doesn't start within timeout
+ */
+async function waitForDaemon(maxWaitMs = 60000) {
+    const startTime = Date.now();
+    const checkInterval = 100; // Check every 100ms
+
+    while (Date.now() - startTime < maxWaitMs) {
+        if (isDaemonReady()) {
+            return;
+        }
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+
+    throw new Error(`Daemon did not start within ${maxWaitMs}ms`);
+}
+
+/**
+ * Request private key from daemon via Unix socket
+ * @param {string} accountName - Name of the account
+ * @param {number} timeout - Timeout in milliseconds (default 5000)
+ * @returns {Promise<string>} Decrypted private key
+ * @throws {Error} If daemon unavailable or request fails
+ */
+function getPrivateKeyFromDaemon(accountName, timeout = 5000) {
+    const net = require('net');
+    const SOCKET_PATH = '/tmp/dexbot-cred-daemon.sock';
+
+    return new Promise((resolve, reject) => {
+        const socket = net.createConnection(SOCKET_PATH, () => {
+            // Send request
+            socket.write(JSON.stringify({ type: 'private-key', accountName }) + '\n');
+        });
+
+        let responseBuffer = '';
+        const timer = setTimeout(() => {
+            socket.destroy();
+            reject(new Error('Daemon request timeout'));
+        }, timeout);
+
+        socket.on('data', (data) => {
+            responseBuffer += data.toString();
+            const lines = responseBuffer.split('\n');
+            responseBuffer = lines.pop();
+
+            for (const line of lines) {
+                if (line.trim()) {
+                    clearTimeout(timer);
+                    socket.end();
+
+                    try {
+                        const response = JSON.parse(line);
+                        if (response.success) {
+                            return resolve(response.privateKey);
+                        } else {
+                            return reject(new Error(response.error || 'Unknown error'));
+                        }
+                    } catch (err) {
+                        return reject(new Error('Invalid daemon response'));
+                    }
+                }
+            }
+        });
+
+        socket.on('error', (error) => {
+            clearTimeout(timer);
+            reject(new Error(`Daemon connection failed: ${error.message}`));
+        });
+
+        socket.on('end', () => {
+            clearTimeout(timer);
+            if (!responseBuffer.trim()) {
+                reject(new Error('Daemon closed connection unexpectedly'));
+            }
+        });
+    });
+}
+
 module.exports = {
     validatePrivateKey,
     loadAccounts,
@@ -655,4 +748,7 @@ module.exports = {
     authenticate,
     getPrivateKey,
     MasterPasswordError,
+    isDaemonReady,
+    waitForDaemon,
+    getPrivateKeyFromDaemon,
 };

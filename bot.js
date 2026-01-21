@@ -10,15 +10,15 @@
  *    - Validates bot exists in configuration
  *    - Reports market pair and account being used
  *
- * 2. Master Password Authentication
- *    - First checks MASTER_PASSWORD environment variable (set by pm2.js)
- *    - Falls back to interactive prompt if env var not set
- *    - Suppresses BitShares client logs during password entry
- *    - Password never written to disk
+ * 2. Private Key Authentication
+ *    - First tries credential daemon (Unix socket) if available
+ *    - Falls back to interactive master password prompt
+ *    - Master password never stored in environment
+ *    - Private key loaded directly to bot memory
  *
  * 3. Bot Initialization
  *    - Waits for BitShares connection (30 second timeout)
- *    - Loads private key for configured account
+ *    - Uses pre-decrypted private key
  *    - Resolves account ID from BitShares
  *    - Initializes OrderManager with bot configuration
  *
@@ -39,7 +39,6 @@
  *   Full setup: npm run pm2:unlock-start or node dexbot.js pm2
  *
  * Environment Variables:
- *   MASTER_PASSWORD - Master password for account (set by pm2.js)
  *   RUN_LOOP_MS     - Trading loop interval in ms (default: 5000)
  *   BOT_NAME        - Bot name (alternative to argv)
  *
@@ -49,9 +48,10 @@
  *   - Rotated automatically by PM2
  *
  * Security:
- *   - Master password from environment variable (RAM only)
+ *   - Private key requested from daemon (Unix socket)
+ *   - Master password never in environment
  *   - No password written to disk
- *   - Private key loaded into memory
+ *   - Private key kept in bot memory only
  *   - All sensitive operations in encrypted BitShares module
  */
 
@@ -120,19 +120,32 @@ function loadBotConfig(name) {
 }
 
 /**
- * Authenticate the master password using environment variables or an interactive prompt.
- * Suppresses internal library logs during interactive input for a cleaner UI.
- * @returns {Promise<string>} The verified master password.
- * @throws {Error} If authentication fails or no master password is set.
+ * Get private key for account from daemon or interactive prompt.
+ * Tries daemon first (if running), then falls back to interactive master password prompt.
+ * @param {string} accountName - The account name to retrieve key for.
+ * @returns {Promise<string>} The decrypted private key.
+ * @throws {Error} If both daemon and interactive authentication fail.
  */
-async function authenticateMasterPassword() {
-    // Check environment variable first
-    if (process.env.MASTER_PASSWORD) {
-        console.log('[bot.js] Master password loaded from environment');
-        return process.env.MASTER_PASSWORD;
+async function getPrivateKeyForAccount(accountName) {
+    const chainKeys = require('./modules/chain_keys');
+
+    // Try daemon first
+    if (chainKeys.isDaemonReady()) {
+        console.log('[bot.js] Requesting private key from credential daemon...');
+        try {
+            const privateKey = await chainKeys.getPrivateKeyFromDaemon(accountName);
+            console.log('[bot.js] Private key loaded from daemon');
+            return privateKey;
+        } catch (err) {
+            console.warn('[bot.js] Daemon request failed:', err.message);
+            console.log('[bot.js] Falling back to interactive authentication...\n');
+        }
+    } else {
+        console.log('[bot.js] Credential daemon not available');
+        console.log('[bot.js] Falling back to interactive authentication...\n');
     }
 
-    // Try interactive prompt with log suppression
+    // Fallback to interactive master password prompt
     const originalLog = console.log;
     try {
         console.log('[bot.js] Prompting for master password...');
@@ -146,16 +159,20 @@ async function authenticateMasterPassword() {
         };
 
         const masterPassword = await authenticateWithChainKeys();
-        return masterPassword;
+
+        // Restore console before getting key
+        console.log = originalLog;
+        console.log('[bot.js] Master password authenticated');
+
+        // Get the private key using master password
+        const privateKey = chainKeys.getPrivateKey(accountName, masterPassword);
+        return privateKey;
     } catch (err) {
+        console.log = originalLog;
         if (err && err.message && err.message.includes('No master password set')) {
             throw err;
         }
         throw err;
-    } finally {
-        // Always restore console output, regardless of success or failure
-        console.log = originalLog;
-        console.log('[bot.js] Master password authentication attempt completed');
     }
 }
 
@@ -187,16 +204,17 @@ async function authenticateMasterPassword() {
          // Normalize config for current bot with correct index from unfiltered array
          const normalizedConfig = normalizeBotEntry(botConfig, botIndex);
 
-        // Authenticate master password
-        const masterPassword = await authenticateMasterPassword();
+        // Get private key from daemon or interactively
+        const preferredAccount = normalizedConfig.preferredAccount;
+        const privateKey = await getPrivateKeyForAccount(preferredAccount);
 
          // Create and start bot with log prefix for [bot.js] context
           const bot = new DEXBot(normalizedConfig, { logPrefix: '[bot.js]' });
           try {
               // Register bot cleanup on shutdown
               registerCleanup(`Bot: ${botName}`, () => bot.shutdown());
-              
-              await bot.start(masterPassword);
+
+              await bot.startWithPrivateKey(privateKey);
           } catch (err) {
               // Attempt graceful cleanup before exiting
               try {
