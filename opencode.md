@@ -97,5 +97,5 @@ git checkout main && git pull && git merge --no-ff dev && git push
 - `docs/architecture.md` - System architecture and module relationships
 - `docs/developer_guide.md` - Developer quick start and glossary
 - `docs/TEST_UPDATES_SUMMARY.md` - Recent test coverage improvements
-- `FUND_ACCOUNTING_AND_ROTATION.md` - (In docs/) Detailed fund accounting design
+- `FUND_MOVEMENT_AND_ACCOUNTING.md` - (In docs/) Unified fund accounting and grid mechanics
 - `CHANGELOG.md` - Version history

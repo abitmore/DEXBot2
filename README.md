@@ -447,8 +447,7 @@ Price            Type            State           Size
 For comprehensive guides on architecture, fund accounting, rotation mechanics, and development, see the **[docs/](docs/)** folder.
 
 Key documents:
-- **[FUND_ACCOUNTING_AND_ROTATION.md](docs/FUND_ACCOUNTING_AND_ROTATION.md)** - Fund accounting model, rotation mechanics, and best practices
-- **[fund_movement_logic.md](docs/fund_movement_logic.md)** - Technical architecture of grid and fund systems
+- **[FUND_MOVEMENT_AND_ACCOUNTING.md](docs/FUND_MOVEMENT_AND_ACCOUNTING.md)** - Unified guide to fund accounting, grid topology, and rotation mechanics
 - **[architecture.md](docs/architecture.md)** - System design and testing strategy
 - **[developer_guide.md](docs/developer_guide.md)** - Development guide with examples
 

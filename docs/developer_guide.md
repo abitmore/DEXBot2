@@ -12,7 +12,7 @@ Welcome to DEXBot2! This guide will help you understand the codebase, navigate k
 Read these files in order to get oriented:
 1. [README.md](../README.md) - User documentation and setup
 2. [architecture.md](architecture.md) - System architecture and module relationships
-3. [fund_movement_logic.md](fund_movement_logic.md) - Core algorithms and formulas
+3. [FUND_MOVEMENT_AND_ACCOUNTING.md](FUND_MOVEMENT_AND_ACCOUNTING.md) - Core algorithms and formulas
 
 ### 2. **Core Concepts** (15 minutes)
 Understand these fundamental concepts before diving into code:
@@ -641,7 +641,7 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 
 ### Documentation
 - [Architecture](architecture.md) - System design and module relationships
-- [Fund Movement Logic](fund_movement_logic.md) - Algorithms and formulas
+- [Fund Movement Logic](FUND_MOVEMENT_AND_ACCOUNTING.md) - Algorithms and formulas
 - [README](../README.md) - User documentation
 - [WORKFLOW](WORKFLOW.md) - Git branch workflow
 
@@ -968,7 +968,7 @@ See [WORKFLOW.md](WORKFLOW.md) for detailed branching strategy.
 ## Next Steps
 
 1. **Read the Architecture**: [architecture.md](architecture.md)
-2. **Understand Fund Logic**: [fund_movement_logic.md](fund_movement_logic.md)
+2. **Understand Fund Logic**: [FUND_MOVEMENT_AND_ACCOUNTING.md](FUND_MOVEMENT_AND_ACCOUNTING.md)
 3. **Follow Code Roadmap**: Start with `constants.js` → `manager.js`
 4. **Try Debugging**: Enable debug logging and explore fund status
 5. **Run Tests**: `npm test` to see how components work
