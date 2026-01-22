@@ -101,7 +101,8 @@ Follow this path through the codebase:
 **Critical Methods**:
 ```javascript
 // Central state update - ALWAYS use this, never modify orders Map directly
-_updateOrder(order)
+// Signature: _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0)
+_updateOrder(order, context, skipAccounting, fee)
 
 // Fast lookups using indices
 getOrdersByTypeAndState(type, state)
@@ -118,7 +119,7 @@ resumeFundRecalc()
 
 **Common Patterns**:
 ```javascript
-// Pattern 1: Update order state
+// Pattern 1: Simple order state update (uses defaults)
 manager._updateOrder({
     id: 'buy-5',
     state: ORDER_STATES.ACTIVE,
@@ -128,14 +129,22 @@ manager._updateOrder({
     orderId: '1.7.12345'
 });
 
-// Pattern 2: Batch updates
+// Pattern 2: Update with context and fee (for blockchain operations)
+manager._updateOrder(
+    { id: 'buy-5', state: ORDER_STATES.VIRTUAL, orderId: null },
+    'cancel-order',  // context for logging
+    false,           // skipAccounting: update balances
+    0                // fee: no fee for cancel
+);
+
+// Pattern 3: Batch updates with pause/resume
 manager.pauseFundRecalc();
 for (const order of orders) {
-    manager._updateOrder(order);
+    manager._updateOrder(order, 'rebalance-batch', false, 0);
 }
 manager.resumeFundRecalc(); // Recalculates once at end
 
-// Pattern 3: Safe async operations
+// Pattern 4: Safe async operations
 manager.lockOrders([orderId]);
 try {
     await chainOperation();
@@ -454,7 +463,16 @@ manager.logger.logGridDiagnostics(manager, 'AFTER FILL');
 
 ### 1. **Always Use _updateOrder()**
 ```javascript
-// ✅ CORRECT
+// ✅ CORRECT - Uses proper signature with context
+manager._updateOrder({
+    id: 'buy-5',
+    state: ORDER_STATES.ACTIVE,
+    type: ORDER_TYPES.BUY,
+    price: 0.5,
+    size: 100
+}, 'order-update', false, 0);
+
+// ✅ ALSO CORRECT - Using defaults (context='updateOrder', skipAccounting=false, fee=0)
 manager._updateOrder({
     id: 'buy-5',
     state: ORDER_STATES.ACTIVE,
@@ -469,7 +487,14 @@ manager.orders.set('buy-5', order);
 
 ### 2. **Batch Fund Recalculation**
 ```javascript
-// ✅ CORRECT - Recalculates once
+// ✅ CORRECT - Recalculates once, with context for logging
+manager.pauseFundRecalc();
+for (const order of orders) {
+    manager._updateOrder(order, 'rebalance-batch', false, 0);
+}
+manager.resumeFundRecalc();
+
+// ⚠️ ACCEPTABLE - Uses defaults but less ideal for debugging
 manager.pauseFundRecalc();
 for (const order of orders) {
     manager._updateOrder(order);
@@ -736,7 +761,7 @@ describe('Fund Tracking - Fund Updates', () => {
             state: ORDER_STATES.VIRTUAL,
             type: ORDER_TYPES.BUY,
             size: 500
-        });
+        }, 'test-virtual', false, 0);
 
         // Assert fund pool updated
         expect(manager.funds.virtual.buy).toBe(500);
@@ -808,9 +833,9 @@ expect(
 **Pattern 1: Batch Fund Updates**
 ```javascript
 manager.pauseFundRecalc();  // Batch mode
-manager._updateOrder(order1);
-manager._updateOrder(order2);
-manager._updateOrder(order3);
+manager._updateOrder(order1, 'test-batch', false, 0);
+manager._updateOrder(order2, 'test-batch', false, 0);
+manager._updateOrder(order3, 'test-batch', false, 0);
 manager.resumeFundRecalc();  // Recalc once
 
 // Verify final state
@@ -824,7 +849,7 @@ manager._updateOrder({
     id: 'order-1',
     state: ORDER_STATES.VIRTUAL,
     size: 500
-});
+}, 'test-setup', false, 0);
 
 const virtualBefore = manager.funds.virtual.buy;
 
@@ -833,7 +858,7 @@ manager._updateOrder({
     state: ORDER_STATES.ACTIVE,
     orderId: 'chain-001',
     size: 500
-});
+}, 'test-transition', false, 0);
 
 // Verify movement
 expect(manager.funds.virtual.buy).toBeLessThan(virtualBefore);

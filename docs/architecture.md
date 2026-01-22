@@ -718,7 +718,8 @@ if (manager.accountant.tryDeductFromChainFree(orderType, size)) {
 ```javascript
 manager.pauseFundRecalc();
 for (const order of orders) {
-    manager._updateOrder(order);
+    // context parameter helps with logging/debugging the source of the update
+    manager._updateOrder(order, 'batch-update', false, 0);
 }
 manager.resumeFundRecalc(); // Recalculates once
 ```
