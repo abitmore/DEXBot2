@@ -8,10 +8,10 @@ The accounting system is designed around a **Single Source of Truth** principle 
 
 | Component | Code Reference | Definition & Ownership |
 |-----------|----------------|------------------------|
-| **ChainFree** | `accountTotals.buyFree` | **Liquid Capital**. The unallocated balance on the blockchain. <br> *Optimistic:* Includes proceeds from fills immediately, before blockchain confirmation. |
-| **Virtual** | `funds.virtual` | **Reserved Capital**. Sum of sizes for orders in `VIRTUAL` state + `ACTIVE` orders *without* `orderId` (in-flight). <br> *Purpose:* Prevents `ChainFree` from being re-spent while an order is being placed. |
-| **Committed (Chain)** | `funds.committed.chain` | **Locked Capital**. Sum of sizes for `ACTIVE` orders *with* `orderId`. <br> *Source:* Real on-chain orders. |
-| **Committed (Grid)** | `funds.committed.grid` | **Strategy Capital**. Sum of sizes for all `ACTIVE` + `PARTIAL` orders (regardless of `orderId`). |
+| **ChainFree** | `accountTotals.buyFree` | **Liquid Capital**. The unallocated balance on the blockchain. <br> *Balanced:* Deducted pre-emptively on fills to offset state release. |
+| **Virtual** | `funds.virtual` | **Planned Capital**. Sum of sizes for orders in `VIRTUAL` state. <br> *Purpose:* Prevents `ChainFree` from being re-spent on overlapping grid layers. |
+| **Committed (Chain)** | `funds.committed.chain` | **Locked Capital**. Sum of sizes for `ACTIVE` + `PARTIAL` orders (including those without `orderId` yet). <br> *Source:* Real-time grid state + on-chain orders. |
+| **Committed (Grid)** | `funds.committed.grid` | **Strategy Capital**. Alias for `committed.chain` in the current engine. |
 | **CacheFunds** | `funds.cacheFunds` | **Reporting Metric**. Cumulative fill proceeds and rotation surpluses. <br> *Note:* Physically part of `ChainFree`. Used for profit tracking and fee deduction prioritization. |
 | **FeesOwed** | `funds.btsFeesOwed` | **Liability**. Accumulated blockchain fees (BTS) that must be settled. |
 | **FeesReservation** | `btsFeesReservation` | **Safety Buffer**. Reserved BTS to ensure future grid operations (creation/cancellation) don't fail. |
@@ -24,7 +24,7 @@ $$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{FeesOwed} - \tex
 
 **Critical Invariants:**
 1.  **CacheFunds is NOT subtracted.** Since fill proceeds are added to `ChainFree`, subtracting `CacheFunds` would be double-counting (removing the capital you just earned).
-2.  **Virtual includes In-Flight.** Orders transitioning `VIRTUAL` $\to$ `ACTIVE` remain in `Virtual` until they receive a blockchain `orderId`. This bridges the "gap" during async placement.
+2.  **Virtual represents Plan.** Orders remain in `Virtual` only while they are truly uncommitted. As soon as they move to `ACTIVE`, they move to `Committed` (Chain), even if the blockchain transaction is still in flight. This maintains the `Total = Free + Committed` invariant.
 
 ---
 
@@ -169,9 +169,9 @@ These are deducted from the *proceeds* of a fill.
 The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference.
 
 ### 6.1 The Equality Invariant
-Total funds on chain must equal free plus locked.
-$$Total_{chain} \approx Free_{chain} + Committed_{chain}$$
-*(Tolerance: 0.1% for rounding errors)*
+Total funds on chain must equal free plus committed.
+$$Total_{chain} = Free_{chain} + Committed_{chain}$$
+*(Balanced Logic: The system handles high-concurrency races without drift by pre-deducting spent capital.)*
 
 ### 6.2 The Ceiling Invariant
 Grid commitment cannot exceed total wealth.

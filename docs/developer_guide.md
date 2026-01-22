@@ -701,23 +701,14 @@ The test suite validates the following fund-related behaviors:
 ### Running Tests
 
 ```bash
-# All tests
+# All tests (native assert)
 npm test
 
-# Unit tests only
-npx jest tests/unit/ --no-coverage
+# Specific logic area
+node tests/test_accounting_logic.js
 
-# Strategy tests (rebalancing & placement)
-npx jest tests/unit/strategy.test.js
-
-# Accounting tests (fund tracking)
-npx jest tests/unit/accounting.test.js
-
-# Grid tests (grid creation)
-npx jest tests/unit/grid.test.js
-
-# Manager tests (state machine)
-npx jest tests/unit/manager.test.js
+# Specific integration test
+node tests/test_fills.js
 ```
 
 ### Understanding Test Structure

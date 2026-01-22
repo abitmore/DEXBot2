@@ -93,7 +93,7 @@ The `OrderManager` is the central hub that coordinates all order operations. It 
 
 | Engine | File | Responsibility |
 |--------|------|----------------|
-| **Accountant** | `accounting.js` | Fund tracking, fee management, invariant verification |
+| **Accountant** | `accounting.js` | **Single Source of Truth**. Centralized fund tracking via `recalculateFunds()`, fee management, invariant verification |
 | **StrategyEngine** | `strategy.js` | Grid rebalancing, order rotation, partial order handling |
 | **SyncEngine** | `sync_engine.js` | Blockchain synchronization, fill detection |
 | **Grid** | `grid.js` | Grid creation, sizing, divergence detection |
@@ -205,7 +205,7 @@ graph LR
     end
     
     subgraph "Calculated Values"
-        AVAILABLE[available<br/>= chainFree - virtual<br/>- cacheFunds - fees]
+        AVAILABLE[available<br/>= chainFree - virtual<br/>- fees]
         TOTAL_CHAIN[total.chain<br/>= chainFree + committed.chain]
         TOTAL_GRID[total.grid<br/>= committed.grid + virtual]
     end
@@ -546,94 +546,36 @@ manager.getMetrics()
 
 ---
 
-## Testing Strategy & Quality Assurance
+### Testing Strategy & Quality Assurance
 
-DEXBot2 employs a comprehensive testing strategy to ensure reliability and prevent regressions in critical fund calculations and rebalancing logic.
+DEXBot2 uses a native Node.js `assert` testing strategy to ensure reliability without heavy dependencies.
 
 ### Test Coverage by Module
 
 ```mermaid
 graph LR
-    A["Unit Tests<br/>(tests/unit/)"]
-    B["Integration Tests<br/>(tests/)"]
+    A["Logic Tests<br/>(tests/test_*_logic.js)"]
+    B["Integration Tests<br/>(tests/test_*.js)"]
 
-    A -->|Manager, State Machine| A1["manager.test.js"]
-    A -->|Fund Tracking| A2["accounting.test.js"]
-    A -->|Grid Creation| A3["grid.test.js"]
-    A -->|Rebalancing| A4["strategy.test.js"]
-    A -->|Sync Logic| A5["sync_engine.test.js"]
+    A -->|Manager, State Machine| A1["manager_logic"]
+    A -->|Fund Tracking| A2["accounting_logic"]
+    A -->|Grid Creation| A3["grid_logic"]
+    A -->|Rebalancing| A4["strategy_logic"]
+    A -->|Sync Logic| A5["sync_logic"]
 
-    B -->|Multi-step Scenarios| B1["Integration Tests"]
+    B -->|Multi-step Scenarios| B1["Market Scenarios"]
     B -->|Edge Cases| B2["Partial Order Tests"]
-    B -->|Real-world Scenarios| B3["Fund Cycling Tests"]
-```
-
-### Test Suite Summary
-
-| Test Type | Files | Test Cases | Coverage |
-|-----------|-------|-----------|----------|
-| **Unit Tests** | 5 files | 50+ cases | Modules, state transitions |
-| **Integration Tests** | 15+ files | 50+ cases | Multi-step scenarios |
-| **Fund Snapshot System** | 2 files | Continuous | Automatic auditing |
-| **Recent Bugfix Tests** | Updated | 23 cases | Last 10 bugfixes |
-| **Total** | 22+ files | 120+ cases | Core functionality |
-
-### Key Test Areas
-
-**1. Fund Accounting (10 test cases)**
-```
-✓ VIRTUAL fund tracking
-✓ ACTIVE/PARTIAL fund transitions
-✓ Available pool calculation
-✓ CacheFunds deduction
-✓ Fund invariant verification
-```
-
-**2. Order State Machine (8 test cases)**
-```
-✓ VIRTUAL → ACTIVE → PARTIAL lifecycle
-✓ State transition validation
-✓ Index consistency
-✓ Order locking mechanisms
-✓ Concurrent operation safety
-```
-
-**3. Grid Rebalancing (16 test cases)**
-```
-✓ VIRTUAL order placement capping
-✓ PARTIAL order updates
-✓ Grid divergence detection
-✓ BoundaryIdx persistence
-✓ Rotation completion
-✓ Taker fee accounting
-```
-
-**4. Integration Scenarios (5+ test cases)**
-```
-✓ Startup after divergence
-✓ Fund cycling with fills
-✓ Multi-partial rebalancing
-✓ Edge-bound grid operations
-✓ Cross-namespace movements
+    B -->|Real-world Scenarios| B3["Fills/FEE Tests"]
 ```
 
 ### Running Tests
 
 ```bash
-# Run all tests (recommended before commits)
+# Run all tests (native assert)
 npm test
 
-# Unit tests only
-npx jest tests/unit/ --no-coverage
-
-# Specific test file
-npx jest tests/unit/accounting.test.js
-
-# Tests matching pattern
-npx jest --testNamePattern="fund invariant"
-
-# Watch mode (auto-rerun on changes)
-npx jest --watch tests/unit/
+# Specific logic area
+node tests/test_accounting_logic.js
 ```
 
 ### Test Quality Metrics

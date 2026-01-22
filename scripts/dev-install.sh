@@ -3,31 +3,21 @@
 ##############################################################################
 # DEXBot2 Development Environment Setup
 #
-# This script installs Jest and development dependencies for contributors
-# who want to use the Jest testing framework.
+# This script prepares the environment for contributors.
+# Testing is now NATIVE to Node.js (no heavy dependencies like Jest).
 #
 # Usage:
 #   ./scripts/dev-install.sh
-#
-# NOTE: This is OPTIONAL and only needed for development/testing
-#       End users running the bot do NOT need this
-#
-# By default, package.json only includes production dependencies:
-#   - bs58check (BitShares address encoding)
-#   - btsdex (BitShares DEX library)
-#   - readline-sync (CLI input)
-#
-# This script adds development testing infrastructure on top of that.
 ##############################################################################
 
 set -e  # Exit on any error
 
 echo "=========================================="
-echo "DEXBot2 - Development Setup"
+echo "DEXBot2 - Development Environment"
 echo "=========================================="
 echo ""
-echo "This script will install Jest and development dependencies."
-echo "Installation will be isolated to node_modules/ only."
+echo "This project uses NATIVE Node.js assert for testing."
+echo "No extra development dependencies (like Jest) are required."
 echo ""
 
 # Check if npm is installed
@@ -41,19 +31,15 @@ echo "Current Node.js version: $(node --version)"
 echo "Current npm version: $(npm --version)"
 echo ""
 
-# Install Jest as a local dev dependency
-echo "Installing Jest testing framework..."
-npm install --save-dev jest@latest
+echo "Installing production dependencies..."
+npm install
 
 echo ""
 echo "=========================================="
-echo "✓ Development environment setup complete!"
+echo "✓ Environment ready!"
 echo "=========================================="
 echo ""
 echo "You can now run:"
-echo "  npm run test         - Run all unit tests using Node.js"
-echo "  npm run test:unit    - Run Jest tests (unit tests only)"
-echo ""
-echo "To remove development dependencies later, run:"
-echo "  npm prune --production"
+echo "  npm test             - Run all native logic and integration tests"
+echo "  node tests/test_*.js - Run a specific test file directly"
 echo ""
