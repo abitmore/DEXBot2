@@ -94,7 +94,7 @@ git checkout main && git pull && git merge --no-ff dev && git push
 - **Fund Rotation Fix**: Aligned `rebalanceSideRobust` in `strategy.js` with the `main` branch's budgeted rotation model.
 - **Available Funds Bug**: Eliminated double-deduction of `inFlight` funds in `utils.js::calculateAvailableFundsValue`, ensuring rotations proceed when capital is available.
 - **Accounting Stabilization**: Reported `recalculateFunds` in `accounting.js` to match the strict `main` branch structure.
-- **Startup Invariant Suppression**: Suppressed transient fund invariant warnings during the bootstrap phase by correctly managing the `isBootstrapping` flag and adding guards in `accounting.js`.
+- **Startup Invariant Suppression**: Suppressed transient fund invariant warnings during the bootstrap phase. Added `startBootstrap()` and enhanced `finishBootstrap()` in `OrderManager` to explicitly control the bootstrap lifecycle. Integrated these into `recalculateGrid` and `performResync` to ensure invariant checks are paused during transient states. Added `tests/test_resync_invariants.js` for verification.
 - **Refined Optimistic Accounting**: Centralized fund updates in `manager.js::_updateOrder` with `skipAccounting` support for full-sync scenarios.
 - **Documentation**: Updated fund model overview in `runner.js` to reflect refined handling of `virtual` fund commitments.
 

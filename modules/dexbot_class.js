@@ -579,7 +579,7 @@ class DEXBot {
                 const rotationSize = targetSlot.size;
 
                 this._log(`[BOOTSTRAP] Rotating ${surplusOrder.id} → ${targetSlot.id} (${oppositeType} ${Format.formatAmount8(rotationSize)})`, 'info');
-                
+
                 // Mark surplus as released
                 this.manager._updateOrder({
                     ...surplusOrder,
@@ -762,6 +762,7 @@ class DEXBot {
             await placeOrderGroup(group);
         }
         await this.manager.persistGrid();
+        this.manager.finishBootstrap();
     }
 
     /**
@@ -998,7 +999,7 @@ class DEXBot {
 
             if (!validation.isValid) {
                 this.manager.logger.log(`Skipping batch broadcast: ${validation.violations.length} fund violation(s) detected`, 'warn');
-                
+
                 // Trigger sync to revert optimistic state on validation failure
                 try {
                     this.manager.logger.log('Triggering state recovery sync...', 'info');
@@ -1028,7 +1029,7 @@ class DEXBot {
 
         } catch (err) {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
-            
+
             // Trigger sync to revert optimistic state on execution failure
             try {
                 this.manager.logger.log('Triggering state recovery sync...', 'info');
@@ -1287,7 +1288,7 @@ class DEXBot {
                 const isPartialPlacement = slot.size > 0 && newSize < slot.size;
 
                 const updatedSlot = { ...slot, id: newGridId, type, size: newSize, price: newPrice, state: ORDER_STATES.VIRTUAL, orderId: null };
-                
+
                 // Update rawOnChain cache for the rotated order
                 if (ctx.finalInts) {
                     updatedSlot.rawOnChain = {
@@ -1535,6 +1536,9 @@ class DEXBot {
                 await this.manager.persistGrid();
             }
 
+            // CRITICAL: Bootstrap complete - allow invariant checks to resume
+            this.manager.finishBootstrap();
+
             // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
             // Note: Grid checks only run if no fills are being processed
             // Fill listener is now active, so fills could arrive during checks - use locks appropriately
@@ -1669,6 +1673,7 @@ class DEXBot {
         const performResync = async () => {
             // Use fill lock to prevent concurrent modifications during resync
             await this.manager._fillProcessingLock.acquire(async () => {
+                this.manager.startBootstrap();
                 this._log('Grid regeneration triggered. Performing full grid resync...');
                 try {
                     // 1. Reload configuration from disk to pick up any changes
@@ -1717,6 +1722,8 @@ class DEXBot {
                     }
                 } catch (err) {
                     this._log(`Error during triggered resync: ${err.message}`);
+                } finally {
+                    this.manager.finishBootstrap();
                 }
             });
         };

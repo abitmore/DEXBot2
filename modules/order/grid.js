@@ -56,10 +56,10 @@ class Grid {
      */
     static _getSizingContext(manager, side) {
         if (!manager || !manager.assets) return null;
-        
+
         // 1. Ensure fund state is fresh before sizing
         manager.recalculateFunds();
-        
+
         const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
         const isBuy = side === 'buy';
         const type = isBuy ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
@@ -77,9 +77,9 @@ class Grid {
             const totalTarget = targetBuy + targetSell;
 
             const btsFees = calculateOrderCreationFees(
-                manager.config.assetA, 
-                manager.config.assetB, 
-                totalTarget, 
+                manager.config.assetA,
+                manager.config.assetB,
+                totalTarget,
                 FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
             );
             budget = Math.max(0, budget - btsFees);
@@ -96,7 +96,7 @@ class Grid {
      * RACE CONDITION FIXES: Synchronization primitives
      * These helpers assume manager has async-lock or similar primitives
      */
-    
+
     /**
      * Safely ensure cacheFunds is initialized (fixes RC-9)
      * RC-9: Prevents concurrent initialization races
@@ -346,7 +346,7 @@ class Grid {
             if (manager._ordersByType) Object.values(manager._ordersByType).forEach(set => set?.clear?.());
         }
     }
-    
+
     /**
      * Synchronize all _updateOrder() calls through grid lock (fixes RC-2)
      * RC-2: Prevents concurrent modifications to manager.orders and fund state
@@ -425,7 +425,7 @@ class Grid {
     static async initializeGrid(manager) {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
         await manager._initializeAssets();
-        
+
         // FIX: Add explicit state validation to prevent cryptic errors later
         if (!manager.assets || !manager.assets.assetA || !manager.assets.assetB) {
             throw new Error('Asset initialization did not complete properly - assetA or assetB undefined');
@@ -495,13 +495,13 @@ class Grid {
         if (!sellCtx || !buyCtx) throw new Error('Failed to retrieve sizing context for grid initialization');
 
         let sizedOrders = calculateOrderSizes(
-            orders, 
-            manager.config, 
-            sellCtx.budget, 
-            buyCtx.budget, 
-            minSellSize, 
-            minBuySize, 
-            precA, 
+            orders,
+            manager.config,
+            sellCtx.budget,
+            buyCtx.budget,
+            minSellSize,
+            minBuySize,
+            precA,
             precB
         );
 
@@ -512,28 +512,28 @@ class Grid {
             throw new Error('Calculated orders fall below minimum allowable size.');
         }
 
-         // Check for warning if orders are near minimal size (regression fix) 
-         const warningSellSize = minSellSize > 0 ? getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
-         const warningBuySize = minBuySize > 0 ? getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
-         if (checkSizeThreshold(sells, warningSellSize, precA, false) || checkSizeThreshold(buys, warningBuySize, precB, false)) {
-             manager.logger?.log?.("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
-         }
+        // Check for warning if orders are near minimal size (regression fix) 
+        const warningSellSize = minSellSize > 0 ? getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
+        const warningBuySize = minBuySize > 0 ? getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
+        if (checkSizeThreshold(sells, warningSellSize, precA, false) || checkSizeThreshold(buys, warningBuySize, precB, false)) {
+            manager.logger?.log?.("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
+        }
 
-          // RC-2: Use atomic clear to prevent concurrent modifications
-          await Grid._clearOrderCachesAtomic(manager);
-          manager.resetFunds();
+        // RC-2: Use atomic clear to prevent concurrent modifications
+        await Grid._clearOrderCachesAtomic(manager);
+        manager.resetFunds();
 
-         manager.pauseRecalcLogging();
-         manager.pauseFundRecalc();
-         try {
-             // RC-2: Use atomic order updates to prevent concurrent state corruption
-             for (const order of sizedOrders) {
-                 await Grid._updateOrderAtomic(manager, order);
-             }
-         } finally {
-             manager.resumeFundRecalc();
-             manager.resumeRecalcLogging();
-         }
+        manager.pauseRecalcLogging();
+        manager.pauseFundRecalc();
+        try {
+            // RC-2: Use atomic order updates to prevent concurrent state corruption
+            for (const order of sizedOrders) {
+                await Grid._updateOrderAtomic(manager, order);
+            }
+        } finally {
+            manager.resumeFundRecalc();
+            manager.resumeRecalcLogging();
+        }
 
         // RC-6: Wrap spread count updates in atomic operation to prevent races
         if (manager._spreadCountLock?.acquire) {
@@ -550,7 +550,6 @@ class Grid {
         manager.logger?.log?.(`Initialized grid with ${orders.length} orders.`, 'info');
         manager.logger?.logFundsStatus?.(manager);
         manager.logger?.logOrderGrid?.(Array.from(manager.orders.values()), manager.config.startPrice);
-        manager.finishBootstrap();
     }
 
     /**
@@ -565,6 +564,14 @@ class Grid {
      */
     static async recalculateGrid(manager, opts) {
         const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
+
+        // Suppress invariant warnings during full resync
+        if (typeof manager.startBootstrap === 'function') {
+            manager.startBootstrap();
+        } else {
+            manager.isBootstrapping = true;
+        }
+
         // FIX: Use consistent optional chaining pattern for logger calls
         manager.logger?.log?.('Starting full resync...', 'info');
 
@@ -581,7 +588,7 @@ class Grid {
         await Grid.initializeGrid(manager);
 
         const { reconcileStartupOrders } = require('./startup_reconcile');
-        
+
         // FIX: Add error context for debugging grid recalculation issues
         try {
             await reconcileStartupOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders, syncResult: { unmatchedChainOrders: chainOpenOrders } });
@@ -589,7 +596,7 @@ class Grid {
             manager.logger?.log?.(`Error during startup order reconciliation: ${err.message}`, 'error');
             throw new Error(`Grid recalculation failed during order reconciliation: ${err.message}`);
         }
-        
+
         // FIX: Use consistent optional chaining pattern for logger calls
         manager.logger?.log?.('Full resync complete.', 'info');
     }
@@ -638,12 +645,12 @@ class Grid {
         return result;
     }
 
-     /**
-      * Standardize grid sizes using blockchain total context.
-      * RC-1: Made async to support atomic cacheFunds updates
-      * @private
-      */
-     static async _recalculateGridOrderSizesFromBlockchain(manager, orderType) {
+    /**
+     * Standardize grid sizes using blockchain total context.
+     * RC-1: Made async to support atomic cacheFunds updates
+     * @private
+     */
+    static async _recalculateGridOrderSizesFromBlockchain(manager, orderType) {
         if (!manager.assets) return;
         const isBuy = orderType === ORDER_TYPES.BUY;
         const sideName = isBuy ? 'buy' : 'sell';
@@ -658,12 +665,12 @@ class Grid {
         if (orders.length === 0) return;
 
         const newSizes = calculateRotationOrderSizes(
-            ctx.budget, 
-            0, 
-            orders.length, 
-            orderType, 
-            manager.config, 
-            0, 
+            ctx.budget,
+            0,
+            orders.length,
+            orderType,
+            manager.config,
+            0,
             ctx.precision
         );
         manager.pauseRecalcLogging();
@@ -674,14 +681,14 @@ class Grid {
             manager.resumeRecalcLogging();
         }
 
-         // Calculate remaining cache for this side only (independent per side)
-         const totalInputInt = floatToBlockchainInt(ctx.budget, ctx.precision);
-         let totalAllocatedInt = 0;
-         newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, ctx.precision));
+        // Calculate remaining cache for this side only (independent per side)
+        const totalInputInt = floatToBlockchainInt(ctx.budget, ctx.precision);
+        let totalAllocatedInt = 0;
+        newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, ctx.precision));
 
-         // RC-1: Update cacheFunds atomically to prevent TOCTOU races
-         const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, ctx.precision);
-         await Grid._updateCacheFundsAtomic(manager, sideName, newCacheValue);
+        // RC-1: Update cacheFunds atomically to prevent TOCTOU races
+        const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, ctx.precision);
+        await Grid._updateCacheFundsAtomic(manager, sideName, newCacheValue);
     }
 
     /**
@@ -740,7 +747,7 @@ class Grid {
         // If manager has grid lock, use it to get consistent snapshots
         let calculatedSnap = calculatedGrid;
         let persistedSnap = persistedGrid;
-        
+
         if (manager?._gridLock?.acquire) {
             const snapshotResult = await manager._gridLock.acquire(() => {
                 return {
@@ -761,7 +768,7 @@ class Grid {
             return result
                 .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
         };
-        
+
         const calculatedBuys = filterForRms(calculatedSnap, ORDER_TYPES.BUY);
         const calculatedSells = filterForRms(calculatedSnap, ORDER_TYPES.SELL);
         const persistedBuys = filterForRms(persistedSnap, ORDER_TYPES.BUY);
@@ -787,23 +794,23 @@ class Grid {
             // 3. Calculate geometric ideals for the ENTIRE side (all slots)
             try {
                 const allIdealSizes = calculateRotationOrderSizes(
-                    ctx.budget, 
-                    0, 
-                    sideSlots.length, 
-                    type, 
-                    manager.config, 
-                    0, 
+                    ctx.budget,
+                    0,
+                    sideSlots.length,
+                    type,
+                    manager.config,
+                    0,
                     ctx.precision
                 );
-                
+
                 // Map Ideal sizes to IDs for quick lookup
                 const idealMap = new Map();
                 sideSlots.forEach((slot, i) => idealMap.set(slot.id, allIdealSizes[i]));
 
                 // Return the activeOrders subset with their true geometric ideal sizes
                 return activeOrders.map(o => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
-            } catch (e) { 
-                return activeOrders; 
+            } catch (e) {
+                return activeOrders;
             }
         };
 
@@ -878,10 +885,10 @@ class Grid {
         // This prevents concurrent fill processing from modifying funds while we're making decisions
         let correction = null;
         let shouldApplyCorrection = false;
-        
+
         // Use chain snapshot to get consistent total capital context
         const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
-        
+
         // FIX: Derive market price OUTSIDE the lock to reduce lock contention
         // derivePrice queries the blockchain and can be slow
         let marketPrice = manager.config.startPrice;
@@ -893,7 +900,7 @@ class Grid {
                 manager.logger?.log?.(`Failed to derive market price: ${err.message}`, 'warn');
             }
         }
-        
+
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
         const executeSpreadCheck = () => {
             const currentSpread = Grid.calculateCurrentSpread(manager);
@@ -959,12 +966,12 @@ class Grid {
      */
     static async checkGridHealth(manager, updateOrdersOnChainBatch = null) {
         if (!manager) return { buyDust: false, sellDust: false };
-        
+
         // Skip health checks during bootstrap to prevent spamming warnings
         if (manager.isBootstrapping) return { buyDust: false, sellDust: false };
 
         const allOrders = Array.from(manager.orders.values());
-        
+
         const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
         const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
 
@@ -980,7 +987,7 @@ class Grid {
      */
     static _hasAnyDust(manager, partials, type) {
         if (!partials || partials.length === 0) return false;
-        
+
         const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const ctx = Grid._getSizingContext(manager, side);
         if (!ctx || ctx.budget <= 0) return false;
@@ -1018,7 +1025,7 @@ class Grid {
     static determineOrderSideByFunds(manager, currentMarketPrice) {
         const reqBuy = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.BUY);
         const reqSell = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.SELL);
-        
+
         // Available funds already include fill proceeds (cacheFunds is part of chainFree)
         const buyAvailable = (manager.funds?.available?.buy || 0);
         const sellAvailable = (manager.funds?.available?.sell || 0);
@@ -1049,7 +1056,7 @@ class Grid {
     static calculateGeometricSizeForSpreadCorrection(manager, targetType, snap = null) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
-        
+
         // Use centralized sizing context (respects botFunds % allocation)
         const ctx = Grid._getSizingContext(manager, side);
         if (!ctx || ctx.budget <= 0 || slotsCount < 1) return null;
@@ -1058,13 +1065,13 @@ class Grid {
         const dummy = Array.from({ length: slotsCount }, () => ({ type: targetType }));
         try {
             const sized = calculateOrderSizes(
-                dummy, 
-                manager.config, 
-                side === 'sell' ? ctx.budget : 0, 
-                side === 'buy' ? ctx.budget : 0, 
-                0, 
-                0, 
-                ctx.precision, 
+                dummy,
+                manager.config,
+                side === 'sell' ? ctx.budget : 0,
+                side === 'buy' ? ctx.budget : 0,
+                0,
+                0,
+                ctx.precision,
                 ctx.precision
             );
             if (!Array.isArray(sized) || sized.length === 0) {
@@ -1072,9 +1079,9 @@ class Grid {
                 return null;
             }
             return side === 'sell' ? sized[sized.length - 1].size : sized[0].size;
-        } catch (e) { 
+        } catch (e) {
             manager.logger?.log?.(`Error calculating geometric size for spread correction: ${e.message}`, 'warn');
-            return null; 
+            return null;
         }
     }
 
@@ -1091,7 +1098,7 @@ class Grid {
         if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
             throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
         }
-        
+
         const ordersToPlace = [];
         const railType = preferredSide;
 
