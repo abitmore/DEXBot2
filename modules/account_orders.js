@@ -468,8 +468,6 @@ class AccountOrders {
     });
   }
 
-  /* `pendingProceeds` storage removed. */
-
   /**
    * Load BTS blockchain fees owed for a bot.
    * BTS fees accumulate during fill processing and must persist across restarts

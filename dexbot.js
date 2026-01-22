@@ -254,7 +254,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
   */
  async function authenticateMasterPassword() {
      try {
-         return await authenticateWithChainKeys();
+         return await chainKeys.authenticate();
      } catch (err) {
          if (!keySetupInProgress && err && err.message && err.message.includes('No master password set')) {
              keySetupInProgress = true;
@@ -263,7 +263,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
                  console.log('autostart account keys');
                  await runAccountManager();
                  keySetupInProgress = false;
-                 return await authenticateWithChainKeys();
+                 return await chainKeys.authenticate();
              } catch (setupErr) {
                  keySetupInProgress = false;
                  throw setupErr;

@@ -31,15 +31,6 @@ const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 // ════════════════════════════════════════════════════════════════════════════════
 
 /**
- * Authenticate with BitShares chain keys (core logic without error handling variants)
- * @returns {Promise<string>} Master password
- * @throws {Error} If authentication fails
- */
-async function authenticateWithChainKeys() {
-    return await chainKeys.authenticate();
-}
-
-/**
  * Normalize bot entry with metadata (active flag and botKey)
  * @param {Object} entry - Bot configuration entry from bots.json
  * @param {number} index - Index in bots array
@@ -272,7 +263,7 @@ class DEXBot {
                         } else {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
                             const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
-                            const resultOpenOrders = await this.manager.syncFromOpenOrders(chainOpenOrders, fillsToSync[0].op[1]);
+                            const resultOpenOrders = await this.manager.syncFromOpenOrders(chainOpenOrders);
                             if (resultOpenOrders.filledOrders) resolvedOrders.push(...resultOpenOrders.filledOrders);
                             if (resultOpenOrders.ordersNeedingCorrection) ordersNeedingCorrection.push(...resultOpenOrders.ordersNeedingCorrection);
                         }
@@ -2243,5 +2234,4 @@ class DEXBot {
 }
 
 module.exports = DEXBot;
-module.exports.authenticateWithChainKeys = authenticateWithChainKeys;
 module.exports.normalizeBotEntry = normalizeBotEntry;

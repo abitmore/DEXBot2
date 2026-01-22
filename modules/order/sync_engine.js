@@ -90,10 +90,9 @@ class SyncEngine {
      * Synchronize grid orders with blockchain open orders snapshot.
      * @param {Array|null} chainOrders - Array of blockchain order objects
      * @param {Object} [options={}] - Sync options (e.g., { skipAccounting: true })
-     * @param {Object|null} fillInfo - Optional fill information metadata (deprecated, use options)
      * @returns {Promise<Object>} Result with filledOrders, updatedOrders, ordersNeedingCorrection
      */
-    async syncFromOpenOrders(chainOrders, options = {}, fillInfo = null) {
+    async syncFromOpenOrders(chainOrders, options = {}) {
         const mgr = this.manager;
 
         if (!mgr) {
@@ -106,7 +105,7 @@ class SyncEngine {
 
         // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
         return await mgr._syncLock.acquire(async () => {
-            return this._doSyncFromOpenOrders(chainOrders, options, fillInfo);
+            return this._doSyncFromOpenOrders(chainOrders, options);
         });
     }
 
@@ -115,11 +114,10 @@ class SyncEngine {
      * Called within _syncLock to guarantee exclusive execution.
      * @param {Array|null} chainOrders - Array of blockchain order objects
      * @param {Object} options - Sync options
-     * @param {Object|null} fillInfo - Optional metadata
      * @returns {Promise<Object>} Sync result
      * @private
      */
-    async _doSyncFromOpenOrders(chainOrders, options, fillInfo = null) {
+    async _doSyncFromOpenOrders(chainOrders, options) {
         const mgr = this.manager;
 
         // Validate inputs
@@ -127,8 +125,6 @@ class SyncEngine {
             throw new Error('manager required');
         }
 
-        // Optimistically update account totals if fill info is provided
-        if (fillInfo) mgr.accountant.processFillAccounting(fillInfo);
         if (!chainOrders || !Array.isArray(chainOrders)) {
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }

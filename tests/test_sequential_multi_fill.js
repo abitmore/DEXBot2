@@ -182,7 +182,6 @@ async function testSequentialMultiFillProcessing() {
 
     // 2. Boundary should shift once per fill
     // (BUY fill shifts boundary left by 1)
-    // TODO: Add boundary assertion based on actual expected behavior
 
     console.log('\n✅ Sequential multi-fill processing test PASSED');
 }

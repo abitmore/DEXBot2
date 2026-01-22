@@ -344,7 +344,6 @@ logger.log('[FUND] available: 100.50000000', 'debug')  // ✓ LOGGED (change det
 - Configuration-driven behavior
 - Config gating for display features
 - 100% backward compatible signatures
-- Deprecated captureSnapshot (now no-op)
 
 ### Phase 2: Integration (Steps 4-5)
 
@@ -356,7 +355,6 @@ logger.log('[FUND] available: 100.50000000', 'debug')  // ✓ LOGGED (change det
 - **Result:** Zero code changes needed in call sites
 
 **Step 5: Deduplication & Cleanup** ✅
-- Removed 3 redundant captureSnapshot() calls from sync_engine.js
 - Removed 50 lines of unused legacy code from logger.js
 - Multi-level deduplication: configuration filtering + change detection + code cleanup
 
@@ -392,11 +390,9 @@ logger.log('[FUND] available: 100.50000000', 'debug')  // ✓ LOGGED (change det
 - Modified: displayStatus() to check config (5 lines)
 - Removed: logSnapshot() method (4 lines) - never called
 - Removed: logSnapshotComparison() method (50 lines) - never called
-- Modified: captureSnapshot() to no-op (deprecation)
 - **Net change:** +28 lines modified, -50 lines removed
 
 **`modules/order/sync_engine.js`**
-- Removed: 3 captureSnapshot() calls (40 lines) - fund snapshot persistence is separate
 - Added: Comments indicating moved concern (3 lines)
 - **Net change:** -37 lines
 
@@ -447,7 +443,6 @@ logger.log('[FUND] amount: 100.50', 'debug')  // ✗ Skipped (no change)
 Removed truly obsolete code:
 - logSnapshot() method - never called
 - logSnapshotComparison() method - never called
-- 3 redundant captureSnapshot() calls - fund snapshot is separate concern
 
 **Effect:** Cleaner codebase, removed 48 lines of dead code
 

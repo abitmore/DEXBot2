@@ -429,7 +429,7 @@ class StrategyEngine {
         let budgetRemaining = reactionCap;
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 2.5: PARTIAL ORDER HANDLING (Update In-Place Before Rotations/Placements)
+        // STEP 3: PARTIAL ORDER HANDLING (Update In-Place Before Rotations/Placements)
         // ════════════════════════════════════════════════════════════════════════════════
         // Handle PARTIAL orders in target window before rotations/placements to prevent grid gaps.
         // - Dust partial: Update to full target size
@@ -657,7 +657,7 @@ class StrategyEngine {
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 5: CANCEL REMAINING SURPLUSES
+        // STEP 6: CANCEL REMAINING SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
         // Cancel surpluses from the outside in (lowest buy/highest sell first)
         const rotatedOldIds = new Set(ordersToRotate.map(r => r.oldOrder.id));
@@ -671,7 +671,7 @@ class StrategyEngine {
         // Handled partials are NOT cancelled - they're updated in-place (STEP 2.5)
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 6: DEFER CACHEFUNDS DEDUCTION (Track Surplus Allocation)
+        // STEP 7: DEFER CACHEFUNDS DEDUCTION (Track Surplus Allocation)
         // ════════════════════════════════════════════════════════════════════════════════
         // CacheFunds deduction is DEFERRED until after state updates are applied.
         // This ensures fund invariants are maintained atomically with state transitions.

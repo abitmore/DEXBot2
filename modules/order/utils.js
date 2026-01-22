@@ -17,58 +17,58 @@
  * TABLE OF CONTENTS
  * ═══════════════════════════════════════════════════════════════════════════════
  *
- * SECTION 1: PARSING & VALIDATION (lines 22-95)
+ * SECTION 1: PARSING & VALIDATION
  *   - isPercentageString, parsePercentageString
  *   - resolveRelativePrice, toFiniteNumber, isValidNumber
  *   Purpose: Parse and validate configuration strings
  *
- * SECTION 2: BLOCKCHAIN CONVERSIONS & PRECISION (lines 247-290)
+ * SECTION 2: BLOCKCHAIN CONVERSIONS & PRECISION
  *   - blockchainToFloat, floatToBlockchainInt
  *   - getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager
  *   Purpose: Handle blockchain conversions and precision calculations
  *
- * SECTION 3: FUND CALCULATIONS (lines 95-240)
+ * SECTION 3: FUND CALCULATIONS
  *   - computeChainFundTotals, calculateAvailableFundsValue
  *   - calculateSpreadFromOrders, resolveConfigValue
  *   - hasValidAccountTotals
  *   Purpose: Calculate fund-related values from state
  *
- * SECTION 4: PRICE OPERATIONS (lines 275-950)
+ * SECTION 4: PRICE OPERATIONS
  *   - calculatePriceTolerance
  *   - deriveMarketPrice, derivePoolPrice, derivePrice
  *   - lookupAsset (helper)
  *   Purpose: Price calculation, tolerance checking, and derivation
  *
- * SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (lines 351-611)
+ * SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION
  *   - parseChainOrder
  *   - findMatchingGridOrderByOpenOrder
  *   - applyChainSizeToGridOrder, correctOrderPriceOnChain
  *   - correctAllPriceMismatches, validateOrderAmountsWithinLimits
  *   Purpose: Match grid orders to blockchain orders and reconcile state
  *
- * SECTION 6: FEE MANAGEMENT (lines 922-1180)
+ * SECTION 6: FEE MANAGEMENT
  *   - initializeFeeCache, getAssetFees
  *   - _fetchBlockchainFees, _fetchAssetMarketFees
  *   - calculateOrderCreationFees, deductOrderFeesFromFunds
  *   Purpose: Cache and calculate market-making fees
  *
- * SECTION 7: GRID STATE MANAGEMENT (lines 1179-1440)
+ * SECTION 7: GRID STATE MANAGEMENT
  *   - persistGridSnapshot, retryPersistenceIfNeeded
  *   - runGridComparisons, applyGridDivergenceCorrections
  *   Purpose: Persist and compare grid state with blockchain
  *
- * SECTION 8: ORDER UTILITIES (lines 1442-1545)
+ * SECTION 8: ORDER UTILITIES
  *   - buildCreateOrderArgs, convertToSpreadPlaceholder
  *   - getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound
  *   Purpose: Build and manipulate order objects
  *
- * SECTION 9: ORDER SIZING & ALLOCATION (lines 1755-1930)
+ * SECTION 9: ORDER SIZING & ALLOCATION
  *   - allocateFundsByWeights, calculateOrderSizes
  *   - calculateRotationOrderSizes, getMinOrderSize
  *   - calculateGridSideDivergenceMetric
  *   Purpose: Calculate order sizes based on funds and grid
  *
- * SECTION 10: FILTERING & ANALYSIS (lines 1525-1750)
+ * SECTION 10: FILTERING & ANALYSIS
  *   - filterOrdersByType, filterOrdersByTypeAndState
  *   - sumOrderSizes, countOrdersByType
  *   - checkSizesBeforeMinimum
@@ -1083,9 +1083,6 @@ async function initializeFeeCache(botsConfig, BitShares) {
     return feeCache;
 }
 
-/**
- * Clear the fee cache (useful for testing or refreshing)
- */
 /**
  * Get total fees (blockchain + market) for a filled order amount
  *
@@ -2108,9 +2105,10 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
 }
 
 /**
- * Determine if the spread is too wide and should be flagged for rebalancing. * Pure calculation: checks if spread exceeds threshold AND both sides have orders.
-  *
-  * @param {number} currentSpread - Current spread percentage
+ * Determine if the spread is too wide and should be flagged for rebalancing.
+ * Pure calculation: checks if spread exceeds threshold AND both sides have orders.
+ *
+ * @param {number} currentSpread - Current spread percentage
   * @param {number} targetSpread - Target spread threshold
   * @param {number} buyCount - Number of BUY orders
   * @param {number} sellCount - Number of SELL orders

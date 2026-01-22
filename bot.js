@@ -61,7 +61,7 @@ const accountBots = require('./modules/account_bots');
 const { parseJsonWithComments } = accountBots;
 const { createBotKey } = require('./modules/account_orders');
 const DEXBot = require('./modules/dexbot_class');
-const { authenticateWithChainKeys, normalizeBotEntry } = require('./modules/dexbot_class');
+const { normalizeBotEntry } = require('./modules/dexbot_class');
 const { readBotsFileSync } = require('./modules/bots_file_lock');
 const { setupGracefulShutdown, registerCleanup } = require('./modules/graceful_shutdown');
 
@@ -158,7 +158,7 @@ async function getPrivateKeyForAccount(accountName) {
             }
         };
 
-        const masterPassword = await authenticateWithChainKeys();
+        const masterPassword = await chainKeys.authenticate();
 
         // Restore console before getting key
         console.log = originalLog;

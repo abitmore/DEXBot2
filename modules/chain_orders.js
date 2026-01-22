@@ -674,40 +674,18 @@ async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToR
  */
 async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false) {
     try {
-        const accId = await resolveAccountId(accountName);
-        if (!accId) throw new Error(`Account ${accountName} not found`);
-
-        if (!expiration) {
-            const now = new Date();
-            now.setFullYear(now.getFullYear() + 1);
-            expiration = now.toISOString().split('T')[0] + 'T23:59:59';
-        }
-
-        const sellPrecision = await _getAssetPrecision(sellAssetId);
-        const receivePrecision = await _getAssetPrecision(receiveAssetId);
-        const amountToSellInt = floatToBlockchainInt(amountToSell, sellPrecision);
-        const minToReceiveInt = floatToBlockchainInt(minToReceive, receivePrecision);
-
-        const createParams = {
-            fee: { amount: 0, asset_id: '1.3.0' },
-            seller: accId,
-            amount_to_sell: { amount: amountToSellInt, asset_id: sellAssetId },
-            min_to_receive: { amount: minToReceiveInt, asset_id: receiveAssetId },
-            expiration: expiration,
-            fill_or_kill: false,
-            extensions: []
-        };
+        const op = await buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration);
 
         if (dryRun) {
             console.log(`Dry run: Limit order prepared for account ${accountName} (not broadcasted)`);
-            return { dryRun: true, params: createParams };
+            return { dryRun: true, params: op.op_data };
         }
 
         const acc = createAccountClient(accountName, privateKey);
         await acc.initPromise;
         const tx = acc.newTx();
         // Invoke standard method directly
-        tx.limit_order_create(createParams);
+        tx.limit_order_create(op.op_data);
         const result = await tx.broadcast();
         console.log(`Limit order created successfully for account ${accountName}`);
         return result;
