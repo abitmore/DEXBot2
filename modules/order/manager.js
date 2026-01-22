@@ -475,118 +475,99 @@ class OrderManager {
         await this._fetchAccountBalancesAndSetTotals();
     }
 
-    /**
-     * Update or insert an order into the manager's state, maintaining all indices.
-     * This is the CENTRAL STATE TRANSITION mechanism for the order system.
-     *
-     * STATE TRANSITIONS (the valid flows):
-     * =========================================================================
-     * VIRTUAL: The initial state for all orders. No on-chain existence.
-     *   → ACTIVE: Order is activated for on-chain placement. Funds become locked.
-     *   → SPREAD: After a fill, order becomes a placeholder for future rebalancing.
-     *
-     * ACTIVE: Order is on-chain with an orderId. Funds are locked/committed.
-     *   → PARTIAL: Order fills partially. Remaining size is tracked for rebalancing.
-     *   → VIRTUAL: Order is cancelled/rotated. Becomes eligible for re-use.
-     *   → SPREAD: Order is cancelled/rotated after being filled. Becomes placeholder.
-     *
-     * PARTIAL: Order has partially filled and is waiting for consolidation or rotation.
-     *   → ACTIVE: Upgraded by multi-partial consolidation (if size >= 100% of ideal).
-     *   → VIRTUAL: Consolidated and moved. Returns to virtual pool.
-     *   → SPREAD: Order absorbed or consolidated, converted to placeholder.
-     *
-     * CRITICAL RULE - Size determines ACTIVE vs PARTIAL:
-     * When an order size < 100% of its slot's ideal size (determined by grid geometry),
-     * it MUST be in PARTIAL state, not ACTIVE. This prevents orders from being stuck
-     * in the wrong state after partial fills.
-     *
-     * FUND DEDUCTION RULES (fund tracking via state change):
-     * - VIRTUAL → ACTIVE: Funds are deducted from chainFree (become locked)
-     * - ACTIVE → VIRTUAL: Funds are added back to chainFree (become free)
-     * - ACTIVE → PARTIAL: Partial fills reduce chainFree based on filled amount
-     * - PARTIAL → ACTIVE: Consolidation may lock additional funds if upgrading
-     *
-     * INDEX MAINTENANCE:
-     * This method maintains three critical indices for O(1) lookups:
-     * 1. _ordersByState: Groups orders by state (VIRTUAL, ACTIVE, PARTIAL)
-     * 2. _ordersByType: Groups orders by type (BUY, SELL, SPREAD)
-     * 3. orders: Central Map storing the order object data
-     *
-     * IMPORTANT: Always call this method instead of directly modifying this.orders
-     * to ensure indices remain consistent. Inconsistent indices can cause:
-     * - Missed orders during rebalancing
-     * - Incorrect fund calculations
-     * - Stuck orders in wrong states
-     *
-     * @param {Object} order - Order object to update/insert
-     * @param {string} order.id - Unique grid order identifier
-     * @param {string} order.state - State: VIRTUAL, ACTIVE, or PARTIAL
-     * @param {string} order.type - Type: BUY, SELL, or SPREAD
-     * @param {number} order.size - Order size in base asset units
-     * @param {number} order.price - Order price
-     * @param {string} [order.orderId] - Blockchain order ID (if on-chain)
-     * @param {Object} order - Order object to update/insert
-     * @param {number} [fee=0] - Optional fee for on-chain placement
-     * @param {Object} [options={}] - Additional options for the update
-     * @param {boolean} [options.skipAccounting=false] - If true, do not trigger optimistic accounting updates
-     * @returns {void}
-     */
-    _updateOrder(order, fee = 0, options = {}) {
-        // Input validation
-        if (order.id === undefined || order.id === null) return;
-        if (typeof order.size === 'number' && order.size < 0) {
-            this.logger.log(`Warning: Order ${order.id} has negative size ${order.size}`, 'warn');
-            return;
+        /**
+         * Update or insert an order into the manager's state, maintaining all indices.
+         * This is the CENTRAL STATE TRANSITION mechanism for the order system.
+         * 
+         * STATE TRANSITIONS (the valid flows):
+         * =========================================================================
+         * VIRTUAL: The initial state for all orders. No on-chain existence.
+         *   → ACTIVE: Order is activated for on-chain placement. Funds become locked.
+         *   → SPREAD: After a fill, order becomes a placeholder for future rebalancing.
+         * 
+         * ACTIVE: Order is on-chain with an orderId. Funds are locked/committed.
+         *   → PARTIAL: Order fills partially. Remaining size is tracked for rebalancing.
+         *   → VIRTUAL: Order is cancelled/rotated. Becomes eligible for re-use.
+         *   → SPREAD: Order is cancelled/rotated after being filled. Becomes placeholder.
+         * 
+         * PARTIAL: Order has partially filled and is waiting for consolidation or rotation.
+         *   → ACTIVE: Upgraded by multi-partial consolidation (if size >= 100% of ideal).
+         *   → VIRTUAL: Consolidated and moved. Returns to virtual pool.
+         *   → SPREAD: Order absorbed or consolidated, converted to placeholder.
+         * 
+         * CRITICAL RULE - Size determines ACTIVE vs PARTIAL:
+         * When an order size < 100% of its slot's ideal size (determined by grid geometry),
+         * it MUST be in PARTIAL state, not ACTIVE. This prevents orders from being stuck
+         * in the wrong state after partial fills.
+         * 
+         * FUND DEDUCTION RULES (fund tracking via state change):
+         * - VIRTUAL → ACTIVE: Funds are deducted from chainFree (become locked)
+         * - ACTIVE → VIRTUAL: Funds are added back to chainFree (become free)
+         * - ACTIVE → PARTIAL: Partial fills reduce chainFree based on filled amount
+         * - PARTIAL → ACTIVE: Consolidation may lock additional funds if upgrading
+         * 
+         * INDEX MAINTENANCE:
+         * This method maintains three critical indices for O(1) lookups:
+         * 1. _ordersByState: Groups orders by state (VIRTUAL, ACTIVE, PARTIAL)
+         * 2. _ordersByType: Groups orders by type (BUY, SELL, SPREAD)
+         * 3. orders: Central Map storing the order object data
+         * 
+         * IMPORTANT: Always call this method instead of directly modifying this.orders
+         * to ensure indices remain consistent. Inconsistent indices can cause:
+         * - Missed orders during rebalancing
+         * - Incorrect fund calculations
+         * - Stuck orders in wrong states
+         * 
+         * @param {Object} order - Updated order object (must contain id)
+         * @param {string} [context='updateOrder'] - Source of the update for logging
+         * @param {boolean} [skipAccounting=false] - If true, do not update optimistic balances
+         * @param {number} [fee=0] - Blockchain fee to record if this is a placement/update
+         * @returns {void}
+         */
+        _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0) {
+            if (!order || !order.id) {
+                this.logger.log('Refusing to update order: missing ID', 'error');
+                return;
+            }
+    
+            const id = order.id;
+            const oldOrder = this.orders.get(id);
+    
+            // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
+            if (order.type === ORDER_TYPES.SPREAD && (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL)) {
+                this.logger.log(`ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${order.state}. SPREAD orders must remain VIRTUAL.`, 'error');
+                return;
+            }
+    
+            // 1. Update optimistic balance (atomic update of tracked funds)
+            if (!skipAccounting && this.accountant) {
+                this.accountant.updateOptimisticFreeBalance(oldOrder, order, context, fee);
+            }
+    
+            // 2. Clone the order to prevent external modification races
+            const updatedOrder = { ...order };
+    
+            // 3. Robust index maintenance
+            Object.values(this._ordersByState).forEach(set => set.delete(id));
+            Object.values(this._ordersByType).forEach(set => set.delete(id));
+    
+            if (this._ordersByState[updatedOrder.state]) {
+                this._ordersByState[updatedOrder.state].add(id);
+            }
+            if (this._ordersByType[updatedOrder.type]) {
+                this._ordersByType[updatedOrder.type].add(id);
+            }
+    
+            this.orders.set(id, updatedOrder);
+    
+            // 4. Recalculate funds if not in a batch pause
+            if (this._pauseFundRecalcDepth === 0) {
+                this.recalculateFunds();
+            }
         }
-        // Validate state if provided (allow undefined for intermediate operations)
-        if (order.state !== undefined && !Object.values(ORDER_STATES).includes(order.state)) {
-            this.logger.log(`Error: Invalid order state '${order.state}' for order ${order.id}. Valid states: ${Object.values(ORDER_STATES).join(', ')}`, 'error');
-            return;
-        }
-
-        // State machine validation: ensure SPREAD orders stay VIRTUAL
-        if (order.type === ORDER_TYPES.SPREAD && order.state !== ORDER_STATES.VIRTUAL) {
-            this.logger.log(`Error: Order ${order.id} is type SPREAD but state is ${order.state}. SPREAD orders must remain VIRTUAL.`, 'error');
-            return;
-        }
-
-        // Skip update if state is undefined (incomplete order object)
-        if (order.state === undefined) {
-            this.logger.log(`Debug: Skipping order ${order.id} - state not set`, 'debug');
-            return;
-        }
-
-        const existing = this.orders.get(order.id);
-
-        // Ensure we store a clean clone to prevent external modification races
-        const updatedOrder = { ...order };
-        const id = updatedOrder.id;
-
-        // Trigger optimistic accounting on state/size transitions
-        if (existing && this.accountant && options.skipAccounting !== true) {
-            this.accountant.updateOptimisticFreeBalance(existing, order, 'updateOrder', fee);
-        }
-
-        // CRITICAL: Robust index cleanup.
-        // Remove ID from ALL state and type sets to prevent duplicates if objects 
-        // were modified in-place before this call. This ensures indices remain 
-        // strictly 1:1 with the orders Map even if state transition logic was bypassed.
-        Object.values(this._ordersByState).forEach(set => set.delete(id));
-        Object.values(this._ordersByType).forEach(set => set.delete(id));
-
-        // Add to new indices
-        this._ordersByState[updatedOrder.state]?.add(id);
-        this._ordersByType[updatedOrder.type]?.add(id);
-        this.orders.set(id, updatedOrder);
-
-        // Only recalculate funds if not in batch mode (depth == 0 means all pauses resolved)
-        if (this._pauseFundRecalcDepth === 0) {
-            this.recalculateFunds();
-        }
-    }
-
-    /**
-     * Log current available and cache funds.
+    
+        /**
+         * Log current available and cache funds.
      * @param {string} [label=''] - Label for the log message.
      * @private
      */

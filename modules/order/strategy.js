@@ -224,11 +224,8 @@ class StrategyEngine {
         const budgetBuy = buyCtx.budget;
         const budgetSell = sellCtx.budget;
 
-        // Ensure funds are calculated with current allocations (respects botFunds %)
-        if (mgr.applyBotFundsAllocation) mgr.applyBotFundsAllocation();
-
         // Available funds for net capital increases (e.g., placing new orders)
-        // This unified metric already accounts for reservations, fees, and virtual (reserved) capital.
+        // Note: buyCtx/sellCtx already triggered recalculateFunds()
         const availBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0);
         const availSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0);
 
@@ -294,8 +291,7 @@ class StrategyEngine {
             await mgr.modifyCacheFunds('sell', -sellResult.totalNewPlacementSize, 'new-placements');
         }
 
-        // Step 3: Recalculate all funds (everything is now in sync)
-        mgr.recalculateFunds();
+        // Step 3: Resume fund recalculation (internally triggers recalculateFunds once)
         mgr.resumeFundRecalc();
 
         // Combine results from both sides
@@ -770,7 +766,7 @@ class StrategyEngine {
                     const slotReused = currentSlot && currentSlot.orderId && currentSlot.orderId !== filledOrder.orderId;
 
                     if (!slotReused) {
-                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null });
+                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null }, 'fill');
                     } else {
                         mgr.logger.log(`[RACE] Slot ${filledOrder.id} reused (curr=${currentSlot.orderId} != fill=${filledOrder.orderId}). Skipping VIRTUAL update.`, 'info');
                     }

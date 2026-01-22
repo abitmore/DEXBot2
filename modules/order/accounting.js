@@ -106,12 +106,17 @@ class Accountant {
         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
 
+        // Ensure percentage-based allocations are applied to the newly calculated totals
+        if (typeof mgr.applyBotFundsAllocation === 'function') {
+            mgr.applyBotFundsAllocation();
+        }
+
         if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0 && (mgr._recalcLoggingDepth === 0 || mgr._recalcLoggingDepth === undefined)) {
             mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmount8(chainTotalBuy)} (Free=${Format.formatAmount8(chainFreeBuy)}, Grid=${Format.formatAmount8(gridBuy)})`, 'debug');
             mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmount8(chainTotalSell)} (Free=${Format.formatAmount8(chainFreeSell)}, Grid=${Format.formatAmount8(gridSell)})`, 'debug');
         }
 
-        if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping) {
+        if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping && !mgr._isBroadcasting) {
             this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
         }
     }
@@ -236,11 +241,10 @@ class Accountant {
 
     /**
      * Update optimistic balance during transitions.
-     * CRITICAL: Use isActive state (ACTIVE/PARTIAL) to determine COMMITMENT, NOT orderId.
-     * Using orderId for commitment causes double-deduction when an order is placed on-chain (receives orderId).
-     *
-     * HOWEVER: Fee deduction MUST use orderId check to prevent double-deduction.
-     * Fees should only be charged when order is PLACED on-chain (receives orderId).
+     * @param {Object} oldOrder - Previous order state
+     * @param {Object} newOrder - New order state
+     * @param {string} context - Context for logging/tracking
+     * @param {number} fee - Blockchain fee to deduct
      */
     updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
         const mgr = this.manager;
@@ -251,6 +255,7 @@ class Accountant {
         const oldSize = Number(oldOrder.size) || 0;
         const newSize = Number(newOrder.size) || 0;
 
+        // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
         // For COMMITMENT: Use GRID state (isActive), not blockchain ID
         const oldGridCommitted = oldIsActive ? oldSize : 0;
         const newGridCommitted = newIsActive ? newSize : 0;
@@ -260,22 +265,16 @@ class Accountant {
             mgr.logger.log(`[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, state=${oldOrder.state}->${newOrder.state}, size=${oldSize}->${newSize}, delta=${Format.formatAmount8(commitmentDelta)}, context=${context}`, 'debug');
         }
 
-        // For FEE deduction: Must check if order is being PLACED on-chain (receives orderId)
-        const oldOnChain = oldIsActive && !!oldOrder.orderId;
-        const newOnChain = newIsActive && !!newOrder.orderId;
-        const isBecomingOnChain = newOnChain && !oldOnChain;
-
-        const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
-
-        // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
         if (commitmentDelta > 0) {
+            // Lock capital: move from Free to Committed
             this.tryDeductFromChainFree(newOrder.type, commitmentDelta, `${context}`);
         } else if (commitmentDelta < 0) {
+            // Release capital: move from Committed back to Free
             this.addToChainFree(oldOrder.type, Math.abs(commitmentDelta), `${context}`);
         }
 
         // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
-        // Deduct whenever a fee is provided, assuming caller only passes it for actual chain operations.
+        const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
         if (fee > 0 && btsSide) {
             const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
             this.adjustTotalBalance(btsOrderType, -fee, `${context}-fee`);
@@ -380,7 +379,7 @@ class Accountant {
         }
 
         // 2. Add RECEIVES amount to both TOTAL and FREE
-        // Also add to cacheFunds for the rebalancer to use
+        // These proceeds are liquid and increase spending power.
         if (receives.asset_id === assetAId) {
             const amount = blockchainToFloat(receives.amount, assetAPrecision, true);
             this.adjustTotalBalance(ORDER_TYPES.SELL, amount, 'fill-receives');

@@ -57,11 +57,8 @@ class Grid {
     static _getSizingContext(manager, side) {
         if (!manager || !manager.assets) return null;
         
-        // 1. Refresh allocation to handle percentage-based botFunds correctly
-        // This ensures the sizing budget responds to account balance changes dynamically.
-        if (typeof manager.applyBotFundsAllocation === 'function') {
-            manager.applyBotFundsAllocation();
-        }
+        // 1. Ensure fund state is fresh before sizing
+        manager.recalculateFunds();
         
         const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
         const isBuy = side === 'buy';
@@ -489,8 +486,6 @@ class Grid {
         const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 
-        if (manager.applyBotFundsAllocation) manager.applyBotFundsAllocation();
-        
         const { A: precA, B: precB } = getPrecisionsForManager(manager.assets);
 
         // Use centralized sizing context for both sides
