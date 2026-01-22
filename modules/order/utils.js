@@ -473,6 +473,7 @@ function parseChainOrder(chainOrder, assets) {
         type = ORDER_TYPES.BUY;
     } else return null;
 
+    let size;
     try {
         if (chainOrder.for_sale !== undefined && chainOrder.for_sale !== null) {
             if (type === ORDER_TYPES.SELL) {
