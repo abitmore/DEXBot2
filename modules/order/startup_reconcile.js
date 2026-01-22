@@ -505,17 +505,17 @@ async function reconcileStartupOrders({
         const chainOrder = sortedUnmatchedSells[i];
         const gridOrder = desiredSellSlots[i];
 
-        // Check if update is feasible: SELL orders need to sell assetA (XRP)
-        // If account doesn't have enough free XRP, skip this update (keep old order as-is)
+        // Check if update is feasible: SELL orders need to sell assetA
+        // If account doesn't have enough free assetA, skip this update (keep old order as-is)
         const gridSize = Number(gridOrder.size) || 0;
         const parsedChain = OrderUtils.parseChainOrder(chainOrder, manager.assets);
         const currentSize = parsedChain ? parsedChain.size : 0;
         const sizeIncrease = Math.max(0, gridSize - currentSize);
-        const currentXrpBalance = (manager.accountTotals?.sellFree) || 0;
+        const currentSellAssetBalance = (manager.accountTotals?.sellFree) || 0;
 
-        if (sizeIncrease > currentXrpBalance) {
+        if (sizeIncrease > currentSellAssetBalance) {
             logger && logger.log && logger.log(
-                `Startup: Skipping SELL update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} XRP, have ${Format.formatAmount8(currentXrpBalance)})`,
+                `Startup: Skipping SELL update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} ${manager.assets.assetA.symbol}, have ${Format.formatAmount8(currentSellAssetBalance)} ${manager.assets.assetA.symbol})`,
                 'warn'
             );
             continue;
@@ -672,18 +672,18 @@ async function reconcileStartupOrders({
         const chainOrder = sortedUnmatchedBuys[i];
         const gridOrder = desiredBuySlots[i];
 
-        // Check if update is feasible: BUY orders need to sell BTS (assetB)
-        // If account doesn't have enough free BTS, skip this update (keep old order as-is)
-        // NOTE: gridOrder.size for BUY orders is already in assetB (BTS) units
+        // Check if update is feasible: BUY orders need to sell assetB
+        // If account doesn't have enough free assetB, skip this update (keep old order as-is)
+        // NOTE: gridOrder.size for BUY orders is already in assetB units
         const gridSize = Number(gridOrder.size) || 0;
         const parsedChain = OrderUtils.parseChainOrder(chainOrder, manager.assets);
         const currentSize = parsedChain ? parsedChain.size : 0;
         const sizeIncrease = Math.max(0, gridSize - currentSize);
-        const currentBtsBalance = (manager.accountTotals?.buyFree) || 0;
+        const currentBuyAssetBalance = (manager.accountTotals?.buyFree) || 0;
 
-        if (sizeIncrease > currentBtsBalance) {
+        if (sizeIncrease > currentBuyAssetBalance) {
             logger && logger.log && logger.log(
-                `Startup: Skipping BUY update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} BTS, have ${Format.formatAmount8(currentBtsBalance)})`,
+                `Startup: Skipping BUY update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} ${manager.assets.assetB.symbol}, have ${Format.formatAmount8(currentBuyAssetBalance)} ${manager.assets.assetB.symbol})`,
                 'warn'
             );
             continue;

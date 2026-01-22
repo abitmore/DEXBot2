@@ -642,7 +642,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     //
     // Example thresholds:
     // - BTS (prec 5): suspicious if chainSize > 1e10 (scales to 1e15)
-    // - IOB.XRP (prec 8): suspicious if chainSize > 1e7 (scales to 1e15)
+    // - assetA (prec 8): suspicious if chainSize > 1e7 (scales to 1e15)
     if (Number.isFinite(precision) && Number.isFinite(Number(chainSize))) {
         const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
         const suspiciousThreshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, precision);

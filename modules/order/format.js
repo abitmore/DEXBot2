@@ -8,8 +8,8 @@
  * DECIMAL PRECISION STANDARDS
  * ═══════════════════════════════════════════════════════════════════════════════
  *
- * Asset Amounts (XRP, Tokens):  8 decimals  - blockchain native precision
- * Prices (XRP/BTS, etc):        6-8 decimals - price precision varies by pair
+ * Asset Amounts:                8 decimals  - blockchain native precision
+ * Prices:                       6-8 decimals - price precision varies by pair
  * Percentages:                  1-4 decimals - display precision
  * Ratios/Metrics:               2-5 decimals - context dependent
  * Time/Performance (ms, %):     1-2 decimals - readable metrics
@@ -19,7 +19,7 @@
  * ═══════════════════════════════════════════════════════════════════════════════
  *
  * ASSET FORMATTING (lines 37-50)
- *   - formatAmount8 (XRP amounts, token amounts)
+ *   - formatAmount8 (Asset amounts)
  *   - formatAmount (with custom decimal places)
  *
  * PRICE FORMATTING (lines 52-65)
@@ -50,7 +50,7 @@
 
 /**
  * Format asset amounts to 8 decimal places (blockchain standard)
- * Used for: XRP amounts, token amounts, order sizes
+ * Used for: Asset amounts, order sizes
  *
  * @param {number} value - The value to format
  * @returns {string} Formatted value to 8 decimals
