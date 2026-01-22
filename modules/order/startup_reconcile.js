@@ -427,7 +427,7 @@ async function reconcileStartupOrders({
                     state: ORDER_STATES.VIRTUAL,
                     orderId: "",
                     rawOnChain: null
-                });
+                }, 'startup-phantom', false, 0);
             }
         }
     }

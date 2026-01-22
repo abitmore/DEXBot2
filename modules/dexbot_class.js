@@ -534,7 +534,7 @@ class DEXBot {
                     state: ORDER_STATES.VIRTUAL,
                     size: 0,
                     orderId: null
-                });
+                }, 'bootstrap-fill', false, 0);
 
                 // Find highest active order on opposite side (closest to market)
                 const allOrders = Array.from(this.manager.orders.values());
@@ -586,7 +586,7 @@ class DEXBot {
                     state: ORDER_STATES.VIRTUAL,
                     size: 0,
                     orderId: null
-                });
+                }, 'bootstrap-rotate', false, 0);
 
                 // Create rotation order with pre-calculated size
                 ordersToPlace.push({
@@ -710,7 +710,7 @@ class DEXBot {
                 const gridOrder = this.manager.orders.get(order.id);
                 if (gridOrder) {
                     gridOrder.size = args.amountToSell;
-                    this.manager._updateOrder(gridOrder);
+                    this.manager._updateOrder(gridOrder, 'size-quantize', false, 0);
                     this.manager.logger.log(
                         `Order ${order.id} size quantized: ${order.size} -> ${args.amountToSell}`,
                         'debug'
@@ -1243,7 +1243,7 @@ class DEXBot {
                                 }
                             };
                         }
-                        this.manager._updateOrder(updatedOrder);
+                        this.manager._updateOrder(updatedOrder, 'post-placement', false, 0);
                     }
 
                     await this.manager.synchronizeWithChain({
@@ -1299,8 +1299,8 @@ class DEXBot {
                         }
                     };
                 }
-                
-                this.manager._updateOrder(updatedSlot);
+
+                this.manager._updateOrder(updatedSlot, 'rotation-prepare', false, 0);
 
                 this.manager.completeOrderRotation(oldOrder);
 

@@ -275,7 +275,7 @@ class StrategyEngine {
 
         // Step 1: Apply state transitions (reduces chainFree via updateOptimisticFreeBalance)
         allUpdates.forEach(upd => {
-            mgr._updateOrder(upd);
+            mgr._updateOrder(upd, 'rebalance-batch', false, 0);
         });
 
         // Step 2: Deduct cacheFunds (while still paused)
@@ -766,7 +766,7 @@ class StrategyEngine {
                     const slotReused = currentSlot && currentSlot.orderId && currentSlot.orderId !== filledOrder.orderId;
 
                     if (!slotReused) {
-                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null }, 'fill');
+                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null }, 'fill', false, 0);
                     } else {
                         mgr.logger.log(`[RACE] Slot ${filledOrder.id} reused (curr=${currentSlot.orderId} != fill=${filledOrder.orderId}). Skipping VIRTUAL update.`, 'info');
                     }

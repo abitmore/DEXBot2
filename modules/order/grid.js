@@ -352,13 +352,13 @@ class Grid {
      * RC-2: Prevents concurrent modifications to manager.orders and fund state
      * @private
      */
-    static async _updateOrderAtomic(manager, order) {
+    static async _updateOrderAtomic(manager, order, context = 'grid-load', skipAccounting = false, fee = 0) {
         if (manager._gridLock?.acquire) {
             return await manager._gridLock.acquire(() => {
-                manager._updateOrder(order);
+                manager._updateOrder(order, context, skipAccounting, fee);
             });
         } else {
-            manager._updateOrder(order);
+            manager._updateOrder(order, context, skipAccounting, fee);
         }
     }
 
@@ -1123,7 +1123,7 @@ class Grid {
                     // FIX: Removed unnecessary pause/resume for single update
                     // Single _updateOrder calls automatically recalculate funds (no batching needed)
                     // Additionally, pauseFundRecalc inside the async lock creates unnecessary overhead
-                    manager._updateOrder(activated);
+                    manager._updateOrder(activated, 'spread-correct', false, 0);
                 }
             } else if (size) {
                 manager.logger?.log?.(`Spread correction order skipped: calculated size (${Format.formatAmount8(size)}) exceeds available funds (${Format.formatAmount8(availableFund)})`, 'warn');
@@ -1144,7 +1144,7 @@ class Grid {
             if (order.size === undefined || Math.abs(order.size - newSize) > 1e-8) {
                 try {
                     // Update size and reset state to ACTIVE (promotes partials back to full size)
-                    manager._updateOrder({ ...order, size: newSize, state: ORDER_STATES.ACTIVE });
+                    manager._updateOrder({ ...order, size: newSize, state: ORDER_STATES.ACTIVE }, 'grid-resize', false, 0);
                 } catch (err) {
                     manager.logger?.log?.(`Error updating order ${order.id} size: ${err.message}`, 'warn');
                 }

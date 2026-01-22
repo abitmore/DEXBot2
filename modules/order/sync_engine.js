@@ -496,7 +496,7 @@ class SyncEngine {
                     }
 
                     const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
-                    mgr._updateOrder(spreadOrder);
+                    mgr._updateOrder(spreadOrder, 'handle-fill-full', false, 0);
                     filledOrders.push(filledOrder);
                     return { filledOrders, updatedOrders, partialFill: false };
                 } else {
@@ -530,7 +530,7 @@ class SyncEngine {
                         // Note: partial fill on doubled side does NOT trigger double replacement
                     }
 
-                    mgr._updateOrder(updatedOrder);
+                    mgr._updateOrder(updatedOrder, 'handle-fill-partial', false, 0);
                     updatedOrders.push(updatedOrder);
                     filledOrders.push(filledPortion);
                     return { filledOrders, updatedOrders, partialFill: true };
@@ -613,7 +613,7 @@ class SyncEngine {
                             // Only transition if not already VIRTUAL
                             if (existingOrder.state !== ORDER_STATES.VIRTUAL) {
                                 const oldVirtualOrder = { ...existingOrder, state: ORDER_STATES.VIRTUAL, orderId: null, size: 0 };
-                                mgr._updateOrder(oldVirtualOrder);
+                                mgr._updateOrder(oldVirtualOrder, 'rotation-cleanup', false, 0);
                             } else if (existingOrder.orderId) {
                                 // Already VIRTUAL but still has orderId (from rebalance)
                                 // Just clear the orderId to reflect blockchain state
@@ -645,7 +645,7 @@ class SyncEngine {
                         const currentGridOrder = mgr.orders.get(gridOrder.id);
                         if (currentGridOrder && currentGridOrder.orderId === orderId) {
                             const updatedOrder = { ...currentGridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
-                            mgr._updateOrder(updatedOrder);
+                            mgr._updateOrder(updatedOrder, 'cancel-order', false, 0);
                         }
                     } finally {
                         mgr.unlockOrders(orderIds);

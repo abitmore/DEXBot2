@@ -675,7 +675,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     if (oldInt === newInt) { gridOrder.size = newSize; return; }
     manager.logger?.log?.(`Order ${gridOrder.id} size adjustment: ${Format.formatAmount8(oldSize)} -> ${Format.formatAmount8(newSize)} (delta: ${Format.formatAmount8(delta)})`, 'debug');
     gridOrder.size = newSize;
-    try { manager._updateOrder(gridOrder); } catch (e) { /* best-effort */ }
+    try { manager._updateOrder(gridOrder, 'size-adjust', false, 0); } catch (e) { /* best-effort */ }
 
     if (delta < 0 && manager.logger) {
         // After partial fill adjustment, log funds snapshot for visibility
