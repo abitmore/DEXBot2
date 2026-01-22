@@ -543,6 +543,13 @@ class OrderManager {
             this.logger.log(`Error: Invalid order state '${order.state}' for order ${order.id}. Valid states: ${Object.values(ORDER_STATES).join(', ')}`, 'error');
             return;
         }
+
+        // State machine validation: ensure SPREAD orders stay VIRTUAL
+        if (order.type === ORDER_TYPES.SPREAD && order.state !== ORDER_STATES.VIRTUAL) {
+            this.logger.log(`Error: Order ${order.id} is type SPREAD but state is ${order.state}. SPREAD orders must remain VIRTUAL.`, 'error');
+            return;
+        }
+
         // Skip update if state is undefined (incomplete order object)
         if (order.state === undefined) {
             this.logger.log(`Debug: Skipping order ${order.id} - state not set`, 'debug');

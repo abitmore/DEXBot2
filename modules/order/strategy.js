@@ -359,7 +359,8 @@ class StrategyEngine {
             if (idx !== undefined) targetIndices.push(idx);
         }
         const targetSet = new Set(targetIndices);
-        const sideWeight = mgr.config.weightDistribution[side];
+        const weightDist = mgr.config.weightDistribution || { sell: 0.5, buy: 0.5 };
+        const sideWeight = weightDist[side];
         const precision = getPrecisionForSide(mgr.assets, side);
 
         // NOTE: BTS fees are already deducted from totalSideBudget in rebalance().

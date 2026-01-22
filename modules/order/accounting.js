@@ -76,16 +76,17 @@ class Accountant {
             const size = Number(order.size) || 0;
             if (size <= 0) continue;
 
-            const hasOrderId = !!order.orderId;
+            const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.startPrice);
+            const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.startPrice);
 
-            if (order.type === ORDER_TYPES.BUY) {
-                gridBuy += size;
-                if (isActive && hasOrderId) chainBuy += size;
-                if (isVirtual || (isActive && !hasOrderId)) virtualBuy += size;
-            } else if (order.type === ORDER_TYPES.SELL) {
-                gridSell += size;
-                if (isActive && hasOrderId) chainSell += size;
-                if (isVirtual || (isActive && !hasOrderId)) virtualSell += size;
+            if (isBuy) {
+                if (isActive) gridBuy += size;
+                if (isActive) chainBuy += size;
+                if (isVirtual) virtualBuy += size;
+            } else if (isSell) {
+                if (isActive) gridSell += size;
+                if (isActive) chainSell += size;
+                if (isVirtual) virtualSell += size;
             }
         }
 
@@ -127,20 +128,20 @@ class Accountant {
 
         // INVARIANT 1: Drift detection
         const expectedBuy = chainFreeBuy + chainBuy;
-        const actualBuy = mgr.accountTotals?.buy ?? expectedBuy;
-        const diffBuy = Math.abs(actualBuy - expectedBuy);
-        const allowedBuyTolerance = Math.max(precisionSlackBuy, actualBuy * PERCENT_TOLERANCE);
+        const actualBuy = mgr.accountTotals?.buy;
+        const diffBuy = Math.abs((actualBuy ?? expectedBuy) - expectedBuy);
+        const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * PERCENT_TOLERANCE);
 
-        if (diffBuy > allowedBuyTolerance && mgr.accountTotals?.buy !== null) {
+        if (actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance) {
             mgr.logger?.log?.(`WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'warn');
         }
 
         const expectedSell = chainFreeSell + chainSell;
-        const actualSell = mgr.accountTotals?.sell ?? expectedSell;
-        const diffSell = Math.abs(actualSell - expectedSell);
-        const allowedSellTolerance = Math.max(precisionSlackSell, actualSell * PERCENT_TOLERANCE);
+        const actualSell = mgr.accountTotals?.sell;
+        const diffSell = Math.abs((actualSell ?? expectedSell) - expectedSell);
+        const allowedSellTolerance = Math.max(precisionSlackSell, (actualSell || expectedSell) * PERCENT_TOLERANCE);
 
-        if (diffSell > allowedSellTolerance && mgr.accountTotals?.sell !== null) {
+        if (actualSell !== null && actualSell !== undefined && diffSell > allowedSellTolerance) {
             mgr.logger?.log?.(`WARNING: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'warn');
         }
 
@@ -201,8 +202,12 @@ class Accountant {
 
     /**
      * Adjust both total and free balances (for fills, fees, deposits).
+     * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+     * @param {number} delta - Amount to adjust
+     * @param {string} operation - Context for logging
+     * @param {boolean} totalOnly - If true, only adjust TOTAL balance, not FREE portion.
      */
-    adjustTotalBalance(orderType, delta, operation) {
+    adjustTotalBalance(orderType, delta, operation, totalOnly = false) {
         const mgr = this.manager;
         const isBuy = (orderType === ORDER_TYPES.BUY);
         const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -210,8 +215,13 @@ class Accountant {
 
         if (!mgr.accountTotals) return;
 
-        const oldFree = Number(mgr.accountTotals[freeKey]) || 0;
-        mgr.accountTotals[freeKey] = Math.max(0, oldFree + delta);
+        if (!totalOnly) {
+            const oldFree = Number(mgr.accountTotals[freeKey]) || 0;
+            // IMPORTANT: No clamping to 0 here. Allowing temporary negative Free balance
+            // ensures the invariant Total = Free + Committed remains stable during
+            // the short race between Fill detection and Order state update.
+            mgr.accountTotals[freeKey] = oldFree + delta;
+        }
 
         if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
             const oldTotal = Number(mgr.accountTotals[totalKey]) || 0;
@@ -219,7 +229,8 @@ class Accountant {
         }
 
         if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(mgr.accountTotals[totalKey])}, Free: ${Format.formatAmount8(mgr.accountTotals[freeKey])}`, 'debug');
+            const freeMsg = totalOnly ? `Free: (untouched)` : `Free: ${Format.formatAmount8(mgr.accountTotals[freeKey])}`;
+            mgr.logger.log(`[ACCOUNTING] ${totalKey} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> Total: ${Format.formatAmount8(mgr.accountTotals[totalKey])}, ${freeMsg}`, 'debug');
         }
     }
 
@@ -323,6 +334,9 @@ class Accountant {
 
         // Reset fees after successful settlement
         mgr.funds.btsFeesOwed = 0;
+
+        // Recalculate funds to update all tracking metrics
+        mgr.recalculateFunds();
     }
 
     async modifyCacheFunds(side, delta, operation = 'update') {
@@ -354,9 +368,9 @@ class Accountant {
 
         if (assetAPrecision === undefined || assetBPrecision === undefined) return;
 
-        // 1. Deduct PAYS amount from both TOTAL and FREE
-        // Free balance adjustment is temporary; _updateOrder will release it 
-        // back to Free once the order transitions to VIRTUAL/SPREAD.
+        // 1. Deduct PAYS amount from both TOTAL and FREE balances.
+        // We must deduct from FREE to offset the optimistic "release to Free"
+        // that happens when _updateOrder transitions the filled order to VIRTUAL.
         if (pays.asset_id === assetAId) {
             const amount = blockchainToFloat(pays.amount, assetAPrecision, true);
             this.adjustTotalBalance(ORDER_TYPES.SELL, -amount, 'fill-pays');

@@ -77,10 +77,17 @@ git checkout main && git pull && git merge --no-ff dev && git push
 - `package.json` - Dependencies and npm scripts
 
 ### Testing
-- `tests/unit/` - Unit tests (accounting, grid, manager, sync_engine)
-- `tests/` - Integration and scenario tests
+- `tests/` - Comprehensive test suite including integration tests and ported unit logic:
+  - `test_accounting_logic.js` - Ported from accounting.test.js
+  - `test_strategy_logic.js` - Ported from strategy.test.js
+  - `test_sync_logic.js` - Ported from sync_engine.test.js
+  - `test_grid_logic.js` - Ported from grid.test.js
+  - `test_manager_logic.js` - Ported from manager.test.js
+  - `test_bts_fee_logic.js` - Ported from bts_fee_settlement.test.js
+  - Scenario and integration tests (fills, grid, manager, etc.)
 
 ## Recent Updates
+- **Native Test Porting**: Ported all unit tests from Jest (`tests/unit/`) to native Node.js `assert` (`tests/test_*_logic.js`) to eliminate heavy devDependencies in standard installations. Removed `jest` and `tests/unit/` directory.
 - **BTS Fee Accounting Fix**: Corrected under-counting of fees during order rotations and size updates. Unified deduction logic in `Accountant` to handle all on-chain fees via `total` balance reduction.
 - **Rotation Synchronization**: Fixed `SyncEngine` to correctly apply `updateFee` during order rotations, ensuring `synchronizeWithChain` reflects actual blockchain costs.
 - **Unified Resize Accounting**: Migrated manual `chainFree` deductions in `DEXBot` to the centralized `_updateOrder` flow, ensuring consistent tracking of both total and free balances.

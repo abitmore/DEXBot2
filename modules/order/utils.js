@@ -2004,19 +2004,19 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     for (const calcOrder of calculatedOrders) {
         const persOrder = persistedMap.get(calcOrder.id);
         if (persOrder) {
-            const calcSize = toFiniteNumber(calcOrder.size);
-            const comparisonTarget = toFiniteNumber(calcOrder.size); // Always compare to ideal size in simplified strategy
+            const currentSize = toFiniteNumber(persOrder.size);
+            const idealSize = toFiniteNumber(calcOrder.size); // Always compare to ideal size in simplified strategy
 
-            if (comparisonTarget > 0) {
-                const relativeDiff = (calcSize - comparisonTarget) / comparisonTarget;
+            if (idealSize > 0) {
+                const relativeDiff = (currentSize - idealSize) / idealSize;
                 const relativePercent = Math.abs(relativeDiff) * 100;
                 if (relativePercent > 10) {
-                    largeDeviations.push({ id: calcOrder.id, persSize: Format.formatAmount8(comparisonTarget), calcSize: Format.formatAmount8(calcSize), percentDiff: Format.formatPercent2(relativePercent) });
+                    largeDeviations.push({ id: calcOrder.id, persSize: Format.formatAmount8(currentSize), calcSize: Format.formatAmount8(idealSize), percentDiff: Format.formatPercent2(relativePercent) });
                 }
                 sumSquaredDiff += relativeDiff * relativeDiff;
                 matchCount++;
-            } else if (calcSize > 0) {
-                trackDeviation(calcOrder.id, '0.00000000', Format.formatAmount8(calcSize), 'Infinity');
+            } else if (currentSize > 0) {
+                trackDeviation(calcOrder.id, '0.00000000', Format.formatAmount8(currentSize), 'Infinity');
             } else {
                 matchCount++;
             }
