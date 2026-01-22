@@ -118,12 +118,15 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
 
     const btsFeeData = OrderUtils.getAssetFees('BTS', 1);
 
-    // Centralized Fund Tracking: Use manager's sync core to handle state transition and fund deduction
+    // Use skipAccounting: true because the chain order already existed and its funds
+    // are already excluded from the accountTotals we fetched at startup.
+    // We only want to align the grid state and deduct the BTS fee.
     await manager.synchronizeWithChain({
         gridOrderId: gridOrder.id,
         chainOrderId,
         isPartialPlacement: false,
-        fee: btsFeeData.updateFee
+        fee: btsFeeData.updateFee,
+        skipAccounting: true
     }, 'createOrder');
 }
 
@@ -427,7 +430,7 @@ async function reconcileStartupOrders({
                     state: ORDER_STATES.VIRTUAL,
                     orderId: "",
                     rawOnChain: null
-                }, 'startup-phantom', false, 0);
+                }, 'startup-phantom', true, 0);
             }
         }
     }

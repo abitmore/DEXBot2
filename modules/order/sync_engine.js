@@ -280,7 +280,7 @@ class SyncEngine {
                     const newInt = floatToBlockchainInt(newSize, precision);
 
                     if (newInt > 0) {
-                        applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
+                        applyChainSizeToGridOrder(mgr, updatedOrder, newSize, options?.skipAccounting);
                         if (updatedOrder.state === ORDER_STATES.ACTIVE) {
                             updatedOrder.state = ORDER_STATES.PARTIAL;
                         }
@@ -355,7 +355,7 @@ class SyncEngine {
 
                 const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 if (floatToBlockchainInt(bestMatch.size, precision) !== floatToBlockchainInt(chainOrder.size, precision)) {
-                    applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size);
+                    applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size, options?.skipAccounting);
                     if (floatToBlockchainInt(chainOrder.size, precision) > 0) {
                         if (bestMatch.state === ORDER_STATES.ACTIVE) bestMatch.state = ORDER_STATES.PARTIAL;
                     } else {
@@ -368,7 +368,7 @@ class SyncEngine {
                         continue;
                     }
                 }
-                mgr._updateOrder(bestMatch, 'sync-pass2-orphan', false, 0);
+                mgr._updateOrder(bestMatch, 'sync-pass2-orphan', options?.skipAccounting || false, 0);
                 updatedOrders.push(bestMatch);
                 chainOrderIdsOnGrid.add(chainOrderId);
             } else if (match) {
@@ -510,13 +510,13 @@ class SyncEngine {
                     };
                     const updatedOrder = { ...matchedGridOrder };
                     updatedOrder.state = ORDER_STATES.PARTIAL;
-                    
+
                     // Update cached raw order integer instead of deleting it
                     if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
                         const currentForSale = Number(updatedOrder.rawOnChain.for_sale);
                         updatedOrder.rawOnChain.for_sale = String(Math.max(0, currentForSale - filledAmountInt));
                     }
-                    
+
                     applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
 
                     // NEW: Simplified Double-Side Strategy (Partial Fill)
@@ -610,15 +610,14 @@ class SyncEngine {
 
                         // For rotation: transition the old order to VIRTUAL, freeing its capital
                         if (isRotation && existingOrder) {
-                            // Only transition if not already VIRTUAL
                             if (existingOrder.state !== ORDER_STATES.VIRTUAL) {
                                 const oldVirtualOrder = { ...existingOrder, state: ORDER_STATES.VIRTUAL, orderId: null, size: 0 };
-                                mgr._updateOrder(oldVirtualOrder, 'rotation-cleanup', false, 0);
+                                mgr._updateOrder(oldVirtualOrder, 'rotation-cleanup', chainData.skipAccounting || false, 0);
                             } else if (existingOrder.orderId) {
                                 // Already VIRTUAL but still has orderId (from rebalance)
                                 // Just clear the orderId to reflect blockchain state
                                 const clearedOrder = { ...existingOrder, orderId: null, size: 0 };
-                                mgr._updateOrder(clearedOrder, 'fill-cleanup', false, 0);
+                                mgr._updateOrder(clearedOrder, 'fill-cleanup', chainData.skipAccounting || false, 0);
                             }
                         }
 
@@ -626,7 +625,7 @@ class SyncEngine {
                         const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
                         // Deduced fee (createFee or updateFee) must always be applied to reflect blockchain cost
                         const actualFee = fee;
-                        mgr._updateOrder(updatedOrder, 'fill-place', false, actualFee);
+                        mgr._updateOrder(updatedOrder, 'fill-place', chainData.skipAccounting || false, actualFee);
                     }
                 } finally {
                     mgr.unlockOrders([gridOrderId]);

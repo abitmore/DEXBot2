@@ -624,8 +624,9 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
  * @param {Object} manager - OrderManager instance
  * @param {Object} gridOrder - Grid order to update
  * @param {number} chainSize - Size in human-readable float units (NOT satoshis!)
+ * @param {boolean} [skipAccounting=false] - Whether to skip optimistic fund updates
  */
-function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
+function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting = false) {
     if (!manager || !gridOrder) return;
     // Allow updates for ACTIVE and PARTIAL orders
     if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) {
@@ -676,7 +677,7 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     if (oldInt === newInt) { gridOrder.size = newSize; return; }
     manager.logger?.log?.(`Order ${gridOrder.id} size adjustment: ${Format.formatAmount8(oldSize)} -> ${Format.formatAmount8(newSize)} (delta: ${Format.formatAmount8(delta)})`, 'debug');
     gridOrder.size = newSize;
-    try { manager._updateOrder(gridOrder, 'size-adjust', false, 0); } catch (e) { /* best-effort */ }
+    try { manager._updateOrder(gridOrder, 'size-adjust', skipAccounting, 0); } catch (e) { /* best-effort */ }
 
     if (delta < 0 && manager.logger) {
         // After partial fill adjustment, log funds snapshot for visibility

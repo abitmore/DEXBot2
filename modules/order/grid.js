@@ -406,7 +406,7 @@ class Grid {
                     order.state = ORDER_STATES.VIRTUAL;
                     // Keep size as-is for debug context, _updateOrder handles state transitions correctly
                 }
-                await Grid._updateOrderAtomic(manager, order);
+                await Grid._updateOrderAtomic(manager, order, 'grid-load', true);
             }
         } finally {
             manager.resumeFundRecalc();
@@ -528,7 +528,7 @@ class Grid {
         try {
             // RC-2: Use atomic order updates to prevent concurrent state corruption
             for (const order of sizedOrders) {
-                await Grid._updateOrderAtomic(manager, order);
+                await Grid._updateOrderAtomic(manager, order, 'grid-init', true);
             }
         } finally {
             manager.resumeFundRecalc();
