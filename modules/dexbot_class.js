@@ -1221,7 +1221,7 @@ class DEXBot {
                             }
                         };
                     }
-                    this.manager._updateOrder(updatedSlot, btsFeeData.updateFee);
+                    this.manager._updateOrder(updatedSlot, 'order-update', false, btsFeeData.updateFee);
                 }
                 this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
                 updateOperationCount++;
@@ -1275,7 +1275,7 @@ class DEXBot {
                                 }
                             };
                         }
-                        this.manager._updateOrder(updatedSlot, btsFeeData.updateFee);
+                        this.manager._updateOrder(updatedSlot, 'order-update', false, btsFeeData.updateFee);
                     }
 
                     updateOperationCount++;

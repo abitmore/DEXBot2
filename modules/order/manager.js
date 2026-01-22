@@ -98,6 +98,7 @@ class OrderManager {
         this._pauseFundRecalcDepth = 0;
         this._recalcLoggingDepth = 0;
         this._persistenceWarning = null;
+        this._isBroadcasting = false;
 
         // Metrics for observability
         this._metrics = {
@@ -181,6 +182,25 @@ class OrderManager {
     recalculateFunds() {
         this._metrics.fundRecalcCount++;
         return this.accountant.recalculateFunds();
+    }
+
+    /**
+     * Sets the broadcasting flag to suppress transient invariant warnings.
+     * Call this before broadcasting active orders to prevent false-positive warnings
+     * during the update window when funds are in transit.
+     * @returns {void}
+     */
+    startBroadcasting() {
+        this._isBroadcasting = true;
+    }
+
+    /**
+     * Clears the broadcasting flag and resumes normal invariant validation.
+     * Call this after broadcasting is complete.
+     * @returns {void}
+     */
+    stopBroadcasting() {
+        this._isBroadcasting = false;
     }
 
     /**

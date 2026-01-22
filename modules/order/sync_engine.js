@@ -286,20 +286,20 @@ class SyncEngine {
                         }
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        mgr._updateOrder(spreadOrder, 0, options);
+                        mgr._updateOrder(spreadOrder, 'sync-pass1-filled', options?.skipAccounting || false, 0);
                         filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                         continue;
                     }
                 }
-                mgr._updateOrder(updatedOrder, 0, options);
+                mgr._updateOrder(updatedOrder, 'sync-pass1-partial', options?.skipAccounting || false, 0);
                 updatedOrders.push(updatedOrder);
             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
                 const currentGridOrder = mgr.orders.get(gridOrder.id);
                 if (currentGridOrder?.orderId && !parsedChainOrders.has(currentGridOrder.orderId)) {
                     const filledOrder = { ...currentGridOrder };
                     const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                    mgr._updateOrder(spreadOrder, 0, options);
+                    mgr._updateOrder(spreadOrder, 'sync-pass1-notfound', options?.skipAccounting || false, 0);
                     filledOrders.push(filledOrder);
                 }
             }
@@ -362,13 +362,13 @@ class SyncEngine {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
                         // bestMatch should not be updated further if it became a spread
-                        mgr._updateOrder(spreadOrder, 0, options);
+                        mgr._updateOrder(spreadOrder, 'sync-pass2-filled', options?.skipAccounting || false, 0);
                         updatedOrders.push(spreadOrder);
                         chainOrderIdsOnGrid.add(chainOrderId);
                         continue;
                     }
                 }
-                mgr._updateOrder(bestMatch);
+                mgr._updateOrder(bestMatch, 'sync-pass2-orphan', false, 0);
                 updatedOrders.push(bestMatch);
                 chainOrderIdsOnGrid.add(chainOrderId);
             } else if (match) {
@@ -618,7 +618,7 @@ class SyncEngine {
                                 // Already VIRTUAL but still has orderId (from rebalance)
                                 // Just clear the orderId to reflect blockchain state
                                 const clearedOrder = { ...existingOrder, orderId: null, size: 0 };
-                                mgr._updateOrder(clearedOrder);
+                                mgr._updateOrder(clearedOrder, 'fill-cleanup', false, 0);
                             }
                         }
 
@@ -626,7 +626,7 @@ class SyncEngine {
                         const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
                         // Deduced fee (createFee or updateFee) must always be applied to reflect blockchain cost
                         const actualFee = fee;
-                        mgr._updateOrder(updatedOrder, actualFee);
+                        mgr._updateOrder(updatedOrder, 'fill-place', false, actualFee);
                     }
                 } finally {
                     mgr.unlockOrders([gridOrderId]);
