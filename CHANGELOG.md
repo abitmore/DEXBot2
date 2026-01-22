@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.6] - 2026-01-22 - Accounting Hardening & Asset Neutrality
+
+### Added
+- **Automated Branch Synchronization Script** (commit 0d7dac0, 1596c93)
+  - New `pmain` script for automated synchronization between `dev`, `test`, and `main` branches.
+  - Ensures proper push order (test -> dev -> main) to maintain consistency.
+- **Gitignore for Generated Documentation** (commit 6ccf2cc)
+  - Automatically ignores generated HTML documentation files from the repository.
+
+### Fixed
+- **Critical Accounting Inconsistency & Double-Deduction** (commit 2deb9fc)
+  - Fixed bugs in `startup_reconcile`, `grid.js`, and `sync_engine` where initial order states triggered redundant optimistic deductions.
+  - Sanitized phantom order cleanup to use `skipAccounting` preventing tracked balance inflation.
+- **Resync Order Duplication** (commit 8d65e0b)
+  - Implemented delta-based balance checks during resync to prevent creating duplicate orders.
+  - Fixed `ReferenceError` in reconciliation logic.
+- **False Positive Fund Invariants** (commit 16f15c7)
+  - Silenced spurious "Fund invariant violation" warnings during resync and startup phases.
+- **Signature Mismatch in Order Updates** (commit 90b27fe, 518f9f8)
+  - Corrected `_updateOrder` signature mismatches across modules.
+  - Implemented `_isBroadcasting` flag for improved operation tracking.
+- **Build/Update Script Robustness** (commit 4082646, 1dea7a4)
+  - Fixed shell script errors ("integer expression expected") and relaxed merge history checks.
+- **Resync Atomic Re-verification & Locking**
+  - Added "Just-in-Time" state verification in `startup_reconcile.js` to abort double-placements after recovery syncs.
+  - Wrapped startup synchronization in `dexbot_class.js` with `_fillProcessingLock` to serialize early fill notifications.
+- **BTS Fee Accounting during Sync**
+  - Fixed bug where BTS fees were skipped during resync; fees are now always tracked even when asset accounting is disabled.
+
+### Refactored
+- **Asset Neutrality (Generic Variable Names)** (commit fc3fa9f)
+  - Refactored codebase to replace asset-specific variable names (e.g., `currentXrpBalance`) with generic alternatives.
+  - Improves multi-asset support and reduces confusion when trading non-XRP pairs.
+- **Integer-First Alignment (rawOnChain)** (commit 92f0701)
+  - Modernized core logic to fully align with the `rawOnChain` integer-tracking model.
+- **Fund Management Streamlining** (commit 83fca8e)
+  - Simplified fund state management and reduced transient logging noise.
+
+### Updated Documentation
+- **Consolidated Fund Guide** (commit ab7789c, 6b2d826)
+  - Merged and expanded fund accounting and movement documentation into a single authoritative guide.
+- **Modernized Architecture & Testing Docs** (commit 0e8c623)
+  - Updated technical documentation to reflect recent architectural shifts and testing procedures.
+
+---
+
 ## [0.6.0-patch.5] - 2026-01-21 - Security, Performance & AMA Integration
 
 ### Added

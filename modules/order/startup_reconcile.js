@@ -101,6 +101,14 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
 async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId, gridOrder, dryRun }) {
     if (dryRun) return;
 
+    // ATOMIC RE-VERIFICATION: Ensure slot hasn't been matched or changed since reconciliation started
+    // (e.g. by a background recovery sync triggered by a previous operation failure)
+    const currentSlot = manager.orders.get(gridOrder.id);
+    if (!currentSlot || (currentSlot.orderId && currentSlot.orderId !== chainOrderId)) {
+        manager.logger?.log?.(`[_updateChainOrderToGrid] SKIP: Slot ${gridOrder.id} already updated/matched (expected ${chainOrderId}, got ${currentSlot?.orderId})`, 'warn');
+        return;
+    }
+
     const { amountToSell, minToReceive } = OrderUtils.buildCreateOrderArgs(gridOrder, manager.assets.assetA, manager.assets.assetB);
 
     const logger = manager && manager.logger;
@@ -209,6 +217,13 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
  */
 async function _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun }) {
     if (dryRun) return;
+
+    // ATOMIC RE-VERIFICATION: Ensure slot is still virtual and hasn't been filled by recovery sync
+    const currentSlot = manager.orders.get(gridOrder.id);
+    if (currentSlot && currentSlot.orderId) {
+        manager.logger?.log?.(`[_createOrderFromGrid] SKIP: Slot ${gridOrder.id} already has orderId ${currentSlot.orderId}`, 'warn');
+        return;
+    }
 
     const { amountToSell, sellAssetId, minToReceive, receiveAssetId } = OrderUtils.buildCreateOrderArgs(
         gridOrder,
@@ -380,7 +395,6 @@ async function reconcileStartupOrders({
     privateKey,
     chainOrders,
     chainOpenOrders,
-    syncResult,
 }) {
     // Parameter validation
     if (!manager || typeof manager.synchronizeWithChain !== 'function') {

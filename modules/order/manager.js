@@ -568,8 +568,8 @@ class OrderManager {
         }
 
         // 1. Update optimistic balance (atomic update of tracked funds)
-        if (!skipAccounting && this.accountant) {
-            this.accountant.updateOptimisticFreeBalance(oldOrder, order, context, fee);
+        if (this.accountant) {
+            this.accountant.updateOptimisticFreeBalance(oldOrder, order, context, fee, skipAccounting);
         }
 
         // 2. Clone the order to prevent external modification races

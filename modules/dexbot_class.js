@@ -1474,14 +1474,54 @@ class DEXBot {
             await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
             this._log('Fill listener activated (ready to process fills during startup)');
 
-            if (shouldRegenerate) {
-                await this.manager._initializeAssets();
+            // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
+            // Fills that arrive during this phase will be queued and processed only after 
+            // the initial reconciliation and placement are complete.
+            await this.manager._fillProcessingLock.acquire(async () => {
+                if (shouldRegenerate) {
+                    await this.manager._initializeAssets();
 
-                // If there are existing on-chain orders, reconcile them with the new grid
-                if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
-                    this._log('Generating new grid and syncing with existing on-chain orders...');
-                    await Grid.initializeGrid(this.manager);
+                    // If there are existing on-chain orders, reconcile them with the new grid
+                    if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
+                        this._log('Generating new grid and syncing with existing on-chain orders...');
+                        await Grid.initializeGrid(this.manager);
+                        await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+                        const rebalanceResult = await reconcileStartupOrders({
+                            manager: this.manager,
+                            config: this.config,
+                            account: this.account,
+                            privateKey: this.privateKey,
+                            chainOrders,
+                            chainOpenOrders,
+                        });
+
+                        if (rebalanceResult) {
+                            await this.updateOrdersOnChainBatch(rebalanceResult);
+                        }
+                    } else {
+                        // No existing orders: place initial orders on-chain
+                        // placeInitialOrders() handles both Grid.initializeGrid() and broadcast
+                        this._log('Generating new grid and placing initial orders on-chain...');
+                        await this.placeInitialOrders();
+                    }
+                    await this.manager.persistGrid();
+                } else {
+                    this._log('Found active session. Loading and syncing existing grid.');
+                    await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
                     const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+
+                    // Process fills discovered during startup sync (happened while bot was offline)
+                    if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                        this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
+                        // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
+                        // and already reflect these fills. Adding them again would cause fund inflation.
+                        await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
+                    }
+
+                    // Reconcile existing on-chain orders to the configured target counts.
+                    // This ensures activeOrders changes in bots.json are applied on restart:
+                    // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
+                    // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
                     const rebalanceResult = await reconcileStartupOrders({
                         manager: this.manager,
                         config: this.config,
@@ -1489,52 +1529,15 @@ class DEXBot {
                         privateKey: this.privateKey,
                         chainOrders,
                         chainOpenOrders,
-                        syncResult,
                     });
 
                     if (rebalanceResult) {
                         await this.updateOrdersOnChainBatch(rebalanceResult);
                     }
-                } else {
-                    // No existing orders: place initial orders on-chain
-                    // placeInitialOrders() handles both Grid.initializeGrid() and broadcast
-                    this._log('Generating new grid and placing initial orders on-chain...');
-                    await this.placeInitialOrders();
+
+                    await this.manager.persistGrid();
                 }
-                await this.manager.persistGrid();
-            } else {
-                this._log('Found active session. Loading and syncing existing grid.');
-                await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
-                const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-
-                // Process fills discovered during startup sync (happened while bot was offline)
-                if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                    this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                    // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
-                    // and already reflect these fills. Adding them again would cause fund inflation.
-                    await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
-                }
-
-                // Reconcile existing on-chain orders to the configured target counts.
-                // This ensures activeOrders changes in bots.json are applied on restart:
-                // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
-                // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
-                const rebalanceResult = await reconcileStartupOrders({
-                    manager: this.manager,
-                    config: this.config,
-                    account: this.account,
-                    privateKey: this.privateKey,
-                    chainOrders,
-                    chainOpenOrders,
-                    syncResult,
-                });
-
-                if (rebalanceResult) {
-                    await this.updateOrdersOnChainBatch(rebalanceResult);
-                }
-
-                await this.manager.persistGrid();
-            }
+            });
 
             // CRITICAL: Bootstrap complete - allow invariant checks to resume
             this.manager.finishBootstrap();
@@ -1955,11 +1958,39 @@ class DEXBot {
             await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
             this._log('Fill listener activated (ready to process fills during startup)');
 
-            if (shouldRegenerate) {
-                await this.placeInitialOrders();
-            } else {
-                await this.bootstrapOrdersFromPersistedGrid();
-            }
+            // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
+            await this.manager._fillProcessingLock.acquire(async () => {
+                if (shouldRegenerate) {
+                    await this.placeInitialOrders();
+                    await this.manager.persistGrid();
+                } else {
+                    this._log('Found active session. Loading and syncing existing grid.');
+                    await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
+                    const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+
+                    // Process fills discovered during startup sync
+                    if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                        this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
+                        await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
+                    }
+
+                    // Reconcile existing on-chain orders to the configured target counts.
+                    const rebalanceResult = await reconcileStartupOrders({
+                        manager: this.manager,
+                        config: this.config,
+                        account: this.account,
+                        privateKey: this.privateKey,
+                        chainOrders,
+                        chainOpenOrders
+                    });
+
+                    if (rebalanceResult) {
+                        await this.updateOrdersOnChainBatch(rebalanceResult);
+                    }
+
+                    await this.manager.persistGrid();
+                }
+            });
 
             this.manager.isBootstrapping = false;
             this._log('Bootstrap completed successfully');

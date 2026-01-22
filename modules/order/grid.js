@@ -591,7 +591,7 @@ class Grid {
 
         // FIX: Add error context for debugging grid recalculation issues
         try {
-            await reconcileStartupOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders, syncResult: { unmatchedChainOrders: chainOpenOrders } });
+            await reconcileStartupOrders({ manager, config: manager.config, account, privateKey, chainOrders, chainOpenOrders });
         } catch (err) {
             manager.logger?.log?.(`Error during startup order reconciliation: ${err.message}`, 'error');
             throw new Error(`Grid recalculation failed during order reconciliation: ${err.message}`);

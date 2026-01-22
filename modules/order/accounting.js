@@ -245,35 +245,39 @@ class Accountant {
      * @param {Object} newOrder - New order state
      * @param {string} context - Context for logging/tracking
      * @param {number} fee - Blockchain fee to deduct
+     * @param {boolean} skipAssetAccounting - If true, skip capital commitment changes (asset amounts) but still process fees
      */
-    updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0) {
+    updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0, skipAssetAccounting = false) {
         const mgr = this.manager;
         if (!oldOrder || !newOrder) return;
 
-        const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
-        const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
-        const oldSize = Number(oldOrder.size) || 0;
-        const newSize = Number(newOrder.size) || 0;
+        if (!skipAssetAccounting) {
+            const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
+            const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
+            const oldSize = Number(oldOrder.size) || 0;
+            const newSize = Number(newOrder.size) || 0;
 
-        // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
-        // For COMMITMENT: Use GRID state (isActive), not blockchain ID
-        const oldGridCommitted = oldIsActive ? oldSize : 0;
-        const newGridCommitted = newIsActive ? newSize : 0;
-        const commitmentDelta = newGridCommitted - oldGridCommitted;
+            // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
+            // For COMMITMENT: Use GRID state (isActive), not blockchain ID
+            const oldGridCommitted = oldIsActive ? oldSize : 0;
+            const newGridCommitted = newIsActive ? newSize : 0;
+            const commitmentDelta = newGridCommitted - oldGridCommitted;
 
-        if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, state=${oldOrder.state}->${newOrder.state}, size=${oldSize}->${newSize}, delta=${Format.formatAmount8(commitmentDelta)}, context=${context}`, 'debug');
-        }
+            if (mgr.logger && mgr.logger.level === 'debug') {
+                mgr.logger.log(`[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, state=${oldOrder.state}->${newOrder.state}, size=${oldSize}->${newSize}, delta=${Format.formatAmount8(commitmentDelta)}, context=${context}`, 'debug');
+            }
 
-        if (commitmentDelta > 0) {
-            // Lock capital: move from Free to Committed
-            this.tryDeductFromChainFree(newOrder.type, commitmentDelta, `${context}`);
-        } else if (commitmentDelta < 0) {
-            // Release capital: move from Committed back to Free
-            this.addToChainFree(oldOrder.type, Math.abs(commitmentDelta), `${context}`);
+            if (commitmentDelta > 0) {
+                // Lock capital: move from Free to Committed
+                this.tryDeductFromChainFree(newOrder.type, commitmentDelta, `${context}`);
+            } else if (commitmentDelta < 0) {
+                // Release capital: move from Committed back to Free
+                this.addToChainFree(oldOrder.type, Math.abs(commitmentDelta), `${context}`);
+            }
         }
 
         // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
+        // Fees are ALWAYS deducted if provided, even if skipAssetAccounting is true
         const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
         if (fee > 0 && btsSide) {
             const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
