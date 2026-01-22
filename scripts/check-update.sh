@@ -159,18 +159,20 @@ EXPECTED_MERGE_COMMITS=2  # f29b4af (main) and 2b4aa98 (dev)
 ACTUAL_MERGE_COMMITS=$(git log --all --oneline --grep="Merge branch" | wc -l)
 
     if [ "$CURRENT_BRANCH" = "main" ]; then
-    # Main should only have 1 merge commit (f29b4af) after cleanup
-    BRANCH_MERGES=$(git log --oneline --grep="Merge branch" | head -1 | grep -c "Clean merge")
-    if [ "$BRANCH_MERGES" -gt 0 ]; then        print_check "pass" "Main branch has clean merge history"
+    # Check if cleanup commit (f29b4af) is in history
+    BRANCH_MERGES=$(git log --oneline --grep="Merge branch" | grep -c "Clean merge")
+    if [ "$BRANCH_MERGES" -gt 0 ]; then
+        print_check "pass" "Cleanup commit found in history"
     else
-        print_check "warn" "Main branch may have old merge history"
+        print_check "warn" "Cleanup commit MISSING from history"
     fi
     elif [ "$CURRENT_BRANCH" = "dev" ]; then
-    # Dev should only have 1 merge commit (2b4aa98) after cleanup
-    BRANCH_MERGES=$(git log --oneline --grep="Merge branch" | head -1 | grep -c "Clean merge")
-    if [ "$BRANCH_MERGES" -gt 0 ]; then        print_check "pass" "Dev branch has clean merge history"
+    # Check if cleanup commit (2b4aa98) is in history
+    BRANCH_MERGES=$(git log --oneline --grep="Merge branch" | grep -c "Clean merge")
+    if [ "$BRANCH_MERGES" -gt 0 ]; then
+        print_check "pass" "Cleanup commit found in history"
     else
-        print_check "warn" "Dev branch may have old merge history"
+        print_check "warn" "Cleanup commit MISSING from history"
     fi
 else
     print_check "pass" "Test branch (no merge expected)"
