@@ -450,10 +450,9 @@ Key documents:
 - **[FUND_MOVEMENT_AND_ACCOUNTING.md](docs/FUND_MOVEMENT_AND_ACCOUNTING.md)** - Unified guide to fund accounting, grid topology, and rotation mechanics
 - **[architecture.md](docs/architecture.md)** - System design and testing strategy
 - **[developer_guide.md](docs/developer_guide.md)** - Development guide with examples
-
-Logging documentation:
-- **[LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md)** - Hybrid centralized architecture, categories, change detection
-- **[LOGGING_MIGRATION_GUIDE.md](LOGGING_MIGRATION_GUIDE.md)** - Configuration presets and testing procedures
+- **[LOGGING.md](docs/LOGGING.md)** - Comprehensive logging system documentation
+- **[WORKFLOW.md](docs/WORKFLOW.md)** - Project workflow and contribution guide
+- **[TEST_UPDATES_SUMMARY.md](docs/TEST_UPDATES_SUMMARY.md)** - Summary of test updates and improvements
 
 ---
 
@@ -463,8 +462,8 @@ Below is a short summary of the modules in this repository and what they provide
 
 ### 📍 Entry Points
 
-- `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, drystart, reset, disable) and management commands (keys, bots, export, --cli-examples). Includes full DEXBot2 class with grid management, fill processing, and account operations. Export command generates CSV/JSON files for QTradeX backtesting.
-- `pm2.js`: Unified PM2 launcher. Orchestrates BitShares connection, PM2 check/install, ecosystem config generation from `profiles/bots.json`, master password authentication, and bot startup with automatic restart policies.
+- `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, drystart, reset, disable) and management commands (keys, bots, export, --cli-examples). Includes full DEXBot2 class with grid management, fill processing, and account operations.
+- `pm2.js`: Unified PM2 launcher. Orchestrates BitShares connection, PM2 check/install, ecosystem config generation from `profiles/bots.json`, credential daemon startup with interactive master password prompt (keeps keys in RAM), and bot startup with automatic restart policies.
 - `bot.js`: PM2-friendly per-bot entry point. Loads bot config by name from `profiles/bots.json`, authenticates via master password (from environment or interactive prompt), initializes DEXBot instance, and runs the trading loop.
 
 ### 🧩 Core Modules
