@@ -1493,15 +1493,16 @@ class DEXBot {
         }
 
         // Debounced watcher to avoid duplicate rapid triggers on some platforms
-        let _triggerDebounce = null;
+        // Store instance variables for cleanup during shutdown
+        this._triggerDebounce = null;
         try {
-            fs.watch(PROFILES_DIR, (eventType, filename) => {
+            this._triggerFileWatcher = fs.watch(PROFILES_DIR, (eventType, filename) => {
                 try {
                     if (filename === path.basename(this.triggerFile)) {
                         if ((eventType === 'rename' || eventType === 'change') && fs.existsSync(this.triggerFile)) {
-                            if (_triggerDebounce) clearTimeout(_triggerDebounce);
-                            _triggerDebounce = setTimeout(() => {
-                                _triggerDebounce = null;
+                            if (this._triggerDebounce) clearTimeout(this._triggerDebounce);
+                            this._triggerDebounce = setTimeout(() => {
+                                this._triggerDebounce = null;
                                 performResync();
                             }, 200);
                         }
@@ -1513,6 +1514,92 @@ class DEXBot {
         } catch (err) {
             this._warn(`Failed to setup file watcher: ${err.message}`);
         }
+    }
+
+    /**
+     * Teardown trigger file detection by closing the file watcher.
+     * @private
+     */
+    _teardownTriggerFileDetection() {
+        // Clear any pending debounce timer
+        if (this._triggerDebounce) {
+            clearTimeout(this._triggerDebounce);
+            this._triggerDebounce = null;
+        }
+
+        // Close the file watcher
+        if (this._triggerFileWatcher) {
+            try {
+                this._triggerFileWatcher.close();
+                this._triggerFileWatcher = null;
+                this._log('Closed trigger file watcher');
+            } catch (err) {
+                this._warn(`Error closing trigger file watcher: ${err.message}`);
+            }
+        }
+    }
+
+    /**
+     * Initialize account from provided private key.
+     * Shared logic between initialize() and startWithPrivateKey().
+     * @param {string} preferredAccount - The account name
+     * @param {string} privateKey - The private key for the account
+     * @private
+     */
+    async _initializeAccountFromPrivateKey(preferredAccount, privateKey) {
+        let accId = null;
+        try {
+            const full = await BitShares.db.get_full_accounts([preferredAccount], false);
+            if (full && full[0]) {
+                const maybe = full[0][0];
+                if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
+                else if (full[0][1] && full[0][1].account && full[0][1].account.id) accId = full[0][1].account.id;
+            }
+        } catch (e) { /* best-effort */ }
+
+        if (accId) chainOrders.setPreferredAccount(accId, preferredAccount);
+
+        this.account = preferredAccount;
+        this.accountId = accId || null;
+        this.privateKey = privateKey;
+        this._log(`Initialized DEXBot for account: ${this.account}`);
+    }
+
+    /**
+     * Restore funds and state from persistence storage.
+     * Shared logic between start() and startWithPrivateKey().
+     * @private
+     */
+    async _restoreFundsFromPersistence() {
+        const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
+        const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
+        const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
+        const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
+
+        // Restore and consolidate cacheFunds
+        // SAFE: Done during startup before fill listener activates, so no concurrent access yet
+        this.manager.resetFunds();
+        if (persistedCacheFunds) {
+            await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
+            await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
+        }
+
+        // Restore doubled side flags
+        if (persistedDoubleSideFlags) {
+            this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
+            this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
+            if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
+                this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
+            }
+        }
+
+        // Return values needed for grid decision logic
+        return {
+            persistedCacheFunds,
+            persistedBtsFeesOwed,
+            persistedBoundaryIdx,
+            persistedDoubleSideFlags
+        };
     }
 
     /**
@@ -1598,27 +1685,9 @@ class DEXBot {
         // This prevents TOCTOU races during cacheFunds restore, fill listener activation, and grid operations
         // Fills arriving during startup are queued in _incomingFillQueue but not processed until isBootstrapping=false
         try {
-            const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
-            const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
-            const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
-            const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
-
-            // Restore and consolidate cacheFunds
-            // SAFE: Done during startup before fill listener activates, so no concurrent access yet
-            this.manager.resetFunds();
-            if (persistedCacheFunds) {
-                await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
-                await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
-            }
-
-            // Restore doubled side flags
-            if (persistedDoubleSideFlags) {
-                this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
-                this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
-                if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
-                    this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
-                }
-            }
+            // Restore funds and state from persistence (shared logic)
+            const { persistedCacheFunds, persistedBtsFeesOwed, persistedBoundaryIdx, persistedDoubleSideFlags } =
+                await this._restoreFundsFromPersistence();
 
             // Use this.accountId which was set during initialize()
             const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
@@ -1795,22 +1864,7 @@ class DEXBot {
 
         if (this.config && this.config.preferredAccount) {
             try {
-                let accId = null;
-                try {
-                    const full = await BitShares.db.get_full_accounts([this.config.preferredAccount], false);
-                    if (full && full[0]) {
-                        const maybe = full[0][0];
-                        if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
-                        else if (full[0][1] && full[0][1].account && full[0][1].account.id) accId = full[0][1].account.id;
-                    }
-                } catch (e) { /* best-effort */ }
-
-                if (accId) chainOrders.setPreferredAccount(accId, this.config.preferredAccount);
-
-                this.account = this.config.preferredAccount;
-                this.accountId = accId || null;
-                this.privateKey = privateKey;
-                this._log(`Initialized DEXBot for account: ${this.account}`);
+                await this._initializeAccountFromPrivateKey(this.config.preferredAccount, privateKey);
             } catch (err) {
                 this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
                 throw err;
@@ -1885,27 +1939,10 @@ class DEXBot {
             }
         }
 
-        this.manager.isBootstrapping = true;
-
         try {
-            const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
-            const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
-            const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
-            const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
-
-            this.manager.resetFunds();
-            if (persistedCacheFunds) {
-                await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
-                await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
-            }
-
-            if (persistedDoubleSideFlags) {
-                this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
-                this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
-                if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
-                    this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
-                }
-            }
+            // Restore funds and state from persistence (shared logic)
+            const { persistedCacheFunds, persistedBtsFeesOwed, persistedBoundaryIdx, persistedDoubleSideFlags } =
+                await this._restoreFundsFromPersistence();
 
             const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
 
@@ -2015,8 +2052,19 @@ class DEXBot {
 
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
-            await this.shutdown();
+            try {
+                await this.shutdown();
+            } catch (shutdownErr) {
+                this._warn(`Error during shutdown after initialization failure: ${shutdownErr.message}`);
+            }
             throw err;
+        } finally {
+            // CRITICAL: Mark bootstrap complete - allow fill processing to resume
+            // Must be in finally to ensure flag is reset even if shutdown() fails
+            if (this.manager && this.manager.isBootstrapping) {
+                this.manager.isBootstrapping = false;
+                this._log('Bootstrap phase complete - fill processing resumed', 'info');
+            }
         }
 
         // Setup trigger file detection for grid reset (shared with start method)
@@ -2230,6 +2278,7 @@ class DEXBot {
 
         // Stop accepting new work
         this._stopBlockchainFetchInterval();
+        this._teardownTriggerFileDetection();
 
         // Wait for current fill processing to complete
         try {
