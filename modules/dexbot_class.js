@@ -1495,11 +1495,6 @@ class DEXBot {
             }
         });
 
-        // CRITICAL: Activate fill listener AFTER trigger file handling
-        // This ensures fills are captured during and after the regeneration
-        await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-        this._log('Fill listener activated (after trigger file regeneration)');
-
         return true;
     }
 
@@ -1755,6 +1750,13 @@ class DEXBot {
         } catch (err) {
             this._warn(`Fee cache initialization failed: ${err.message}`);
         }
+
+        // CRITICAL: Activate fill listener EARLY
+        // This ensures we capture fills that occur during any startup path (normal or reset).
+        // Fills arriving during setup will be queued and processed after grid synchronization
+        // once the isBootstrapping flag is cleared and the fill lock is released.
+        await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+        this._log('Fill listener activated (early capture enabled)');
     }
 
     /**
@@ -1893,12 +1895,6 @@ class DEXBot {
                 this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
                 this.manager.funds.btsFeesOwed = 0;
             }
-
-            // CRITICAL: Activate fill listener BEFORE any grid operations or order placement
-            // This ensures we capture fills that occur during startup (initial placement, syncing, corrections)
-            // The divergence lock at startup grid checks prevents races with concurrent fill processing
-            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-            this._log('Fill listener activated (ready to process fills during startup)');
 
             // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
             // Fills that arrive during this phase will be queued and processed only after
@@ -2091,12 +2087,6 @@ class DEXBot {
                 this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
                 this.manager.funds.btsFeesOwed = 0;
             }
-
-            // CRITICAL: Activate fill listener BEFORE any grid operations or order placement.
-            // This ensures we capture fills that occur during startup (initial placement, syncing, corrections).
-            // The divergence lock at startup grid checks prevents races with concurrent fill processing.
-            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-            this._log('Fill listener activated (ready to process fills during startup)');
 
             // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
             // Fills that arrive during this phase will be queued and processed only after
