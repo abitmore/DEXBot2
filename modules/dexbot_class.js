@@ -1809,10 +1809,21 @@ class DEXBot {
             // Perform post-bootstrap grid validation checks (shared with startWithPrivateKey)
             await this._performPostBootstrapGridChecks();
 
+        } catch (err) {
+            this._warn(`Error during grid initialization: ${err.message}`);
+            try {
+                await this.shutdown();
+            } catch (shutdownErr) {
+                this._warn(`Error during shutdown after initialization failure: ${shutdownErr.message}`);
+            }
+            throw err;
         } finally {
             // CRITICAL: Mark bootstrap complete - allow fill processing to resume
-            this.manager.isBootstrapping = false;
-            this._log('Bootstrap phase complete - fill processing resumed', 'info');
+            // Must be in finally to ensure flag is reset even if shutdown() fails
+            if (this.manager && this.manager.isBootstrapping) {
+                this.manager.isBootstrapping = false;
+                this._log('Bootstrap phase complete - fill processing resumed', 'info');
+            }
         }
 
         // Setup trigger file detection for grid reset (shared with startWithPrivateKey)
@@ -1867,7 +1878,17 @@ class DEXBot {
                 await this._initializeAccountFromPrivateKey(this.config.preferredAccount, privateKey);
             } catch (err) {
                 this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
-                throw err;
+                // Attempt fallback if available (same as initialize())
+                // Note: bot.js may not have selectAccount available, so this just re-throws
+                if (typeof chainOrders.selectAccount === 'function') {
+                    const accountData = await chainOrders.selectAccount();
+                    this.account = accountData.accountName;
+                    this.accountId = accountData.id || null;
+                    this.privateKey = privateKey;
+                    this._log(`Initialized DEXBot for account: ${this.account}`);
+                } else {
+                    throw err;
+                }
             }
         } else {
             throw new Error('No preferredAccount configured');
@@ -2081,12 +2102,16 @@ class DEXBot {
             while (true) {
                 try {
                     if (this.manager && !this.config.dryRun) {
+                        // OPTIMIZATION: Reduce lock thrashing by checking if lock is already held
+                        // Only acquire if we actually need to do work AND lock is available
+                        // This prevents busy-looping that continuously acquires/releases the lock
                         if (!this.manager._fillProcessingLock.isLocked() &&
                             this.manager._fillProcessingLock.getQueueLength() === 0) {
                             await this.manager._fillProcessingLock.acquire(async () => {
                                 await this.manager.syncFromOpenOrders();
                             });
                         } else {
+                            // Lock is busy with fill processing, skip this iteration
                             this.manager.logger.log('Sync deferred: fill processing in progress', 'debug');
                         }
                     }
