@@ -76,6 +76,9 @@ class DEXBot {
 
         // Shutdown state
         this._shuttingDown = false;
+
+        // Blockchain fetch interval state tracking
+        this._blockchainFetchIntervalActive = false;
     }
 
     /**
@@ -1393,6 +1396,7 @@ class DEXBot {
 
         // Check spread condition at startup (after grid operations complete)
         try {
+            // SAFE: AsyncLock ensures lock is released even if callback throws (finally block in _processQueue)
             await this.manager._fillProcessingLock.acquire(async () => {
                 // CRITICAL: Recalculate funds before spread correction
                 this.manager.recalculateFunds();
@@ -1697,25 +1701,32 @@ class DEXBot {
                 shouldRegenerate = true;
                 this._log('No persisted grid found. Generating new grid.');
             } else {
-                await this.manager._initializeAssets();
-                const decision = await decideStartupGridAction({
-                    persistedGrid,
-                    chainOpenOrders,
-                    manager: this.manager,
-                    logger: { log: (msg) => this._log(msg) },
-                    storeGrid: async (orders) => {
-                        // Temporarily replace manager.orders to persist the specific orders
-                        const originalOrders = this.manager.orders;
-                        this.manager.orders = new Map(orders.map(o => [o.id, o]));
-                        await this.manager.persistGrid();
-                        this.manager.orders = originalOrders;
-                    },
-                    attemptResumeFn: attemptResumePersistedGridByPriceMatch,
-                });
-                shouldRegenerate = decision.shouldRegenerate;
+                try {
+                    await this.manager._initializeAssets();
+                } catch (err) {
+                    this._warn(`Failed to initialize assets before grid decision: ${err.message}`);
+                    shouldRegenerate = true;  // Fallback to grid regeneration
+                }
+                if (!shouldRegenerate) {
+                    const decision = await decideStartupGridAction({
+                        persistedGrid,
+                        chainOpenOrders,
+                        manager: this.manager,
+                        logger: { log: (msg) => this._log(msg) },
+                        storeGrid: async (orders) => {
+                            // Temporarily replace manager.orders to persist the specific orders
+                            const originalOrders = this.manager.orders;
+                            this.manager.orders = new Map(orders.map(o => [o.id, o]));
+                            await this.manager.persistGrid();
+                            this.manager.orders = originalOrders;
+                        },
+                        attemptResumeFn: attemptResumePersistedGridByPriceMatch,
+                    });
+                    shouldRegenerate = decision.shouldRegenerate;
 
-                if (shouldRegenerate && chainOpenOrders.length === 0) {
-                    this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                    if (shouldRegenerate && chainOpenOrders.length === 0) {
+                        this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                    }
                 }
             }
 
@@ -1739,8 +1750,9 @@ class DEXBot {
             this._log('Fill listener activated (ready to process fills during startup)');
 
             // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
-            // Fills that arrive during this phase will be queued and processed only after 
+            // Fills that arrive during this phase will be queued and processed only after
             // the initial reconciliation and placement are complete.
+            // SAFE: AsyncLock ensures lock is released even if callback throws (finally block in _processQueue)
             await this.manager._fillProcessingLock.acquire(async () => {
                 if (shouldRegenerate) {
                     await this.manager._initializeAssets();
@@ -1898,7 +1910,8 @@ class DEXBot {
         // Create AccountOrders with bot-specific file (one file per bot)
         this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
 
-        // Load persisted processed fills to prevent reprocessing after restart
+        // Load persisted processed fills to prevent reprocessing after restart.
+        // This prevents double-deduction of fees if fills are reprocessed across bot restarts.
         const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
         for (const [fillKey, timestamp] of persistedFills) {
             this._recentlyProcessedFills.set(fillKey, timestamp);
@@ -1907,7 +1920,8 @@ class DEXBot {
             this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
         }
 
-        // Ensure bot metadata is properly initialized in storage
+        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations.
+        // This prevents fills from arriving during grid initialization/syncing without proper bot records.
         const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
         const allActiveBots = allBotsConfig
             .filter(b => b.active !== false)
@@ -1972,24 +1986,31 @@ class DEXBot {
                 shouldRegenerate = true;
                 this._log('No persisted grid found. Generating new grid.');
             } else {
-                await this.manager._initializeAssets();
-                const decision = await decideStartupGridAction({
-                    persistedGrid,
-                    chainOpenOrders,
-                    manager: this.manager,
-                    logger: { log: (msg) => this._log(msg) },
-                    storeGrid: async (orders) => {
-                        const originalOrders = this.manager.orders;
-                        this.manager.orders = new Map(orders.map(o => [o.id, o]));
-                        await this.manager.persistGrid();
-                        this.manager.orders = originalOrders;
-                    },
-                    attemptResumeFn: attemptResumePersistedGridByPriceMatch,
-                });
-                shouldRegenerate = decision.shouldRegenerate;
+                try {
+                    await this.manager._initializeAssets();
+                } catch (err) {
+                    this._warn(`Failed to initialize assets before grid decision: ${err.message}`);
+                    shouldRegenerate = true;  // Fallback to grid regeneration
+                }
+                if (!shouldRegenerate) {
+                    const decision = await decideStartupGridAction({
+                        persistedGrid,
+                        chainOpenOrders,
+                        manager: this.manager,
+                        logger: { log: (msg) => this._log(msg) },
+                        storeGrid: async (orders) => {
+                            const originalOrders = this.manager.orders;
+                            this.manager.orders = new Map(orders.map(o => [o.id, o]));
+                            await this.manager.persistGrid();
+                            this.manager.orders = originalOrders;
+                        },
+                        attemptResumeFn: attemptResumePersistedGridByPriceMatch,
+                    });
+                    shouldRegenerate = decision.shouldRegenerate;
 
-                if (shouldRegenerate && chainOpenOrders.length === 0) {
-                    this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                    if (shouldRegenerate && chainOpenOrders.length === 0) {
+                        this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                    }
                 }
             }
 
@@ -2004,11 +2025,16 @@ class DEXBot {
                 this.manager.funds.btsFeesOwed = 0;
             }
 
-            // Activate fill listener
+            // CRITICAL: Activate fill listener BEFORE any grid operations or order placement.
+            // This ensures we capture fills that occur during startup (initial placement, syncing, corrections).
+            // The divergence lock at startup grid checks prevents races with concurrent fill processing.
             await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
             this._log('Fill listener activated (ready to process fills during startup)');
 
             // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
+            // Fills that arrive during this phase will be queued and processed only after
+            // the initial reconciliation and placement are complete.
+            // SAFE: AsyncLock ensures lock is released even if callback throws (finally block in _processQueue)
             await this.manager._fillProcessingLock.acquire(async () => {
                 if (shouldRegenerate) {
                     await this.manager._initializeAssets();
@@ -2031,7 +2057,8 @@ class DEXBot {
                             await this.updateOrdersOnChainBatch(rebalanceResult);
                         }
                     } else {
-                        // No existing orders: place initial orders on-chain
+                        // No existing orders: place initial orders on-chain.
+                        // placeInitialOrders() handles both Grid.initializeGrid() and broadcast.
                         this._log('Generating new grid and placing initial orders on-chain...');
                         await this.placeInitialOrders();
                     }
@@ -2041,13 +2068,18 @@ class DEXBot {
                     await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
                     const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
-                    // Process fills discovered during startup sync
+                    // Process fills discovered during startup sync (happened while bot was offline).
                     if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
                         this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
+                        // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
+                        // and already reflect these fills. Adding them again would cause fund inflation.
                         await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
                     }
 
                     // Reconcile existing on-chain orders to the configured target counts.
+                    // This ensures activeOrders changes in bots.json are applied on restart:
+                    // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
+                    // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
                     const rebalanceResult = await reconcileStartupOrders({
                         manager: this.manager,
                         config: this.config,
@@ -2206,17 +2238,20 @@ class DEXBot {
         // Validate the interval setting
         if (!Number.isFinite(intervalMin) || intervalMin <= 0) {
             this._log(`Blockchain fetch interval disabled (value: ${intervalMin}). Periodic blockchain updates will not run.`);
+            this._blockchainFetchIntervalActive = false;
             return;
         }
 
         // Validate manager and account ID
         if (!this.manager || typeof this.manager.fetchAccountTotals !== 'function') {
             this._warn('Cannot start blockchain fetch interval: manager or fetchAccountTotals method missing');
+            this._blockchainFetchIntervalActive = false;
             return;
         }
 
         if (!this.accountId) {
             this._warn('Cannot start blockchain fetch interval: account ID not available');
+            this._blockchainFetchIntervalActive = false;
             return;
         }
 
@@ -2262,6 +2297,7 @@ class DEXBot {
             }
         }, intervalMs);
 
+        this._blockchainFetchIntervalActive = true;
         this._log(`Started periodic blockchain fetch interval: every ${intervalMin} minute(s)`);
     }
 
@@ -2270,9 +2306,12 @@ class DEXBot {
      * @private
      */
     _stopBlockchainFetchInterval() {
-        if (this._blockchainFetchInterval !== null && this._blockchainFetchInterval !== undefined) {
-            clearInterval(this._blockchainFetchInterval);
-            this._blockchainFetchInterval = null;
+        if (this._blockchainFetchIntervalActive) {
+            if (this._blockchainFetchInterval !== null && this._blockchainFetchInterval !== undefined) {
+                clearInterval(this._blockchainFetchInterval);
+                this._blockchainFetchInterval = null;
+            }
+            this._blockchainFetchIntervalActive = false;
             this._log('Stopped periodic blockchain fetch interval');
         }
     }
