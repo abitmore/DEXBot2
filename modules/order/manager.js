@@ -567,6 +567,22 @@ class OrderManager {
             return;
         }
 
+        // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
+        // This is a defense-in-depth check to catch bugs in any module that might try to
+        // create an ACTIVE or PARTIAL order without a corresponding blockchain order ID.
+        if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !order.orderId) {
+            this.logger.log(
+                `ILLEGAL STATE: Refusing to set order ${id} to ${order.state} without orderId. ` +
+                `Context: ${context}. This would create a phantom order that doubles fund tracking. ` +
+                `Downgrading to VIRTUAL instead.`,
+                'error'
+            );
+            // Auto-correct to VIRTUAL to prevent fund tracking corruption
+            // NOTE: Keep the size - VIRTUAL orders can have non-zero sizes (planned placements)
+            // Only SPREAD orders should have size 0
+            order.state = ORDER_STATES.VIRTUAL;
+        }
+
         // 1. Update optimistic balance (atomic update of tracked funds)
         if (this.accountant) {
             this.accountant.updateOptimisticFreeBalance(oldOrder, order, context, fee, skipAccounting);

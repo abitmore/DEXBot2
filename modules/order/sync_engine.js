@@ -292,10 +292,12 @@ class SyncEngine {
                 updatedOrders.push(updatedOrder);
             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
                 const currentGridOrder = mgr.orders.get(gridOrder.id);
-                if (currentGridOrder?.orderId && !parsedChainOrders.has(currentGridOrder.orderId)) {
+                // CRITICAL FIX: If order has no ID OR its ID is not on chain, it's a phantom/filled order
+                // The previous check only caught orders WITH IDs that were no longer on chain.
+                if (!currentGridOrder?.orderId || !parsedChainOrders.has(currentGridOrder.orderId)) {
                     const filledOrder = { ...currentGridOrder };
                     const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                    mgr._updateOrder(spreadOrder, 'sync-pass1-notfound', options?.skipAccounting || false, 0);
+                    mgr._updateOrder(spreadOrder, 'sync-cleanup-phantom', options?.skipAccounting || false, 0);
                     filledOrders.push(filledOrder);
                 }
             }

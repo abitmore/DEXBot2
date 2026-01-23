@@ -1150,8 +1150,8 @@ class Grid {
             const newSize = newSizes[i] || 0;
             if (order.size === undefined || Math.abs(order.size - newSize) > 1e-8) {
                 try {
-                    // Update size and reset state to ACTIVE (promotes partials back to full size)
-                    manager._updateOrder({ ...order, size: newSize, state: ORDER_STATES.ACTIVE }, 'grid-resize', false, 0);
+                    // Update size and preserve state (prevents moving VIRTUAL to ACTIVE without an orderId)
+                    manager._updateOrder({ ...order, size: newSize, state: order.state }, 'grid-resize', false, 0);
                 } catch (err) {
                     manager.logger?.log?.(`Error updating order ${order.id} size: ${err.message}`, 'warn');
                 }
