@@ -1432,6 +1432,70 @@ class DEXBot {
      * Runs indefinitely, periodically syncing with open orders on-chain.
      * @private
      */
+    /**
+     * Handle trigger file at startup if it exists from previous run.
+     * Performs immediate grid regeneration without loading persisted grid first.
+     * @private
+     * @returns {Promise<boolean>} - Returns true if trigger file was handled, false otherwise
+     */
+    async _handleStartupTriggerFile() {
+        if (!fs.existsSync(this.triggerFile)) {
+            return false;
+        }
+
+        this._log('Trigger file detected at startup. Performing grid regeneration...');
+        await this.manager._fillProcessingLock.acquire(async () => {
+            this.manager.startBootstrap();
+            try {
+                // 1. Reload configuration from disk to pick up any changes
+                try {
+                    const { parseJsonWithComments } = require('./account_bots');
+                    const { createBotKey } = require('./account_orders');
+                    const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
+                    const allBotsConfig = parseJsonWithComments(content).bots || [];
+                    const myName = this.config.name;
+                    const updatedBot = allBotsConfig.find(b => b.name === myName);
+
+                    if (updatedBot) {
+                        this._log(`Reloaded configuration for bot '${myName}'`);
+                        const oldKey = this.config.botKey;
+                        const oldIndex = this.config.botIndex;
+                        this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
+                        this.manager.config = { ...this.manager.config, ...this.config };
+                    }
+                } catch (e) {
+                    this._warn(`Failed to reload config during startup resync: ${e.message}`);
+                }
+
+                // 2. Recalculate grid from scratch
+                const readFn = () => chainOrders.readOpenOrders(this.accountId);
+                await Grid.recalculateGrid(this.manager, {
+                    readOpenOrdersFn: readFn,
+                    chainOrders,
+                    account: this.account,
+                    privateKey: this.privateKey,
+                    config: this.config,
+                });
+
+                // 3. Reset funds for clean slate
+                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+                this.manager.funds.btsFeesOwed = 0;
+                await this.manager.persistGrid();
+
+                // 4. Remove trigger file
+                if (fs.existsSync(this.triggerFile)) {
+                    fs.unlinkSync(this.triggerFile);
+                    this._log('Removed trigger file.');
+                }
+            } catch (err) {
+                this._log(`Error during startup trigger resync: ${err.message}`);
+            } finally {
+                this.manager.finishBootstrap();
+            }
+        });
+        return true;
+    }
+
     _startMainEventLoop() {
         const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
         this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
@@ -1545,9 +1609,8 @@ class DEXBot {
             });
         };
 
-        if (fs.existsSync(this.triggerFile)) {
-            await performResync();
-        }
+        // NOTE: Trigger file check at startup now happens in start() and startWithPrivateKey()
+        // This method only sets up the file watcher for runtime changes
 
         // Debounced watcher to avoid duplicate rapid triggers on some platforms
         // Store instance variables for cleanup during shutdown
@@ -1731,6 +1794,16 @@ class DEXBot {
      */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
+
+        // CRITICAL: Check for trigger file FIRST before any grid operations
+        // If trigger file exists from previous run, handle it immediately
+        // This prevents the bot from loading a stale grid only to immediately resync
+        if (await this._handleStartupTriggerFile()) {
+            await this._setupBlockchainFetchInterval();
+            this._startMainEventLoop();
+            return;
+        }
+
         await this._initializeBootstrapPhase();
 
         // NOTE: Fill listener activation deferred to after startup reconciliation completes
@@ -1978,6 +2051,15 @@ class DEXBot {
             await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
         } catch (err) {
             this._warn(`Fee cache initialization failed: ${err.message}`);
+        }
+
+        // CRITICAL: Check for trigger file FIRST before any grid operations
+        // If trigger file exists from previous run, handle it immediately
+        // This prevents the bot from loading a stale grid only to immediately resync
+        if (await this._handleStartupTriggerFile()) {
+            await this._setupBlockchainFetchInterval();
+            this._startMainEventLoop();
+            return;
         }
 
         const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
