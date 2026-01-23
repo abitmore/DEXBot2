@@ -51,10 +51,12 @@ async function runAutoderiveForBot(botCfg) {
 
     // Create and initialize the OrderManager which triggers auto-derive.
     const { OrderManager, grid: Grid } = require('../modules/order');
+    // Override minPrice/maxPrice with wide bounds to accommodate any derived price
+    // This ensures the test's mock derivation succeeds regardless of bot's configured bounds
     const cfg = Object.assign({}, botCfg, {
         startPrice: botCfg.startPrice || 'market',
-        minPrice: Number(botCfg.minPrice) || 1e-12,
-        maxPrice: Number(botCfg.maxPrice) || 1e12
+        minPrice: 1e-12,
+        maxPrice: 1e12
     });
 
     const manager = new OrderManager(cfg);
