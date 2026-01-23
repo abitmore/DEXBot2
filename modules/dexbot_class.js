@@ -1312,6 +1312,96 @@ class DEXBot {
         return { executed: true, hadRotation };
     }
 
+    /**
+     * Setup trigger file detection for grid reset.
+     * Monitors the trigger file and performs grid resync when it's created.
+     * @private
+     */
+    async _setupTriggerFileDetection() {
+        const performResync = async () => {
+            // Use fill lock to prevent concurrent modifications during resync
+            await this.manager._fillProcessingLock.acquire(async () => {
+                this.manager.startBootstrap();
+                this._log('Grid regeneration triggered. Performing full grid resync...');
+                try {
+                    // 1. Reload configuration from disk to pick up any changes
+                    try {
+                        const { parseJsonWithComments } = require('./account_bots');
+                        const { createBotKey } = require('./account_orders');
+                        const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
+                        const allBotsConfig = parseJsonWithComments(content).bots || [];
+
+                        // Find this bot by name or fallback to index if name changed?
+                        // Better: find by current name.
+                        const myName = this.config.name;
+                        const updatedBot = allBotsConfig.find(b => b.name === myName);
+
+                        if (updatedBot) {
+                            this._log(`Reloaded configuration for bot '${myName}'`);
+                            // Keep botKey and index if they were set
+                            const oldKey = this.config.botKey;
+                            const oldIndex = this.config.botIndex;
+                            this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
+                            this.manager.config = { ...this.manager.config, ...this.config };
+                        }
+                    } catch (e) {
+                        this._warn(`Failed to reload config during resync (using current settings): ${e.message}`);
+                    }
+
+                    // 2. Perform the actual grid recalculation
+                    const readFn = () => chainOrders.readOpenOrders(this.accountId);
+                    await Grid.recalculateGrid(this.manager, {
+                        readOpenOrdersFn: readFn,
+                        chainOrders,
+                        account: this.account,
+                        privateKey: this.privateKey,
+                        config: this.config,
+                    });
+
+                    // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
+                    // SAFE: Protected by _fillProcessingLock held by performResync caller
+                    this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+                    this.manager.funds.btsFeesOwed = 0;
+                    await this.manager.persistGrid();
+
+                    if (fs.existsSync(this.triggerFile)) {
+                        fs.unlinkSync(this.triggerFile);
+                        this._log('Removed trigger file.');
+                    }
+                } catch (err) {
+                    this._log(`Error during triggered resync: ${err.message}`);
+                } finally {
+                    this.manager.finishBootstrap();
+                }
+            });
+        };
+
+        if (fs.existsSync(this.triggerFile)) {
+            await performResync();
+        }
+
+        // Debounced watcher to avoid duplicate rapid triggers on some platforms
+        let _triggerDebounce = null;
+        try {
+            fs.watch(PROFILES_DIR, (eventType, filename) => {
+                try {
+                    if (filename === path.basename(this.triggerFile)) {
+                        if ((eventType === 'rename' || eventType === 'change') && fs.existsSync(this.triggerFile)) {
+                            if (_triggerDebounce) clearTimeout(_triggerDebounce);
+                            _triggerDebounce = setTimeout(() => {
+                                _triggerDebounce = null;
+                                performResync();
+                            }, 200);
+                        }
+                    }
+                } catch (err) {
+                    this._warn(`fs.watch handler error: ${err && err.message ? err.message : err}`);
+                }
+            });
+        } catch (err) {
+            this._warn(`Failed to setup file watcher: ${err.message}`);
+        }
+    }
 
     /**
      * Starts the bot's operation.
@@ -1661,94 +1751,9 @@ class DEXBot {
             this.manager.isBootstrapping = false;
             this._log('Bootstrap phase complete - fill processing resumed', 'info');
         }
-        /**
-         * Perform a full grid resync: cancel orphan orders and regenerate grid.
-         * Triggered by the presence of a `recalculate.<botKey>.trigger` file.
-         * Uses AsyncLock to prevent concurrent resync/fill processing.
-         */
-        const performResync = async () => {
-            // Use fill lock to prevent concurrent modifications during resync
-            await this.manager._fillProcessingLock.acquire(async () => {
-                this.manager.startBootstrap();
-                this._log('Grid regeneration triggered. Performing full grid resync...');
-                try {
-                    // 1. Reload configuration from disk to pick up any changes
-                    try {
-                        const { parseJsonWithComments } = require('./account_bots');
-                        const { createBotKey } = require('./account_orders');
-                        const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-                        const allBotsConfig = parseJsonWithComments(content).bots || [];
 
-                        // Find this bot by name or fallback to index if name changed? 
-                        // Better: find by current name.
-                        const myName = this.config.name;
-                        const updatedBot = allBotsConfig.find(b => b.name === myName);
-
-                        if (updatedBot) {
-                            this._log(`Reloaded configuration for bot '${myName}'`);
-                            // Keep botKey and index if they were set
-                            const oldKey = this.config.botKey;
-                            const oldIndex = this.config.botIndex;
-                            this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
-                            this.manager.config = { ...this.manager.config, ...this.config };
-                        }
-                    } catch (e) {
-                        this._warn(`Failed to reload config during resync (using current settings): ${e.message}`);
-                    }
-
-                    // 2. Perform the actual grid recalculation
-                    const readFn = () => chainOrders.readOpenOrders(this.accountId);
-                    await Grid.recalculateGrid(this.manager, {
-                        readOpenOrdersFn: readFn,
-                        chainOrders,
-                        account: this.account,
-                        privateKey: this.privateKey,
-                        config: this.config,
-                    });
-
-                    // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
-                    // SAFE: Protected by _fillProcessingLock held by performResync caller
-                    this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                    this.manager.funds.btsFeesOwed = 0;
-                    await this.manager.persistGrid();
-
-                    if (fs.existsSync(this.triggerFile)) {
-                        fs.unlinkSync(this.triggerFile);
-                        this._log('Removed trigger file.');
-                    }
-                } catch (err) {
-                    this._log(`Error during triggered resync: ${err.message}`);
-                } finally {
-                    this.manager.finishBootstrap();
-                }
-            });
-        };
-
-        if (fs.existsSync(this.triggerFile)) {
-            await performResync();
-        }
-
-        // Debounced watcher to avoid duplicate rapid triggers on some platforms
-        let _triggerDebounce = null;
-        try {
-            fs.watch(PROFILES_DIR, (eventType, filename) => {
-                try {
-                    if (filename === path.basename(this.triggerFile)) {
-                        if ((eventType === 'rename' || eventType === 'change') && fs.existsSync(this.triggerFile)) {
-                            if (_triggerDebounce) clearTimeout(_triggerDebounce);
-                            _triggerDebounce = setTimeout(() => {
-                                _triggerDebounce = null;
-                                performResync();
-                            }, 200);
-                        }
-                    }
-                } catch (err) {
-                    this._warn(`fs.watch handler error: ${err && err.message ? err.message : err}`);
-                }
-            });
-        } catch (err) {
-            this._warn(`Failed to setup file watcher: ${err.message}`);
-        }
+        // Setup trigger file detection for grid reset (shared with startWithPrivateKey)
+        await this._setupTriggerFileDetection();
 
         // Start periodic blockchain fetch to keep blockchain variables updated
         this._setupBlockchainFetchInterval();
@@ -1993,6 +1998,9 @@ class DEXBot {
             await this.shutdown();
             throw err;
         }
+
+        // Setup trigger file detection for grid reset (shared with start method)
+        await this._setupTriggerFileDetection();
 
         // Start periodic blockchain fetch to keep blockchain variables updated
         this._setupBlockchainFetchInterval();
