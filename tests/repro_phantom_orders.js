@@ -1,7 +1,14 @@
 /**
  * tests/repro_phantom_orders.js
  * 
- * Reproduction test for "phantom" active orders causing doubled funds.
+ * Test that verifies phantom orders (ACTIVE/PARTIAL without orderId) are now PREVENTED.
+ * 
+ * Historical context: Before the fix, phantom orders could be created via:
+ * 1. Grid._updateOrdersForSide moving VIRTUAL to ACTIVE without an orderId
+ * 2. SyncEngine skipping ACTIVE orders without orderId during cleanup
+ * 3. Strategy upgrading PARTIAL to ACTIVE without checking orderId
+ * 
+ * Now: Defense-in-depth in _updateOrder prevents these from ever occurring.
  */
 
 const assert = require('assert');
@@ -9,8 +16,8 @@ const { OrderManager } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
 const Grid = require('../modules/order/grid.js');
 
-async function runRepro() {
-    console.log('Running Phantom Orders Reproduction...');
+async function runTest() {
+    console.log('Running Phantom Orders Prevention Test...');
 
     const mgr = new OrderManager({
         market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS'
@@ -21,54 +28,95 @@ async function runRepro() {
     };
     mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
 
-    console.log(' - Step 1: Create a phantom order (ACTIVE with no ID)');
+    // ============================================================================
+    // TEST 1: Direct phantom creation attempt is blocked
+    // ============================================================================
+    console.log(' - Test 1: Attempt to create phantom order (ACTIVE with no orderId)');
     mgr._updateOrder({
         id: 'slot-1',
         type: ORDER_TYPES.SELL,
-        state: ORDER_STATES.ACTIVE, // Phantom active
+        state: ORDER_STATES.ACTIVE, // Attempt phantom active
         size: 10,
         price: 1.0,
         orderId: '' // No ID
     });
 
     mgr.recalculateFunds();
-    const initialTracked = mgr.funds.committed.grid.sell;
-    console.log(`   Tracked SELL total: ${initialTracked}`);
-    assert.strictEqual(initialTracked, 10, 'Tracked total should include the phantom order');
+    const order1 = mgr.orders.get('slot-1');
 
-    console.log(' - Step 2: Run sync with empty chain orders');
-    // Current bug: SyncEngine skips ACTIVE orders with no ID, so it won't clean this up.
-    await mgr.sync.syncFromOpenOrders([]);
+    // Order should be downgraded to VIRTUAL by defense-in-depth
+    assert.strictEqual(order1.state, ORDER_STATES.VIRTUAL, 'Phantom attempt should be downgraded to VIRTUAL');
+    assert.strictEqual(mgr.funds.committed.grid.sell, 0, 'No funds should be committed for VIRTUAL order');
+    console.log('   ✓ Phantom order blocked - downgraded to VIRTUAL');
 
-    mgr.recalculateFunds();
-    const afterSyncTracked = mgr.funds.committed.grid.sell;
-    console.log(`   Tracked SELL total after sync: ${afterSyncTracked}`);
-
-    if (afterSyncTracked === 10) {
-        console.log('   RESULT: BUG REPRODUCED - Phantom order survived sync!');
-    } else if (afterSyncTracked === 0) {
-        console.log('   RESULT: Phantom order was cleaned up.');
-    }
-
-    console.log(' - Step 3: Verify fix for Grid._updateOrdersForSide');
-    // This is the other part of the bug: resizing creates phantoms
+    // ============================================================================
+    // TEST 2: Grid resize preserves VIRTUAL state (doesn't create phantoms)
+    // ============================================================================
+    console.log(' - Test 2: Grid resize preserves VIRTUAL state');
     const dummyOrders = [{ id: 'slot-2', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, size: 0 }];
     mgr.orders.set('slot-2', dummyOrders[0]);
 
-    console.log('   Running Grid._updateOrdersForSide with new size...');
     Grid._updateOrdersForSide(mgr, ORDER_TYPES.SELL, [20], dummyOrders);
 
     const resizedOrder = mgr.orders.get('slot-2');
-    console.log(`   Resized order state: ${resizedOrder.state}, size: ${resizedOrder.size}`);
+    assert.strictEqual(resizedOrder.state, ORDER_STATES.VIRTUAL, 'Resized VIRTUAL order should stay VIRTUAL');
+    assert.strictEqual(resizedOrder.size, 20, 'Size should be updated correctly');
+    console.log('   ✓ Grid resize preserves VIRTUAL state (no phantom created)');
 
-    if (resizedOrder.state === ORDER_STATES.ACTIVE && !resizedOrder.orderId) {
-        console.log('   RESULT: BUG REPRODUCED - Resize created a phantom active order!');
-    }
+    // ============================================================================
+    // TEST 3: SyncEngine cleanup of orphaned ACTIVE (no orderId on chain)
+    // ============================================================================
+    console.log(' - Test 3: Sync cleans up orders with no orderId');
 
-    process.exit(afterSyncTracked === 10 || resizedOrder.state === ORDER_STATES.ACTIVE ? 1 : 0);
+    // Create an order that has ACTIVE state but no orderId (simulating corruption)
+    // First create as VIRTUAL, then manually set to ACTIVE to bypass the guard
+    mgr.orders.set('slot-3', {
+        id: 'slot-3',
+        type: ORDER_TYPES.SELL,
+        state: ORDER_STATES.ACTIVE,  // Manually corrupted to ACTIVE
+        size: 10,
+        price: 1.5,
+        orderId: null  // No blockchain ID
+    });
+    mgr._ordersByState[ORDER_STATES.ACTIVE].add('slot-3');
+    mgr._ordersByType[ORDER_TYPES.SELL].add('slot-3');
+
+    // Run sync with empty chain orders - should clean up the phantom
+    await mgr.sync.syncFromOpenOrders([]);
+
+    const syncedOrder = mgr.orders.get('slot-3');
+    // After sync, the phantom should be converted to SPREAD placeholder
+    assert.ok(
+        syncedOrder.state === ORDER_STATES.VIRTUAL || syncedOrder.state === ORDER_STATES.SPREAD || syncedOrder.size === 0,
+        'Orphaned ACTIVE order should be cleaned up by sync'
+    );
+    console.log('   ✓ Sync cleans up orders without orderId');
+
+    // ============================================================================
+    // TEST 4: Valid ACTIVE order with orderId is preserved
+    // ============================================================================
+    console.log(' - Test 4: Valid ACTIVE order with orderId is preserved');
+    mgr._updateOrder({
+        id: 'slot-4',
+        type: ORDER_TYPES.SELL,
+        state: ORDER_STATES.ACTIVE,
+        size: 15,
+        price: 2.0,
+        orderId: '1.7.12345' // Valid orderId
+    });
+
+    mgr.recalculateFunds();
+    const validOrder = mgr.orders.get('slot-4');
+    assert.strictEqual(validOrder.state, ORDER_STATES.ACTIVE, 'Valid ACTIVE order should remain ACTIVE');
+    assert.strictEqual(validOrder.orderId, '1.7.12345', 'orderId should be preserved');
+    assert.ok(mgr.funds.committed.grid.sell > 0, 'Valid ACTIVE order should have committed funds');
+    console.log('   ✓ Valid ACTIVE order preserved correctly');
+
+    console.log('\n✓ All phantom prevention tests passed!');
+    process.exit(0);
 }
 
-runRepro().catch(err => {
-    console.error('Repro failed with error:', err);
+runTest().catch(err => {
+    console.error('Test failed with error:', err);
     process.exit(1);
 });

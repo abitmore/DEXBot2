@@ -295,10 +295,14 @@ class SyncEngine {
                 // CRITICAL FIX: If order has no ID OR its ID is not on chain, it's a phantom/filled order
                 // The previous check only caught orders WITH IDs that were no longer on chain.
                 if (!currentGridOrder?.orderId || !parsedChainOrders.has(currentGridOrder.orderId)) {
-                    const filledOrder = { ...currentGridOrder };
                     const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
                     mgr._updateOrder(spreadOrder, 'sync-cleanup-phantom', options?.skipAccounting || false, 0);
-                    filledOrders.push(filledOrder);
+
+                    // Only trigger fill processing for GENUINE fills (had orderId but no longer on chain)
+                    // Phantoms (never had orderId) should NOT trigger rotations/rebalancing
+                    if (currentGridOrder?.orderId) {
+                        filledOrders.push({ ...currentGridOrder });
+                    }
                 }
             }
         }

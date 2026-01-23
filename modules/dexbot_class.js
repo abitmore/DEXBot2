@@ -972,12 +972,14 @@ class DEXBot {
             // Convert unmet rotations to placements so we still fill the grid gaps
             if (unmetRotations.length > 0) {
                 this.manager.logger.log(`Converting ${unmetRotations.length} unmet rotations to new placements`, 'info');
+                // CRITICAL: Use VIRTUAL state for fallback placements - they only become ACTIVE
+                // after blockchain confirmation via synchronizeWithChain('createOrder')
                 const fallbackPlacements = unmetRotations.map(r => ({
                     id: r.newGridId,
                     price: r.newPrice,
                     size: r.newSize,
                     type: r.type,
-                    state: ORDER_STATES.ACTIVE
+                    state: ORDER_STATES.VIRTUAL
                 }));
                 await this._buildCreateOps(fallbackPlacements, assetA, assetB, operations, opContexts);
             }

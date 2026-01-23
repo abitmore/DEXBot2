@@ -169,8 +169,8 @@ class StrategyEngine {
 
         // Validate boundary index before clamping
         if (!Number.isFinite(mgr.boundaryIdx)) {
-             mgr.logger.log(`[BOUNDARY] Invalid boundary index detected (NaN/Infinity). Resetting to center.`, 'warn');
-             mgr.boundaryIdx = Math.floor(allSlots.length / 2);
+            mgr.logger.log(`[BOUNDARY] Invalid boundary index detected (NaN/Infinity). Resetting to center.`, 'warn');
+            mgr.boundaryIdx = Math.floor(allSlots.length / 2);
         }
 
         // Clamp boundary to valid range
@@ -480,7 +480,9 @@ class StrategyEngine {
                     else mgr.sellSideIsDoubled = true;
 
                     ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
-                    stateUpdates.push({ ...partial, size: finalSize, state: ORDER_STATES.ACTIVE });
+                    // CRITICAL: Only upgrade to ACTIVE if order has valid orderId to prevent phantom orders
+                    const newState = partial.orderId ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+                    stateUpdates.push({ ...partial, size: finalSize, state: newState });
 
                     totalNewPlacementSize += cappedIncrease;
                     remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
@@ -512,20 +514,23 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
                 const finalSize = oldSize + cappedIncrease;
 
-                                    if (finalSize > 0) {
-                                        mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
-                                        ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
-                                        stateUpdates.push({ ...partial, size: finalSize, state: ORDER_STATES.ACTIVE });
-                
-                                        // NEW: Set new split order to VIRTUAL until confirmed on-chain
-                                        ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
-                                        stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
-                
-                                        totalNewPlacementSize += cappedIncrease;
-                                        remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
-                                        handledPartialIds.add(partial.id);
-                                        budgetRemaining--;
-                                    }            }
+                if (finalSize > 0) {
+                    mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
+                    ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
+                    // CRITICAL: Only upgrade to ACTIVE if order has valid orderId to prevent phantom orders
+                    const newState = partial.orderId ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+                    stateUpdates.push({ ...partial, size: finalSize, state: newState });
+
+                    // NEW: Set new split order to VIRTUAL until confirmed on-chain
+                    ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
+                    stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
+
+                    totalNewPlacementSize += cappedIncrease;
+                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    handledPartialIds.add(partial.id);
+                    budgetRemaining--;
+                }
+            }
         }
 
         // Remove handled partials from surpluses so they aren't rotated to other slots
