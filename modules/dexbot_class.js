@@ -481,7 +481,6 @@ class DEXBot {
         const fills = this._incomingFillQueue.splice(0);
         const validFills = [];
         const processedFillKeys = new Set();
-        const ORDER_TYPES = require('./order/constants').ORDER_TYPES;
 
         // 1. Validate and deduplicate fills
         for (const fill of fills) {
@@ -620,17 +619,7 @@ class DEXBot {
             try {
                 const pwd = masterPassword || await chainKeys.authenticate();
                 const privateKey = chainKeys.getPrivateKey(this.config.preferredAccount, pwd);
-                let accId = null;
-                try {
-                    const full = await BitShares.db.get_full_accounts([this.config.preferredAccount], false);
-                    if (full && full[0]) {
-                        const maybe = full[0][0];
-                        if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
-                        else if (full[0][1] && full[0][1].account && full[0][1].account.id) accId = full[0][1].account.id;
-                    }
-                } catch (e) { /* best-effort */ }
-
-                if (accId) chainOrders.setPreferredAccount(accId, this.config.preferredAccount);
+                const accId = await this._resolveAccountId(this.config.preferredAccount);
                 accountData = { accountName: this.config.preferredAccount, privateKey, id: accId };
             } catch (err) {
                 this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
@@ -1544,16 +1533,16 @@ class DEXBot {
     }
 
     /**
-     * Initialize account from provided private key.
-     * Shared logic between initialize() and startWithPrivateKey().
-     * @param {string} preferredAccount - The account name
-     * @param {string} privateKey - The private key for the account
+     * Resolve account ID from account name using BitShares blockchain lookup.
+     * Shared logic for account resolution across initialization paths.
+     * @param {string} accountName - The account name to resolve
+     * @returns {Promise<string|null>} The account ID if found, null otherwise
      * @private
      */
-    async _initializeAccountFromPrivateKey(preferredAccount, privateKey) {
+    async _resolveAccountId(accountName) {
         let accId = null;
         try {
-            const full = await BitShares.db.get_full_accounts([preferredAccount], false);
+            const full = await BitShares.db.get_full_accounts([accountName], false);
             if (full && full[0]) {
                 const maybe = full[0][0];
                 if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
@@ -1561,12 +1550,77 @@ class DEXBot {
             }
         } catch (e) { /* best-effort */ }
 
-        if (accId) chainOrders.setPreferredAccount(accId, preferredAccount);
+        if (accId) chainOrders.setPreferredAccount(accId, accountName);
+        return accId || null;
+    }
 
+    /**
+     * Initialize account from provided private key.
+     * Shared logic between initialize() and startWithPrivateKey().
+     * @param {string} preferredAccount - The account name
+     * @param {string} privateKey - The private key for the account
+     * @private
+     */
+    async _initializeAccountFromPrivateKey(preferredAccount, privateKey) {
+        this.accountId = await this._resolveAccountId(preferredAccount);
         this.account = preferredAccount;
-        this.accountId = accId || null;
         this.privateKey = privateKey;
         this._log(`Initialized DEXBot for account: ${this.account}`);
+    }
+
+    /**
+     * Initialize bootstrap phase: setup AccountOrders, load persisted state, create OrderManager.
+     * Shared initialization logic between start() and startWithPrivateKey().
+     * @private
+     */
+    async _initializeBootstrapPhase() {
+        // Create AccountOrders with bot-specific file (one file per bot)
+        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
+
+        // Load persisted processed fills to prevent reprocessing after restart.
+        // This prevents double-deduction of fees if fills are reprocessed.
+        const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
+        for (const [fillKey, timestamp] of persistedFills) {
+            this._recentlyProcessedFills.set(fillKey, timestamp);
+        }
+        if (persistedFills.size > 0) {
+            this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
+        }
+
+        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations.
+        // This prevents fills from arriving during grid initialization/syncing without proper bot records.
+        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+        const allActiveBots = allBotsConfig
+            .filter(b => b.active !== false)
+            .map((b, idx) => normalizeBotEntry(b, idx));
+
+        await this.accountOrders.ensureBotEntries(allActiveBots);
+
+        if (!this.manager) {
+            this.manager = new OrderManager(this.config || {});
+            this.manager.account = this.account;
+            this.manager.accountId = this.accountId;
+            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
+        }
+        this.manager.isBootstrapping = true;
+
+        // Fetch account totals from blockchain at startup to initialize funds
+        try {
+            if (this.accountId && this.config.assetA && this.config.assetB) {
+                await this.manager._initializeAssets();
+                await this.manager.fetchAccountTotals(this.accountId);
+                this._log('Fetched blockchain account balances at startup');
+            }
+        } catch (err) {
+            this._warn(`Failed to fetch account totals at startup: ${err.message}`);
+        }
+
+        // Ensure fee cache is initialized before any fill processing
+        try {
+            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
+        } catch (err) {
+            this._warn(`Fee cache initialization failed: ${err.message}`);
+        }
     }
 
     /**
@@ -1613,53 +1667,7 @@ class DEXBot {
      */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
-
-        // Create AccountOrders with bot-specific file (one file per bot)
-        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
-
-        // Load persisted processed fills to prevent reprocessing after restart
-        // This prevents double-deduction of fees if fills are reprocessed
-        const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
-        for (const [fillKey, timestamp] of persistedFills) {
-            this._recentlyProcessedFills.set(fillKey, timestamp);
-        }
-        if (persistedFills.size > 0) {
-            this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
-        }
-
-        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
-        const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
-
-        await this.accountOrders.ensureBotEntries(allActiveBots);
-
-        if (!this.manager) {
-            this.manager = new OrderManager(this.config || {});
-            this.manager.account = this.account;
-            this.manager.accountId = this.accountId;
-            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
-        }
-        this.manager.isBootstrapping = true;
-
-        // Fetch account totals from blockchain at startup to initialize funds
-        try {
-            if (this.accountId && this.config.assetA && this.config.assetB) {
-                await this.manager._initializeAssets();
-                await this.manager.fetchAccountTotals(this.accountId);
-                this._log('Fetched blockchain account balances at startup');
-            }
-        } catch (err) {
-            this._warn(`Failed to fetch account totals at startup: ${err.message}`);
-        }
-
-        // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
-        try {
-            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
-        } catch (err) {
-            this._warn(`Fee cache initialization failed: ${err.message}`);
-        }
+        await this._initializeBootstrapPhase();
 
         // NOTE: Fill listener activation deferred to after startup reconciliation completes
         // This prevents fills from arriving during grid initialization/syncing
