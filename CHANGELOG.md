@@ -4,59 +4,61 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [0.6.0-patch.7] - 2026-01-23 - Phantom Orders Prevention & PM2 Trigger Detection
+## [0.6.0-patch.7] - 2026-01-23 - Architectural Hardening, Deep Consolidation & Performance Optimization
 
 ### Fixed
-- **Phantom Orders Prevention with Defense-in-Depth** (commits c73e790, d36c180)
-  - **Problem**: Orders could exist in ACTIVE/PARTIAL state without blockchain `orderId`, causing "doubled funds" warnings and high RMS divergence logs
-  - **Root Causes**:
-    1. `Grid._updateOrdersForSide()` forced VIRTUAL orders to ACTIVE during resizing without blockchain verification
-    2. `SyncEngine._performSyncFromOpenOrders()` skipped ACTIVE orders without orderId, allowing phantoms to persist indefinitely
-    3. `Strategy.rebalance()` could upgrade PARTIAL orders to ACTIVE without valid orderId
-    4. Fallback placements initialized as ACTIVE instead of VIRTUAL, creating phantoms on placement failure
-    5. No centralized validation prevented any module from creating invalid ACTIVE/PARTIAL states
-  - **Solution - Three Layer Defense**:
-    1. **Primary Guard** (manager.js:570-584): Centralized validation in `_updateOrder()` entry point
-       - Rejects any ACTIVE/PARTIAL state assignment without valid orderId
-       - Auto-downgrades to VIRTUAL with error logging for audit trail
-       - Applies to ALL modules calling _updateOrder()
-    2. **Grid Protection** (grid.js:1154): Preserve state during resize
-       - Changed from: `state: ORDER_STATES.ACTIVE`
-       - Changed to: `state: order.state`
-       - Prevents VIRTUAL → ACTIVE transition without blockchain confirmation
-    3. **Sync Cleanup** (sync_engine.js:297-305): Enhanced phantom detection
-       - Detects ACTIVE/PARTIAL orders missing blockchain orderId
-       - Converts to SPREAD placeholders without triggering fills/rotations
-       - Only genuine fills (with orderId) trigger downstream rebalancing
-  - **Additional Hardening** (strategy.js:484, 521, dexbot_class.js:982):
-    - Partial upgrades conditional: `newState = partial.orderId ? ACTIVE : VIRTUAL`
-    - Fallback placements start as VIRTUAL, become ACTIVE only after blockchain confirmation
-    - Prevents phantom creation from network/confirmation failures
-  - **Verification**: Comprehensive test suite (`tests/repro_phantom_orders.js`) confirms all four prevention mechanisms work
-  - **Fund Impact**: No phantom funds created; cleanup releases incorrectly-locked funds (committed → free)
-  - **Logs Impact**: Eliminates "doubled funds" warnings and phantom order divergence
+- **Deep Startup Consolidation & Refactoring** (commits 3898ae0, a3df538, aeb6850, c33568c)
+  - **Problem**: CLI and PM2 startup paths had diverged into 100+ lines of duplicated, inconsistent logic, increasing maintenance burden and race condition risk.
+  - **Solution**: Extracted shared logic into unified private methods:
+    - `_executeStartupGridSequence()`: Centralized fund restoration, grid decision (resume/regenerate), and initial reconciliation.
+    - `_initializeBootstrapPhase()`: Centralized AccountOrders setup, fill loading, and OrderManager creation.
+    - `_resolveAccountId()`: Single source of truth for account resolution.
+  - **Impact**: Guaranteed identical, hardened startup behavior across all entry points. Net reduction of ~200 lines of redundant code.
 
-- **PM2 Trigger File Detection for Running Bots** (commit b3dbcc1)
-  - **Problem**: `dexbot reset` commands were ignored for bots running via PM2 because trigger file detection was only in CLI start path, not PM2 start path
-  - **Root Cause**: Code duplication - `start()` and `startWithPrivateKey()` had separate implementations with detection only in one path
-  - **Solution**: Extracted trigger file detection into shared `_setupTriggerFileDetection()` method
-    - Single implementation now called by both entry points
-    - PM2-launched bots can now detect reset triggers without restarting
-    - Eliminates 95 lines of duplicated code
-  - **Impact**: Running bots respond to `dexbot reset` and other trigger file commands
+- **Startup Accounting Alignment (The "Fund Invariant" Fix)** (commit 64c7287)
+  - **Problem**: When repurposing an on-chain order during startup, any reduction in size was "leaked" from internal tracking, causing a permanent discrepancy where `blockchainTotal > trackedTotal`.
+  - **Solution**: Refactored `startup_reconcile.js` to use delta-based accounting.
+    - Optimistically adds existing order size to `Free` balance before resizing.
+    - Uses `skipAccounting: false` during synchronization to correctly deduct the new grid size.
+  - **Impact**: Correctly tracks fund deltas (released or required) during startup, maintaining perfect 1:1 synchronization with blockchain totals.
+
+- **Grid Resizing Performance & "Hang" Prevention** (commit 64c7287)
+  - **Problem**: Modifying 300+ grid slots during rebalancing triggered a full fund recalculation and invariant check for *every single order*, causing massive log spam and process "hangs" during bootstrap.
+  - **Solution**: Wrapped `Grid._updateOrdersForSide()` in `pauseFundRecalc()` and `resumeFundRecalc()` guards.
+  - **Impact**: Fund totals are recalculated exactly once after the entire side is updated. Eliminates redundant processing and prevents logging-related performance degradation.
+
+- **Earliest Phase Fill Capture** (commit a291f30)
+  - **Problem**: Fills occurring during the few seconds of grid synchronization at startup could be missed or cause state collisions.
+  - **Solution**: Moved `listenForFills` activation to the very beginning of the shared `_initializeBootstrapPhase()`.
+  - **Hardening**: Fills arriving during setup are safely queued and only processed after the `isBootstrapping` flag is cleared and the startup lock is released.
+  - **Impact**: Full capture of trading activity during any startup path (normal or reset).
+
+- **Unified Grid Reset Logic** (commit 3898ae0)
+  - **Problem**: Trigger-based resets used separate implementations for startup detection vs. runtime file watching.
+  - **Solution**: Extracted shared regeneration logic into `_performGridReset()`.
+  - **Impact**: Consistent behavior for config reloading, fund clearing, and trigger file removal across the entire bot lifecycle.
+
+- **Phantom Orders Prevention with Defense-in-Depth** (commits c73e790, d36c180)
+  - **Problem**: Orders could exist in ACTIVE/PARTIAL state without blockchain `orderId`, causing "doubled funds" warnings.
+  - **Solution - Three Layer Defense**:
+    1. **Primary Guard**: Centralized validation in `_updateOrder()` rejects ACTIVE/PARTIAL state without valid orderId.
+    2. **Grid Protection**: Preserves order state during resizing instead of forcing ACTIVE.
+    3. **Sync Cleanup**: Detects and converts nameless ACTIVE/PARTIAL orders to SPREAD placeholders.
+  - **Impact**: Provides permanent protection against fund tracking corruption and high RMS divergence logs.
 
 ### Refactored
+- **Strategy Logic Cleanup** (commit 3898ae0)
+  - Simplified `countOrdersByType()` in `utils.js` by removing stale `pendingRotation` and `EffectiveActive` logic from older models.
+- **Standardized Bootstrap Management** (commit 3898ae0)
+  - Enforced formal `manager.startBootstrap()` and `finishBootstrap()` calls across all paths for consistent logging and invariant suppression.
 - **Utils Module Organization** (commit 0e5e9e7)
-  - Reorganized utils.js sections to match Table of Contents
-  - Improved code navigation and maintainability
+  - Reorganized utils.js sections to match Table of Contents.
 
 ### Updated Documentation
 - **PM2 Documentation** (commit a47ddbf)
-  - Updated pm2.js description and documentation index in README
-  - Clarified PM2 orchestration capabilities
-- **Logging System Links** (commit bfb8eee)
-  - Fixed broken links in README logging documentation
-  - Improved doc accessibility
+  - Updated README to clarify PM2 orchestration and trigger detection for running bots.
+- **Architecture & Developer Guides** (commit 86261fc)
+  - Added "Phantom Order Prevention" and "Hardened Startup Sequence" sections.
 
 ---
 
