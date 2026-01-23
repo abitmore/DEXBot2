@@ -1794,6 +1794,7 @@ class DEXBot {
      */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
+        await this._initializeBootstrapPhase();
 
         // CRITICAL: Check for trigger file FIRST before any grid operations
         // If trigger file exists from previous run, handle it immediately
@@ -1803,8 +1804,6 @@ class DEXBot {
             this._startMainEventLoop();
             return;
         }
-
-        await this._initializeBootstrapPhase();
 
         // NOTE: Fill listener activation deferred to after startup reconciliation completes
         // This prevents fills from arriving during grid initialization/syncing
@@ -2004,54 +2003,8 @@ class DEXBot {
             throw new Error('No preferredAccount configured');
         }
 
-        // Continue with standard start sequence (grid initialization)
-        // Create AccountOrders with bot-specific file (one file per bot)
-        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
-
-        // Load persisted processed fills to prevent reprocessing after restart.
-        // This prevents double-deduction of fees if fills are reprocessed across bot restarts.
-        const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
-        for (const [fillKey, timestamp] of persistedFills) {
-            this._recentlyProcessedFills.set(fillKey, timestamp);
-        }
-        if (persistedFills.size > 0) {
-            this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
-        }
-
-        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations.
-        // This prevents fills from arriving during grid initialization/syncing without proper bot records.
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
-        const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
-
-        await this.accountOrders.ensureBotEntries(allActiveBots);
-
-        if (!this.manager) {
-            this.manager = new OrderManager(this.config || {});
-            this.manager.account = this.account;
-            this.manager.accountId = this.accountId;
-            this.manager.accountOrders = this.accountOrders;
-        }
-        this.manager.isBootstrapping = true;
-
-        // Fetch account totals from blockchain at startup to initialize funds
-        try {
-            if (this.accountId && this.config.assetA && this.config.assetB) {
-                await this.manager._initializeAssets();
-                await this.manager.fetchAccountTotals(this.accountId);
-                this._log('Fetched blockchain account balances at startup');
-            }
-        } catch (err) {
-            this._warn(`Failed to fetch account totals at startup: ${err.message}`);
-        }
-
-        // Ensure fee cache is initialized before any fill processing
-        try {
-            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
-        } catch (err) {
-            this._warn(`Fee cache initialization failed: ${err.message}`);
-        }
+        // Call shared bootstrap initialization (same as start())
+        await this._initializeBootstrapPhase();
 
         // CRITICAL: Check for trigger file FIRST before any grid operations
         // If trigger file exists from previous run, handle it immediately
@@ -2347,28 +2300,30 @@ class DEXBot {
         this._stopBlockchainFetchInterval();
         this._teardownTriggerFileDetection();
 
-        // Wait for current fill processing to complete
-        try {
-            await this.manager._fillProcessingLock.acquire(async () => {
-                this._log('Fill processing lock acquired for shutdown');
+        // Wait for current fill processing to complete (only if manager was initialized)
+        if (this.manager && this.manager._fillProcessingLock) {
+            try {
+                await this.manager._fillProcessingLock.acquire(async () => {
+                    this._log('Fill processing lock acquired for shutdown');
 
-                // Log any remaining queued fills
-                if (this._incomingFillQueue.length > 0) {
-                    this._warn(`${this._incomingFillQueue.length} fills queued but not processed at shutdown`);
-                }
-
-                // Persist final state
-                if (this.manager && this.accountOrders && this.config?.botKey) {
-                    try {
-                        await this.manager.persistGrid();
-                        this._log('Final grid snapshot persisted');
-                    } catch (err) {
-                        this._warn(`Failed to persist final state: ${err.message}`);
+                    // Log any remaining queued fills
+                    if (this._incomingFillQueue.length > 0) {
+                        this._warn(`${this._incomingFillQueue.length} fills queued but not processed at shutdown`);
                     }
-                }
-            });
-        } catch (err) {
-            this._warn(`Error during shutdown lock acquisition: ${err.message}`);
+
+                    // Persist final state
+                    if (this.manager && this.accountOrders && this.config?.botKey) {
+                        try {
+                            await this.manager.persistGrid();
+                            this._log('Final grid snapshot persisted');
+                        } catch (err) {
+                            this._warn(`Failed to persist final state: ${err.message}`);
+                        }
+                    }
+                });
+            } catch (err) {
+                this._warn(`Error during shutdown lock acquisition: ${err.message}`);
+            }
         }
 
         // Log final metrics
