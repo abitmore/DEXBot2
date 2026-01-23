@@ -98,15 +98,26 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
  * @returns {Promise<void>}
  * @private
  */
-async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId, gridOrder, dryRun }) {
+async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId, gridOrder, dryRun, chainOrderObj }) {
     if (dryRun) return;
 
     // ATOMIC RE-VERIFICATION: Ensure slot hasn't been matched or changed since reconciliation started
-    // (e.g. by a background recovery sync triggered by a previous operation failure)
     const currentSlot = manager.orders.get(gridOrder.id);
     if (!currentSlot || (currentSlot.orderId && currentSlot.orderId !== chainOrderId)) {
         manager.logger?.log?.(`[_updateChainOrderToGrid] SKIP: Slot ${gridOrder.id} already updated/matched (expected ${chainOrderId}, got ${currentSlot?.orderId})`, 'warn');
         return;
+    }
+
+    // CRITICAL ACCOUNTING ALIGNMENT: 
+    // This order already exists on chain. To track its funds correctly:
+    // 1. Add its CURRENT size to our optimistic Free balance (bring external funds into tracking)
+    // 2. synchronizeWithChain will then deduct the NEW grid size from Free
+    // Result: Free balance is adjusted by the delta (Released funds or extra Commitment)
+    if (chainOrderObj && manager.accountant) {
+        const parsed = OrderUtils.parseChainOrder(chainOrderObj, manager.assets);
+        if (parsed && parsed.size > 0) {
+            manager.accountant.addToChainFree(gridOrder.type, parsed.size, 'startup-align');
+        }
     }
 
     const { amountToSell, minToReceive } = OrderUtils.buildCreateOrderArgs(gridOrder, manager.assets.assetA, manager.assets.assetB);
@@ -126,15 +137,13 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
 
     const btsFeeData = OrderUtils.getAssetFees('BTS', 1);
 
-    // Use skipAccounting: true because the chain order already existed and its funds
-    // are already excluded from the accountTotals we fetched at startup.
-    // We only want to align the grid state and deduct the BTS fee.
+    // skipAccounting: false ensures the NEW size is deducted from our (now increased) Free balance
     await manager.synchronizeWithChain({
         gridOrderId: gridOrder.id,
         chainOrderId,
         isPartialPlacement: false,
         fee: btsFeeData.updateFee,
-        skipAccounting: true
+        skipAccounting: false
     }, 'createOrder');
 }
 
@@ -538,12 +547,8 @@ async function reconcileStartupOrders({
             continue;
         }
 
-        logger && logger.log && logger.log(
-            `Startup: Updating chain SELL ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
-            'info'
-        );
         try {
-            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
+            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun, chainOrderObj: chainOrder });
         } catch (err) {
             logger && logger.log && logger.log(`Startup: Failed to update SELL ${chainOrder.id}: ${err.message}`, 'error');
             // CRITICAL: On update failure, resync from blockchain to catch order-not-found or other state mismatches
@@ -711,7 +716,7 @@ async function reconcileStartupOrders({
             'info'
         );
         try {
-            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun });
+            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun, chainOrderObj: chainOrder });
         } catch (err) {
             logger && logger.log && logger.log(`Startup: Failed to update BUY ${chainOrder.id}: ${err.message}`, 'error');
             // CRITICAL: On update failure, resync from blockchain to catch order-not-found or other state mismatches

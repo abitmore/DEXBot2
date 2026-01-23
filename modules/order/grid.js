@@ -1146,17 +1146,23 @@ class Grid {
     static _updateOrdersForSide(manager, orderType, newSizes, orders = null) {
         const ords = Array.isArray(orders) ? orders : Array.from(manager.orders.values()).filter(o => o.type === orderType);
         if (ords.length === 0 || newSizes.length !== ords.length) return;
-        ords.forEach((order, i) => {
-            const newSize = newSizes[i] || 0;
-            if (order.size === undefined || Math.abs(order.size - newSize) > 1e-8) {
-                try {
-                    // Update size and preserve state (prevents moving VIRTUAL to ACTIVE without an orderId)
-                    manager._updateOrder({ ...order, size: newSize, state: order.state }, 'grid-resize', false, 0);
-                } catch (err) {
-                    manager.logger?.log?.(`Error updating order ${order.id} size: ${err.message}`, 'warn');
+
+        manager.pauseFundRecalc();
+        try {
+            ords.forEach((order, i) => {
+                const newSize = newSizes[i] || 0;
+                if (order.size === undefined || Math.abs(order.size - newSize) > 1e-8) {
+                    try {
+                        // Update size and preserve state (prevents moving VIRTUAL to ACTIVE without an orderId)
+                        manager._updateOrder(order, 'grid-resize', false, 0);
+                    } catch (err) {
+                        manager.logger?.log?.(`Error updating order ${order.id} size: ${err.message}`, 'warn');
+                    }
                 }
-            }
-        });
+            });
+        } finally {
+            manager.resumeFundRecalc();
+        }
     }
 
 }
