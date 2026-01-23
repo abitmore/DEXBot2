@@ -1435,6 +1435,7 @@ class DEXBot {
     /**
      * Handle trigger file at startup if it exists from previous run.
      * Performs immediate grid regeneration without loading persisted grid first.
+     * CRITICAL: Activates fill listener after grid regeneration to capture fills.
      * @private
      * @returns {Promise<boolean>} - Returns true if trigger file was handled, false otherwise
      */
@@ -1493,6 +1494,12 @@ class DEXBot {
                 this.manager.finishBootstrap();
             }
         });
+
+        // CRITICAL: Activate fill listener AFTER trigger file handling
+        // This ensures fills are captured during and after the regeneration
+        await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+        this._log('Fill listener activated (after trigger file regeneration)');
+
         return true;
     }
 
