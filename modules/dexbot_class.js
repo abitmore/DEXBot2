@@ -1724,7 +1724,28 @@ class DEXBot {
      * Handles fund restoration, grid decision (resume/regenerate), and initial reconciliation.
      * @private
      */
-    async _executeStartupGridSequence(persistedGrid) {
+    async _executeStartupGridSequence() {
+        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
+
+        // CRITICAL REPAIR: Strip fake orderIds where orderId === id (e.g. "slot-0")
+        // These were caused by a bug in AccountOrders serialization and block rebalancing.
+        if (persistedGrid && persistedGrid.length > 0) {
+            let repairCount = 0;
+            for (const order of persistedGrid) {
+                if (order && order.orderId && order.orderId === order.id) {
+                    order.orderId = '';
+                    // If it was marked ACTIVE/PARTIAL because of the fake ID, revert to VIRTUAL
+                    if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
+                        order.state = ORDER_STATES.VIRTUAL;
+                    }
+                    repairCount++;
+                }
+            }
+            if (repairCount > 0) {
+                this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
+            }
+        }
+
         // Restore funds and state from persistence (shared logic)
         const { persistedBtsFeesOwed, persistedBoundaryIdx } =
             await this._restoreFundsFromPersistence();
@@ -1888,29 +1909,8 @@ class DEXBot {
         // NOTE: Fill listener activation deferred to after startup reconciliation completes
         // This prevents fills from arriving during grid initialization/syncing
 
-        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
-
-        // CRITICAL REPAIR: Strip fake orderIds where orderId === id (e.g. "slot-0")
-        // These were caused by a bug in AccountOrders serialization and block rebalancing.
-        if (persistedGrid && persistedGrid.length > 0) {
-            let repairCount = 0;
-            for (const order of persistedGrid) {
-                if (order && order.orderId && order.orderId === order.id) {
-                    order.orderId = '';
-                    // If it was marked ACTIVE/PARTIAL because of the fake ID, revert to VIRTUAL
-                    if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                        order.state = ORDER_STATES.VIRTUAL;
-                    }
-                    repairCount++;
-                }
-            }
-            if (repairCount > 0) {
-                this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
-            }
-        }
-
         try {
-            await this._executeStartupGridSequence(persistedGrid);
+            await this._executeStartupGridSequence();
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
             try {
@@ -1982,27 +1982,8 @@ class DEXBot {
             return;
         }
 
-        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
-
-        // CRITICAL REPAIR: Strip fake orderIds where orderId === id
-        if (persistedGrid && persistedGrid.length > 0) {
-            let repairCount = 0;
-            for (const order of persistedGrid) {
-                if (order && order.orderId && order.orderId === order.id) {
-                    order.orderId = '';
-                    if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                        order.state = ORDER_STATES.VIRTUAL;
-                    }
-                    repairCount++;
-                }
-            }
-            if (repairCount > 0) {
-                this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
-            }
-        }
-
         try {
-            await this._executeStartupGridSequence(persistedGrid);
+            await this._executeStartupGridSequence();
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
             try {
