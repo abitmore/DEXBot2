@@ -2042,24 +2042,16 @@ function sumOrderSizes(orders) {
 function countOrdersByType(orderType, ordersMap) {
     if (!ordersMap?.size) return 0;
 
-    const oppositeType = orderType === ORDER_TYPES.BUY ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
-    let hasOppositeWithPendingRotation = false;
-    const candidates = [];
-
+    let count = 0;
     for (const order of ordersMap.values()) {
-        if (order.type === oppositeType && order.pendingRotation) {
-            hasOppositeWithPendingRotation = true;
-        }
         if (order.type === orderType) {
-            candidates.push(order);
+            if ([ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL].includes(order.state)) {
+                count++;
+            }
         }
     }
 
-    return candidates.reduce((count, order) => {
-        const isActive = [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL].includes(order.state);
-        const isEffectiveActive = hasOppositeWithPendingRotation && order.state === ORDER_STATES.VIRTUAL;
-        return count + (isActive || isEffectiveActive ? 1 : 0);
-    }, 0);
+    return count;
 }
 
 /**

@@ -1433,6 +1433,63 @@ class DEXBot {
      * @private
      */
     /**
+     * Perform a full grid reset and regeneration.
+     * Shared logic for both startup trigger handling and runtime trigger detection.
+     * @private
+     */
+    async _performGridReset() {
+        this.manager.startBootstrap();
+        this._log('Grid regeneration triggered. Performing full grid resync...');
+        try {
+            // 1. Reload configuration from disk to pick up any changes
+            try {
+                const { parseJsonWithComments } = require('./account_bots');
+                const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
+                const allBotsConfig = parseJsonWithComments(content).bots || [];
+                const myName = this.config.name;
+                const updatedBot = allBotsConfig.find(b => b.name === myName);
+
+                if (updatedBot) {
+                    this._log(`Reloaded configuration for bot '${myName}'`);
+                    // Keep botKey and index as they are unique instance identifiers
+                    const oldKey = this.config.botKey;
+                    const oldIndex = this.config.botIndex;
+                    this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
+                    this.manager.config = { ...this.manager.config, ...this.config };
+                }
+            } catch (e) {
+                this._warn(`Failed to reload config during grid reset: ${e.message}`);
+            }
+
+            // 2. Perform the actual grid recalculation
+            const readFn = () => chainOrders.readOpenOrders(this.accountId);
+            await Grid.recalculateGrid(this.manager, {
+                readOpenOrdersFn: readFn,
+                chainOrders,
+                account: this.account,
+                privateKey: this.privateKey,
+                config: this.config,
+            });
+
+            // 3. Reset funds for clean slate
+            // SAFE: Always wrapped in _fillProcessingLock by callers
+            this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+            this.manager.funds.btsFeesOwed = 0;
+            await this.manager.persistGrid();
+
+            // 4. Remove trigger file if it exists
+            if (fs.existsSync(this.triggerFile)) {
+                fs.unlinkSync(this.triggerFile);
+                this._log('Removed trigger file.');
+            }
+        } catch (err) {
+            this._log(`Error during grid reset: ${err.message}`);
+        } finally {
+            this.manager.finishBootstrap();
+        }
+    }
+
+    /**
      * Handle trigger file at startup if it exists from previous run.
      * Performs immediate grid regeneration without loading persisted grid first.
      * CRITICAL: Activates fill listener after grid regeneration to capture fills.
@@ -1446,53 +1503,7 @@ class DEXBot {
 
         this._log('Trigger file detected at startup. Performing grid regeneration...');
         await this.manager._fillProcessingLock.acquire(async () => {
-            this.manager.startBootstrap();
-            try {
-                // 1. Reload configuration from disk to pick up any changes
-                try {
-                    const { parseJsonWithComments } = require('./account_bots');
-                    const { createBotKey } = require('./account_orders');
-                    const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-                    const allBotsConfig = parseJsonWithComments(content).bots || [];
-                    const myName = this.config.name;
-                    const updatedBot = allBotsConfig.find(b => b.name === myName);
-
-                    if (updatedBot) {
-                        this._log(`Reloaded configuration for bot '${myName}'`);
-                        const oldKey = this.config.botKey;
-                        const oldIndex = this.config.botIndex;
-                        this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
-                        this.manager.config = { ...this.manager.config, ...this.config };
-                    }
-                } catch (e) {
-                    this._warn(`Failed to reload config during startup resync: ${e.message}`);
-                }
-
-                // 2. Recalculate grid from scratch
-                const readFn = () => chainOrders.readOpenOrders(this.accountId);
-                await Grid.recalculateGrid(this.manager, {
-                    readOpenOrdersFn: readFn,
-                    chainOrders,
-                    account: this.account,
-                    privateKey: this.privateKey,
-                    config: this.config,
-                });
-
-                // 3. Reset funds for clean slate
-                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                this.manager.funds.btsFeesOwed = 0;
-                await this.manager.persistGrid();
-
-                // 4. Remove trigger file
-                if (fs.existsSync(this.triggerFile)) {
-                    fs.unlinkSync(this.triggerFile);
-                    this._log('Removed trigger file.');
-                }
-            } catch (err) {
-                this._log(`Error during startup trigger resync: ${err.message}`);
-            } finally {
-                this.manager.finishBootstrap();
-            }
+            await this._performGridReset();
         });
 
         return true;
@@ -1556,58 +1567,7 @@ class DEXBot {
         const performResync = async () => {
             // Use fill lock to prevent concurrent modifications during resync
             await this.manager._fillProcessingLock.acquire(async () => {
-                this.manager.startBootstrap();
-                this._log('Grid regeneration triggered. Performing full grid resync...');
-                try {
-                    // 1. Reload configuration from disk to pick up any changes
-                    try {
-                        const { parseJsonWithComments } = require('./account_bots');
-                        const { createBotKey } = require('./account_orders');
-                        const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-                        const allBotsConfig = parseJsonWithComments(content).bots || [];
-
-                        // Find this bot by name or fallback to index if name changed?
-                        // Better: find by current name.
-                        const myName = this.config.name;
-                        const updatedBot = allBotsConfig.find(b => b.name === myName);
-
-                        if (updatedBot) {
-                            this._log(`Reloaded configuration for bot '${myName}'`);
-                            // Keep botKey and index if they were set
-                            const oldKey = this.config.botKey;
-                            const oldIndex = this.config.botIndex;
-                            this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
-                            this.manager.config = { ...this.manager.config, ...this.config };
-                        }
-                    } catch (e) {
-                        this._warn(`Failed to reload config during resync (using current settings): ${e.message}`);
-                    }
-
-                    // 2. Perform the actual grid recalculation
-                    const readFn = () => chainOrders.readOpenOrders(this.accountId);
-                    await Grid.recalculateGrid(this.manager, {
-                        readOpenOrdersFn: readFn,
-                        chainOrders,
-                        account: this.account,
-                        privateKey: this.privateKey,
-                        config: this.config,
-                    });
-
-                    // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
-                    // SAFE: Protected by _fillProcessingLock held by performResync caller
-                    this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                    this.manager.funds.btsFeesOwed = 0;
-                    await this.manager.persistGrid();
-
-                    if (fs.existsSync(this.triggerFile)) {
-                        fs.unlinkSync(this.triggerFile);
-                        this._log('Removed trigger file.');
-                    }
-                } catch (err) {
-                    this._log(`Error during triggered resync: ${err.message}`);
-                } finally {
-                    this.manager.finishBootstrap();
-                }
+                await this._performGridReset();
             });
         };
 
@@ -1731,7 +1691,7 @@ class DEXBot {
             this.manager.accountId = this.accountId;
             this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
         }
-        this.manager.isBootstrapping = true;
+        this.manager.startBootstrap();
 
         // Fetch account totals from blockchain at startup to initialize funds
         try {
@@ -1757,6 +1717,117 @@ class DEXBot {
         // once the isBootstrapping flag is cleared and the fill lock is released.
         await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
         this._log('Fill listener activated (early capture enabled)');
+    }
+
+    /**
+     * Shared startup grid sequence for both CLI and PM2 entry points.
+     * Handles fund restoration, grid decision (resume/regenerate), and initial reconciliation.
+     * @private
+     */
+    async _executeStartupGridSequence(persistedGrid) {
+        // Restore funds and state from persistence (shared logic)
+        const { persistedBtsFeesOwed, persistedBoundaryIdx } =
+            await this._restoreFundsFromPersistence();
+
+        // Use this.accountId which was set during initialize()
+        const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
+
+        let shouldRegenerate = false;
+        if (!persistedGrid || persistedGrid.length === 0) {
+            shouldRegenerate = true;
+            this._log('No persisted grid found. Generating new grid.');
+        } else {
+            try {
+                await this.manager._initializeAssets();
+            } catch (err) {
+                this._warn(`Failed to initialize assets before grid decision: ${err.message}`);
+                shouldRegenerate = true;  // Fallback to grid regeneration
+            }
+            if (!shouldRegenerate) {
+                const decision = await decideStartupGridAction({
+                    persistedGrid,
+                    chainOpenOrders,
+                    manager: this.manager,
+                    logger: { log: (msg) => this._log(msg) },
+                    storeGrid: async (orders) => {
+                        // Temporarily replace manager.orders to persist the specific orders
+                        const originalOrders = this.manager.orders;
+                        this.manager.orders = new Map(orders.map(o => [o.id, o]));
+                        await this.manager.persistGrid();
+                        this.manager.orders = originalOrders;
+                    },
+                    attemptResumeFn: attemptResumePersistedGridByPriceMatch,
+                });
+                shouldRegenerate = decision.shouldRegenerate;
+
+                if (shouldRegenerate && chainOpenOrders.length === 0) {
+                    this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                }
+            }
+        }
+
+        // Restore BTS fees owed ONLY if we're NOT regenerating the grid
+        if (!shouldRegenerate) {
+            // CRITICAL: Restore BTS fees owed from blockchain operations
+            if (persistedBtsFeesOwed > 0) {
+                this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
+                this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
+            }
+        } else {
+            this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
+            this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+            this.manager.funds.btsFeesOwed = 0;
+        }
+
+        // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
+        // Fills that arrive during this phase will be queued and processed only after
+        // the initial reconciliation and placement are complete.
+        // SAFE: AsyncLock ensures lock is released even if callback throws (finally block in _processQueue)
+        await this.manager._fillProcessingLock.acquire(async () => {
+            if (shouldRegenerate) {
+                await this.manager._initializeAssets();
+
+                // If there are existing on-chain orders, reconcile them with the new grid
+                if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
+                    this._log('Generating new grid and syncing with existing on-chain orders...');
+                    await Grid.initializeGrid(this.manager);
+                    await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+                    await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
+                } else {
+                    // No existing orders: place initial orders on-chain
+                    // placeInitialOrders() handles both Grid.initializeGrid() and broadcast
+                    this._log('Generating new grid and placing initial orders on-chain...');
+                    await this.placeInitialOrders();
+                }
+                await this.manager.persistGrid();
+            } else {
+                this._log('Found active session. Loading and syncing existing grid.');
+                await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
+                const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+
+                // Process fills discovered during startup sync (happened while bot was offline)
+                if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                    this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
+                    // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
+                    // and already reflect these fills. Adding them again would cause fund inflation.
+                    await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
+                }
+
+                // Reconcile existing on-chain orders to the configured target counts.
+                // This ensures activeOrders changes in bots.json are applied on restart:
+                // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
+                // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
+                await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
+
+                await this.manager.persistGrid();
+            }
+        });
+
+        // CRITICAL: Bootstrap complete - allow invariant checks to resume
+        this.manager.finishBootstrap();
+
+        // Perform post-bootstrap grid validation checks
+        await this._performPostBootstrapGridChecks();
     }
 
     /**
@@ -1838,114 +1909,8 @@ class DEXBot {
             }
         }
 
-        // CRITICAL: Set bootstrap flag to defer fill processing until startup completes
-        // This prevents TOCTOU races during cacheFunds restore, fill listener activation, and grid operations
-        // Fills arriving during startup are queued in _incomingFillQueue but not processed until isBootstrapping=false
         try {
-            // Restore funds and state from persistence (shared logic)
-            const { persistedCacheFunds, persistedBtsFeesOwed, persistedBoundaryIdx, persistedDoubleSideFlags } =
-                await this._restoreFundsFromPersistence();
-
-            // Use this.accountId which was set during initialize()
-            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
-
-            let shouldRegenerate = false;
-            if (!persistedGrid || persistedGrid.length === 0) {
-                shouldRegenerate = true;
-                this._log('No persisted grid found. Generating new grid.');
-            } else {
-                try {
-                    await this.manager._initializeAssets();
-                } catch (err) {
-                    this._warn(`Failed to initialize assets before grid decision: ${err.message}`);
-                    shouldRegenerate = true;  // Fallback to grid regeneration
-                }
-                if (!shouldRegenerate) {
-                    const decision = await decideStartupGridAction({
-                        persistedGrid,
-                        chainOpenOrders,
-                        manager: this.manager,
-                        logger: { log: (msg) => this._log(msg) },
-                        storeGrid: async (orders) => {
-                            // Temporarily replace manager.orders to persist the specific orders
-                            const originalOrders = this.manager.orders;
-                            this.manager.orders = new Map(orders.map(o => [o.id, o]));
-                            await this.manager.persistGrid();
-                            this.manager.orders = originalOrders;
-                        },
-                        attemptResumeFn: attemptResumePersistedGridByPriceMatch,
-                    });
-                    shouldRegenerate = decision.shouldRegenerate;
-
-                    if (shouldRegenerate && chainOpenOrders.length === 0) {
-                        this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
-                    }
-                }
-            }
-
-            // Restore BTS fees owed ONLY if we're NOT regenerating the grid
-            if (!shouldRegenerate) {
-                // CRITICAL: Restore BTS fees owed from blockchain operations
-                if (persistedBtsFeesOwed > 0) {
-                    this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
-                    this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
-                }
-            } else {
-                this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
-                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                this.manager.funds.btsFeesOwed = 0;
-            }
-
-            // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
-            // Fills that arrive during this phase will be queued and processed only after
-            // the initial reconciliation and placement are complete.
-            // SAFE: AsyncLock ensures lock is released even if callback throws (finally block in _processQueue)
-            await this.manager._fillProcessingLock.acquire(async () => {
-                if (shouldRegenerate) {
-                    await this.manager._initializeAssets();
-
-                    // If there are existing on-chain orders, reconcile them with the new grid
-                    if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
-                        this._log('Generating new grid and syncing with existing on-chain orders...');
-                        await Grid.initializeGrid(this.manager);
-                        await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-                        await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
-                    } else {
-                        // No existing orders: place initial orders on-chain
-                        // placeInitialOrders() handles both Grid.initializeGrid() and broadcast
-                        this._log('Generating new grid and placing initial orders on-chain...');
-                        await this.placeInitialOrders();
-                    }
-                    await this.manager.persistGrid();
-                } else {
-                    this._log('Found active session. Loading and syncing existing grid.');
-                    await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
-                    const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-
-                    // Process fills discovered during startup sync (happened while bot was offline)
-                    if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                        this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                        // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
-                        // and already reflect these fills. Adding them again would cause fund inflation.
-                        await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
-                    }
-
-                    // Reconcile existing on-chain orders to the configured target counts.
-                    // This ensures activeOrders changes in bots.json are applied on restart:
-                    // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
-                    // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
-                    await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
-
-                    await this.manager.persistGrid();
-                }
-            });
-
-            // CRITICAL: Bootstrap complete - allow invariant checks to resume
-            this.manager.finishBootstrap();
-
-            // Perform post-bootstrap grid validation checks (shared with startWithPrivateKey)
-            await this._performPostBootstrapGridChecks();
-
+            await this._executeStartupGridSequence(persistedGrid);
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
             try {
@@ -1957,9 +1922,8 @@ class DEXBot {
         } finally {
             // CRITICAL: Mark bootstrap complete - allow fill processing to resume
             // Must be in finally to ensure flag is reset even if shutdown() fails
-            if (this.manager && this.manager.isBootstrapping) {
-                this.manager.isBootstrapping = false;
-                this._log('Bootstrap phase complete - fill processing resumed', 'info');
+            if (this.manager) {
+                this.manager.finishBootstrap();
             }
         }
 
@@ -2038,106 +2002,7 @@ class DEXBot {
         }
 
         try {
-            // Restore funds and state from persistence (shared logic)
-            const { persistedCacheFunds, persistedBtsFeesOwed, persistedBoundaryIdx, persistedDoubleSideFlags } =
-                await this._restoreFundsFromPersistence();
-
-            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
-
-            let shouldRegenerate = false;
-            if (!persistedGrid || persistedGrid.length === 0) {
-                shouldRegenerate = true;
-                this._log('No persisted grid found. Generating new grid.');
-            } else {
-                try {
-                    await this.manager._initializeAssets();
-                } catch (err) {
-                    this._warn(`Failed to initialize assets before grid decision: ${err.message}`);
-                    shouldRegenerate = true;  // Fallback to grid regeneration
-                }
-                if (!shouldRegenerate) {
-                    const decision = await decideStartupGridAction({
-                        persistedGrid,
-                        chainOpenOrders,
-                        manager: this.manager,
-                        logger: { log: (msg) => this._log(msg) },
-                        storeGrid: async (orders) => {
-                            const originalOrders = this.manager.orders;
-                            this.manager.orders = new Map(orders.map(o => [o.id, o]));
-                            await this.manager.persistGrid();
-                            this.manager.orders = originalOrders;
-                        },
-                        attemptResumeFn: attemptResumePersistedGridByPriceMatch,
-                    });
-                    shouldRegenerate = decision.shouldRegenerate;
-
-                    if (shouldRegenerate && chainOpenOrders.length === 0) {
-                        this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
-                    }
-                }
-            }
-
-            if (!shouldRegenerate) {
-                if (persistedBtsFeesOwed > 0) {
-                    this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
-                    this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
-                }
-            } else {
-                this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
-                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                this.manager.funds.btsFeesOwed = 0;
-            }
-
-            // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
-            // Fills that arrive during this phase will be queued and processed only after
-            // the initial reconciliation and placement are complete.
-            // SAFE: AsyncLock ensures lock is released even if callback throws (finally block in _processQueue)
-            await this.manager._fillProcessingLock.acquire(async () => {
-                if (shouldRegenerate) {
-                    await this.manager._initializeAssets();
-
-                    // If there are existing on-chain orders, reconcile them with the new grid (same as start())
-                    if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
-                        this._log('Generating new grid and syncing with existing on-chain orders...');
-                        await Grid.initializeGrid(this.manager);
-                        await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-                        await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
-                    } else {
-                        // No existing orders: place initial orders on-chain.
-                        // placeInitialOrders() handles both Grid.initializeGrid() and broadcast.
-                        this._log('Generating new grid and placing initial orders on-chain...');
-                        await this.placeInitialOrders();
-                    }
-                    await this.manager.persistGrid();
-                } else {
-                    this._log('Found active session. Loading and syncing existing grid.');
-                    await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
-                    const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-
-                    // Process fills discovered during startup sync (happened while bot was offline).
-                    if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                        this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                        // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
-                        // and already reflect these fills. Adding them again would cause fund inflation.
-                        await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
-                    }
-
-                    // Reconcile existing on-chain orders to the configured target counts.
-                    // This ensures activeOrders changes in bots.json are applied on restart:
-                    // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
-                    // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
-                    await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
-
-                    await this.manager.persistGrid();
-                }
-            });
-
-            // CRITICAL: Bootstrap complete - allow invariant checks to resume (same as start())
-            this.manager.finishBootstrap();
-
-            // Perform post-bootstrap grid validation checks (shared with start)
-            await this._performPostBootstrapGridChecks();
-
+            await this._executeStartupGridSequence(persistedGrid);
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
             try {
@@ -2149,9 +2014,8 @@ class DEXBot {
         } finally {
             // CRITICAL: Mark bootstrap complete - allow fill processing to resume
             // Must be in finally to ensure flag is reset even if shutdown() fails
-            if (this.manager && this.manager.isBootstrapping) {
-                this.manager.isBootstrapping = false;
-                this._log('Bootstrap phase complete - fill processing resumed', 'info');
+            if (this.manager) {
+                this.manager.finishBootstrap();
             }
         }
 
