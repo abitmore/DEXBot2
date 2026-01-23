@@ -4,6 +4,62 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.7] - 2026-01-23 - Phantom Orders Prevention & PM2 Trigger Detection
+
+### Fixed
+- **Phantom Orders Prevention with Defense-in-Depth** (commits c73e790, d36c180)
+  - **Problem**: Orders could exist in ACTIVE/PARTIAL state without blockchain `orderId`, causing "doubled funds" warnings and high RMS divergence logs
+  - **Root Causes**:
+    1. `Grid._updateOrdersForSide()` forced VIRTUAL orders to ACTIVE during resizing without blockchain verification
+    2. `SyncEngine._performSyncFromOpenOrders()` skipped ACTIVE orders without orderId, allowing phantoms to persist indefinitely
+    3. `Strategy.rebalance()` could upgrade PARTIAL orders to ACTIVE without valid orderId
+    4. Fallback placements initialized as ACTIVE instead of VIRTUAL, creating phantoms on placement failure
+    5. No centralized validation prevented any module from creating invalid ACTIVE/PARTIAL states
+  - **Solution - Three Layer Defense**:
+    1. **Primary Guard** (manager.js:570-584): Centralized validation in `_updateOrder()` entry point
+       - Rejects any ACTIVE/PARTIAL state assignment without valid orderId
+       - Auto-downgrades to VIRTUAL with error logging for audit trail
+       - Applies to ALL modules calling _updateOrder()
+    2. **Grid Protection** (grid.js:1154): Preserve state during resize
+       - Changed from: `state: ORDER_STATES.ACTIVE`
+       - Changed to: `state: order.state`
+       - Prevents VIRTUAL → ACTIVE transition without blockchain confirmation
+    3. **Sync Cleanup** (sync_engine.js:297-305): Enhanced phantom detection
+       - Detects ACTIVE/PARTIAL orders missing blockchain orderId
+       - Converts to SPREAD placeholders without triggering fills/rotations
+       - Only genuine fills (with orderId) trigger downstream rebalancing
+  - **Additional Hardening** (strategy.js:484, 521, dexbot_class.js:982):
+    - Partial upgrades conditional: `newState = partial.orderId ? ACTIVE : VIRTUAL`
+    - Fallback placements start as VIRTUAL, become ACTIVE only after blockchain confirmation
+    - Prevents phantom creation from network/confirmation failures
+  - **Verification**: Comprehensive test suite (`tests/repro_phantom_orders.js`) confirms all four prevention mechanisms work
+  - **Fund Impact**: No phantom funds created; cleanup releases incorrectly-locked funds (committed → free)
+  - **Logs Impact**: Eliminates "doubled funds" warnings and phantom order divergence
+
+- **PM2 Trigger File Detection for Running Bots** (commit b3dbcc1)
+  - **Problem**: `dexbot reset` commands were ignored for bots running via PM2 because trigger file detection was only in CLI start path, not PM2 start path
+  - **Root Cause**: Code duplication - `start()` and `startWithPrivateKey()` had separate implementations with detection only in one path
+  - **Solution**: Extracted trigger file detection into shared `_setupTriggerFileDetection()` method
+    - Single implementation now called by both entry points
+    - PM2-launched bots can now detect reset triggers without restarting
+    - Eliminates 95 lines of duplicated code
+  - **Impact**: Running bots respond to `dexbot reset` and other trigger file commands
+
+### Refactored
+- **Utils Module Organization** (commit 0e5e9e7)
+  - Reorganized utils.js sections to match Table of Contents
+  - Improved code navigation and maintainability
+
+### Updated Documentation
+- **PM2 Documentation** (commit a47ddbf)
+  - Updated pm2.js description and documentation index in README
+  - Clarified PM2 orchestration capabilities
+- **Logging System Links** (commit bfb8eee)
+  - Fixed broken links in README logging documentation
+  - Improved doc accessibility
+
+---
+
 ## [0.6.0-patch.6] - 2026-01-22 - Accounting Hardening & Asset Neutrality
 
 ### Added

@@ -45,6 +45,10 @@ Follow this path through the codebase:
 | **PARTIAL** | Order partially filled | Reduced `committed`, proceeds in `cacheFunds` |
 | **SPREAD** | Placeholder for spread zone | Always VIRTUAL, no funds |
 
+⚠️ **CRITICAL: Phantom Orders**
+
+A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId`. This is an illegal state that corrupts fund tracking. The system implements a three-layer defense to prevent phantoms (see **Phantom Orders Prevention** section). If encountered, the order is automatically downgraded to VIRTUAL with error logging.
+
 ### Fund Components
 
 | Term | Meaning | Formula |
@@ -152,6 +156,105 @@ try {
     manager.unlockOrders([orderId]);
 }
 ```
+
+---
+
+## Phantom Orders Prevention (Defense-in-Depth)
+
+### Why This Matters
+
+**Phantom orders** are orders that exist in memory as ACTIVE/PARTIAL state but lack a corresponding blockchain `orderId`. This causes fund tracking corruption:
+- Memory shows orders locked in `committed.grid` but blockchain has no such orders
+- Leads to "doubled funds" warnings where `trackedTotal >> blockchainTotal`
+- Causes high RMS divergence with many unmatched orders
+- Can lock funds indefinitely if not detected
+
+### Three-Layer Prevention System
+
+#### Layer 1: Primary Guard in `OrderManager._updateOrder()` (manager.js:570-584)
+
+**The Critical Validation**:
+```javascript
+// Centralized check - ALL state transitions go through here
+if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !order.orderId) {
+    logger.log(
+        `ILLEGAL STATE: Refusing to set order ${id} to ${order.state} without orderId. ` +
+        `Context: ${context}. This would create a phantom order that doubles fund tracking. ` +
+        `Downgrading to VIRTUAL instead.`,
+        'error'
+    );
+    order.state = ORDER_STATES.VIRTUAL;  // Auto-correct
+}
+```
+
+**Why It Works**:
+- Every order state change must call `_updateOrder()` (enforced throughout codebase)
+- Cannot be bypassed - direct state assignments are not used for order state
+- Applies to ALL modules: grid, sync, strategy, dexbot_class
+- Auto-correction with logging provides audit trail
+
+#### Layer 2: Grid Resize Protection (grid.js:1154)
+
+**Before (Vulnerable)**:
+```javascript
+manager._updateOrder({ ...order, size: newSize, state: ORDER_STATES.ACTIVE }, 'grid-resize', ...);
+```
+
+**After (Safe)**:
+```javascript
+manager._updateOrder({ ...order, size: newSize, state: order.state }, 'grid-resize', ...);
+```
+
+**Why It Matters**: Preserves order's current state instead of forcing ACTIVE, preventing VIRTUAL → ACTIVE phantom creation during grid resizing.
+
+#### Layer 3: Sync Cleanup (sync_engine.js:297-305)
+
+**Phantom Detection & Prevention**:
+```javascript
+// If order has no ID OR its ID is not on chain, it's a phantom/filled order
+if (!currentGridOrder?.orderId || !parsedChainOrders.has(currentGridOrder.orderId)) {
+    const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
+    mgr._updateOrder(spreadOrder, 'sync-cleanup-phantom', ...);
+
+    // CRITICAL: Only trigger fill processing for GENUINE fills (had orderId)
+    // Phantoms (never had orderId) should NOT trigger rotations/rebalancing
+    if (currentGridOrder?.orderId) {
+        filledOrders.push({ ...currentGridOrder });
+    }
+}
+```
+
+**Why It Matters**:
+- Detects phantoms on every sync
+- Converts to SPREAD placeholders (releases locked funds)
+- Prevents phantom fills from triggering unwarranted rotations/rebalancing
+
+### Additional Hardening
+
+**Strategy Module** (strategy.js:484, 521):
+```javascript
+// Only upgrade to ACTIVE if order has valid orderId
+const newState = partial.orderId ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+```
+
+**Fallback Placements** (dexbot_class.js:982):
+```javascript
+const fallbackPlacements = unmetRotations.map(r => ({
+    id: r.newGridId,
+    price: r.newPrice,
+    size: r.newSize,
+    type: r.type,
+    state: ORDER_STATES.VIRTUAL  // Start VIRTUAL, become ACTIVE after blockchain confirmation
+}));
+```
+
+### Testing
+
+See `tests/repro_phantom_orders.js` for comprehensive test coverage:
+- Direct phantom creation attempt (blocked)
+- Grid resize phantom prevention (verified)
+- Sync cleanup of orphaned ACTIVE orders (verified)
+- Valid ACTIVE order preservation (verified)
 
 ---
 

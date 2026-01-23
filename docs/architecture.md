@@ -185,6 +185,28 @@ stateDiagram-v2
 | PARTIAL | ACTIVE | Consolidation | Update to `idealSize` (releases dust to `cacheFunds`) |
 | PARTIAL | VIRTUAL | Order moved | Release funds, re-reserve |
 
+### Critical: Phantom Order Prevention
+
+A **phantom order** is an illegal state where an order exists as ACTIVE/PARTIAL without a corresponding blockchain `orderId`. This corrupts fund tracking and causes "doubled funds" warnings.
+
+**Why Phantoms Occur**:
+1. **Grid Resize Bug**: `Grid._updateOrdersForSide()` could force VIRTUAL → ACTIVE without blockchain confirmation
+2. **Sync Gap**: Orders without orderId could remain ACTIVE indefinitely if sync logic skipped them
+3. **No Validation**: No centralized check prevented invalid state assignments
+
+**Prevention System** (Three-Layer Defense):
+
+| Layer | Location | Mechanism |
+|-------|----------|-----------|
+| **Guard** | `manager.js:570-584` | Centralized validation in `_updateOrder()` rejects ACTIVE/PARTIAL without orderId, auto-downgrades to VIRTUAL |
+| **Grid Protection** | `grid.js:1154` | Preserve order state during resize: `state: order.state` instead of forcing ACTIVE |
+| **Sync Cleanup** | `sync_engine.js:297-305` | Detect orders without orderId and convert to SPREAD placeholders; prevent phantom fills from triggering rebalancing |
+
+**Verification**:
+- Direct state assignment in code review: All transitions go through `_updateOrder()` (cannot bypass)
+- Automated tests: `tests/repro_phantom_orders.js` confirms all prevention layers work
+- Logging: Any phantom creation attempt is logged as ERROR with context
+
 ---
 
 ## Fund Flow Architecture
