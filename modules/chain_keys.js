@@ -645,7 +645,7 @@ async function main() {
 }
 
 /**
- * Check if credential daemon is ready and responsive
+ * Check if dexbot-cred daemon is ready and responsive
  * @returns {boolean} True if daemon socket is responsive
  */
 function isDaemonReady() {
@@ -657,7 +657,7 @@ function isDaemonReady() {
 }
 
 /**
- * Wait for credential daemon to be ready
+ * Wait for dexbot-cred daemon to be ready
  * @param {number} maxWaitMs - Maximum time to wait in milliseconds (default 60000)
  * @returns {Promise<void>} Resolves when daemon is ready
  * @throws {Error} If daemon doesn't start within timeout
@@ -677,7 +677,7 @@ async function waitForDaemon(maxWaitMs = 60000) {
 }
 
 /**
- * Request private key from daemon via Unix socket
+ * Request private key from dexbot-cred daemon via Unix socket
  * @param {string} accountName - Name of the account
  * @param {number} timeout - Timeout in milliseconds (default 5000)
  * @returns {Promise<string>} Decrypted private key

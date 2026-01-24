@@ -19,8 +19,8 @@
  *    - Filters only active bots (active !== false)
  *    - If bot-name provided, filters to only that bot
  *
- * 4. Credential Daemon Startup
- *    - Starts credential daemon if not already running
+ * 4. dexbot-cred Startup
+ *    - Starts dexbot-cred daemon if not already running
  *    - Prompts user interactively for master password (once)
  *    - Daemon authenticates and keeps password in RAM
  *    - Bot processes request keys via Unix socket
@@ -28,7 +28,7 @@
  *
  * 5. PM2 Startup
  *    - Starts configured bots via PM2
- *    - Bots request private keys from credential daemon
+ *    - Bots request private keys from dexbot-cred daemon
  *    - No MASTER_PASSWORD environment variable passed
  *
  * Usage:
@@ -128,26 +128,26 @@ function generateEcosystemConfig(botNameFilter = null) {
 
         // Add credential daemon as a managed service
         apps.unshift({
-            name: 'credential-daemon',
+            name: 'dexbot-cred',
             script: path.join(ROOT, 'credential-daemon.js'),
             cwd: ROOT,
             autorestart: true,
             max_memory_restart: '100M',
-            error_file: path.join(LOGS_DIR, 'credential-daemon-error.log'),
-            out_file: path.join(LOGS_DIR, 'credential-daemon.log'),
+            error_file: path.join(LOGS_DIR, 'dexbot-cred-error.log'),
+            out_file: path.join(LOGS_DIR, 'dexbot-cred.log'),
             log_date_format: 'YY-MM-DD HH:mm:ss.SSS'
         });
 
         // Add weekly updater (if active and not filtering for a specific bot)
         if (!botNameFilter && UPDATER.ACTIVE) {
             apps.push({
-                name: "updater",
+                name: "dexbot-update",
                 script: path.join(ROOT, 'scripts', 'update.js'),
                 cwd: ROOT,
                 autorestart: false,
                 cron_restart: UPDATER.SCHEDULE,
-                error_file: path.join(LOGS_DIR, `updater-error.log`),
-                out_file: path.join(LOGS_DIR, `updater.log`),
+                error_file: path.join(LOGS_DIR, `dexbot-update-error.log`),
+                out_file: path.join(LOGS_DIR, `dexbot-update.log`),
                 log_date_format: "YY-MM-DD HH:mm:ss.SSS"
             });
         }
@@ -234,7 +234,7 @@ async function main(botNameFilter = null) {
 
     // Step 2: Generate ecosystem config
     const apps = generateEcosystemConfig(botNameFilter);
-    const botCount = apps.filter(a => a.name !== 'updater' && a.name !== 'credential-daemon').length;
+    const botCount = apps.filter(a => a.name !== 'dexbot-update' && a.name !== 'dexbot-cred').length;
     console.log(`Number active bots: ${botCount}`);
     console.log();
 

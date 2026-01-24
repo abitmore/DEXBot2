@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Credential Daemon - Secure BitShares private key server
+ * dexbot-cred - Secure BitShares private key server
  *
  * This daemon:
  * 1. Prompts for master password ONCE at startup

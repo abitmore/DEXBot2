@@ -299,7 +299,7 @@ DEXBot2 includes an integrated updater that can automatically keep your installa
 - **Automatic**: Fetches and pulls latest code, installs dependencies, and reloads PM2 processes.
 - **Configurable**: Choose your branch (`auto`, `main`, `dev`, `test`) and set a custom Cron schedule.
 - **Safe**: Protects your `profiles/` directory and logs all update operations to `update.log`.
-- **Integrated**: Managed as a separate "updater" process in PM2.
+- **Integrated**: Managed as a separate "dexbot-update" process in PM2.
 
 ### ⚡ Automatic Grid Recalculation via Threshold Detection
 DEXBot automatically regenerates grid order sizes when market conditions or cached proceeds exceed configurable thresholds. This ensures orders remain optimally sized without manual intervention:
