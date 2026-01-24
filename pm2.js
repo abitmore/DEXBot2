@@ -126,6 +126,18 @@ function generateEcosystemConfig(botNameFilter = null) {
             };
         });
 
+        // Add credential daemon as a managed service
+        apps.unshift({
+            name: 'credential-daemon',
+            script: path.join(ROOT, 'credential-daemon.js'),
+            cwd: ROOT,
+            autorestart: true,
+            max_memory_restart: '100M',
+            error_file: path.join(LOGS_DIR, 'credential-daemon-error.log'),
+            out_file: path.join(LOGS_DIR, 'credential-daemon.log'),
+            log_date_format: 'YY-MM-DD HH:mm:ss.SSS'
+        });
+
         // Add weekly updater (if active and not filtering for a specific bot)
         if (!botNameFilter && UPDATER.ACTIVE) {
             apps.push({
@@ -176,58 +188,84 @@ async function authenticateWithoutWait() {
 }
 
 /**
- * Start credential daemon if not already running.
+ * Main application entry point for PM2 orchestration.
+ * @param {string|null} [botNameFilter=null] - Optional bot name to start.
  * @returns {Promise<void>}
- * @throws {Error} If daemon fails to start within timeout
  */
-async function startCredentialDaemon() {
-    const chainKeys = require('./modules/chain_keys');
-    const { authenticateWithChainKeys } = require('./modules/dexbot_class');
+async function main(botNameFilter = null) {
+    console.log('='.repeat(50));
+    console.log('DEXBot2 PM2 Launcher');
+    if (botNameFilter) {
+        console.log(`Starting bot: ${botNameFilter}`);
+    }
+    console.log('='.repeat(50));
+    console.log();
 
-    // Kill any existing stale daemon process
+     // Step 0: Wait for BitShares connection (suppress BitShares client logs)
+     const { waitForConnected } = require('./modules/bitshares_client');
+     const chainKeys = require('./modules/chain_keys');
+     console.log('Connecting to BitShares...');
+ 
+     // Suppress BitShares console output during connection
+     const originalLog = console.log;
+     try {
+         console.log = (...args) => {
+             // Only suppress BitShares-specific messages
+             const msg = args.join(' ');
+             if (!msg.includes('bitshares_client') && !msg.includes('modules/')) {
+                 originalLog(...args);
+             }
+         };
+
+         await waitForConnected(30000);
+     } finally {
+         // Always restore console output, even if waitForConnected throws
+         console.log = originalLog;
+     }
+     
+     console.log('Connected to BitShares');
+     console.log();
+
+    // Step 1: Check PM2
+    if (!checkPM2Installed()) {
+        console.error('PM2 is not installed');
+        await installPM2();
+    }
+
+    // Step 2: Generate ecosystem config
+    const apps = generateEcosystemConfig(botNameFilter);
+    const botCount = apps.filter(a => a.name !== 'updater' && a.name !== 'credential-daemon').length;
+    console.log(`Number active bots: ${botCount}`);
+    console.log();
+
+    // Step 3: Clean up and authenticate
+    // Clean up any stale daemon socket files
     try {
-        execSync('pkill -f "node credential-daemon.js"', { stdio: 'ignore' });
-        // Clean up socket and ready file
         try { fs.unlinkSync('/tmp/dexbot-cred-daemon.sock'); } catch (e) { }
         try { fs.unlinkSync('/tmp/dexbot-cred-daemon.ready'); } catch (e) { }
-        // Brief delay for process cleanup
-        await new Promise(resolve => setTimeout(resolve, 100));
     } catch (e) {
-        // No existing daemon, that's fine
+        // Socket files already cleaned, that's fine
     }
 
-    console.log('Starting credential daemon...');
-
-    // Pre-authenticate in parent process (avoids stdin inheritance issues)
-    let masterPassword;
+    // Authenticate password and set in environment for PM2 apps
+    console.log('Authenticating master password...');
     try {
-        masterPassword = await chainKeys.authenticate();
+        const masterPassword = await chainKeys.authenticate();
+        process.env.DAEMON_PASSWORD = masterPassword;
     } catch (error) {
         console.error('\n❌', error.message);
         process.exit(1);
     }
+    console.log('✓ Authentication successful\n');
 
-    // Start daemon WITHOUT stdin - it will receive password via env var
-    // This prevents terminal hangs from inherited stdin
-    const daemonProcess = spawn('node', ['credential-daemon.js'], {
-        cwd: ROOT,
-        stdio: ['ignore', 'inherit', 'inherit'],  // Ignore stdin, inherit stdout/stderr
-        detached: true,
-        setsid: true,  // Create new session group (Linux/Mac)
-        env: { ...process.env, DAEMON_PASSWORD: masterPassword }  // Pass password securely
-    });
+    // Step 4: Start PM2
+    console.log('Starting PM2 with all services...');
+    await startPM2();
 
-    // Immediately unref the daemon process
-    daemonProcess.unref();
-
-    // Wait for daemon to initialize (creates ready file)
-    try {
-        await chainKeys.waitForDaemon(5000);  // Wait up to 5 seconds (no user input delay)
-    } catch (error) {
-        console.error('\n❌', error.message);
-        process.exit(1);
-    }
-
+    console.log();
+    console.log('='.repeat(50));
+    console.log('DEXBot2 started successfully!');
+    console.log('='.repeat(50));
     console.log();
 }
 
@@ -528,70 +566,6 @@ Examples:
   node pm2.js delete XRP-BTS     # Delete specific bot from PM2
   node pm2.js help               # Show help
     `);
-}
-
-/**
- * Main application entry point for PM2 orchestration.
- * @param {string|null} [botNameFilter=null] - Optional bot name to start.
- * @returns {Promise<void>}
- */
-async function main(botNameFilter = null) {
-    console.log('='.repeat(50));
-    console.log('DEXBot2 PM2 Launcher');
-    if (botNameFilter) {
-        console.log(`Starting bot: ${botNameFilter}`);
-    }
-    console.log('='.repeat(50));
-    console.log();
-
-     // Step 0: Wait for BitShares connection (suppress BitShares client logs)
-     const { waitForConnected } = require('./modules/bitshares_client');
-     console.log('Connecting to BitShares...');
- 
-     // Suppress BitShares console output during connection
-     const originalLog = console.log;
-     try {
-         console.log = (...args) => {
-             // Only suppress BitShares-specific messages
-             const msg = args.join(' ');
-             if (!msg.includes('bitshares_client') && !msg.includes('modules/')) {
-                 originalLog(...args);
-             }
-         };
-
-         await waitForConnected(30000);
-     } finally {
-         // Always restore console output, even if waitForConnected throws
-         console.log = originalLog;
-     }
-     
-     console.log('Connected to BitShares');
-     console.log();
-
-    // Step 1: Check PM2
-    if (!checkPM2Installed()) {
-        console.error('PM2 is not installed');
-        await installPM2();
-    }
-
-    // Step 2: Generate ecosystem config
-    const apps = generateEcosystemConfig(botNameFilter);
-    const botCount = apps.filter(a => a.name !== 'updater').length;
-    console.log(`Number active bots: ${botCount}`);
-    console.log();
-
-    // Step 3: Start credential daemon
-    await startCredentialDaemon();
-
-    // Step 4: Start PM2
-    console.log('Starting PM2...');
-    await startPM2();
-
-    console.log();
-    console.log('='.repeat(50));
-    console.log('DEXBot2 started successfully!');
-    console.log('='.repeat(50));
-    console.log();
 }
 
 // Run if called directly
