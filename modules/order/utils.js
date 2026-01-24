@@ -1237,11 +1237,22 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
     if (assetSymbol === 'BTS') {
         const orderCreationFee = cachedFees.limitOrderCreate.bts;
         const orderUpdateFee = cachedFees.limitOrderUpdate.bts;
+        
         // For makers: 90% refund, so net fee = 10% of creation fee
         // For takers: no refund, so net fee = full creation fee
         const makerNetFee = orderCreationFee * 0.1;
         const takerNetFee = orderCreationFee; // Taker pays full fee with no refund
         const netFee = isMaker ? makerNetFee : takerNetFee;
+
+        // If amount is provided, we're calculating NET PROCEEDS (what actually hits the wallet)
+        // On BitShares, proceeds = raw amount + (90% refund if maker)
+        // Note: Takers don't get a refund, so proceeds = raw amount.
+        if (assetAmount > 0) {
+            const refund = isMaker ? (orderCreationFee * 0.9) : 0;
+            return assetAmount + refund;
+        }
+
+        // Default: return the fee info object (legacy behavior used for estimations)
         return {
             total: netFee + orderUpdateFee,
             createFee: orderCreationFee,
@@ -1260,7 +1271,7 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
         : (cachedFees.takerFee?.percent || cachedFees.marketFee?.percent || 0);
     const feeAmount = (assetAmount * feePercent) / 100;
 
-    // Return amount after fees are deducted
+    // Return amount after fees are deducted (Net Proceeds)
     return assetAmount - feeAmount;
 }
 

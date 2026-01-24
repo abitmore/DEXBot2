@@ -362,6 +362,7 @@ class Accountant {
         const mgr = this.manager;
         const pays = fillOp.pays;
         const receives = fillOp.receives;
+        const isMaker = fillOp.is_maker !== false; // Default to true if not specified
 
         const assetAId = mgr.assets?.assetA?.id;
         const assetBId = mgr.assets?.assetB?.id;
@@ -370,6 +371,9 @@ class Accountant {
         const assetBPrecision = mgr.assets?.assetB?.precision;
 
         if (assetAPrecision === undefined || assetBPrecision === undefined) return;
+
+        const assetASymbol = mgr.config?.assetA;
+        const assetBSymbol = mgr.config?.assetB;
 
         // 1. Deduct PAYS amount from both TOTAL and FREE balances.
         // We must deduct from FREE to offset the optimistic "release to Free"
@@ -384,14 +388,19 @@ class Accountant {
 
         // 2. Add RECEIVES amount to both TOTAL and FREE
         // These proceeds are liquid and increase spending power.
+        // IMPORTANT: Deduct market fees from proceeds to match blockchain reality.
         if (receives.asset_id === assetAId) {
-            const amount = blockchainToFloat(receives.amount, assetAPrecision, true);
-            this.adjustTotalBalance(ORDER_TYPES.SELL, amount, 'fill-receives');
-            this.modifyCacheFunds('sell', amount, 'fill-proceeds');
+            const rawAmount = blockchainToFloat(receives.amount, assetAPrecision, true);
+            const netAmount = assetASymbol ? getAssetFees(assetASymbol, rawAmount, isMaker) : rawAmount;
+            
+            this.adjustTotalBalance(ORDER_TYPES.SELL, netAmount, 'fill-receives');
+            this.modifyCacheFunds('sell', netAmount, 'fill-proceeds');
         } else if (receives.asset_id === assetBId) {
-            const amount = blockchainToFloat(receives.amount, assetBPrecision, true);
-            this.adjustTotalBalance(ORDER_TYPES.BUY, amount, 'fill-receives');
-            this.modifyCacheFunds('buy', amount, 'fill-proceeds');
+            const rawAmount = blockchainToFloat(receives.amount, assetBPrecision, true);
+            const netAmount = assetBSymbol ? getAssetFees(assetBSymbol, rawAmount, isMaker) : rawAmount;
+
+            this.adjustTotalBalance(ORDER_TYPES.BUY, netAmount, 'fill-receives');
+            this.modifyCacheFunds('buy', netAmount, 'fill-proceeds');
         }
     }
 }
