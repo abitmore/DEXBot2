@@ -373,6 +373,7 @@ node backtest_trend_detection.js
 - `dual_ama.js` - Fast & Slow AMA engine
 - `price_ratio.js` - Price position analysis
 - `trend_analyzer.js` - Main interface (use this!)
+- `3_INDICATOR_REVERSAL_ARCHITECTURE.md` - Modular reversal detection system architecture
 
 ### Tools
 - `fetch_1day_candles.js` - Fetch market data (1-day candles)
