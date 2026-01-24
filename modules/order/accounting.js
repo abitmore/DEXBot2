@@ -391,13 +391,15 @@ class Accountant {
         // IMPORTANT: Deduct market fees from proceeds to match blockchain reality.
         if (receives.asset_id === assetAId) {
             const rawAmount = blockchainToFloat(receives.amount, assetAPrecision, true);
-            const netAmount = assetASymbol ? getAssetFees(assetASymbol, rawAmount, isMaker) : rawAmount;
+            const feeResult = assetASymbol ? getAssetFees(assetASymbol, rawAmount, isMaker) : rawAmount;
+            const netAmount = (typeof feeResult === 'object') ? feeResult.netProceeds : feeResult;
             
             this.adjustTotalBalance(ORDER_TYPES.SELL, netAmount, 'fill-receives');
             this.modifyCacheFunds('sell', netAmount, 'fill-proceeds');
         } else if (receives.asset_id === assetBId) {
             const rawAmount = blockchainToFloat(receives.amount, assetBPrecision, true);
-            const netAmount = assetBSymbol ? getAssetFees(assetBSymbol, rawAmount, isMaker) : rawAmount;
+            const feeResult = assetBSymbol ? getAssetFees(assetBSymbol, rawAmount, isMaker) : rawAmount;
+            const netAmount = (typeof feeResult === 'object') ? feeResult.netProceeds : feeResult;
 
             this.adjustTotalBalance(ORDER_TYPES.BUY, netAmount, 'fill-receives');
             this.modifyCacheFunds('buy', netAmount, 'fill-proceeds');

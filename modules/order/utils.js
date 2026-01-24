@@ -1244,15 +1244,11 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
         const takerNetFee = orderCreationFee; // Taker pays full fee with no refund
         const netFee = isMaker ? makerNetFee : takerNetFee;
 
-        // If amount is provided, we're calculating NET PROCEEDS (what actually hits the wallet)
         // On BitShares, proceeds = raw amount + (90% refund if maker)
-        // Note: Takers don't get a refund, so proceeds = raw amount.
-        if (assetAmount > 0) {
-            const refund = isMaker ? (orderCreationFee * 0.9) : 0;
-            return assetAmount + refund;
-        }
+        const refund = isMaker ? (orderCreationFee * 0.9) : 0;
+        const netProceeds = assetAmount + refund;
 
-        // Default: return the fee info object (legacy behavior used for estimations)
+        // ALWAYS return the object for BTS to avoid breaking fee lookups elsewhere
         return {
             total: netFee + orderUpdateFee,
             createFee: orderCreationFee,
@@ -1260,6 +1256,7 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
             makerNetFee: makerNetFee,
             takerNetFee: takerNetFee,
             netFee: netFee,
+            netProceeds: netProceeds, // New field for accounting.js
             isMaker: isMaker
         };
     }
@@ -1868,11 +1865,11 @@ function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 
     const sellOrders = orders.filter(o => o.type === ORDER_TYPES.SELL);
     const buyOrders = orders.filter(o => o.type === ORDER_TYPES.BUY);
 
-    // Apply reverse flag to compensate for different array orientations:
-    // SELL (market-to-edge): reverse=false -> weight[0] = maximum (correct, index 0 is market)
-    // BUY (edge-to-market): reverse=true -> weight[n-1] = maximum (correct, last index is market)
-    // NOTE: strategy.js does explicit sorting instead, so it always uses reverse=false
+    // SELL side: Budget is in Asset A (e.g. XRP)
     const sellSizes = allocateFundsByWeights(sellFunds, sellOrders.length, sellWeight, incrementFactor, false, minSellSize, precisionA);
+    
+    // BUY side: Budget is in Asset B (e.g. BTS)
+    // CRITICAL: We use precisionB here because we are allocating the BTS budget.
     const buySizes = allocateFundsByWeights(buyFunds, buyOrders.length, buyWeight, incrementFactor, true, minBuySize, precisionB);
 
     const sellState = { sizes: sellSizes, index: 0 };

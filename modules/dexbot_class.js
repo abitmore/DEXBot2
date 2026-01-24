@@ -673,6 +673,13 @@ class DEXBot {
 
         const sellOrders = ordersToActivate.filter(o => o.type === 'sell');
         const buyOrders = ordersToActivate.filter(o => o.type === 'buy');
+
+        this.manager.logger.log(`Activating ${sellOrders.length} sell and ${buyOrders.length} buy orders`, 'info');
+        
+        if (sellOrders.length === 0 || buyOrders.length === 0) {
+            this.manager.logger.log(`WARNING: Initializing grid with one side empty! (Sell: ${sellOrders.length}, Buy: ${buyOrders.length})`, 'warn');
+        }
+
         const interleavedOrders = [];
         const maxLen = Math.max(sellOrders.length, buyOrders.length);
         for (let i = 0; i < maxLen; i++) {
