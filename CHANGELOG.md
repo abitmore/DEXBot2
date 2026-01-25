@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.8] - 2026-01-25 - Spread Refinement, Inventory Sync & Operational Hardening
+
+### Added
+- **Fund-Driven Boundary Sync** (commit 7a443f5)
+  - **Feature**: Implemented a new synchronization layer that aligns the grid boundary with the account's actual inventory distribution (buy/sell fund ratio).
+  - **Benefit**: Automatically shifts the grid to favor the "heavier" side, ensuring the bot remains positioned where it has the most capital to trade.
+- **Scaled Spread Correction** (commit 75e23b2)
+  - **Feature**: Introduced dynamic spread correction that scales the number of replacement slots based on the severity of the widening.
+  - **Safety**: Integrated a "double-dust" safety floor to prevent creating undersized orders during aggressive corrections.
+- **Periodic Market Price Refresh** (commit ec97a02)
+  - **Feature**: Added background market price updates every 4 hours (configurable).
+  - **Impact**: Ensures that fund valuation and grid anchoring remain accurate even during long-running sessions without fills.
+
+### Fixed
+- **Spread Gap Over-calculation & Alignment** (commit 77d01cd)
+  - **Problem**: The grid was creating one more price gap than intended because it didn't account for the naturally occurring 'Center Gap' during symmetric centering.
+  - **Solution**: Refined `gapSlots` calculation to `requiredSteps - 1` and standardized spread-check logic to use `gapSlots + 1` as the true gap distance.
+- **BUY Side Sizing & Fee Accounting** (commits 6190e46, eea127b)
+  - **Fix**: Resolved a sizing mismatch on the BUY side where fees were incorrectly applied to the base asset instead of the quote asset.
+  - **Accuracy**: Now correctly accounts for market fees and BTS maker refunds in fill proceeds calculation, ensuring internal ledgers match blockchain totals.
+- **Configurable Pricing Priority** (commit 46b39f8)
+  - **Fix**: Disabled automatic `startPrice` derivation and refresh when a numeric value is explicitly provided in `bots.json`. This gives users absolute control over grid anchoring.
+- **Strategic Grid Balance** (commit 2313bdd)
+  - **Logic**: Implemented automatic target count reduction (-1) on "doubled" sides (sides with dust-consolidated orders) to prevent structural grid drift and maintain symmetry.
+
+### Refactored
+- **PM2 Orchestration & Credential Management** (commits 5ddd6cb, 3685332)
+  - **Cleanup**: Integrated the credential daemon directly into the PM2 lifecycle and simplified the launcher logic.
+  - **Visibility**: Renamed PM2 processes to `dexbot-cred` and `dexbot-update` for easier monitoring via `pm2 list`.
+- **Legacy Spread Multiplier Removal** (commit 77d01cd)
+  - **Cleanup**: Completely removed `SPREAD_WIDENING_MULTIPLIER` and replaced it with a neutral, fixed 1-slot tolerance buffer across all modules.
+- **Out-of-Spread Metric Unification** (commit 0546487)
+  - **Logic**: Refactored `outOfSpread` from a boolean flag to a numeric distance (steps), allowing for more precise structural updates during rebalancing.
+
+### Performance
+- **Pool ID Caching** (commit 490b793)
+  - **Optimization**: Cached Liquidity Pool IDs in `derivePoolPrice` to eliminate redundant blockchain scans, significantly reducing API load during startup and refreshes.
+
+### Changed
+- **Documentation Overhaul**: Updated `FUND_MOVEMENT_AND_ACCOUNTING.md`, `architecture.md`, and `developer_guide.md` to reflect refined gap formulas, zone indexing, and new sync behaviors.
+- **Research**: Added the 3-indicator reversal architecture to the trend detection analysis folder (`74203ab`).
+
+---
+
 ## [0.6.0-patch.7] - 2026-01-23 - Architectural Hardening, Deep Consolidation & Performance Optimization
 
 ### Fixed
