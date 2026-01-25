@@ -357,6 +357,7 @@ class Accountant {
     /**
      * Process the fund impact of an order fill.
      * Atomically updates accountTotals to keep internal state in sync with blockchain.
+     * CRITICAL: Called within fill processing lock context to prevent race conditions.
      */
     processFillAccounting(fillOp) {
         const mgr = this.manager;

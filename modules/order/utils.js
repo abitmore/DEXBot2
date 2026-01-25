@@ -1848,10 +1848,18 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                     manager._gridSidesUpdated.clear();
                 }
             } catch (err) {
-                // CRITICAL: Clear corrections AND flags on error to prevent list explosion
-                manager.ordersNeedingPriceCorrection = [];
-                manager._gridSidesUpdated.clear();
-                manager?.logger?.log?.(`Warning: Could not execute grid divergence corrections: ${err.message}`, 'warn');
+                // ERROR RECOVERY: Log the error but preserve flags to enable retry on next cycle
+                // This prevents silent divergence where corrections are lost but divergence persists
+                manager?.logger?.log?.(
+                    `Error executing grid divergence corrections: ${err.message}. Flags preserved for retry on next cycle.`,
+                    'error'
+                );
+                // Do NOT clear the flags here - let the next cycle attempt the corrections again
+                // Only clear ordersNeedingPriceCorrection if it becomes too large (prevent memory explosion)
+                if (manager.ordersNeedingPriceCorrection.length > 1000) {
+                    manager?.logger?.log?.(`Warning: ordersNeedingPriceCorrection list exceeded 1000 entries. Clearing to prevent memory issues.`, 'warn');
+                    manager.ordersNeedingPriceCorrection = [];
+                }
             }
         }
     });

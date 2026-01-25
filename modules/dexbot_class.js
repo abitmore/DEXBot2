@@ -538,7 +538,7 @@ class DEXBot {
                 const activeOpposite = allOrders.filter(o =>
                     o.type === oppositeType &&
                     o.orderId &&
-                    o.state === 'ACTIVE'
+                    o.state === ORDER_STATES.ACTIVE
                 );
 
                 if (activeOpposite.length === 0) {
@@ -557,7 +557,7 @@ class DEXBot {
                 const emptySlotsOpposite = allOrders.filter(o =>
                     o.type === oppositeType &&
                     !o.orderId &&
-                    o.state === 'VIRTUAL'
+                    o.state === ORDER_STATES.VIRTUAL
                 );
 
                 if (emptySlotsOpposite.length === 0) {
@@ -600,6 +600,10 @@ class DEXBot {
                 this._log(`[BOOTSTRAP] Broadcasting ${ordersToPlace.length} rotation order(s) - sizes: ${sizes}`, 'info');
                 await this.updateOrdersOnChainBatch(ordersToPlace);
             }
+
+            // CRITICAL: Persist grid state after bootstrap fill processing completes
+            // This ensures rotations and state changes are saved for recovery on restart
+            await this.manager.persistGrid();
 
             this._metrics.fillsProcessed += validFills.length;
             this._metrics.fillProcessingTimeMs += Date.now() - startTime;
@@ -1342,16 +1346,21 @@ class DEXBot {
             // This requires fill processing lock for safety
             let spreadResult = null;
             const executeSpreadActions = async () => {
-                // CRITICAL: Recalculate funds before spread correction
-                this.manager.recalculateFunds();
+                // CRITICAL: Pause fund recalc during spread correction to prevent inconsistent state
+                this.manager.pauseFundRecalc();
+                try {
+                    this.manager.recalculateFunds();
 
-                spreadResult = await this.manager.checkSpreadCondition(
-                    BitShares,
-                    this.updateOrdersOnChainBatch.bind(this)
-                );
-                if (spreadResult && spreadResult.ordersPlaced > 0) {
-                    const checkPhase = isBootstrap ? 'startup' : '4h fetch';
-                    this._log(`✓ Spread correction at ${checkPhase}: ${spreadResult.ordersPlaced} order(s) placed`);
+                    spreadResult = await this.manager.checkSpreadCondition(
+                        BitShares,
+                        this.updateOrdersOnChainBatch.bind(this)
+                    );
+                    if (spreadResult && spreadResult.ordersPlaced > 0) {
+                        const checkPhase = isBootstrap ? 'startup' : '4h fetch';
+                        this._log(`✓ Spread correction at ${checkPhase}: ${spreadResult.ordersPlaced} order(s) placed`);
+                    }
+                } finally {
+                    this.manager.resumeFundRecalc();
                 }
             };
 
@@ -1501,6 +1510,8 @@ class DEXBot {
                 account: this.account,
                 privateKey: this.privateKey,
                 config: this.config,
+                sessionId: this.sessionId,
+                sessionStartMs: this.sessionStartMs,
             });
 
             // 3. Reset funds for clean slate

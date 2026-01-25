@@ -444,6 +444,20 @@ class Grid {
      */
     static async initializeGrid(manager, sessionInfo = null) {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
+
+        // Layer 1: Validate session info to ensure orders are properly marked
+        if (sessionInfo) {
+            if (!sessionInfo.sessionId || typeof sessionInfo.sessionId !== 'string') {
+                throw new Error(`Invalid sessionId: must be a non-empty string. Got: ${sessionInfo.sessionId}`);
+            }
+            if (!Number.isFinite(sessionInfo.sessionStartMs) || sessionInfo.sessionStartMs <= 0) {
+                throw new Error(`Invalid sessionStartMs: must be a positive number. Got: ${sessionInfo.sessionStartMs}`);
+            }
+            if (sessionInfo.sessionStartMs > Date.now() + 5000) { // Allow 5s clock skew
+                throw new Error(`Invalid sessionStartMs: appears to be in the future. Got: ${sessionInfo.sessionStartMs}`);
+            }
+        }
+
         await manager._initializeAssets();
 
         // FIX: Add explicit state validation to prevent cryptic errors later
@@ -583,7 +597,7 @@ class Grid {
      * @returns {Promise<void>}
      */
     static async recalculateGrid(manager, opts) {
-        const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
+        const { readOpenOrdersFn, chainOrders, account, privateKey, sessionId, sessionStartMs } = opts;
 
         // Suppress invariant warnings during full resync
         if (typeof manager.startBootstrap === 'function') {
@@ -605,7 +619,11 @@ class Grid {
         manager.resetFunds();
 
         await manager.persistGrid();
-        await Grid.initializeGrid(manager);
+        // Pass session info to prevent stale order mismatches (Layer 1)
+        await Grid.initializeGrid(manager, {
+            sessionId: sessionId,
+            sessionStartMs: sessionStartMs
+        });
 
         const { reconcileStartupOrders } = require('./startup_reconcile');
 
