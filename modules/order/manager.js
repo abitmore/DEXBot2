@@ -77,7 +77,7 @@ class OrderManager {
         this.sellSideIsDoubled = false;
         this.targetSpreadCount = 0;
         this.currentSpreadCount = 0;
-        this.outOfSpread = false;
+        this.outOfSpread = 0;
         this.assets = null;
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;

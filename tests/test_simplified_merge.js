@@ -1,4 +1,28 @@
 const assert = require('assert');
+const utils = require('../modules/order/utils');
+
+// Mock getAssetFees to ensure test can run without blockchain connection
+utils.getAssetFees = (asset, amount, isMaker = true) => {
+    if (asset === 'BTS') {
+        const createFee = 0.01;
+        const updateFee = 0.0001;
+        const makerNetFee = createFee * 0.1;
+        const takerNetFee = createFee;
+        const netFee = isMaker ? makerNetFee : takerNetFee;
+        return {
+            total: netFee + updateFee,
+            createFee: createFee,
+            updateFee: updateFee,
+            makerNetFee: makerNetFee,
+            takerNetFee: takerNetFee,
+            netFee: netFee,
+            netProceeds: amount + (isMaker ? createFee * 0.9 : 0),
+            isMaker: isMaker
+        };
+    }
+    return amount;
+};
+
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
@@ -15,6 +39,12 @@ async function testSimplifiedMergeStrategy() {
         assetA: { id: '1.3.1', symbol: 'BASE', precision: 5 },
         assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
     };
+
+    // Set account totals so availBuy/availSell are correctly calculated
+    mgr.setAccountTotals({
+        buy: 1000, sell: 1000,
+        buyFree: 1000, sellFree: 1000
+    });
 
     // 1. Setup Grid with a dust partial on BUY side
     // Ideal size for 2 orders with 1000 budget is ~500 each.
@@ -50,9 +80,10 @@ async function testSimplifiedMergeStrategy() {
     // 2. Simulate a partial fill on the doubled side
     console.log('  Scenario 2: Partial fill on doubled side');
     const fill1 = {
-        op: [1, {
+        op: [4, {
             order_id: 'chain-buy-0',
             pays: { amount: 100000, asset_id: '1.3.2' }, // paying QUOTE
+            receives: { amount: 100000, asset_id: '1.3.1' }, // receiving BASE
             is_maker: true
         }],
         block_num: 123,
@@ -68,9 +99,10 @@ async function testSimplifiedMergeStrategy() {
     mgr.buySideIsDoubled = true;
     console.log('  Scenario 3: Full fill on doubled side');
     const fill2 = {
-        op: [1, {
+        op: [4, {
             order_id: 'chain-buy-0',
             pays: { amount: 50125629, asset_id: '1.3.2' }, // paying ~501 QUOTE (full fill)
+            receives: { amount: 50125629, asset_id: '1.3.1' }, // receiving BASE
             is_maker: true
         }],
         block_num: 124,

@@ -355,12 +355,11 @@ class Logger {
          console.log(`committed.grid: ${buy}Buy ${Format.formatAmount8(committedGridBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(committedGridSell)}${reset} ${sellName}`);
          console.log(`committed.chain: ${buy}Buy ${Format.formatAmount8(committedChainBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(committedChainSell)}${reset} ${sellName}`);
         console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length} | Partial ${partialOrders.length}`);
-        console.log(`Spreads: ${manager.currentSpreadCount}/${manager.targetSpreadCount}`);
-        // calculateCurrentSpread may exist on manager
-        const spread = typeof manager.calculateCurrentSpread === 'function' ? manager.calculateCurrentSpread() : 0;
-         console.log(`Current Spread: ${Format.formatPercent2(spread)}%`);
-        console.log(`Spread Condition: ${manager.outOfSpread ? 'TOO WIDE' : 'Normal'}`);
-    }
+                console.log(`Spreads: ${manager.currentSpreadCount}/${manager.targetSpreadCount}`);
+                // calculateCurrentSpread may exist on manager
+                const spread = typeof manager.calculateCurrentSpread === 'function' ? manager.calculateCurrentSpread() : 0;
+                console.log(`Current Spread: ${Format.formatPercent2(spread)}%`);
+                console.log(`Spread Condition: ${manager.outOfSpread > 0 ? 'TOO WIDE (' + manager.outOfSpread + ')' : 'Normal'}`);    }
 
     /**
      * Log detailed grid diagnostic: ACTIVE, SPREAD, PARTIAL orders and first VIRTUAL on boundary

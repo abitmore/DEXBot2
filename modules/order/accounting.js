@@ -360,8 +360,10 @@ class Accountant {
      */
     processFillAccounting(fillOp) {
         const mgr = this.manager;
-        const pays = fillOp.pays;
-        const receives = fillOp.receives;
+        const pays = fillOp?.pays;
+        const receives = fillOp?.receives;
+        if (!pays || !receives) return;
+
         const isMaker = fillOp.is_maker !== false; // Default to true if not specified
 
         const assetAId = mgr.assets?.assetA?.id;

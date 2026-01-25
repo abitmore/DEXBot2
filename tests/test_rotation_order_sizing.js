@@ -1,5 +1,6 @@
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
+const { utils: OrderUtils } = require('../modules/order/index');
 const { ORDER_TYPES, DEFAULT_CONFIG } = require('../modules/constants');
 const Format = require('../modules/order/format');
 
@@ -29,13 +30,13 @@ console.log(`Increment Percent: ${config.incrementPercent}%\n`);
 // ==========================================
 console.log('=== INITIAL GRID SIZES ===\n');
 
-// Create mock grid orders
+// Create mock grid orders (ASC price order)
 const initialBuyOrders = [
-    { id: 'buy-0', type: ORDER_TYPES.BUY, price: 0.49, size: 0 },
-    { id: 'buy-1', type: ORDER_TYPES.BUY, price: 0.48, size: 0 },
-    { id: 'buy-2', type: ORDER_TYPES.BUY, price: 0.47, size: 0 },
+    { id: 'buy-4', type: ORDER_TYPES.BUY, price: 0.45, size: 0 },
     { id: 'buy-3', type: ORDER_TYPES.BUY, price: 0.46, size: 0 },
-    { id: 'buy-4', type: ORDER_TYPES.BUY, price: 0.45, size: 0 }
+    { id: 'buy-2', type: ORDER_TYPES.BUY, price: 0.47, size: 0 },
+    { id: 'buy-1', type: ORDER_TYPES.BUY, price: 0.48, size: 0 },
+    { id: 'buy-0', type: ORDER_TYPES.BUY, price: 0.49, size: 0 }
 ];
 
 const initialSellOrders = [
@@ -46,9 +47,9 @@ const initialSellOrders = [
     { id: 'sell-4', type: ORDER_TYPES.SELL, price: 0.55, size: 0 }
 ];
 
-// Calculate initial sizes using Grid.calculateOrderSizes
+// Calculate initial sizes using OrderUtils.calculateOrderSizes
 const allInitialOrders = [...initialBuyOrders, ...initialSellOrders];
-const initialGridSizes = Grid.calculateOrderSizes(
+const initialGridSizes = OrderUtils.calculateOrderSizes(
     allInitialOrders,
     config,
     2000,  // 2000 BTS total for sell orders
@@ -123,7 +124,7 @@ console.log(`  Input: available = ${Format.formatMetric2(availableFundsBuy)} USD
 console.log(`  Total to distribute: ${Format.formatMetric2(availableFundsBuy + buyGridTotal)} USDT\n`);
 
 const buySizesPrecision = 3;
-const buyRotationSizes = Grid.calculateRotationOrderSizes(
+const buyRotationSizes = OrderUtils.calculateRotationOrderSizes(
     availableFundsBuy,
     buyGridTotal,
     5,             // 5 new rotation orders
@@ -147,7 +148,7 @@ console.log(`  Input: available = ${Format.formatMetric2(availableFundsSell)} BT
 console.log(`  Total to distribute: ${Format.formatMetric2(availableFundsSell + sellGridTotal)} BTS\n`);
 
 const sellSizesPrecision = 8;
-const sellRotationSizes = Grid.calculateRotationOrderSizes(
+const sellRotationSizes = OrderUtils.calculateRotationOrderSizes(
     availableFundsSell,
     sellGridTotal,
     5,             // 5 new rotation orders
@@ -219,11 +220,18 @@ assert(buyRotationSizes.every(s => s > 0), 'All buy rotation sizes should be pos
 assert(sellRotationSizes.every(s => s > 0), 'All sell rotation sizes should be positive');
 console.log('✓ All calculated sizes are positive');
 
-// Check that larger allocations go to earlier orders (geometric weighting with weight=0.5)
-const buyFirstLarger = buyRotationSizes[0] > buyRotationSizes[1];
-const buyLastSmaller = buyRotationSizes[4] < buyRotationSizes[3];
-assert(buyFirstLarger && buyLastSmaller, 'Buy sizes should decrease geometrically');
-console.log('✓ Order sizes decrease geometrically as expected');
+// Check that larger allocations go to market orders
+// BUY: [Edge, ..., Market] -> index 4 is largest
+// SELL: [Market, ..., Edge] -> index 0 is largest
+const buyLastLarger = buyRotationSizes[4] > buyRotationSizes[3];
+const buyFirstSmaller = buyRotationSizes[0] < buyRotationSizes[1];
+assert(buyLastLarger && buyFirstSmaller, 'Buy sizes should increase geometrically (Edge to Market)');
+
+const sellFirstLarger = sellRotationSizes[0] > sellRotationSizes[1];
+const sellLastSmaller = sellRotationSizes[4] < sellRotationSizes[3];
+assert(sellFirstLarger && sellLastSmaller, 'Sell sizes should decrease geometrically (Market to Edge)');
+
+console.log('✓ Order sizes follow correct geometric progression for each side');
 
 console.log('\n✓ All assertions passed!');
 console.log('\nRotation order sizing test completed successfully.');

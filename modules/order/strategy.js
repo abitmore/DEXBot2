@@ -80,25 +80,25 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 0: SPREAD CONDITION CHECK (Pre-rebalance)
         // ════════════════════════════════════════════════════════════════════════════════
-        // Determine if spread is too wide before rebalancing. This affects targetCount
-        // in rebalanceSideRobust, allowing an extra slot to narrow the spread.
-        // CRITICAL: Only perform this check if NOT processing a fill. Fills naturally 
-        // widen the spread; we should let the replacement rotation close the gap
-        // using base spreadSlots first. (Fix: Issue #17)
-        if (fills.length === 0) {
-            const currentSpread = mgr.calculateCurrentSpread();
-            const baseTarget = mgr.config.targetSpreadPercent + (mgr.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-            const doubledSideCount = (mgr.buySideIsDoubled ? 1 : 0) + (mgr.sellSideIsDoubled ? 1 : 0);
-            const targetSpread = baseTarget + (doubledSideCount * mgr.config.incrementPercent);
-            const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
-            const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
-            mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
+        // Determine if spread is too wide before rebalancing. This informs the manager's
+        // state and can trigger structural shifts if RMS/Cache triggers follow.
+        const currentSpread = mgr.calculateCurrentSpread();
+        const step = 1 + (mgr.config.incrementPercent / 100);
+        
+        // Nominal spread is what the grid was built for (gapSlots)
+        const nominalSpread = (Math.pow(step, gapSlots) - 1) * 100;
+        
+        // Tolerance allows some "floating" before correction (widening multiplier + doubled state)
+        const toleranceSteps = (GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER || 1.5) + (mgr.buySideIsDoubled ? 1 : 0) + (mgr.sellSideIsDoubled ? 1 : 0);
+        
+        const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
+        const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
+        
+        mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, mgr.config.incrementPercent);
 
-            if (mgr.outOfSpread) {
-                mgr.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${targetSpread.toFixed(2)}%). Extra orderslot enabled for this cycle.`, "info");
-            }
-        } else {
-            mgr.outOfSpread = false;
+        if (mgr.outOfSpread > 0) {
+            const limitSpread = (Math.pow(step, gapSlots + toleranceSteps) - 1) * 100;
+            mgr.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${limitSpread.toFixed(2)}%). ${mgr.outOfSpread} extra orderslot(s) identified.`, "info");
         }
 
         // ════════════════════════════════════════════════════════════════════════════════
@@ -306,9 +306,6 @@ class StrategyEngine {
 
         mgr.logger.log(`[BOUNDARY] Sequence complete: ${result.ordersToPlace.length} place, ${result.ordersToRotate.length} rotate. Gap size: ${gapSlots} slots.`, "info");
 
-        // Reset outOfSpread flag after rebalance completes
-        mgr.outOfSpread = false;
-
         return result;
     }
 
@@ -334,8 +331,8 @@ class StrategyEngine {
 
         const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : sideSlots.length;
 
-        // Consider an extra order slot when out of spread
-        const finalTargetCount = mgr.outOfSpread ? targetCount + 1 : targetCount;
+        // Strictly follow targetCount (isDoubled and outOfSpread no longer expand the count)
+        const finalTargetCount = targetCount;
 
         // ════════════════════════════════════════════════════════════════════════════════
         // BUILD SLOT INDEX MAP FOR O(1) LOOKUPS (FIX: O(n²) → O(n) complexity)
@@ -362,12 +359,11 @@ class StrategyEngine {
         // NOTE: BTS fees are already deducted from totalSideBudget in rebalance().
         // Do NOT subtract them again here - that was causing double fee deduction.
 
-        // CRITICAL: Sort order differs between sides:
-        // - BUY (line 295): descending (b.price - a.price) = highest first = EDGE to MARKET (reversed)
-        // - SELL (line 295): ascending (a.price - b.price) = lowest first = MARKET to EDGE (normal)
-        // Use reverse=true for BUY to flip weight distribution so market (index n-1) gets max weight.
-        // Use reverse=false for SELL so market (index 0) gets max weight.
-        const reverse = (type === ORDER_TYPES.BUY);
+        // - BUY: descending (b.price - a.price) = highest price first = MARKET to EDGE
+        // - SELL: ascending (a.price - b.price) = lowest price first = MARKET to EDGE
+        // Since both are now MARKET to EDGE, we always use reverse=false to align
+        // maximum weight with the first element (index 0).
+        const reverse = false;
         const sideIdealSizes = allocateFundsByWeights(totalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);

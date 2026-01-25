@@ -1,4 +1,28 @@
 const assert = require('assert');
+const utils = require('../modules/order/utils');
+
+// Mock getAssetFees to ensure test can run without blockchain connection
+utils.getAssetFees = (asset, amount, isMaker = true) => {
+    if (asset === 'BTS') {
+        const createFee = 0.01;
+        const updateFee = 0.0001;
+        const makerNetFee = createFee * 0.1;
+        const takerNetFee = createFee;
+        const netFee = isMaker ? makerNetFee : takerNetFee;
+        return {
+            total: netFee + updateFee,
+            createFee: createFee,
+            updateFee: updateFee,
+            makerNetFee: makerNetFee,
+            takerNetFee: takerNetFee,
+            netFee: netFee,
+            netProceeds: amount + (isMaker ? createFee * 0.9 : 0),
+            isMaker: isMaker
+        };
+    }
+    return amount;
+};
+
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const { buildCreateOrderArgs, floatToBlockchainInt, blockchainToFloat } = require('../modules/order/utils');
@@ -123,15 +147,20 @@ async function testFullOrderLifecycle() {
     console.log('─'.repeat(80));
 
     const result = mgr.syncFromFillHistory({
-        order_id: '1.7.569640154',
-        pays: {
-            amount: filledInt,
-            asset_id: mgr.assets.assetB.id
-        },
-        receives: {
-            amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
-            asset_id: mgr.assets.assetA.id
-        }
+        op: [4, {
+            order_id: '1.7.569640154',
+            pays: {
+                amount: filledInt,
+                asset_id: mgr.assets.assetB.id
+            },
+            receives: {
+                amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
+                asset_id: mgr.assets.assetA.id
+            },
+            is_maker: true
+        }],
+        block_num: 12345,
+        id: '1.11.12345'
     });
 
     console.log(`  Fill processed by manager:`);

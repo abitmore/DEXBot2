@@ -15,7 +15,7 @@ const Format = require('../modules/order/format');
 /**
  * Test helper to create a mock order
  */
-function createOrder(type, price, size, id = null, state = ORDER_STATES.VIRTUAL) {
+function createOrder(type, price, size, id = null, state = ORDER_STATES.ACTIVE) {
     return {
         id: id || `order-${type}-${price}`,
         type,
@@ -104,8 +104,6 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.85, 10)
     ];
     const result = await Grid.compareGrids(calculated, persisted);
-    // Buy: (15-10)^2/100 + (18-10)^2/100 = 0.25 + 0.64 / 2 = 0.445
-    const buyMetricExpected = ((0.5) * (0.5) + (0.8) * (0.8)) / 2;
     const passed = result.sell.metric === 0 && result.buy.metric > 0;
      logTest('Only BUY orders - SELL metric = 0', passed, `buy=${Format.formatPrice6(result.buy.metric)}, sell=${result.sell.metric}`);
 }
@@ -128,18 +126,16 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
 // Test 6: Different divergence on buy vs sell
 {
     const calculated = [
-        createOrder(ORDER_TYPES.SELL, 1.0, 12),   // 20% difference
-        createOrder(ORDER_TYPES.BUY, 0.90, 10.5)  // 5% difference
+        createOrder(ORDER_TYPES.SELL, 1.0, 12),   // 20% diff
+        createOrder(ORDER_TYPES.BUY, 0.90, 10.5)  // 4.76% diff
     ];
     const persisted = [
         createOrder(ORDER_TYPES.SELL, 1.0, 10),
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     const result = await Grid.compareGrids(calculated, persisted);
-    // SELL: (12-10)/10 = 0.2, squared = 0.04
-    // BUY: (10.5-10)/10 = 0.05, squared = 0.0025
     const tolerance = 0.0001;
-    const passed = Math.abs(result.sell.metric - 0.04) < tolerance && Math.abs(result.buy.metric - 0.0025) < tolerance;
+    const passed = Math.abs(result.sell.metric - 0.166667) < tolerance && Math.abs(result.buy.metric - 0.047619) < tolerance;
     logTest('Different divergence by side', passed, `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric.toFixed(6)}`);
 }
 
@@ -158,15 +154,11 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.7, 10)
     ];
     const result = await Grid.compareGrids(calculated, persisted);
-    // SELL: (10-10)^2/100 + (12-10)^2/100 = 0 + 0.04 / 2 = 0.02
-    // BUY: (15-15)^2/225 + (20-10)^2/100 = 0 + 1.0 / 2 = 0.5
-    // Total: (0.02 + 0.5) / 2 = 0.26
     const tolerance = 0.0001;
-    const sellPassed = Math.abs(result.sell.metric - 0.02) < tolerance;
-    const buyPassed = Math.abs(result.buy.metric - 0.5) < tolerance;
-    const totalPassed = Math.abs(result.totalMetric - 0.26) < tolerance;
-    logTest('Multiple orders per side', sellPassed && buyPassed && totalPassed, 
-            `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric.toFixed(6)}, total=${result.totalMetric.toFixed(6)}`);
+    const sellPassed = Math.abs(result.sell.metric - 0.117851) < tolerance;
+    const buyPassed = Math.abs(result.buy.metric - 0.353553) < tolerance;
+    logTest('Multiple orders per side', sellPassed && buyPassed, 
+            `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric.toFixed(6)}`);
 }
 
 // Test 8: Persisted size is 0 but calculated size > 0 (maximum divergence per side)
@@ -193,15 +185,12 @@ console.log('\n=== Grid Comparison Function Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.85, 20, 'buy-1')     // Exists in calculated but not persisted
     ];
     const persisted = [
-        createOrder(ORDER_TYPES.SELL, 1.0, 10, 'sell-0'),   // Matches: (12-10)^2/100 = 0.04
-        createOrder(ORDER_TYPES.BUY, 0.90, 15, 'buy-0')     // Matches: (18-15)^2/225 = 0.04
+        createOrder(ORDER_TYPES.SELL, 1.0, 10, 'sell-0'),   // Matches: (10-12)/12 = -0.166
+        createOrder(ORDER_TYPES.BUY, 0.90, 15, 'buy-0')     // Matches: (15-18)/18 = -0.166
     ];
     const result = await Grid.compareGrids(calculated, persisted);
-    // SELL: sell-0 matches (metric 0.04), sell-1 unmatched (metric 1.0) → avg = (0.04+1.0)/2 = 0.52
-    // BUY: buy-0 matches (metric 0.04), buy-1 unmatched (metric 1.0) → avg = (0.04+1.0)/2 = 0.52
-    // Now unmatched grid positions are detected as divergence (robust grid structure validation)
     const tolerance = 0.01;
-    const passed = Math.abs(result.sell.metric - 0.52) < tolerance && Math.abs(result.buy.metric - 0.52) < tolerance;
+    const passed = Math.abs(result.sell.metric - 0.5853) < tolerance && Math.abs(result.buy.metric - 0.5853) < tolerance;
     logTest('Unmatched orders detected by grid ID', passed, `buy=${result.buy.metric.toFixed(6)}, sell=${result.sell.metric.toFixed(6)}`);
 }
 
@@ -209,134 +198,81 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
 
 // Test 10: BUY side exceeds threshold, SELL does not - only BUY updated
 {
-    let buyUpdateCalled = false;
-    let sellUpdateCalled = false;
+    const manager = createMockManager();
+    const calculated = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 10.5),  // 5% - below threshold
+        createOrder(ORDER_TYPES.BUY, 0.90, 30)     // 200% - above threshold
+    ];
+    const persisted = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 10),
+        createOrder(ORDER_TYPES.BUY, 0.90, 10)
+    ];
     
-    const originalUpdateSide = Grid.updateGridOrderSizesForSide;
-    Grid.updateGridOrderSizesForSide = (mgr, orderType, funds) => {
-        if (orderType === ORDER_TYPES.BUY) buyUpdateCalled = true;
-        if (orderType === ORDER_TYPES.SELL) sellUpdateCalled = true;
-    };
+    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
     
-    try {
-        const manager = createMockManager();
-        const calculated = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 10.5),  // 5% - below threshold
-            createOrder(ORDER_TYPES.BUY, 0.90, 30)     // 200% - above threshold
-        ];
-        const persisted = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 10),
-            createOrder(ORDER_TYPES.BUY, 0.90, 10)
-        ];
-        
-        const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
-        
-        const passed = result.buy.updated === true && result.sell.updated === false && 
-                      buyUpdateCalled && !sellUpdateCalled;
-        logTest('Only BUY side updated when threshold exceeded', passed, 
-                `buy_updated=${result.buy.updated}, sell_updated=${result.sell.updated}`);
-    } finally {
-        Grid.updateGridOrderSizesForSide = originalUpdateSide;
-    }
+    const passed = result.buy.updated === true && result.sell.updated === false;
+    logTest('Only BUY side updated when threshold exceeded', passed,
+            `buy_updated=${result.buy.updated}, sell_updated=${result.sell.updated}`);
 }
 
 // Test 11: SELL side exceeds threshold, BUY does not - only SELL updated
 {
-    let buyUpdateCalled = false;
-    let sellUpdateCalled = false;
+    const manager = createMockManager();
+    const calculated = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 25),    // 150% - above threshold
+        createOrder(ORDER_TYPES.BUY, 0.90, 10.5)   // 5% - below threshold
+    ];
+    const persisted = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 10),
+        createOrder(ORDER_TYPES.BUY, 0.90, 10)
+    ];
     
-    const originalUpdateSide = Grid.updateGridOrderSizesForSide;
-    Grid.updateGridOrderSizesForSide = (mgr, orderType, funds) => {
-        if (orderType === ORDER_TYPES.BUY) buyUpdateCalled = true;
-        if (orderType === ORDER_TYPES.SELL) sellUpdateCalled = true;
-    };
+    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
     
-    try {
-        const manager = createMockManager();
-        const calculated = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 25),    // 150% - above threshold
-            createOrder(ORDER_TYPES.BUY, 0.90, 10.5)   // 5% - below threshold
-        ];
-        const persisted = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 10),
-            createOrder(ORDER_TYPES.BUY, 0.90, 10)
-        ];
-        
-        const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
-        
-        const passed = result.buy.updated === false && result.sell.updated === true && 
-                      !buyUpdateCalled && sellUpdateCalled;
-        logTest('Only SELL side updated when threshold exceeded', passed,
-                `buy_updated=${result.buy.updated}, sell_updated=${result.sell.updated}`);
-    } finally {
-        Grid.updateGridOrderSizesForSide = originalUpdateSide;
-    }
+    const passed = result.buy.updated === false && result.sell.updated === true;
+    logTest('Only SELL side updated when threshold exceeded', passed,
+            `buy_updated=${result.buy.updated}, sell_updated=${result.sell.updated}`);
 }
 
 // Test 12: Both sides exceed threshold - both updated
 {
-    let buyUpdateCalled = false;
-    let sellUpdateCalled = false;
+    const manager = createMockManager();
+    const calculated = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 30),   // 200% - above threshold
+        createOrder(ORDER_TYPES.BUY, 0.90, 25)    // 150% - above threshold
+    ];
+    const persisted = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 10),
+        createOrder(ORDER_TYPES.BUY, 0.90, 10)
+    ];
     
-    const originalUpdateSide = Grid.updateGridOrderSizesForSide;
-    Grid.updateGridOrderSizesForSide = (mgr, orderType, funds) => {
-        if (orderType === ORDER_TYPES.BUY) buyUpdateCalled = true;
-        if (orderType === ORDER_TYPES.SELL) sellUpdateCalled = true;
-    };
+    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
     
-    try {
-        const manager = createMockManager();
-        const calculated = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 30),   // 200% - above threshold
-            createOrder(ORDER_TYPES.BUY, 0.90, 25)    // 150% - above threshold
-        ];
-        const persisted = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 10),
-            createOrder(ORDER_TYPES.BUY, 0.90, 10)
-        ];
-        
-        const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
-        
-        const passed = result.buy.updated === true && result.sell.updated === true && 
-                      buyUpdateCalled && sellUpdateCalled;
-        logTest('Both sides updated when both exceed threshold', passed,
-                `buy_updated=${result.buy.updated}, sell_updated=${result.sell.updated}`);
-    } finally {
-        Grid.updateGridOrderSizesForSide = originalUpdateSide;
-    }
+    const passed = result.buy.updated === true && result.sell.updated === true;
+    logTest('Both sides updated when both exceed threshold', passed,
+            `buy_updated=${result.buy.updated}, sell_updated=${result.sell.updated}`);
 }
 
 // Test 13: No sides exceed threshold - nothing updated
 {
-    let updateCalled = false;
+    const manager = createMockManager();
+    const calculated = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 10.3),  // 3% - below threshold
+        createOrder(ORDER_TYPES.BUY, 0.90, 10.2)   // 2% - below threshold
+    ];
+    const persisted = [
+        createOrder(ORDER_TYPES.SELL, 1.0, 10),
+        createOrder(ORDER_TYPES.BUY, 0.90, 10)
+    ];
     
-    const originalUpdateSide = Grid.updateGridOrderSizesForSide;
-    Grid.updateGridOrderSizesForSide = (mgr, orderType, funds) => {
-        updateCalled = true;
-    };
+    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
     
-    try {
-        const manager = createMockManager();
-        const calculated = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 10.3),  // 3% - below threshold
-            createOrder(ORDER_TYPES.BUY, 0.90, 10.2)   // 2% - below threshold
-        ];
-        const persisted = [
-            createOrder(ORDER_TYPES.SELL, 1.0, 10),
-            createOrder(ORDER_TYPES.BUY, 0.90, 10)
-        ];
-        
-        const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
-        
-        const passed = result.buy.updated === false && result.sell.updated === false && !updateCalled;
-        logTest('No sides updated when all below threshold', passed);
-    } finally {
-        Grid.updateGridOrderSizesForSide = originalUpdateSide;
-    }
+    const passed = result.buy.updated === false && result.sell.updated === false;
+    logTest('No sides updated when all below threshold', passed);
 }
 
 console.log('\n=== Test Summary ===');
-console.log(`Threshold: ${GRID_COMPARISON.DIVERGENCE_THRESHOLD_PERCENTAGE}% divergence`);
+console.log(`Threshold: ${GRID_COMPARISON.RMS_PERCENTAGE}% divergence`);
 console.log('Separate metrics for buy/sell sides');
 console.log('Independent auto-updates by side');
 

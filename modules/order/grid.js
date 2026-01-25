@@ -659,34 +659,47 @@ class Grid {
         const ctx = Grid._getSizingContext(manager, sideName);
         if (!ctx) return;
 
-        const orders = Array.from(manager.orders.values())
+        // Get ALL slots for this side, sorted for calculateRotationOrderSizes
+        // SELL: sorted ASC (Market to Edge)
+        // BUY: sorted ASC (Edge to Market)
+        const allSideSlots = Array.from(manager.orders.values())
             .filter(o => o.type === orderType)
-            .sort((a, b) => a.price - b.price); // Must be sorted ASC for calculateRotationOrderSizes
-        if (orders.length === 0) return;
+            .sort((a, b) => a.price - b.price);
 
+        if (allSideSlots.length === 0) return;
+
+        // Calculate geometric sizes for the ENTIRE rail
         const newSizes = calculateRotationOrderSizes(
             ctx.budget,
             0,
-            orders.length,
+            allSideSlots.length,
             orderType,
             manager.config,
             0,
             ctx.precision
         );
+
         manager.pauseRecalcLogging();
         try {
-            Grid._updateOrdersForSide(manager, orderType, newSizes, orders);
+            // Apply new sizes to all slots on the side
+            allSideSlots.forEach((slot, i) => {
+                const newSize = newSizes[i] || 0;
+                // Update size but preserve existing state and orderId
+                if (slot.size === undefined || Math.abs(slot.size - newSize) > 1e-8) {
+                    manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', true, 0);
+                }
+            });
+
             manager.recalculateFunds();
         } finally {
             manager.resumeRecalcLogging();
         }
 
-        // Calculate remaining cache for this side only (independent per side)
+        // Calculate remaining cache for this side only
         const totalInputInt = floatToBlockchainInt(ctx.budget, ctx.precision);
         let totalAllocatedInt = 0;
         newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, ctx.precision));
 
-        // RC-1: Update cacheFunds atomically to prevent TOCTOU races
         const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, ctx.precision);
         await Grid._updateCacheFundsAtomic(manager, sideName, newCacheValue);
     }
@@ -839,9 +852,8 @@ class Grid {
 
         return {
             buy: { metric: buyMetric, updated: buyUpdated },
-            sell: { metric: sellMetric, updated: sellUpdated }
-            // FIX: Removed unused totalMetric field - no caller depends on it
-            // If re-adding for monitoring/alerting, document intended use case
+            sell: { metric: sellMetric, updated: sellUpdated },
+            totalMetric: (buyMetric + sellMetric) / 2
         };
     }
 
@@ -904,19 +916,22 @@ class Grid {
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
         const executeSpreadCheck = () => {
             const currentSpread = Grid.calculateCurrentSpread(manager);
-            // Base target widens spread beyond nominal value to account for order density and price movement
-            const baseTarget = manager.config.targetSpreadPercent + (manager.config.incrementPercent * GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER);
-            // If double sides exist (merged dust awaiting rotation), add extra spread tolerance per side to prevent over-correction
-            const doubledSideCount = (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
-            const targetSpread = baseTarget + (doubledSideCount * manager.config.incrementPercent);
+            const step = 1 + (manager.config.incrementPercent / 100);
+
+            // Nominal spread is what the grid was built for (targetSpreadCount)
+            const nominalSpread = (Math.pow(step, manager.targetSpreadCount || 0) - 1) * 100;
+            
+            // Tolerance allows some "floating" before correction (widening multiplier + doubled state)
+            const toleranceSteps = (GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER || 1.5) + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
 
             const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
             const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
 
-            manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount);
-            if (!manager.outOfSpread) return false;
+            manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
+            if (manager.outOfSpread === 0) return false;
 
-            manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)}), correcting...`, 'warn');
+            const limitSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + toleranceSteps) - 1) * 100;
+            manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
             const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
             if (!decision.side) return false;
@@ -1107,35 +1122,34 @@ class Grid {
             .filter(o => o.state === ORDER_STATES.VIRTUAL && !o.orderId)
             .sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
-        // Find the slot closest to market that isn't currently active
-        const candidate = candidateSlots[0];
+        // Process up to manager.outOfSpread slots (at least 1 if we're here)
+        const maxSlots = Math.max(1, manager.outOfSpread || 1);
+        const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
 
-        if (candidate) {
+        for (let i = 0; i < Math.min(maxSlots, candidateSlots.length); i++) {
+            const candidate = candidateSlots[i];
             const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType, snap);
-            const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-            // Include available funds in correction check
-            // FIX: Use optional chaining for consistent null safety
             const availableFund = (manager.funds?.available?.[sideName] || 0);
 
             if (size && size <= availableFund) {
-                // Check if available funds would create a dust-sized order (below dust threshold of ideal size)
                 const dustThresholdPercent = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
                 const orderSizeRatio = (availableFund / size) * 100;
 
                 if (orderSizeRatio < dustThresholdPercent) {
                     manager.logger?.log?.(`Spread correction order skipped: available funds would create dust order (${Format.formatPercent2(orderSizeRatio)}% of ideal size ${Format.formatAmount8(size)}, below ${dustThresholdPercent}% threshold)`, 'warn');
+                    break; // Stop if we hit a dust limit
                 } else {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
                     ordersToPlace.push(activated);
-                    // FIX: Removed unnecessary pause/resume for single update
-                    // Single _updateOrder calls automatically recalculate funds (no batching needed)
-                    // Additionally, pauseFundRecalc inside the async lock creates unnecessary overhead
                     manager._updateOrder(activated, 'spread-correct', false, 0);
+                    // availableFund will be updated on next iteration via recalculateFunds inside _updateOrder
                 }
             } else if (size) {
                 manager.logger?.log?.(`Spread correction order skipped: calculated size (${Format.formatAmount8(size)}) exceeds available funds (${Format.formatAmount8(availableFund)})`, 'warn');
+                break; // Stop if we run out of funds
             }
         }
+
         return { ordersToPlace, partialMoves: [] };
     }
 

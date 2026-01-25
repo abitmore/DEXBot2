@@ -1631,28 +1631,90 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             return;
         }
 
+        // STEP A: BOUNDARY SYNC (If out of spread)
+        // If the grid is lagging behind the market, shift the boundary to center the spread
+        if (manager.outOfSpread > 0) {
+            const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
+            const marketPrice = manager.config.startPrice;
+            const gapSlots = (typeof manager.calculateGapSlots === 'function') 
+                ? manager.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent)
+                : (manager.targetSpreadCount || 2);
+
+            const newBoundary = calculateIdealBoundary(allSlots, marketPrice, gapSlots);
+            
+            if (newBoundary !== manager.boundaryIdx) {
+                manager.logger?.log?.(`[DIVERGENCE] Syncing boundary to market price: ${manager.boundaryIdx} -> ${newBoundary}`, 'info');
+                manager.boundaryIdx = newBoundary;
+                assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES);
+            }
+        }
+
         // Process each divergent side independently
         for (const orderType of manager._gridSidesUpdated) {
-            const ordersOnSide = Array.from(manager.orders.values())
+            const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+            
+            // 1. Get current on-chain orders for this side
+            const currentActiveOrders = Array.from(manager.orders.values())
                 .filter(o => o.type === orderType && o.orderId && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL));
 
-            const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+            // 2. Identify all slots for this side, sorted by market distance
+            const allSideSlots = Array.from(manager.orders.values())
+                .filter(o => o.type === orderType)
+                .sort((a, b) => sideName === 'buy' ? b.price - a.price : a.price - b.price); // Closest to market first
 
-            for (const order of ordersOnSide) {
-                // Update only this divergent side
-                // The caller (updateGridFromBlockchainSnapshot) already recalculated sizes for this side
-                manager.ordersNeedingPriceCorrection.push({
-                    gridOrder: { ...order },
-                    chainOrderId: order.orderId,
-                    rawChainOrder: null,
-                    expectedPrice: order.price,
-                    actualPrice: order.price,
-                    expectedSize: order.size,
-                    size: order.size,
-                    type: order.type,
-                    sideUpdated: sideName,
-                    sizeChanged: true
-                });
+            // 3. Determine the Desired Active Window (Target Count)
+            const targetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName])) 
+                ? Math.max(1, manager.config.activeOrders[sideName]) 
+                : currentActiveOrders.length;
+            
+            const desiredSlots = allSideSlots.slice(0, targetCount);
+
+            // 4. Match existing orders to desired slots (Rotation Pairing)
+            // Sort existing active orders to match desiredSlots orientation (Closest to Market first)
+            const sortedActive = currentActiveOrders.sort((a, b) => sideName === 'buy' ? b.price - a.price : a.price - b.price);
+
+            for (let i = 0; i < Math.max(sortedActive.length, desiredSlots.length); i++) {
+                const active = sortedActive[i];
+                const slot = desiredSlots[i];
+
+                if (active && slot) {
+                    // CASE 1: MATCH - Update existing order to match target slot (Price and/or Size)
+                    manager.ordersNeedingPriceCorrection.push({
+                        gridOrder: { ...slot },
+                        chainOrderId: active.orderId,
+                        oldOrder: { ...active },
+                        expectedPrice: slot.price,
+                        actualPrice: slot.price,
+                        expectedSize: slot.size,
+                        size: slot.size,
+                        type: slot.type,
+                        sideUpdated: sideName,
+                        sizeChanged: true,
+                        newGridId: (active.id !== slot.id) ? slot.id : null // Only set newGridId if it's a structural rotation
+                    });
+                } else if (active) {
+                    // CASE 2: SURPLUS - Order is outside the target window and no slot left to fill
+                    manager.ordersNeedingPriceCorrection.push({
+                        gridOrder: { ...active },
+                        chainOrderId: active.orderId,
+                        isSurplus: true,
+                        sideUpdated: sideName
+                    });
+                } else if (slot) {
+                    // CASE 3: SHORTAGE - Target window needs more orders than we have active
+                    manager.ordersNeedingPriceCorrection.push({
+                        gridOrder: { ...slot },
+                        chainOrderId: null,
+                        expectedPrice: slot.price,
+                        actualPrice: slot.price,
+                        expectedSize: slot.size,
+                        size: slot.size,
+                        type: slot.type,
+                        sideUpdated: sideName,
+                        sizeChanged: true,
+                        isNewPlacement: true
+                    });
+                }
             }
         }
 
@@ -1670,19 +1732,39 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 );
             });
 
-            // Build rotation objects for size corrections
-            const ordersToRotate = manager.ordersNeedingPriceCorrection.map(correction => ({
-                oldOrder: { orderId: correction.chainOrderId },
-                newPrice: correction.expectedPrice,
-                newSize: correction.size,
-                type: correction.type
-            }));
+            // Build rotation, placement, and cancellation objects
+            const ordersToRotate = manager.ordersNeedingPriceCorrection
+                .filter(c => !c.isNewPlacement && !c.isSurplus)
+                .map(correction => ({
+                    oldOrder: { orderId: correction.chainOrderId },
+                    newPrice: correction.expectedPrice,
+                    newSize: correction.size,
+                    type: correction.type,
+                    newGridId: correction.newGridId
+                }));
+
+            const ordersToPlace = manager.ordersNeedingPriceCorrection
+                .filter(c => c.isNewPlacement)
+                .map(correction => ({
+                    id: correction.gridOrder.id,
+                    price: correction.expectedPrice,
+                    size: correction.size,
+                    type: correction.type
+                }));
+
+            const ordersToCancel = manager.ordersNeedingPriceCorrection
+                .filter(c => c.isSurplus)
+                .map(correction => ({
+                    orderId: correction.chainOrderId,
+                    id: correction.gridOrder.id
+                }));
 
             // Execute a batch correction for divergent side orders only
             try {
                 const result = await updateOrdersOnChainBatchFn({
-                    ordersToPlace: [],
+                    ordersToPlace: ordersToPlace,
                     ordersToRotate: ordersToRotate,
+                    ordersToCancel: ordersToCancel,
                     partialMoves: []
                 });
 
@@ -1692,6 +1774,13 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 // CRITICAL: Only clear flags if operations were actually executed
                 // If all operations were rejected (result.executed === false), keep flags
                 if (result && result.executed) {
+                    // Reset flags after successful structural update
+                    manager.outOfSpread = 0;
+                    for (const type of manager._gridSidesUpdated) {
+                        if (type === ORDER_TYPES.BUY) manager.buySideIsDoubled = false;
+                        if (type === ORDER_TYPES.SELL) manager.sellSideIsDoubled = false;
+                    }
+
                     manager._gridSidesUpdated.clear();
                     // Re-persist grid after corrections are applied to keep persisted state in sync
                     await persistGridSnapshot(manager, accountOrders, botKey);
@@ -2101,6 +2190,54 @@ function convertToSpreadPlaceholder(order) {
     return { ...order, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null };
 }
 
+/**
+ * Calculate the ideal boundary index to center the spread gap around a reference price.
+ * 
+ * @param {Array} allSlots - Array of all grid slots
+ * @param {number} referencePrice - The market price to center around
+ * @param {number} gapSlots - The number of slots in the spread zone
+ * @returns {number} The new boundary index (last BUY slot)
+ */
+function calculateIdealBoundary(allSlots, referencePrice, gapSlots) {
+    if (!allSlots || allSlots.length === 0) return -1;
+
+    // Find the first slot at or above referencePrice (splitIdx)
+    let splitIdx = allSlots.findIndex(s => s.price >= referencePrice);
+    if (splitIdx === -1) splitIdx = allSlots.length;
+
+    // Position boundary so spread gap is centered around referencePrice
+    const buySpread = Math.floor(gapSlots / 2);
+    const newBoundary = splitIdx - buySpread - 1;
+
+    // Clamp to valid range
+    return Math.max(0, Math.min(allSlots.length - 1, newBoundary));
+}
+
+/**
+ * Assign BUY, SELL, or SPREAD roles to grid slots based on a boundary index.
+ * 
+ * @param {Array} allSlots - Array of slots to update
+ * @param {number} boundaryIdx - The boundary index (last BUY slot)
+ * @param {number} gapSlots - The number of slots in the spread zone
+ * @param {Object} ORDER_TYPES - The ORDER_TYPES constant
+ * @returns {Array} The updated slots
+ */
+function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES) {
+    const buyEndIdx = boundaryIdx;
+    const sellStartIdx = boundaryIdx + gapSlots + 1;
+
+    allSlots.forEach((slot, i) => {
+        if (i <= buyEndIdx) {
+            slot.type = ORDER_TYPES.BUY;
+        } else if (i >= sellStartIdx) {
+            slot.type = ORDER_TYPES.SELL;
+        } else {
+            slot.type = ORDER_TYPES.SPREAD;
+        }
+    });
+    return allSlots;
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // SECTION 10: FILTERING & ANALYSIS (PART 2 - Validation Helpers)
 // ════════════════════════════════════════════════════════════════════════════════
@@ -2112,12 +2249,21 @@ function convertToSpreadPlaceholder(order) {
   * @param {number} sellCount - Number of SELL orders
   * @returns {boolean} True if spread is too wide and should be flagged
   */
-function shouldFlagOutOfSpread(currentSpread, targetSpread, buyCount, sellCount) {
-    // If one side is completely missing, the grid is structurally incomplete and needs correction
-    if (buyCount === 0 || sellCount === 0) return true;
+function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, incrementPercent = 0.5) {
+    // CRITICAL: If either side is empty, we ARE out of spread (infinite spread)
+    // Return at least 1 slot to start filling the side
+    if (buyCount === 0 || sellCount === 0) return 1;
 
-    // Otherwise, check if current spread exceeds target (which includes widening tolerance)
-    return currentSpread > targetSpread;
+    const step = 1 + (incrementPercent / 100);
+    const currentSteps = Math.log(1 + (currentSpread / 100)) / Math.log(step);
+    const nominalSteps = Math.log(1 + (nominalSpread / 100)) / Math.log(step);
+    
+    // Check if we are outside the tolerated limit (nominal + tolerance)
+    const limitSteps = nominalSteps + toleranceSteps;
+    if (currentSteps <= limitSteps) return 0;
+
+    // Return the number of extra slots needed to bridge the gap back to the TOLERANCE LIMIT
+    return Math.max(1, Math.ceil(currentSteps - limitSteps));
 }
 
 /**
@@ -2308,6 +2454,10 @@ module.exports = {
 
     // Formatting
     convertToSpreadPlaceholder,
+
+    // Logic helpers
+    calculateIdealBoundary,
+    assignGridRoles,
 
     // Validation helpers
     hasValidAccountTotals,
