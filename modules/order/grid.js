@@ -1120,25 +1120,32 @@ class Grid {
 
         for (let i = 0; i < Math.min(maxSlots, candidateSlots.length); i++) {
             const candidate = candidateSlots[i];
-            const size = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType, snap);
+            const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType, snap);
             const availableFund = (manager.funds?.available?.[sideName] || 0);
 
-            if (size && size <= availableFund) {
-                const dustThresholdPercent = GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE;
-                const orderSizeRatio = (availableFund / size) * 100;
+            if (idealSize && idealSize > 0) {
+                // Scale down to available funds if necessary
+                const size = Math.min(idealSize, availableFund);
+                
+                // Calculate minimum healthy size (double the standard dust threshold)
+                const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
+                const minHealthySize = idealSize * dustThresholdFactor * 2;
 
-                if (orderSizeRatio < dustThresholdPercent) {
-                    manager.logger?.log?.(`Spread correction order skipped: available funds would create dust order (${Format.formatPercent2(orderSizeRatio)}% of ideal size ${Format.formatAmount8(size)}, below ${dustThresholdPercent}% threshold)`, 'warn');
-                    break; // Stop if we hit a dust limit
-                } else {
+                if (size >= minHealthySize && size > 0) {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
+                    
+                    // Log if we are scaling down
+                    if (size < idealSize) {
+                        manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatAmount8(idealSize)} -> available ${Format.formatAmount8(size)} (ratio: ${Format.formatPercent2((size/idealSize)*100)})`, 'info');
+                    }
+
                     ordersToPlace.push(activated);
                     manager._updateOrder(activated, 'spread-correct', false, 0);
                     // availableFund will be updated on next iteration via recalculateFunds inside _updateOrder
+                } else {
+                    manager.logger?.log?.(`Spread correction order skipped: available funds ${Format.formatAmount8(availableFund)} below double-dust threshold ${Format.formatAmount8(minHealthySize)} (ideal: ${Format.formatAmount8(idealSize)})`, 'warn');
+                    break; // Stop if we run out of usable funds
                 }
-            } else if (size) {
-                manager.logger?.log?.(`Spread correction order skipped: calculated size (${Format.formatAmount8(size)}) exceeds available funds (${Format.formatAmount8(availableFund)})`, 'warn');
-                break; // Stop if we run out of funds
             }
         }
 
