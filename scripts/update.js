@@ -40,14 +40,21 @@ try {
     // Step 2: Fetch and Check for updates
     log('Checking for updates...');
     
+    let currentBranch;
+    try {
+        currentBranch = execSync('git rev-parse --abbrev-ref HEAD').toString().trim();
+    } catch (e) {
+        currentBranch = 'unknown';
+    }
+
     // Handle Branch policy for detection
     if (branch === 'auto') {
-        try {
-            branch = execSync('git rev-parse --abbrev-ref HEAD').toString().trim();
-            log(`Detected current branch: ${branch}`);
-        } catch (e) {
+        if (currentBranch === 'HEAD' || currentBranch === 'unknown') {
             branch = 'main';
-            log('Warning: Could not detect current branch, defaulting to main.');
+            log(`Could not detect current branch, defaulting to: ${branch}`);
+        } else {
+            branch = currentBranch;
+            log(`Detected current branch: ${branch}`);
         }
     }
 
@@ -68,7 +75,14 @@ try {
     const localHash = execSync('git rev-parse HEAD').toString().trim();
     const remoteHash = execSync(`git rev-parse origin/${branch}`).toString().trim();
 
+    // If hashes match, the code is identical. 
+    // We only need to switch the branch name if it differs, then exit without reloading.
     if (localHash === remoteHash) {
+        if (currentBranch !== branch) {
+            log(`Aligning branch reference: ${currentBranch} -> ${branch} (code is identical).`);
+            run(`git checkout ${branch}`);
+            log('DEXBot2 is now tracking the correct branch.');
+        }
         log('DEXBot2 is already up to date.');
         process.exit(0);
     }
@@ -90,7 +104,11 @@ try {
     run('git reset --hard');
     run('git clean -fd');
 
-    // Step 4: Pull changes
+    // Step 4: Pull changes / Switch branch
+    if (currentBranch !== branch) {
+        log(`Switching to branch: ${branch}...`);
+        run(`git checkout ${branch}`);
+    }
     log(`Pulling latest changes from ${repoUrl} (branch: ${branch})...`);
     run(`git pull --rebase origin ${branch}`);
 
