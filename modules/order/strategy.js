@@ -834,9 +834,9 @@ class StrategyEngine {
             }
 
             mgr.recalculateFunds();
-            await mgr.persistGrid();
 
             // Layer 2: Stabilization gate - verify funds before rebalancing (prevents cascade corruption)
+            // CRITICAL: persistGrid() is called AFTER this gate passes to avoid persisting corrupted state
             let driftCheck = mgr.checkFundDriftAfterFills();
             if (!driftCheck.isValid) {
                 mgr.logger.log(`[STABILIZATION-GATE] Fund invariant violated after fills: ${driftCheck.reason}. Attempting self-healing recovery...`, 'warn');
@@ -869,6 +869,10 @@ class StrategyEngine {
                     return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
                 }
             }
+
+            // Persist grid state only AFTER Layer 2 gate passes (or self-healing succeeds)
+            // This ensures corrupted state is never written to disk
+            await mgr.persistGrid();
 
             let shouldRebalance = (fillsToSettle > 0);
 
