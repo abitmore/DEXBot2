@@ -701,8 +701,12 @@ manager.resumeFundRecalc();
 
 ### 3. **Cache Blockchain Calls**
 ```javascript
-// ✅ GOOD - Uses fee cache
-const fees = getAssetFees('BTS', 1);
+// ✅ GOOD - Uses fee cache (no amount = returns fee info object)
+const feeInfo = getAssetFees('BTS');
+console.log(feeInfo.createFee, feeInfo.updateFee);
+
+// ✅ GOOD - With amount = returns net proceeds (number)
+const netProceeds = getAssetFees('IOB.XRP', 100);
 
 // ❌ BAD - Fetches every time
 const fees = await BitShares.db.get_global_properties();

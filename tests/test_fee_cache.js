@@ -57,11 +57,12 @@ async function main() {
 
         for (const assetSymbol of assets) {
             try {
-                // Test getAssetFees to verify fees are cached (with minimal amount)
-                const testFee = getAssetFees(assetSymbol, assetSymbol === 'BTS' ? 1 : 0.01);
+                // Test getAssetFees to verify fees are cached
+                // For BTS: pass null to get fee info object; for others: pass amount to get net proceeds
+                const testFee = getAssetFees(assetSymbol, assetSymbol === 'BTS' ? null : 0.01);
                 console.log(`\n${assetSymbol}:`);
                 if (assetSymbol === 'BTS') {
-                    console.log(`  ✓ Fees cached (test fee for 1 BTS: ${Format.formatAmount8(testFee.total)} BTS)`);
+                    console.log(`  ✓ Fees cached (createFee: ${Format.formatAmount8(testFee.createFee)} BTS)`);
                 } else {
                     console.log(`  ✓ Fees cached (test fee: ${Format.formatAmount8(testFee)} ${assetSymbol})`);
                 }
@@ -77,8 +78,8 @@ async function main() {
 
          // Test BTS (blockchain fees)
          console.log('\n--- BTS ---');
-         const btsFees = getAssetFees('BTS', 1000);
-         console.log(`getAssetFees('BTS', 1000):`);
+         const btsFees = getAssetFees('BTS');
+         console.log(`getAssetFees('BTS'):`);
          console.log(`  total: ${Format.formatAmount8(btsFees.total)} BTS`);
          console.log(`  createFee: ${Format.formatAmount8(btsFees.createFee)} BTS`);
 

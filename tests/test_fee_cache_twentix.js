@@ -51,8 +51,8 @@ async function main() {
         console.log('BTS BLOCKCHAIN MAKER FEE');
         console.log('-'.repeat(80));
 
-        const btsFees = getAssetFees('BTS', 1000);
-        console.log(`\ngetAssetFees('BTS', 1000):`);
+        const btsFees = getAssetFees('BTS');
+        console.log(`\ngetAssetFees('BTS'):`);
         console.log(`  total: ${btsFees.total.toFixed(8)} BTS`);
         console.log(`  createFee: ${btsFees.createFee.toFixed(8)} BTS`);
 

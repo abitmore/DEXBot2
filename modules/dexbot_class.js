@@ -688,7 +688,7 @@ class DEXBot {
         }
 
         const { assetA, assetB } = this.manager.assets;
-        const btsFeeData = OrderUtils.getAssetFees('BTS', 1);
+        const btsFeeData = OrderUtils.getAssetFees('BTS');
 
         const createAndSyncOrder = async (order) => {
             this.manager.logger.log(`Placing ${order.type} order: size=${order.size}, price=${order.price}`, 'debug');
@@ -1191,7 +1191,7 @@ class DEXBot {
     async _processBatchResults(result, opContexts, ordersToPlace, ordersToRotate) {
         const results = (result && result[0] && result[0].trx && result[0].trx.operation_results) || [];
         const { getAssetFees } = require('./order/utils');
-        const btsFeeData = getAssetFees('BTS', 1);
+        const btsFeeData = getAssetFees('BTS');
         let hadRotation = false;
         let updateOperationCount = 0;
 
@@ -1323,13 +1323,12 @@ class DEXBot {
      */
     async _performGridChecks(isBootstrap = false, options = {}) {
         const { skipFillLock = false } = options;
+        const phase = isBootstrap ? 'startup' : 'periodic';
         try {
             // Only run grid checks if orders exist
             if (!this.manager || !this.manager.orders || this.manager.orders.size === 0) {
                 return;
             }
-
-            const phase = isBootstrap ? 'startup' : 'periodic';
 
             // 1. Check spread condition first (updates manager.outOfSpread)
             // This requires fill processing lock for safety
@@ -2040,15 +2039,13 @@ class DEXBot {
      * @private
      */
     /**
-     * Perform periodic grid validation checks.
-     * @private
-     */
-    /**
      * Perform periodic grid health and fund balance checks.
+     * Called from within _setupBlockchainFetchInterval which already holds _fillProcessingLock,
+     * so we pass skipFillLock: true to prevent deadlock.
      * @private
      */
     async _performPeriodicGridChecks() {
-        await this._performGridChecks(false);
+        await this._performGridChecks(false, { skipFillLock: true });
     }
 
     /**

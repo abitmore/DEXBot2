@@ -92,7 +92,7 @@ async function testFeeAccounting() {
     // 2. Simulate execution of planned rotations (this is where updateFees are deducted)
     if (result && result.ordersToRotate) {
         for (const rotation of result.ordersToRotate) {
-            const btsFeeData = utils.getAssetFees('BTS', 1);
+            const btsFeeData = utils.getAssetFees('BTS');
             await manager.synchronizeWithChain({
                 gridOrderId: rotation.newGridId,
                 chainOrderId: rotation.oldOrder.orderId,

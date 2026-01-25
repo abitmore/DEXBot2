@@ -265,7 +265,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
             const totalTargetOrders = targetBuy + targetSell;
 
             if (totalTargetOrders > 0) {
-                const btsFeeData = getAssetFees('BTS', 1);
+                const btsFeeData = getAssetFees('BTS');
                 btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
             }
         } catch (err) {
@@ -1439,7 +1439,7 @@ function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier =
 
     try {
         if (totalOrders > 0) {
-            const btsFeeData = getAssetFees('BTS', 1);
+            const btsFeeData = getAssetFees('BTS');
             return btsFeeData.createFee * totalOrders * feeMultiplier;
         }
     } catch (err) {

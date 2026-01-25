@@ -818,8 +818,8 @@ class StrategyEngine {
                 // Apply correct blockchain fees based on maker vs taker fills
                 // Maker fills: get 90% refund (pay makerNetFee = 10% of creation fee)
                 // Taker fills: no refund (pay full creation fee)
-                const btsFeeDataMaker = getAssetFees("BTS", 0, true);
-                const btsFeeDataTaker = getAssetFees("BTS", 0, false);
+                const btsFeeDataMaker = getAssetFees("BTS", null, true);
+                const btsFeeDataTaker = getAssetFees("BTS", null, false);
                 const makerFeesOwed = makerFillCount * btsFeeDataMaker.netFee;
                 const takerFeesOwed = takerFillCount * btsFeeDataTaker.netFee;
                 mgr.funds.btsFeesOwed += makerFeesOwed + takerFeesOwed;
