@@ -454,6 +454,39 @@ fetchAccountBalancesAndSetTotals()
 
 ---
 
+## Managing Bot Configuration
+
+### The `bots.json` Source of Truth
+
+The bot's operational parameters are defined in `profiles/bots.json`. While most settings are loaded at startup, the system is designed to pick up manual changes to critical valuation parameters during its runtime.
+
+#### Handling `startPrice`
+
+The `startPrice` is the anchor for valuation (calculating the relative value of Asset A and Asset B). It can be configured in three ways:
+
+1.  **Fixed Numeric Price** (e.g., `105.5`):
+    *   The bot treats this as a **fixed anchor**.
+    *   Automatic price derivation from the market is **disabled**.
+    *   Used as the base for all grid math during a **Grid Reset**.
+
+2.  **"pool"**:
+    *   The bot fetches the current BitShares Liquidity Pool price.
+    *   Updated periodically every 4 hours.
+
+3.  **"market"**:
+    *   The bot derives the price from the current orderbook.
+    *   Updated periodically every 4 hours.
+
+### Runtime Updates (The 4h Refresh)
+
+The bot performs a **Periodic Configuration Refresh** (every 4 hours by default).
+
+*   **Valuation Update**: If you change the `startPrice` in `bots.json` while the bot is running, it will pick up the new value at the next refresh.
+*   **Operational Stability**: Updating the `startPrice` in memory **does not** move your orders on the blockchain. The bot remains "fund-driven" during normal operation.
+*   **Applying Changes**: To force the bot to move orders to a new `startPrice` immediately, you must use the **File Trigger** (`recalculate.{botKey}.trigger`) to perform a full grid reset.
+
+---
+
 ## How to Add New Features
 
 ### Example: Adding a New Order Type

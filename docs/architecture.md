@@ -452,6 +452,30 @@ sequenceDiagram
 
 ---
 
+## Dynamic Configuration Refresh
+
+The bot implementation supports runtime updates to specific configuration parameters without requiring a process restart. This is handled via a **Periodic Configuration Refresh** mechanism.
+
+### The Refresh Cycle
+
+Every 4 hours (default `BLOCKCHAIN_FETCH_INTERVAL_MIN`), the bot performs the following safe refresh cycle:
+
+1.  **Thread-Safe Load**: The bot re-reads `profiles/bots.json` using `readBotsFileWithLock` to ensure it doesn't collide with manual edits or the CLI manager.
+2.  **Memory Update**: It identifies its own configuration entry and updates its internal memory state (`this.config` and `manager.config`).
+3.  **Non-Disruptive Application**: The refresh is designed to be **passive**. It updates valuation anchors but does **not** trigger on-chain order movement automatically.
+
+### Configuration Authority: `startPrice`
+
+The `startPrice` parameter follows a strict hierarchy of authority:
+
+| Setting Type | Source | Behavior |
+|--------------|--------|----------|
+| **Numeric** | `bots.json` | **Single Source of Truth**. Blocks all auto-derivation. Used as a fixed anchor for valuation and grid resets. |
+| **"pool"** | Blockchain | Derived from current Liquidity Pool price during resets or 4h refresh cycles. |
+| **"market"** | Blockchain | Derived from current Orderbook price during resets or 4h refresh cycles. |
+
+---
+
 ## Data Persistence
 
 ```mermaid

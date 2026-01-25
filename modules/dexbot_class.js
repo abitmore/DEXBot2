@@ -21,6 +21,7 @@ const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require(
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
 const { parseJsonWithComments } = require('./account_bots');
+const { readBotsFileWithLock } = require('./bots_file_lock');
 const Format = require('./order/format');
 
 const PROFILES_BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
@@ -1312,10 +1313,9 @@ class DEXBot {
     }
 
     /**
-     * Perform unified grid validation checks.
-     * Shared logic for both post-bootstrap and periodic grid verification.
-     * Includes: threshold checks, divergence checks (bootstrap only), spread condition, grid health.
-     * @param {boolean} [isBootstrap=false] - true for post-bootstrap checks, false for periodic checks
+     * Core grid validation logic.
+     * Checks fund thresholds and optional divergence.
+     * @param {boolean} [isBootstrap=false] - Whether this is the startup check
      * @private
      */
     async _performGridChecks(isBootstrap = false) {
@@ -2027,6 +2027,10 @@ class DEXBot {
      * Perform periodic grid validation checks.
      * @private
      */
+    /**
+     * Perform periodic grid health and fund balance checks.
+     * @private
+     */
     async _performPeriodicGridChecks() {
         await this._performGridChecks(false);
     }
@@ -2070,10 +2074,26 @@ class DEXBot {
                 await this.manager._fillProcessingLock.acquire(async () => {
                     this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     
-                    // 1. Refresh account totals
+                    // 1. Refresh configuration from disk (allows picking up manual startPrice changes for valuation)
+                    try {
+                        const { config: freshFileConfig } = await readBotsFileWithLock(PROFILES_BOTS_FILE, parseJsonWithComments);
+                        if (freshFileConfig && Array.isArray(freshFileConfig.bots)) {
+                            const freshEntry = freshFileConfig.bots.find(b => b.name === this.config.name);
+                            if (freshEntry) {
+                                // Update internal startPrice from disk
+                                const isNumeric = (val) => typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
+                                this.config.startPrice = isNumeric(freshEntry.startPrice) ? Number(freshEntry.startPrice) : freshEntry.startPrice;
+                                this.manager.config.startPrice = this.config.startPrice;
+                            }
+                        }
+                    } catch (err) {
+                        this._warn(`Failed to refresh config from disk: ${err.message}`);
+                    }
+
+                    // 2. Refresh account totals
                     await this.manager.fetchAccountTotals(this.accountId);
 
-                    // 2. Refresh market price for valuation ratios
+                    // 3. Refresh market price for valuation ratios
                     // Skip if startPrice is a fixed numeric value (explicitly set in bots.json)
                     const isNumeric = (val) => typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
                     const isFixedPrice = isNumeric(this.config.startPrice);
@@ -2094,10 +2114,10 @@ class DEXBot {
                             this._warn(`Periodic price refresh failed: ${err.message}`);
                         }
                     } else {
-                        this.manager.logger.log(`Skipping periodic price refresh: using fixed startPrice ${this.config.startPrice}`, 'debug');
+                        this.manager.logger.log(`Using fixed startPrice ${this.config.startPrice} (skipping auto-refresh)`, 'debug');
                     }
 
-                    // 3. Sync with current on-chain orders to detect divergence
+                    // 4. Sync with current on-chain orders to detect divergence
                     let chainOpenOrders = [];
                     if (!this.config.dryRun) {
                         try {
