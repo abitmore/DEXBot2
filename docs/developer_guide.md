@@ -401,7 +401,7 @@ compareGrids(calculatedGrid, persistedGrid, manager, cacheFunds)
 const stepFactor = 1 + (incrementPercent / 100);
 const minSteps = MIN_SPREAD_FACTOR; // 2
 const targetSteps = ceil(ln(1 + targetSpread/100) / ln(stepFactor));
-const gapSlots = max(minSteps, targetSteps);
+const gapSlots = max(minSteps, targetSteps - 1); // Account for naturally occurring center gap
 
 // 2. Generate price levels
 const prices = [];

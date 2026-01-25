@@ -33,7 +33,7 @@ class StrategyEngine {
         const minSpreadPercent = safeIncrement * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
         const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
         const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
-        return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+        return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps - 1);
     }
 
     /**
@@ -85,11 +85,11 @@ class StrategyEngine {
         const currentSpread = mgr.calculateCurrentSpread();
         const step = 1 + (mgr.config.incrementPercent / 100);
         
-        // Nominal spread is what the grid was built for (gapSlots)
-        const nominalSpread = (Math.pow(step, gapSlots) - 1) * 100;
+        // Nominal spread is what the grid was built for (gapSlots + 1 gaps)
+        const nominalSpread = (Math.pow(step, gapSlots + 1) - 1) * 100;
         
-        // Tolerance allows some "floating" before correction (widening multiplier + doubled state)
-        const toleranceSteps = (GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER || 1.5) + (mgr.buySideIsDoubled ? 1 : 0) + (mgr.sellSideIsDoubled ? 1 : 0);
+        // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
+        const toleranceSteps = 1 + (mgr.buySideIsDoubled ? 1 : 0) + (mgr.sellSideIsDoubled ? 1 : 0);
         
         const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
         const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
@@ -97,7 +97,7 @@ class StrategyEngine {
         mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, mgr.config.incrementPercent);
 
         if (mgr.outOfSpread > 0) {
-            const limitSpread = (Math.pow(step, gapSlots + toleranceSteps) - 1) * 100;
+            const limitSpread = (Math.pow(step, gapSlots + 1 + toleranceSteps) - 1) * 100;
             mgr.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${limitSpread.toFixed(2)}%). ${mgr.outOfSpread} extra orderslot(s) identified.`, "info");
         }
 

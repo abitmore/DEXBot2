@@ -250,13 +250,14 @@ class Grid {
         const minSpreadPercent = incrementPercent * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
         const targetSpreadPercent = Math.max(config.targetSpreadPercent || 0, minSpreadPercent);
 
-        // Calculate number of steps needed to achieve target spread
+        // Calculate number of steps (gaps) needed to achieve target spread
         // Formula: n = ceil(ln(1 + targetSpread/100) / ln(stepFactor))
         // Reuse stepUp from line 99 instead of redundant 'step' variable
-        const requiredSteps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
+        const requiredGaps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
 
-        // Final gap size: At least MIN_SPREAD_ORDERS, or more if needed for target spread
-        const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps);
+        // Final gap size (number of spread orders): One less than required gaps because centering around market adds one extra gap
+        // At least MIN_SPREAD_ORDERS, or more if needed for target spread
+        const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredGaps - 1);
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 4: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
@@ -911,11 +912,11 @@ class Grid {
             const currentSpread = Grid.calculateCurrentSpread(manager);
             const step = 1 + (manager.config.incrementPercent / 100);
 
-            // Nominal spread is what the grid was built for (targetSpreadCount)
-            const nominalSpread = (Math.pow(step, manager.targetSpreadCount || 0) - 1) * 100;
+            // Nominal spread is what the grid was built for (targetSpreadCount + 1 gaps)
+            const nominalSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + 1) - 1) * 100;
             
-            // Tolerance allows some "floating" before correction (widening multiplier + doubled state)
-            const toleranceSteps = (GRID_LIMITS.SPREAD_WIDENING_MULTIPLIER || 1.5) + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
+            // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
+            const toleranceSteps = 1 + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
 
             const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
             const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
@@ -923,7 +924,7 @@ class Grid {
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
             if (manager.outOfSpread === 0) return false;
 
-            const limitSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + toleranceSteps) - 1) * 100;
+            const limitSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + 1 + toleranceSteps) - 1) * 100;
             manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
             const decision = Grid.determineOrderSideByFunds(manager, marketPrice);

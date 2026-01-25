@@ -61,13 +61,13 @@ $$S_i = \left( \frac{W_i}{\sum W} \right) \times Total$$
 The grid is divided into zones by a dynamic **Boundary Index**.
 
 -   **Gap Size ($G$):** Calculated from `targetSpreadPercent` and `incrementPercent`.
-    $$G = \lceil \frac{\ln(1 + \text{targetSpread})}{\ln(1 + \text{increment})} \rceil$$
-    *(Min capped at `MIN_SPREAD_ORDERS`, usually 2)*
+    $$G = \lceil \frac{\ln(1 + \text{targetSpread}/100)}{\ln(1 + \text{increment}/100)} \rceil - 1$$
+    *(Min capped at `MIN_SPREAD_ORDERS`, usually 2. The $-1$ accounts for the naturally occurring center gap during grid centering)*
 
 -   **Zones:**
     -   **BUY:** Indices $[0, \text{boundaryIdx}]$
-    -   **SPREAD:** Indices $[	ext{boundaryIdx}+1, \text{boundaryIdx}+G]$
-    -   **SELL:** Indices $[	ext{boundaryIdx}+G+1, N]$
+    -   **SPREAD:** Indices $[\text{boundaryIdx}+1, \text{boundaryIdx}+G]$ (Total of $G+1$ actual gaps)
+    -   **SELL:** Indices $[\text{boundaryIdx}+G+1, N]$
 
 ---
 

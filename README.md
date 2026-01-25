@@ -138,7 +138,7 @@ Below is a reference guide for each configuration option from `node dexbot bots`
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
 | **`incrementPercent`** | number | Geometric step between layers (e.g., `0.5` for 0.5% increments). |
-| **`targetSpreadPercent`** | number | Buffer zone around the center price where no orders are placed. |
+| **`targetSpreadPercent`** | number | Target width of the empty spread zone between buy and sell orders. |
 | **`weightDistribution`**| object | Sizing logic: `{ "sell": 1.0, "buy": 1.0 }`. Range: `-1` to `2`. <br>• `-1`: **Super Valley** (heavy edge) <br>• `0.5`: **Neutral** <br>• `2`: **Super Mountain** (heavy center) |
 
 #### 5. Funding & Scaling

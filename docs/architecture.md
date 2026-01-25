@@ -323,7 +323,7 @@ graph LR
 ### Role Assignment
 
 - **BUY**: Slots `[0, boundaryIdx]`
-- **SPREAD**: Slots `[boundaryIdx + 1, boundaryIdx + G]` where G = spread gap size
+- **SPREAD**: Slots `[boundaryIdx + 1, boundaryIdx + G]` where G = spread gap size (empty slots). Actual gaps = G + 1.
 - **SELL**: Slots `[boundaryIdx + G + 1, N]`
 
 ---

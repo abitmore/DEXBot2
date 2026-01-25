@@ -110,12 +110,6 @@ let GRID_LIMITS = {
     // Default: 2 (minimum 2 slots in spread zone)
     MIN_SPREAD_ORDERS: 2,
 
-    // Spread widening multiplier for spread correction tolerance
-    // Actual spread tolerance = targetSpreadPercent + (incrementPercent × SPREAD_WIDENING_MULTIPLIER)
-    // Prevents over-correction when spread is slightly wider than target
-    // Default: 1.5 (allows spread to be 1.5× increment wider before triggering correction)
-    SPREAD_WIDENING_MULTIPLIER: 1.5,
-
     // Grid comparison metrics
     // Detects significant divergence between calculated (in-memory) and persisted grid state
     // after order fills and rotations
