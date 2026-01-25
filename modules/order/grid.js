@@ -41,7 +41,8 @@ const {
     allocateFundsByWeights,
     countOrdersByType,
     shouldFlagOutOfSpread,
-    derivePrice
+    derivePrice,
+    isNumeric
 } = require('./utils');
 
 class Grid {
@@ -436,7 +437,6 @@ class Grid {
         }
 
         const mpRaw = manager.config.startPrice;
-        const isNumeric = (val) => typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
 
         // Auto-derive price ONLY if not a fixed numeric value (e.g. "pool", "market", or undefined)
         if (!isNumeric(mpRaw)) {
@@ -905,7 +905,7 @@ class Grid {
 
         // Market price is only used for valuation during side-selection decision.
         // We rely on config.startPrice (which is updated periodically) to avoid redundant blockchain calls.
-        const marketPrice = manager.config.startPrice;
+        const startPrice = manager.config.startPrice;
 
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
         const executeSpreadCheck = () => {
@@ -927,7 +927,7 @@ class Grid {
             const limitSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + 1 + toleranceSteps) - 1) * 100;
             manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
-            const decision = Grid.determineOrderSideByFunds(manager, marketPrice);
+            const decision = Grid.determineOrderSideByFunds(manager, startPrice);
             if (!decision.side) return false;
 
             // Pass the chain snapshot for consistent sizing context

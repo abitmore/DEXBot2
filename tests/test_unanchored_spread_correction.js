@@ -54,11 +54,14 @@ async function testUnanchoredSpreadCorrection() {
 
     // 3. Run applyGridDivergenceCorrections
     console.log('  Scenario 2: Correcting spread with BUY-heavy inventory');
-    
+
     // BitShares client is no longer required inside the function as we use config.startPrice
     const mockUpdateFn = async () => ({ executed: true });
-    
-    await utils.applyGridDivergenceCorrections(mgr, {}, 'bot-key', mockUpdateFn);
+
+    // Mock accountOrders with storeMasterGrid to avoid errors during persistence
+    const mockAccountOrders = { storeMasterGrid: async () => {} };
+
+    await utils.applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
 
     // With 10000 BUY power vs ~100 SELL power, the buyValueRatio is ~0.5 (if price=100).
     // Wait, let's check the math:
@@ -70,7 +73,7 @@ async function testUnanchoredSpreadCorrection() {
     mgr.recalculateFunds();
     mgr.outOfSpread = 2;
     mgr._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
-    await utils.applyGridDivergenceCorrections(mgr, {}, 'bot-key', mockUpdateFn);
+    await utils.applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
 
     console.log(`  Updated boundaryIdx (100% BUY): ${mgr.boundaryIdx}`);
     

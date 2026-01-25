@@ -16,7 +16,7 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange } = OrderUtils;
+const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange, isNumeric } = OrderUtils;
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
@@ -1450,9 +1450,8 @@ class DEXBot {
         try {
             // 1. Reload configuration from disk to pick up any changes
             try {
-                const { parseJsonWithComments } = require('./account_bots');
-                const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-                const allBotsConfig = parseJsonWithComments(content).bots || [];
+                const { config: freshFileConfig } = await readBotsFileWithLock(PROFILES_BOTS_FILE, parseJsonWithComments);
+                const allBotsConfig = freshFileConfig.bots || [];
                 const myName = this.config.name;
                 const updatedBot = allBotsConfig.find(b => b.name === myName);
 
@@ -1685,7 +1684,8 @@ class DEXBot {
 
         // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations.
         // This prevents fills from arriving during grid initialization/syncing without proper bot records.
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+        const { config: freshFileConfig } = await readBotsFileWithLock(PROFILES_BOTS_FILE, parseJsonWithComments);
+        const allBotsConfig = freshFileConfig.bots || [];
         const allActiveBots = allBotsConfig
             .filter(b => b.active !== false)
             .map((b, idx) => normalizeBotEntry(b, idx));
@@ -2081,7 +2081,6 @@ class DEXBot {
                             const freshEntry = freshFileConfig.bots.find(b => b.name === this.config.name);
                             if (freshEntry) {
                                 // Update internal startPrice from disk
-                                const isNumeric = (val) => typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
                                 this.config.startPrice = isNumeric(freshEntry.startPrice) ? Number(freshEntry.startPrice) : freshEntry.startPrice;
                                 this.manager.config.startPrice = this.config.startPrice;
                             }
@@ -2095,7 +2094,6 @@ class DEXBot {
 
                     // 3. Refresh market price for valuation ratios
                     // Skip if startPrice is a fixed numeric value (explicitly set in bots.json)
-                    const isNumeric = (val) => typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
                     const isFixedPrice = isNumeric(this.config.startPrice);
 
                     if (!isFixedPrice) {

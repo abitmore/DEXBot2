@@ -113,6 +113,16 @@ function isValidNumber(value) {
 }
 
 /**
+ * Check if a value represents a numeric value (number or numeric string).
+ * Used to determine if a config value like startPrice is explicitly set vs derived.
+ * @param {*} val - Value to check
+ * @returns {boolean} True if value is a number or a non-empty string that parses to a number
+ */
+function isNumeric(val) {
+    return typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
+}
+
+/**
  * Checks if a value is a percentage string (e.g. "50%").
  * @param {*} v - The value to check.
  * @returns {boolean} True if it's a percentage string.
@@ -1658,17 +1668,17 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         if (manager.outOfSpread > 0) {
             const availA = (manager.funds?.available?.sell || 0);
             const availB = (manager.funds?.available?.buy || 0);
-            const marketPrice = manager.config.startPrice;
+            const startPrice = manager.config.startPrice;
 
             const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
             const gapSlots = (typeof manager.calculateGapSlots === 'function') 
                 ? manager.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent)
                 : (manager.targetSpreadCount || 2);
 
-            const newBoundary = calculateFundDrivenBoundary(allSlots, availA, availB, marketPrice, gapSlots);
+            const newBoundary = calculateFundDrivenBoundary(allSlots, availA, availB, startPrice, gapSlots);
             
             if (newBoundary !== manager.boundaryIdx) {
-                manager.logger?.log?.(`[DIVERGENCE] Syncing boundary to fund distribution: ${manager.boundaryIdx} -> ${newBoundary} (ratio: ${Format.formatPercent2((availB / (availA * marketPrice + availB)) * 100)})`, 'info');
+                manager.logger?.log?.(`[DIVERGENCE] Syncing boundary to fund distribution: ${manager.boundaryIdx} -> ${newBoundary} (ratio: ${Format.formatPercent2((availB / (availA * startPrice + availB)) * 100)})`, 'info');
                 manager.boundaryIdx = newBoundary;
                 assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES);
             }
@@ -2477,6 +2487,7 @@ module.exports = {
     // Numeric validation helpers
     toFiniteNumber,
     isValidNumber,
+    isNumeric,
 
     // Order filtering helpers
     filterOrdersByType,

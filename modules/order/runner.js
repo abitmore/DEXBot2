@@ -21,6 +21,9 @@ const fs = require('fs');
 const path = require('path');
 const { OrderManager } = require('./manager');
 const Grid = require('./grid');
+const { readBotsFileSync } = require('../bots_file_lock');
+const { parseJsonWithComments } = require('../account_bots');
+const { derivePrice, isNumeric } = require('./utils');
 
 /**
  * Run a standalone order grid calculation for testing.
@@ -29,73 +32,57 @@ const Grid = require('./grid');
  */
 async function runOrderManagerCalculation() {
     const cfgFile = path.join(__dirname, '..', 'profiles', 'bots.json');
-    let runtimeConfig = {};
+    let botConfig = {};
+    
     try {
-        if (!fs.existsSync(cfgFile)) {
-            throw new Error('profiles/bots.json not found (run npm run bootstrap:profiles)');
+        const { config } = readBotsFileSync(cfgFile, parseJsonWithComments);
+        const bots = config.bots || [];
+
+        const envName = process.env.LIVE_BOT_NAME || process.env.BOT_NAME;
+        let chosenBot = null;
+        if (envName) chosenBot = bots.find(b => String(b.name).toLowerCase() === String(envName).toLowerCase());
+        if (!chosenBot) chosenBot = bots[0];
+        
+        if (!chosenBot) {
+            throw new Error('No bots found in profiles/bots.json');
         }
-        const raw = fs.readFileSync(cfgFile, 'utf8');
-        const cleaned = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').split('\n').map(l => l.replace(/(^|\s*)\/\/.*$/, '')).join('\n');
-        runtimeConfig = JSON.parse(cleaned);
+        
+        console.log(`Using bot from settings: ${chosenBot.name || '<unnamed>'}`);
+        botConfig = { ...chosenBot };
     } catch (err) {
-        console.warn('Failed to read bot configuration (profiles/bots.json):', err.message);
+        console.warn('Failed to read bot configuration:', err.message);
         throw err;
     }
 
-    if (runtimeConfig && Array.isArray(runtimeConfig.bots) && runtimeConfig.bots.length > 0) {
-        const envName = process.env.LIVE_BOT_NAME || process.env.BOT_NAME;
-        let chosenBot = null;
-        if (envName) chosenBot = runtimeConfig.bots.find(b => String(b.name).toLowerCase() === String(envName).toLowerCase());
-        if (!chosenBot) chosenBot = runtimeConfig.bots[0];
-        console.log(`Using bot from settings: ${chosenBot.name || '<unnamed>'}`);
-        runtimeConfig = { ...chosenBot };
-    }
+    const rawMarketPrice = botConfig.startPrice;
 
-    const rawMarketPrice = runtimeConfig.startPrice;
-    const mpIsPool = typeof rawMarketPrice === 'string' && rawMarketPrice.trim().toLowerCase() === 'pool';
-    const mpIsMarket = typeof rawMarketPrice === 'string' && rawMarketPrice.trim().toLowerCase() === 'market';
-
-    if ((rawMarketPrice === undefined || rawMarketPrice === null || rawMarketPrice === 0) || mpIsPool || mpIsMarket) {
-        const tryPool = mpIsPool || !!runtimeConfig.pool;
-        const tryMarket = mpIsMarket || !!runtimeConfig.market;
-
-        const { derivePoolPrice, deriveMarketPrice, derivePrice } = require('./utils');
-        if (tryPool && (runtimeConfig.assetA && runtimeConfig.assetB)) {
-            try {
-                const { BitShares } = require('../bitshares_client');
-                const symA = runtimeConfig.assetA; const symB = runtimeConfig.assetB;
-                const p = await derivePoolPrice(BitShares, symA, symB);
-                if (p !== null) runtimeConfig.startPrice = p;
-            } catch (err) { console.warn('Pool-based price lookup failed:', err.message); }
-        } else if (tryMarket && (runtimeConfig.assetA && runtimeConfig.assetB)) {
-            try {
-                const { BitShares } = require('../bitshares_client');
-                const symA = runtimeConfig.assetA; const symB = runtimeConfig.assetB;
-                const m = await deriveMarketPrice(BitShares, symA, symB);
-                if (m !== null) runtimeConfig.startPrice = m;
-            } catch (err) { console.warn('Market-based price lookup failed:', err.message); }
-        } else { throw new Error('No startPrice provided and neither "pool" nor "market" were set in bots.json \u2014 define at least one to derive price.'); }
-
+    // Auto-derive price ONLY if not a fixed numeric value
+    if (!isNumeric(rawMarketPrice)) {
         try {
             const { BitShares } = require('../bitshares_client');
-            const symA = runtimeConfig.assetA; const symB = runtimeConfig.assetB;
-            // Use centralized derivePrice as a final fallback (which may prefer pool->market->limit-orders)
-            // Pass an explicit runtime preference (runtimeConfig.priceMode or env PRICE_MODE) if present
-            const runtimeMode = (runtimeConfig && runtimeConfig.priceMode) ? String(runtimeConfig.priceMode) : (process && process.env && process.env.PRICE_MODE ? String(process.env.PRICE_MODE) : 'auto');
-            const m = await derivePrice(BitShares, symA, symB, runtimeMode);
-            if (m !== null) { runtimeConfig.startPrice = m; console.log('Derived startPrice from on-chain (derivePrice)', runtimeConfig.assetA + '/' + runtimeConfig.assetB, m); }
-        } catch (err) { console.warn('Failed to auto-derive startPrice from chain (derivePrice):', err && err.message ? err.message : err); }
+            const mode = botConfig.priceMode || (rawMarketPrice === 'market' ? 'market' : (rawMarketPrice === 'pool' ? 'pool' : 'auto'));
+            
+            console.log(`Deriving startPrice using mode: ${mode}...`);
+            const derived = await derivePrice(BitShares, botConfig.assetA, botConfig.assetB, mode);
+            
+            if (derived) {
+                botConfig.startPrice = Number(derived);
+                console.log(`✓ Derived startPrice from on-chain: ${botConfig.startPrice}`);
+            } else {
+                throw new Error(`Failed to derive price using mode "${mode}" and no numeric fallback available.`);
+            }
+        } catch (err) {
+            console.error('Price derivation failed:', err.message);
+            throw err;
+        }
     }
 
     try {
-        const cfgMin = Number(runtimeConfig.minPrice || 80000);
-        const cfgMax = Number(runtimeConfig.maxPrice || 160000);
-        const mp = Number(runtimeConfig.startPrice);
+        const mp = Number(botConfig.startPrice);
         if (!Number.isFinite(mp)) throw new Error('Invalid startPrice (not a number)');
-        if (mp < cfgMin || mp > cfgMax) { throw new Error(`Derived startPrice ${mp} is outside configured range [${cfgMin}, ${cfgMax}] \u2014 refusing to create orders.`); }
     } catch (err) { throw err; }
 
-    const manager = new OrderManager(runtimeConfig);
+    const manager = new OrderManager(botConfig);
     await Grid.initializeGrid(manager);
 
     const cycles = Number(process.env.CALC_CYCLES || 3);
