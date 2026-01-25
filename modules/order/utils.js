@@ -549,6 +549,10 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
 // ════════════════════════════════════════════════════════════════════════════════
 // Derive market and pool prices from blockchain (moved from modules/order/price.js)
 
+// Simple module-level cache for Liquidity Pool IDs to avoid repeated scans
+// Reset on bot restart (process restart)
+const poolIdCache = new Map();
+
 const lookupAsset = async (BitShares, s) => {
     if (!BitShares) return null;
     const sym = s.toLowerCase();
@@ -632,15 +636,27 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
         if (!aMeta?.id || !bMeta?.id) return null;
 
         let chosen = null;
+        const cacheKey = [aMeta.id, bMeta.id].sort().join(':');
 
-        // 1. Direct lookup (disabled - method not found in API)
-        // if (typeof BitShares.db?.get_liquidity_pool_by_asset_ids === 'function') {
-        //     try {
-        //         chosen = await BitShares.db.get_liquidity_pool_by_asset_ids(aMeta.id, bMeta.id);
-        //     } catch (e) { console.warn(`[utils.js] derivePoolPrice direct lookup failed for ${symA}/${symB}:`, e.message); }
-        // }
+        // 1. Check Cache first
+        const cachedPoolId = poolIdCache.get(cacheKey);
+        if (cachedPoolId && typeof BitShares.db?.get_objects === 'function') {
+            try {
+                const [pool] = await BitShares.db.get_objects([cachedPoolId]);
+                if (pool && pool.id === cachedPoolId) {
+                    // Verify pool still matches our assets (sanity check)
+                    const assets = (pool.asset_ids || [pool.asset_a, pool.asset_b]).map(String);
+                    if (assets.includes(aMeta.id) && assets.includes(bMeta.id)) {
+                        chosen = pool;
+                    }
+                }
+            } catch (e) {
+                console.warn(`[utils.js] derivePoolPrice cached fetch failed for ${cachedPoolId}:`, e.message);
+                poolIdCache.delete(cacheKey); // Clear invalid cache
+            }
+        }
 
-        // 2. Scan if not found
+        // 2. Scan if not found in cache
         if (!chosen && typeof BitShares.db?.list_liquidity_pools === 'function') {
             try {
                 let startId = '1.19.0';
@@ -668,6 +684,11 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
                         const getBal = p => Number(p.asset_a === aMeta.id ? p.balance_a : p.balance_b);
                         return getBal(b) - getBal(a);
                     })[0];
+
+                    // Store in cache for next time
+                    if (chosen && chosen.id) {
+                        poolIdCache.set(cacheKey, chosen.id);
+                    }
                 }
             } catch (e) { console.warn(`[utils.js] derivePoolPrice scan pools failed for ${symA}/${symB}:`, e.message); }
         }
