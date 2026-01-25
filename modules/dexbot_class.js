@@ -676,7 +676,7 @@ class DEXBot {
         const buyOrders = ordersToActivate.filter(o => o.type === 'buy');
 
         this.manager.logger.log(`Activating ${sellOrders.length} sell and ${buyOrders.length} buy orders`, 'info');
-        
+
         if (sellOrders.length === 0 || buyOrders.length === 0) {
             this.manager.logger.log(`WARNING: Initializing grid with one side empty! (Sell: ${sellOrders.length}, Buy: ${buyOrders.length})`, 'warn');
         }
@@ -1143,8 +1143,8 @@ class DEXBot {
             if (!oldOrder.orderId || seenOrderIds.has(oldOrder.orderId)) continue;
             seenOrderIds.add(oldOrder.orderId);
 
-            // Trust internal grid state: if orderId exists and no rawOnChain cache, 
-            // it's likely a newly placed order. buildUpdateOrderOp will handle 
+            // Trust internal grid state: if orderId exists and no rawOnChain cache,
+            // it's likely a newly placed order. buildUpdateOrderOp will handle
             // the fetch if cache is missing.
             try {
                 const { amountToSell, minToReceive } = buildCreateOrderArgs({ type, size: newSize, price: newPrice }, assetA, assetB);
@@ -2073,7 +2073,7 @@ class DEXBot {
             try {
                 await this.manager._fillProcessingLock.acquire(async () => {
                     this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
-                    
+
                     // 1. Refresh configuration from disk (allows picking up manual startPrice changes for valuation)
                     try {
                         const { config: freshFileConfig } = await readBotsFileWithLock(PROFILES_BOTS_FILE, parseJsonWithComments);
@@ -2099,9 +2099,9 @@ class DEXBot {
                     if (!isFixedPrice) {
                         try {
                             const freshPrice = await OrderUtils.derivePrice(
-                                BitShares, 
-                                this.manager.assets.assetA.symbol, 
-                                this.manager.assets.assetB.symbol, 
+                                BitShares,
+                                this.manager.assets.assetA.symbol,
+                                this.manager.assets.assetB.symbol,
                                 this.config.priceMode || 'pool'
                             );
                             if (freshPrice && Number.isFinite(freshPrice)) {

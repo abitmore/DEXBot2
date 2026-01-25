@@ -347,7 +347,7 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
 
 /**
  * Convert a blockchain integer (satoshis) to a human-readable float.
- * 
+ *
  * @param {number | TaggedNumber} intValue - Blockchain integer amount
  * @param {number} precision - Asset precision (e.g., 5 for BTS, 8 for IOB.XRP)
  * @param {boolean} tag - If true, returns TaggedNumber with type='float' (default: false for backward compat)
@@ -363,10 +363,10 @@ function blockchainToFloat(intValue, precision) {
 
 /**
  * Convert a human-readable float to a blockchain integer (satoshis).
- * 
+ *
  * IMPORTANT: This function expects floatValue to be in human-readable units (e.g., 1.5 BTS).
  * The data structure (parsedChainOrders vs rawChainOrders) ensures type safety by design.
- * 
+ *
  * @param {number} floatValue - Human-readable amount (e.g., 1.5 for 1.5 BTS)
  * @param {number} precision - Asset precision (e.g., 5 for BTS, 8 for IOB.XRP)
  * @returns {number} Blockchain integer (satoshis)
@@ -1013,11 +1013,11 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
 
 /**
  * Apply a chain-derived size to a grid order.
- * 
+ *
  * IMPORTANT: chainSize MUST be a human-readable float (e.g., 1.5 BTS), NOT a blockchain integer.
  * The caller is responsible for converting blockchain integers via blockchainToFloat() BEFORE calling.
  * This function includes a sanity check to detect accidental int-as-float input.
- * 
+ *
  * @param {Object} manager - OrderManager instance
  * @param {Object} gridOrder - Grid order to update
  * @param {number} chainSize - Size in human-readable float units (NOT satoshis!)
@@ -1268,7 +1268,7 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
     if (assetSymbol === 'BTS') {
         const orderCreationFee = cachedFees.limitOrderCreate.bts;
         const orderUpdateFee = cachedFees.limitOrderUpdate.bts;
-        
+
         // For makers: 90% refund, so net fee = 10% of creation fee
         // For takers: no refund, so net fee = full creation fee
         const makerNetFee = orderCreationFee * 0.1;
@@ -1671,12 +1671,12 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             const startPrice = manager.config.startPrice;
 
             const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
-            const gapSlots = (typeof manager.calculateGapSlots === 'function') 
+            const gapSlots = (typeof manager.calculateGapSlots === 'function')
                 ? manager.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent)
                 : (manager.targetSpreadCount || 2);
 
             const newBoundary = calculateFundDrivenBoundary(allSlots, availA, availB, startPrice, gapSlots);
-            
+
             if (newBoundary !== manager.boundaryIdx) {
                 manager.logger?.log?.(`[DIVERGENCE] Syncing boundary to fund distribution: ${manager.boundaryIdx} -> ${newBoundary} (ratio: ${Format.formatPercent2((availB / (availA * startPrice + availB)) * 100)})`, 'info');
                 manager.boundaryIdx = newBoundary;
@@ -1687,7 +1687,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         // Process each divergent side independently
         for (const orderType of manager._gridSidesUpdated) {
             const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-            
+
             // 1. Get current on-chain orders for this side
             const currentActiveOrders = Array.from(manager.orders.values())
                 .filter(o => o.type === orderType && o.orderId && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL));
@@ -1698,13 +1698,13 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 .sort((a, b) => sideName === 'buy' ? b.price - a.price : a.price - b.price); // Closest to market first
 
             // 3. Determine the Desired Active Window (Target Count)
-            const baseTargetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName])) 
-                ? Math.max(1, manager.config.activeOrders[sideName]) 
+            const baseTargetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName]))
+                ? Math.max(1, manager.config.activeOrders[sideName])
                 : currentActiveOrders.length;
 
             const isDoubledSide = orderType === ORDER_TYPES.BUY ? manager.buySideIsDoubled : manager.sellSideIsDoubled;
             const targetCount = isDoubledSide ? Math.max(1, baseTargetCount - 1) : baseTargetCount;
-            
+
             const desiredSlots = allSideSlots.slice(0, targetCount);
 
             // 4. Match existing orders to desired slots (Rotation Pairing)
@@ -1994,7 +1994,7 @@ function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 
 
     // SELL side: Budget is in Asset A (e.g. XRP)
     const sellSizes = allocateFundsByWeights(sellFunds, sellOrders.length, sellWeight, incrementFactor, false, minSellSize, precisionA);
-    
+
     // BUY side: Budget is in Asset B (e.g. BTS)
     // CRITICAL: We use precisionB here because we are allocating the BTS budget.
     const buySizes = allocateFundsByWeights(buyFunds, buyOrders.length, buyWeight, incrementFactor, true, minBuySize, precisionB);
@@ -2230,7 +2230,7 @@ function convertToSpreadPlaceholder(order) {
 
 /**
  * Calculate the ideal boundary index to center the spread gap around a reference price.
- * 
+ *
  * @param {Array} allSlots - Array of all grid slots
  * @param {number} referencePrice - The market price to center around
  * @param {number} gapSlots - The number of slots in the spread zone
@@ -2254,7 +2254,7 @@ function calculateIdealBoundary(allSlots, referencePrice, gapSlots) {
 /**
  * Calculate the ideal boundary index based on fund distribution.
  * Uses the ratio of Asset A vs Asset B value to position the grid center.
- * 
+ *
  * @param {Array} allSlots - All grid slots
  * @param {number} availA - Available Asset A (Sell side)
  * @param {number} availB - Available Asset B (Buy side)
@@ -2266,21 +2266,21 @@ function calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) 
     const valA = toFiniteNumber(availA) * toFiniteNumber(price);
     const valB = toFiniteNumber(availB);
     const totalVal = valA + valB;
-    
+
     // Default to center if no funds
     if (totalVal <= 0) return Math.floor((allSlots.length - gapSlots) / 2);
 
     const buyValueRatio = valB / totalVal;
     const totalOrderSlots = allSlots.length - gapSlots;
     const targetBuySlots = Math.round(totalOrderSlots * buyValueRatio);
-    
+
     // Clamp to valid range (leaving room for the gap at the end)
     return Math.max(0, Math.min(allSlots.length - gapSlots - 1, targetBuySlots - 1));
 }
 
 /**
  * Assign BUY, SELL, or SPREAD roles to grid slots based on a boundary index.
- * 
+ *
  * @param {Array} allSlots - Array of slots to update
  * @param {number} boundaryIdx - The boundary index (last BUY slot)
  * @param {number} gapSlots - The number of slots in the spread zone
@@ -2322,7 +2322,7 @@ function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buy
     const step = 1 + (incrementPercent / 100);
     const currentSteps = Math.log(1 + (currentSpread / 100)) / Math.log(step);
     const nominalSteps = Math.log(1 + (nominalSpread / 100)) / Math.log(step);
-    
+
     // Check if we are outside the tolerated limit (nominal + tolerance)
     const limitSteps = nominalSteps + toleranceSteps;
     if (currentSteps <= limitSteps) return 0;
@@ -2334,9 +2334,9 @@ function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buy
 /**
  * Check if a size change is significant enough to warrant an update.
  * Filters out tiny adjustments (noise) caused by startup recalculation drift or minor divergence.
- * 
+ *
  * USAGE: Call this before deciding to update an order size on-chain to avoid wasting fees on tiny changes.
- * 
+ *
  * @param {number} currentSize - Current order size (in human-readable units)
  * @param {number} newSize - Proposed new size (in human-readable units)
  * @param {number} thresholdPercent - Minimum change percentage (default: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE or 3%)
@@ -2373,7 +2373,7 @@ function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
  * Check if a size change is significant for divergence correction purposes.
  * Used in divergence correction flow to filter which slots get updated.
  * Only updates slots with size change >= GRID_REGENERATION_PERCENTAGE to minimize on-chain updates.
- * 
+ *
  * @param {number} currentSize - Current order size (in human-readable units)
  * @param {number} newSize - Proposed new size (in human-readable units)
  * @param {number} thresholdPercent - Minimum change percentage (default: GRID_LIMITS.GRID_REGENERATION_PERCENTAGE or 3%)

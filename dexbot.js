@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
  * DEXBot2 - Primary CLI driver for automated BitShares DEX market making
- * 
+ *
  * This is the main entry point that manages tracked bots and provides helper
  * utilities such as key/bot editors. The bot creates grid-based limit orders
  * across a price range and automatically replaces filled orders.
- * 
+ *
  * Main features:
  * - Grid-based order placement with configurable spread and increment
  * - Automatic order replacement when fills occur
@@ -181,14 +181,14 @@ function normalizeBotEntries(rawEntries) {
 
 /**
  * DEXBot - Core trading bot class that manages grid-based market making
- * 
+ *
  * Responsibilities:
  * - Initializes connection to BitShares and authenticates account
  * - Creates and manages an OrderManager instance for grid operations
  * - Places initial orders and listens for fills to replace them
  * - Handles grid synchronization with on-chain state
  * - Supports dry-run mode for testing without broadcasting
- * 
+ *
  * @class
  */
 // Extend SharedDEXBot for dexbot.js context (currently just a thin wrapper)
@@ -336,7 +336,7 @@ function collectValidationIssues(entries, sourceName) {
  * 1. Validates all bot configurations
  * 2. Prompts for master password if any bot needs it
  * 3. Creates DEXBot instances and starts them
- * 
+ *
  * @param {Array} botEntries - Array of normalized bot configurations
  * @param {Object} options - Execution options
  * @param {boolean} options.forceDryRun - Force all bots into dry-run mode
@@ -698,7 +698,7 @@ async function bootstrap() {
         // Generate default general.settings.json for new installations
         const SETTINGS_FILE = path.join(PROFILES_DIR, 'general.settings.json');
         const { LOG_LEVEL, GRID_LIMITS, TIMING, UPDATER } = require('./modules/constants');
-        
+
         // Create a copy of GRID_LIMITS and remove any legacy fields if necessary
         // (Though constants.js was already updated, this ensures a clean object)
         const gridLimits = { ...GRID_LIMITS };

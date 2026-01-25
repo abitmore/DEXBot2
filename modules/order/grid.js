@@ -49,7 +49,7 @@ class Grid {
     /**
      * Unifies budget calculation and fee deduction for all grid sizing scenarios.
      * Ensures consistent fund context (Allocated vs Total) across the bot.
-     * 
+     *
      * @param {Object} manager - OrderManager instance
      * @param {string} side - 'buy' or 'sell'
      * @returns {Object} { budget, precision, config }
@@ -122,41 +122,41 @@ class Grid {
 
     /**
      * Create the initial order grid structure based on configuration.
-     * 
+     *
      * ALGORITHM: Geometric Grid Creation with Fixed Spread Gap
      * =========================================================
      * This method generates a unified "Master Rail" of price levels with geometric spacing.
      * The grid is centered around startPrice with a fixed-size spread gap.
-     * 
+     *
      * KEY CONCEPTS:
      * - Geometric Spacing: Each price level is incrementPercent% away from neighbors
      * - Master Rail: Single unified array (not separate buy/sell rails)
      * - Spread Gap: Fixed-size buffer between best buy and best sell
      * - Role Assignment: BUY / SPREAD / SELL based on position relative to startPrice
-     * 
+     *
      * SPREAD GAP FORMULA:
      * ===================
      * The spread gap size is calculated to match the target spread percentage:
-     * 
+     *
      * 1. Step Factor (s): s = 1 + (incrementPercent / 100)
      *    Example: If incrementPercent = 0.5%, then s = 1.005
-     * 
+     *
      * 2. Minimum Spread: minSpread = incrementPercent × MIN_SPREAD_FACTOR
      *    This ensures spread is at least 2× the increment (prevents too-narrow spread)
-     * 
+     *
      * 3. Target Steps (n): Number of price levels needed to achieve target spread
      *    Formula: n = ceil(ln(1 + targetSpread/100) / ln(s))
-     *    
+     *
      *    Derivation: If we want price to grow by targetSpread% over n steps:
      *    - Final price = startPrice × s^n
      *    - Growth factor = (1 + targetSpread/100)
      *    - Therefore: s^n = (1 + targetSpread/100)
      *    - Taking ln: n × ln(s) = ln(1 + targetSpread/100)
      *    - Solving: n = ln(1 + targetSpread/100) / ln(s)
-     * 
+     *
      * 4. Gap Slots (G): G = max(MIN_SPREAD_ORDERS, n)
      *    Ensures at least MIN_SPREAD_ORDERS slots even if target spread is small
-     * 
+     *
      * EXAMPLE:
      * --------
      * incrementPercent = 0.5%, targetSpread = 2%
@@ -165,7 +165,7 @@ class Grid {
      * - targetSpread = max(2%, 1%) = 2%
      * - n = ceil(ln(1.02) / ln(1.005)) = ceil(3.98) = 4 steps
      * - G = max(2, 4) = 4 slots
-     * 
+     *
      * @param {Object} config - Grid configuration
      * @param {number} config.startPrice - Market price (grid center)
      * @param {number} config.minPrice - Minimum price bound
@@ -209,7 +209,7 @@ class Grid {
         // ════════════════════════════════════════════════════════════════════════════════
         // Create a geometric series of prices from minPrice to maxPrice.
         // Each level is incrementPercent% away from its neighbors.
-        // 
+        //
         // We start from startPrice and expand outward in both directions to ensure
         // the grid is centered around the market price.
 
@@ -264,12 +264,12 @@ class Grid {
         // STEP 4: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
         // ════════════════════════════════════════════════════════════════════════════════
         // Assign each price level to a role based on its position relative to startPrice.
-        // 
+        //
         // STRATEGY: Center the spread gap around startPrice
         // - Find the first slot >= startPrice (splitIdx)
         // - Place half the gap below splitIdx (buySpread)
         // - Place remaining gap above splitIdx (sellSpread)
-        // 
+        //
         // RESULT:
         // [0 ... buyEndIdx] = BUY zone (prices < spread)
         // [buyEndIdx+1 ... sellStartIdx-1] = SPREAD zone (empty buffer)
@@ -514,7 +514,7 @@ class Grid {
             throw new Error('Calculated orders fall below minimum allowable size.');
         }
 
-        // Check for warning if orders are near minimal size (regression fix) 
+        // Check for warning if orders are near minimal size (regression fix)
         const warningSellSize = minSellSize > 0 ? getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
         const warningBuySize = minBuySize > 0 ? getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
         if (checkSizeThreshold(sells, warningSellSize, precA, false) || checkSizeThreshold(buys, warningBuySize, precB, false)) {
@@ -606,7 +606,7 @@ class Grid {
     /**
      * Check for grid divergence and trigger update if threshold is met.
      * FIX: Complete JSDoc with parameter types and return value documentation
-     * 
+     *
      * @param {OrderManager} manager - Manager instance with order state
      * @param {Object} cacheFunds - Current cache funds state
      * @param {number} cacheFunds.buy - Buy side cache funds available
@@ -709,7 +709,7 @@ class Grid {
     /**
      * High-level entry for resizing grid from snapshot.
      * FIX: Complete JSDoc with parameter types and return value documentation
-     * 
+     *
      * @param {OrderManager} manager - Manager instance
      * @param {string} orderType - 'buy', 'sell', or 'both' - which sides to update
      * @param {boolean} fromBlockchainTimer - If true, skip refetch of account totals (already current)
@@ -878,20 +878,20 @@ class Grid {
 
     /**
      * Proactive spread correction check.
-     * 
+     *
      * CRITICAL: Uses AsyncLock to prevent race conditions with fill processing.
      * Without the lock, a TOCTOU (Time-Of-Check-To-Use) vulnerability exists where:
      * - Fund snapshot is taken (check phase)
      * - Fill processor modifies funds in another thread
      * - Order is placed based on stale funds (use phase)
      * Result: Orders placed beyond available liquidity, fund accounting errors
-     * 
+     *
      * DESIGN DECISION: Lock is released before blockchain operations for performance
      * - Lock held: Fund verification and correction decision (synchronized)
      * - Lock released: Blockchain submission (async, potentially slow)
      * - RACE CONDITION WINDOW: Between lock release and blockchain submission
      * - MITIGATION: Pre-flight fund verification before submission; comprehensive error handling
-     * 
+     *
      * See RACE_CONDITION_ANALYSIS.md for detailed vulnerability documentation.
      */
     static async checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch = null) {
@@ -914,7 +914,7 @@ class Grid {
 
             // Nominal spread is what the grid was built for (targetSpreadCount + 1 gaps)
             const nominalSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + 1) - 1) * 100;
-            
+
             // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
             const toleranceSteps = 1 + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
 
@@ -964,7 +964,7 @@ class Grid {
     /**
      * Grid health check for structural violations.
      * Monitors for "Dust Partials" that are too small to be traded on-chain.
-     * 
+     *
      * NOTE: Internal gaps (virtual slots between active ones) are no longer
      * flagged as violations. The "Edge-First" placement strategy intentionally
      * creates these gaps to maximize grid coverage during fund expansion.
@@ -1128,14 +1128,14 @@ class Grid {
             if (idealSize && idealSize > 0) {
                 // Scale down to available funds if necessary
                 const size = Math.min(idealSize, availableFund);
-                
+
                 // Calculate minimum healthy size (double the standard dust threshold)
                 const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
                 const minHealthySize = idealSize * dustThresholdFactor * 2;
 
                 if (size >= minHealthySize && size > 0) {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
-                    
+
                     // Log if we are scaling down
                     if (size < idealSize) {
                         manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatAmount8(idealSize)} -> available ${Format.formatAmount8(size)} (ratio: ${Format.formatPercent2((size/idealSize)*100)})`, 'info');

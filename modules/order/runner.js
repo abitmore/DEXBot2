@@ -1,20 +1,20 @@
 /**
  * Runner Module - Standalone order grid calculation utility
- * 
+ *
  * Provides a command-line tool for testing order grid generation
  * without actually placing orders. Useful for:
  * - Verifying configuration produces expected grid
  * - Testing price derivation from pool/market
  * - Debugging order sizing and fund allocation
  * - Validating fund calculations (available, virtual, committed)
- * 
+ *
  * Fund model overview (see manager.js for full details):
  * - available = max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
  * - cacheFunds = fill proceeds and rotation surplus (tracked separately, part of chainFree)
  * - virtual = sum of VIRTUAL orders and ACTIVE orders without orderId (reserved, not yet on-chain)
  * - committed.grid = total sum of all grid order sizes (active + partial + virtual)
  * - committed.chain = sum of ACTIVE or PARTIAL orders that have an orderId on-chain
- * 
+ *
  * Usage: CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e \"require('./runner').runOrderManagerCalculation()\"
  */
 const fs = require('fs');
@@ -33,7 +33,7 @@ const { derivePrice, isNumeric } = require('./utils');
 async function runOrderManagerCalculation() {
     const cfgFile = path.join(__dirname, '..', 'profiles', 'bots.json');
     let botConfig = {};
-    
+
     try {
         const { config } = readBotsFileSync(cfgFile, parseJsonWithComments);
         const bots = config.bots || [];
@@ -42,11 +42,11 @@ async function runOrderManagerCalculation() {
         let chosenBot = null;
         if (envName) chosenBot = bots.find(b => String(b.name).toLowerCase() === String(envName).toLowerCase());
         if (!chosenBot) chosenBot = bots[0];
-        
+
         if (!chosenBot) {
             throw new Error('No bots found in profiles/bots.json');
         }
-        
+
         console.log(`Using bot from settings: ${chosenBot.name || '<unnamed>'}`);
         botConfig = { ...chosenBot };
     } catch (err) {
@@ -61,10 +61,10 @@ async function runOrderManagerCalculation() {
         try {
             const { BitShares } = require('../bitshares_client');
             const mode = botConfig.priceMode || (rawMarketPrice === 'market' ? 'market' : (rawMarketPrice === 'pool' ? 'pool' : 'auto'));
-            
+
             console.log(`Deriving startPrice using mode: ${mode}...`);
             const derived = await derivePrice(BitShares, botConfig.assetA, botConfig.assetB, mode);
-            
+
             if (derived) {
                 botConfig.startPrice = Number(derived);
                 console.log(`✓ Derived startPrice from on-chain: ${botConfig.startPrice}`);

@@ -205,7 +205,7 @@ async function main(botNameFilter = null) {
      const { waitForConnected } = require('./modules/bitshares_client');
      const chainKeys = require('./modules/chain_keys');
      console.log('Connecting to BitShares...');
- 
+
      // Suppress BitShares console output during connection
      const originalLog = console.log;
      try {
@@ -222,7 +222,7 @@ async function main(botNameFilter = null) {
          // Always restore console output, even if waitForConnected throws
          console.log = originalLog;
      }
-     
+
      console.log('Connected to BitShares');
      console.log();
 
@@ -343,13 +343,13 @@ async function installPM2() {
             }
 
             console.log('Installing PM2...');
-            
+
             // Helper to run installation command
             const runInstall = (command, args) => {
                 return new Promise((res, rej) => {
-                    const proc = spawn(command, args, { 
-                        stdio: 'inherit', 
-                        shell: process.platform === 'win32' 
+                    const proc = spawn(command, args, {
+                        stdio: 'inherit',
+                        shell: process.platform === 'win32'
                     });
                     proc.on('close', (code) => {
                         if (code === 0) res();
@@ -370,7 +370,7 @@ async function installPM2() {
                     if (process.platform !== 'win32') {
                         console.log('\nStandard installation failed (likely permissions). Trying with sudo...');
                         console.log('This covers Linux and macOS. Please enter your password if prompted:');
-                        
+
                         runInstall('sudo', ['npm', 'install', '-g', 'pm2'])
                             .then(() => {
                                 console.log('PM2 installed successfully with sudo!');
@@ -388,7 +388,7 @@ async function installPM2() {
                         // Run npm install in a new elevated window
                         // We use timeout so the user can see the result before window closes
                         const psCommand = "Start-Process cmd -ArgumentList '/c npm install -g pm2 & echo. & echo Installation complete. Closing in 5 seconds... & timeout /t 5' -Verb RunAs -Wait";
-                        
+
                         runInstall('powershell', ['-Command', psCommand])
                             .then(() => {
                                 // Verify installation succeeded since we can't easily get the exit code from the elevated process
@@ -433,11 +433,11 @@ async function execPM2Command(action, target) {
         }
 
         const { spawn } = require('child_process');
-        const pm2 = spawn('pm2', args, { 
-            stdio: 'pipe', 
-            shell: process.platform === 'win32' 
+        const pm2 = spawn('pm2', args, {
+            stdio: 'pipe',
+            shell: process.platform === 'win32'
         });
-        
+
         let stdout = '';
         let stderr = '';
 
@@ -488,7 +488,7 @@ async function stopPM2Processes(target) {
         try {
             const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
             const botExists = config.bots && config.bots.some(b => b.name === target && b.active !== false);
-            
+
             if (!botExists) {
                 throw new Error(`Bot '${target}' not found or not active in profiles/bots.json`);
             }
@@ -527,7 +527,7 @@ async function deletePM2Processes(target) {
         try {
             const { config } = await readBotsFileWithLock(BOTS_JSON, parseJsonWithComments);
             const botExists = config.bots && config.bots.some(b => b.name === target && b.active !== false);
-            
+
             if (!botExists) {
                 throw new Error(`Bot '${target}' not found or not active in profiles/bots.json`);
             }

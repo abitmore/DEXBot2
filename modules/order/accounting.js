@@ -395,7 +395,7 @@ class Accountant {
             const rawAmount = blockchainToFloat(receives.amount, assetAPrecision, true);
             const feeResult = assetASymbol ? getAssetFees(assetASymbol, rawAmount, isMaker) : rawAmount;
             const netAmount = (typeof feeResult === 'object') ? feeResult.netProceeds : feeResult;
-            
+
             this.adjustTotalBalance(ORDER_TYPES.SELL, netAmount, 'fill-receives');
             this.modifyCacheFunds('sell', netAmount, 'fill-proceeds');
         } else if (receives.asset_id === assetBId) {

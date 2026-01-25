@@ -38,25 +38,25 @@ class StrategyEngine {
 
     /**
      * Unified rebalancing entry point.
-     * 
+     *
      * ALGORITHM: Boundary-Crawl Rebalancing
      * =====================================
      * This method implements a dynamic grid rebalancing strategy that maintains a "boundary"
      * separating BUY and SELL zones with a fixed-size SPREAD gap between them.
-     * 
+     *
      * KEY CONCEPTS:
      * - Master Rail: Single unified array of price levels (not separate buy/sell rails)
      * - Boundary Index: Pivot point that shifts left/right as fills occur
      * - Spread Gap: Fixed-size buffer of empty slots between best buy and best sell
      * - Crawl Mechanism: Orders "crawl" toward market as boundary shifts
-     * 
+     *
      * FLOW:
      * 1. Determine/recover boundary index
      * 2. Shift boundary based on fills (buy fill = shift left, sell fill = shift right)
      * 3. Assign roles (BUY/SPREAD/SELL) based on boundary position
      * 4. Calculate budgets (target vs reality, with cacheFunds)
      * 5. Rebalance each side independently
-     * 
+     *
      * @param {Array} fills - Recently filled orders (triggers boundary shift)
      * @param {Set} excludeIds - Order IDs to skip (locked or recently processed)
      * @returns {Object} Rebalancing actions (place, rotate, update, cancel)
@@ -84,16 +84,16 @@ class StrategyEngine {
         // state and can trigger structural shifts if RMS/Cache triggers follow.
         const currentSpread = mgr.calculateCurrentSpread();
         const step = 1 + (mgr.config.incrementPercent / 100);
-        
+
         // Nominal spread is what the grid was built for (gapSlots + 1 gaps)
         const nominalSpread = (Math.pow(step, gapSlots + 1) - 1) * 100;
-        
+
         // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
         const toleranceSteps = 1 + (mgr.buySideIsDoubled ? 1 : 0) + (mgr.sellSideIsDoubled ? 1 : 0);
-        
+
         const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
         const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
-        
+
         mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, mgr.config.incrementPercent);
 
         if (mgr.outOfSpread > 0) {
@@ -311,7 +311,7 @@ class StrategyEngine {
 
     /**
      * Rebalance a single side (BUY or SELL) using pure grid-based logic.
-     * 
+     *
      * ALGORITHM: Grid-State Pivot (Crawl & Activate)
      * ===============================================
      * 1. Rotations (Updates): Move the furthest surplus order to the CLOSEST inner gap.
@@ -767,7 +767,7 @@ class StrategyEngine {
                     }
 
                     // CRITICAL FIX: Only update slot to VIRTUAL if it hasn't been reused!
-                    // In sequential processing, a previous fill's rebalance might have rotated 
+                    // In sequential processing, a previous fill's rebalance might have rotated
                     // a new order into this slot (treated as empty because it was about to fill).
                     const currentSlot = mgr.orders.get(filledOrder.id);
                     const slotReused = currentSlot && currentSlot.orderId && currentSlot.orderId !== filledOrder.orderId;

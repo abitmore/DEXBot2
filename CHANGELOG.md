@@ -41,10 +41,69 @@ All notable changes to this project will be documented in this file.
 ### Performance
 - **Pool ID Caching** (commit 490b793)
   - **Optimization**: Cached Liquidity Pool IDs in `derivePoolPrice` to eliminate redundant blockchain scans, significantly reducing API load during startup and refreshes.
+  - **Cache Invalidation**: Validates cached pools against requested assets to prevent stale pool reuse
+  - **Transparent Fallback**: Falls back to blockchain scan on cache miss, maintaining correctness
+
+### Quality Assurance
+- **Boundary Sync Integration Tests** (`tests/test_boundary_sync_logic.js`)
+  - **Coverage**: 10+ test cases covering fund-driven boundary recalculation, rotation pairing, and target count reduction
+  - **Tests Include**:
+    - Boundary shifts with fund imbalance (validates fund-driven boundary logic)
+    - Rotation pairing matches existing orders to desired slots
+    - Doubled side reduces target count by 1 (prevents grid imbalance)
+    - Boundary respects available funds (prevents overfunding)
+    - Cache ratio threshold detection (20% GRID_REGENERATION_PERCENTAGE)
+    - Grid divergence detection between persisted and calculated states
+    - Bootstrap divergence ordering (threshold check → divergence check)
+    - Pool ID cache hit/miss behavior
+    - Cache invalidation on stale pools
+    - Concurrent cache access integrity
+  - **Impact**: Comprehensive validation of core boundary sync and startup grid check logic
+
+- **Fee Calculation Backwards Compatibility Tests** (`tests/test_fee_backwards_compat.js`)
+  - **Coverage**: 21+ test cases validating fee calculation changes and API compatibility
+  - **Tests Include**:
+    - **BTS Fee Object Structure**: Always returns object (never number) for BTS
+    - **Old Fields Preserved**: `total`, `createFee`, `netFee` still present (legacy code compatibility)
+    - **New Field Added**: `netProceeds` field for improved accounting
+    - **Maker/Taker Differentiation**: 90% refund for makers preserved
+    - **Non-BTS Assets**: Still return number (unchanged behavior)
+    - **Mixed Asset Pattern**: Code handles both BTS and non-BTS safely
+    - **Fee Math Accuracy**: Validates BTS maker/taker proceeds and non-BTS fee deduction
+  - **Key Finding**: New `netProceeds` field is backwards compatible; code can safely use `typeof` checks to access it
+  - **Impact**: Ensures no breaking changes to fee API while adding accounting precision
+
+- **Code Quality Improvements**
+  - **Trailing Whitespace**: Removed 34 lines of trailing whitespace across 10 files
+    - `modules/dexbot_class.js`, `modules/order/runner.js`, `modules/order/grid.js`
+    - `modules/order/accounting.js`, `modules/order/strategy.js`, `modules/account_bots.js`
+    - `modules/order/startup_reconcile.js`, `modules/order/utils.js`, `dexbot.js`, `pm2.js`
+  - **Whitespace Verification**: `git diff --cached --check` shows 0 issues post-cleanup
+  - **Test Integration**: New tests added to npm test script (package.json)
+  - **All Tests Passing**: Full test suite runs 32+ test files with no failures
 
 ### Changed
 - **Documentation Overhaul**: Updated `FUND_MOVEMENT_AND_ACCOUNTING.md`, `architecture.md`, and `developer_guide.md` to reflect refined gap formulas, zone indexing, and new sync behaviors.
 - **Research**: Added the 3-indicator reversal architecture to the trend detection analysis folder (`74203ab`).
+- **Fee Calculation**: Added `netProceeds` field to BTS fee objects for improved accounting accuracy
+  - **For Makers**: `netProceeds = assetAmount + (creationFee * 0.9)` (includes refund)
+  - **For Takers**: `netProceeds = assetAmount` (no refund)
+  - **Backwards Compat**: Non-BTS assets unchanged; BTS object structure is additive
+
+### Technical Details Added
+- **Locking Architecture**: New `_divergenceLock` in `_performGridChecks()` prevents races with fill processing during boundary sync
+- **Startup Grid Checks**: New `_performGridChecks()` method consolidates fund threshold and divergence checks
+  - **Phase 1**: Threshold check (cache ratio exceeds GRID_REGENERATION_PERCENTAGE)
+  - **Phase 2**: Divergence check (only after threshold check fails, only during bootstrap)
+  - **Atomic Operations**: Uses `_divergenceLock.acquire()` to prevent concurrent modifications
+- **Fund-Driven Boundary Calculation**: Adjusts grid boundary based on inventory distribution (buy/sell fund ratio)
+  - **Initialization**: Scans all grid slots and calculates fund-driven boundary position
+  - **Role Assignment**: Adjusts BUY/SPREAD/SELL zone assignments based on new boundary
+  - **Fund Respect**: Never exceeds available funds during slot activation
+- **Rotation Pairing Algorithm**: Matches existing on-chain orders to desired slots
+  - **Closest First**: Sorts active orders by market distance (best execution first)
+  - **Adaptive Target Count**: Reduces by 1 on doubled sides to prevent structural drift
+  - **Three Cases**: MATCH (update), ACTIVATE (new placement), DEACTIVATE (excessive)
 
 ---
 

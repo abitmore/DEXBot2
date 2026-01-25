@@ -34,7 +34,7 @@ function readInput(prompt, options = {}) {
         const stdin = process.stdin;
         const stdout = process.stdout;
         let input = '';
-        
+
         stdout.write(prompt);
 
         const isRaw = stdin.isRaw;
@@ -270,11 +270,11 @@ async function askRequiredString(promptText, defaultValue) {
  */
 async function askCronSchedule(promptText, defaultValue) {
     const current = parseCronToDelta(defaultValue);
-    
+
     // Interval Prompt
     const days = await askNumberWithBounds('  Interval (days)', current.days, 1, 31);
     if (days === '\x1b') return '\x1b';
-    
+
     // Time Prompt
     let time = current.time;
     while (true) {
@@ -286,7 +286,7 @@ async function askCronSchedule(promptText, defaultValue) {
         }
         console.log('  Invalid time format. Use HH:mm (24h)');
     }
-    
+
     return deltaToCron(days, time);
 }
 
@@ -479,29 +479,29 @@ function isValidCron(cron) {
 /**
  * Converts a cron string to a readable format (days delta and time).
  * Only supports simple daily/multi-day patterns like "0 0 * /N * *".
- * @param {string} cron 
+ * @param {string} cron
  * @returns {Object} { days, time }
  */
 function parseCronToDelta(cron) {
     const parts = cron.trim().split(/\s+/);
     if (parts.length !== 5) return { days: 1, time: '00:00' };
-    
+
     const min = parts[0].padStart(2, '0');
     const hour = parts[1].padStart(2, '0');
     let days = 1;
-    
+
     if (parts[2].startsWith('*/')) {
         days = parseInt(parts[2].substring(2)) || 1;
     } else if (parts[2] === '*') {
         days = 1;
     }
-    
+
     return { days, time: `${hour}:${min}` };
 }
 
 /**
  * Converts days delta and time to a cron string.
- * @param {number} days 
+ * @param {number} days
  * @param {string} time - format "HH:mm"
  * @returns {string} cron string
  */
@@ -780,12 +780,12 @@ async function askStartPrice(promptText, defaultValue) {
 async function promptBotData(base = {}) {
     // Create a working copy of the data
     const data = JSON.parse(JSON.stringify(base));
-    
+
     // Ensure nested objects exist
     if (!data.weightDistribution) data.weightDistribution = { ...DEFAULT_CONFIG.weightDistribution };
     if (!data.botFunds) data.botFunds = { ...DEFAULT_CONFIG.botFunds };
     if (!data.activeOrders) data.activeOrders = { ...DEFAULT_CONFIG.activeOrders };
-    
+
     // Set other defaults if missing
     if (data.active === undefined) data.active = DEFAULT_CONFIG.active;
     if (data.dryRun === undefined) data.dryRun = DEFAULT_CONFIG.dryRun;
@@ -868,11 +868,11 @@ async function promptBotData(base = {}) {
                 const incrP = await askNumberWithBounds('incrementPercent', data.incrementPercent, 0.01, 10);
                 if (incrP === '\x1b') break;
                 const defaultSpread = data.targetSpreadPercent || incrP * 4;
-                
+
                 // Use current general settings for the validation limit
                 const currentSettings = loadGeneralSettings();
                 const targetS = await askTargetSpreadPercent('targetSpread %', defaultSpread, incrP, currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR);
-                
+
                 if (targetS === '\x1b') break;
                 data.weightDistribution.sell = wSell;
                 data.weightDistribution.buy = wBuy;
@@ -1019,7 +1019,7 @@ async function promptGeneralSettings() {
                  console.log('  \x1b[38;5;250mBranch:\x1b[0m \x1b[32mmain\x1b[0m, \x1b[38;5;208mdev\x1b[0m, \x1b[31mtest\x1b[0m, or \x1b[38;5;39mauto\x1b[0m (detected current)');
                 const branch = await askUpdaterBranch('Branch', settings.UPDATER.BRANCH);
                 if (branch === '\x1b') break;
-                
+
                 const schedule = await askCronSchedule('Schedule', settings.UPDATER.SCHEDULE);
                 if (schedule === '\x1b') break;
 
@@ -1059,7 +1059,7 @@ async function main() {
          console.log('  7) Exit (or press Enter)');
          const selection = (await readInput('Choose an action [1-7]: ')).trim();
          console.log('');
-         
+
          if (selection === '\x1b' || selection === '7' || selection === '') {
              exit = true;
              continue;

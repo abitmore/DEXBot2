@@ -108,7 +108,7 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
         return;
     }
 
-    // CRITICAL ACCOUNTING ALIGNMENT: 
+    // CRITICAL ACCOUNTING ALIGNMENT:
     // This order already exists on chain. To track its funds correctly:
     // 1. Add its CURRENT size to our optimistic Free balance (bring external funds into tracking)
     // 2. synchronizeWithChain will then deduct the NEW grid size from Free
@@ -823,7 +823,7 @@ async function reconcileStartupOrders({
         'info'
     );
 
-    // DUST CHECK: If startup reconcile resulted in partials on either side, 
+    // DUST CHECK: If startup reconcile resulted in partials on either side,
     // trigger a full rebalance to consolidate them.
     const allOrders = Array.from(manager.orders.values());
     const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
