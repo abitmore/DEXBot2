@@ -2069,9 +2069,27 @@ class DEXBot {
             try {
                 await this.manager._fillProcessingLock.acquire(async () => {
                     this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
+                    
+                    // 1. Refresh account totals
                     await this.manager.fetchAccountTotals(this.accountId);
 
-                    // Sync with current on-chain orders to detect divergence
+                    // 2. Refresh market price for valuation ratios
+                    try {
+                        const freshPrice = await OrderUtils.derivePrice(
+                            BitShares, 
+                            this.manager.assets.assetA.symbol, 
+                            this.manager.assets.assetB.symbol, 
+                            this.config.priceMode || 'pool'
+                        );
+                        if (freshPrice && Number.isFinite(freshPrice)) {
+                            this.manager.config.startPrice = freshPrice;
+                            this.manager.logger.log(`✓ Periodic price refresh: ${Format.formatPrice6(freshPrice)}`, 'info');
+                        }
+                    } catch (err) {
+                        this._warn(`Periodic price refresh failed: ${err.message}`);
+                    }
+
+                    // 3. Sync with current on-chain orders to detect divergence
                     let chainOpenOrders = [];
                     if (!this.config.dryRun) {
                         try {
