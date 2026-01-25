@@ -332,7 +332,9 @@ class StrategyEngine {
         const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : sideSlots.length;
 
         // Strictly follow targetCount (isDoubled and outOfSpread no longer expand the count)
-        const finalTargetCount = targetCount;
+        // If a side is doubled (merged dust), we reduce target count by 1 to maintain balance
+        const isDoubled = type === ORDER_TYPES.BUY ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
+        const finalTargetCount = isDoubled ? Math.max(1, targetCount - 1) : targetCount;
 
         // ════════════════════════════════════════════════════════════════════════════════
         // BUILD SLOT INDEX MAP FOR O(1) LOOKUPS (FIX: O(n²) → O(n) complexity)

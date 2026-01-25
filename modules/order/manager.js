@@ -681,8 +681,12 @@ class OrderManager {
      * @returns {Array<Object>} Array of orders to activate.
      */
     getInitialOrdersToActivate() {
-        const sellCount = Math.max(0, Number(this.config.activeOrders?.sell || 1));
-        const buyCount = Math.max(0, Number(this.config.activeOrders?.buy || 1));
+        const sellCountRaw = Math.max(0, Number(this.config.activeOrders?.sell || 1));
+        const buyCountRaw = Math.max(0, Number(this.config.activeOrders?.buy || 1));
+
+        const sellCount = this.sellSideIsDoubled ? Math.max(1, sellCountRaw - 1) : sellCountRaw;
+        const buyCount = this.buySideIsDoubled ? Math.max(1, buyCountRaw - 1) : buyCountRaw;
+
         const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
         const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
 

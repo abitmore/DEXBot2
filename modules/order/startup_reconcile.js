@@ -427,8 +427,11 @@ async function reconcileStartupOrders({
         .filter(x => x.parsed);
 
     const activeCfg = (config && config.activeOrders) ? config.activeOrders : {};
-    const targetBuy = Math.max(0, Number.isFinite(Number(activeCfg.buy)) ? Number(activeCfg.buy) : 1);
-    const targetSell = Math.max(0, Number.isFinite(Number(activeCfg.sell)) ? Number(activeCfg.sell) : 1);
+    let targetBuy = Math.max(0, Number.isFinite(Number(activeCfg.buy)) ? Number(activeCfg.buy) : 1);
+    let targetSell = Math.max(0, Number.isFinite(Number(activeCfg.sell)) ? Number(activeCfg.sell) : 1);
+
+    if (manager.buySideIsDoubled) targetBuy = Math.max(1, targetBuy - 1);
+    if (manager.sellSideIsDoubled) targetSell = Math.max(1, targetSell - 1);
 
     const chainBuys = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
     const chainSells = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);

@@ -1663,9 +1663,12 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 .sort((a, b) => sideName === 'buy' ? b.price - a.price : a.price - b.price); // Closest to market first
 
             // 3. Determine the Desired Active Window (Target Count)
-            const targetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName])) 
+            const baseTargetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName])) 
                 ? Math.max(1, manager.config.activeOrders[sideName]) 
                 : currentActiveOrders.length;
+
+            const isDoubledSide = orderType === ORDER_TYPES.BUY ? manager.buySideIsDoubled : manager.sellSideIsDoubled;
+            const targetCount = isDoubledSide ? Math.max(1, baseTargetCount - 1) : baseTargetCount;
             
             const desiredSlots = allSideSlots.slice(0, targetCount);
 
