@@ -1653,18 +1653,22 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         }
 
         // STEP A: BOUNDARY SYNC (If out of spread)
-        // If the grid is lagging behind the market, shift the boundary to center the spread
+        // If the grid is lagging behind the market, shift the boundary based on the
+        // mathematical ideal distribution of funds. Market price is used only for valuation.
         if (manager.outOfSpread > 0) {
-            const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
+            const availA = (manager.funds?.available?.sell || 0);
+            const availB = (manager.funds?.available?.buy || 0);
             const marketPrice = manager.config.startPrice;
+
+            const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
             const gapSlots = (typeof manager.calculateGapSlots === 'function') 
                 ? manager.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent)
                 : (manager.targetSpreadCount || 2);
 
-            const newBoundary = calculateIdealBoundary(allSlots, marketPrice, gapSlots);
+            const newBoundary = calculateFundDrivenBoundary(allSlots, availA, availB, marketPrice, gapSlots);
             
             if (newBoundary !== manager.boundaryIdx) {
-                manager.logger?.log?.(`[DIVERGENCE] Syncing boundary to market price: ${manager.boundaryIdx} -> ${newBoundary}`, 'info');
+                manager.logger?.log?.(`[DIVERGENCE] Syncing boundary to fund distribution: ${manager.boundaryIdx} -> ${newBoundary} (ratio: ${Format.formatPercent2((availB / (availA * marketPrice + availB)) * 100)})`, 'info');
                 manager.boundaryIdx = newBoundary;
                 assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES);
             }
@@ -2238,6 +2242,33 @@ function calculateIdealBoundary(allSlots, referencePrice, gapSlots) {
 }
 
 /**
+ * Calculate the ideal boundary index based on fund distribution.
+ * Uses the ratio of Asset A vs Asset B value to position the grid center.
+ * 
+ * @param {Array} allSlots - All grid slots
+ * @param {number} availA - Available Asset A (Sell side)
+ * @param {number} availB - Available Asset B (Buy side)
+ * @param {number} price - Market price for valuation
+ * @param {number} gapSlots - Number of slots in spread zone
+ * @returns {number} New boundary index
+ */
+function calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) {
+    const valA = toFiniteNumber(availA) * toFiniteNumber(price);
+    const valB = toFiniteNumber(availB);
+    const totalVal = valA + valB;
+    
+    // Default to center if no funds
+    if (totalVal <= 0) return Math.floor((allSlots.length - gapSlots) / 2);
+
+    const buyValueRatio = valB / totalVal;
+    const totalOrderSlots = allSlots.length - gapSlots;
+    const targetBuySlots = Math.round(totalOrderSlots * buyValueRatio);
+    
+    // Clamp to valid range (leaving room for the gap at the end)
+    return Math.max(0, Math.min(allSlots.length - gapSlots - 1, targetBuySlots - 1));
+}
+
+/**
  * Assign BUY, SELL, or SPREAD roles to grid slots based on a boundary index.
  * 
  * @param {Array} allSlots - Array of slots to update
@@ -2482,6 +2513,7 @@ module.exports = {
     // Logic helpers
     calculateIdealBoundary,
     assignGridRoles,
+    calculateFundDrivenBoundary,
 
     // Validation helpers
     hasValidAccountTotals,

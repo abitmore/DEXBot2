@@ -901,17 +901,9 @@ class Grid {
         // Use chain snapshot to get consistent total capital context
         const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
 
-        // FIX: Derive market price OUTSIDE the lock to reduce lock contention
-        // derivePrice queries the blockchain and can be slow
-        let marketPrice = manager.config.startPrice;
-        if (BitShares) {
-            try {
-                const derived = await derivePrice(BitShares, manager.assets?.assetA?.symbol, manager.assets?.assetB?.symbol, 'pool');
-                if (derived) marketPrice = derived;
-            } catch (err) {
-                manager.logger?.log?.(`Failed to derive market price: ${err.message}`, 'warn');
-            }
-        }
+        // Market price is only used for valuation during side-selection decision.
+        // We rely on config.startPrice (which is updated periodically) to avoid redundant blockchain calls.
+        const marketPrice = manager.config.startPrice;
 
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
         const executeSpreadCheck = () => {
