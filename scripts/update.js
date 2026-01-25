@@ -132,22 +132,46 @@ try {
             const raw = fs.readFileSync(BOTS_FILE, 'utf8');
             const stripped = raw.replace(/\/\*(?:.|[\r\n])*?\*\//g, '').replace(/(^|\s*)\/\/.*$/gm, '');
             const config = JSON.parse(stripped);
-            const activeBots = (config.bots || [])
+            const activeInConfig = (config.bots || [])
                 .filter(b => b.active !== false)
                 .map(b => b.name)
                 .filter(name => !!name);
 
-            if (activeBots.length > 0) {
-                log(`Active bots detected: ${activeBots.join(', ')}`);
-                for (const name of activeBots) {
-                    try {
-                        run(`pm2 reload "${name}"`);
-                    } catch (e) {
-                        log(`Warning: Failed to reload bot "${name}" (it might not be running).`);
+            if (activeInConfig.length > 0) {
+                // Get list of actually running PM2 processes
+                let runningProcesses = [];
+                try {
+                    const output = execSync('pm2 jlist').toString().trim();
+                    // Find the start of the JSON array
+                    const jsonStart = output.indexOf('[');
+                    if (jsonStart !== -1) {
+                        const jsonPart = output.substring(jsonStart);
+                        const parsed = JSON.parse(jsonPart);
+                        runningProcesses = parsed.map(p => p.name);
+                    } else {
+                        log('Warning: PM2 jlist output did not contain JSON array.');
                     }
+                } catch (e) {
+                    log('Warning: Could not fetch PM2 process list. Falling back to config-only detection.');
+                    runningProcesses = activeInConfig; // Fallback
+                }
+
+                const botsToReload = activeInConfig.filter(name => runningProcesses.includes(name));
+
+                if (botsToReload.length > 0) {
+                    log(`Active bots detected: ${botsToReload.join(', ')}`);
+                    for (const name of botsToReload) {
+                        try {
+                            run(`pm2 reload "${name}"`);
+                        } catch (e) {
+                            log(`Warning: Failed to reload bot "${name}" (it might not be running).`);
+                        }
+                    }
+                } else {
+                    log('No active bots currently running in PM2. Skipping reload.');
                 }
             } else {
-                log('No active bots found to reload.');
+                log('No active bots found in config.');
             }
         } else {
             log('Warning: profiles/bots.json not found, skipping selective reload.');
