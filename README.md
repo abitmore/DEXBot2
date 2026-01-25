@@ -258,7 +258,11 @@ DEXBot2 handles filled orders and partial fills with atomic transactions across 
 - **Consistency Guarantee**: Either all operations succeed or all fail - no partial blockchain states
 - **No Manual Intervention**: Fully automatic fill processing, state updates, and rebalancing
 
-This comprehensive fill handling ensures capital efficiency, eliminates orphaned orders and stuck funds, and guarantees consistency across all order state changes.
+### 🎯 Tighter Spread & Precision Control
+The spread management system has been refactored for professional market-making performance:
+- **Zero-Drift Logic**: Grid initialization now accounts for the center price gap, ensuring the spread starts closer to your target (e.g., 2.01% instead of 2.53%).
+- **Predictable Correction**: Replaced vague multipliers with a strict **1-slot buffer**. The bot reacts the moment the market moves by one discrete price step.
+- **Logarithmic Accuracy**: Spread boundaries are calculated using logarithmic price steps, ensuring consistent behavior across all price scales and volatility levels.
 
 ### 🔢 Price Tolerance & Integer Rounding
 The bot calculates price tolerances to account for blockchain integer rounding discrepancies. This ensures reliable matching of on-chain orders with grid orders despite minor precision differences.

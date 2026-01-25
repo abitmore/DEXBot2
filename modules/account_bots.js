@@ -551,10 +551,11 @@ async function askNumberWithBounds(promptText, defaultValue, minVal, maxVal) {
  * @param {string} promptText - The prompt text to display.
  * @param {number} defaultValue - The default value to use if input is empty.
  * @param {number} incrementPercent - The grid increment percentage.
+ * @param {number} minSpreadFactor - The minimum spread factor from GRID_LIMITS.
  * @returns {Promise<number|string>} The spread percentage or '\x1b' if ESC.
  */
-async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent) {
-    const minRequired = incrementPercent * 2;
+async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor = 2.1) {
+    const minRequired = incrementPercent * minSpreadFactor;
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue.toFixed(2)}]` : '';
     const raw = (await readInput(`${promptText} (>= ${minRequired.toFixed(2)})${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -562,22 +563,22 @@ async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent
     const parsed = Number(raw);
     if (Number.isNaN(parsed)) {
         console.log('Please enter a valid number.');
-        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent);
+        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
     // Validate that number is finite (not Infinity, -Infinity, or NaN)
     if (!Number.isFinite(parsed)) {
         console.log('Please enter a valid finite number.');
-        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent);
+        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
-    // Validate >= 2x incrementPercent
+    // Validate >= minSpreadFactor x incrementPercent
     if (parsed < minRequired) {
-        console.log(`Invalid ${promptText}: ${parsed}. Must be >= 2x incrementPercent (${minRequired.toFixed(2)})`);
-        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent);
+        console.log(`Invalid ${promptText}: ${parsed}. Must be >= ${minSpreadFactor}x incrementPercent (${minRequired.toFixed(2)})`);
+        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
     // Validate no negative
     if (parsed < 0) {
         console.log(`Invalid ${promptText}: ${parsed}. Cannot be negative`);
-        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent);
+        return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
     return parsed;
 }
@@ -867,7 +868,11 @@ async function promptBotData(base = {}) {
                 const incrP = await askNumberWithBounds('incrementPercent', data.incrementPercent, 0.01, 10);
                 if (incrP === '\x1b') break;
                 const defaultSpread = data.targetSpreadPercent || incrP * 4;
-                const targetS = await askTargetSpreadPercent('targetSpread %', defaultSpread, incrP);
+                
+                // Use current general settings for the validation limit
+                const currentSettings = loadGeneralSettings();
+                const targetS = await askTargetSpreadPercent('targetSpread %', defaultSpread, incrP, currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR);
+                
                 if (targetS === '\x1b') break;
                 data.weightDistribution.sell = wSell;
                 data.weightDistribution.buy = wBuy;
@@ -938,19 +943,20 @@ async function promptGeneralSettings() {
 
      while (!finished) {
           console.log('\x1b[1m--- General Settings (Global) ---\x1b[0m');
-          console.log(`\x1b[1;33m1) Grid:\x1b[0m          \x1b[38;5;208mCache:\x1b[0m ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, \x1b[38;5;208mRMS:\x1b[0m ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, \x1b[38;5;208mDust:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
-          console.log(`\x1b[1;33m2) Timing (Core):\x1b[0m  \x1b[38;5;208mFetchInterval:\x1b[0m ${settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN}min, \x1b[38;5;208mSyncDelay:\x1b[0m ${settings.TIMING.SYNC_DELAY_MS / 1000}s, \x1b[38;5;208mLockTimeout:\x1b[0m ${settings.TIMING.LOCK_TIMEOUT_MS / 1000}s`);
-          console.log(`\x1b[1;33m3) Timing (Fill):\x1b[0m  \x1b[38;5;208mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS / 1000}s, \x1b[38;5;208mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS / 1000}s, \x1b[38;5;208mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS / 1000}s`);
-          console.log(`\x1b[1;33m4) Log lvl:\x1b[0m       \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
+          console.log(`\x1b[1;33m1) Grid Limits:\x1b[0m   \x1b[38;5;208mCache:\x1b[0m ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, \x1b[38;5;208mRMS:\x1b[0m ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, \x1b[38;5;208mDust:\x1b[0m ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
+          console.log(`\x1b[1;33m2) Grid Safety:\x1b[0m   \x1b[38;5;208mMinSpreadFactor:\x1b[0m ${settings.GRID_LIMITS.MIN_SPREAD_FACTOR}, \x1b[38;5;208mMinSpreadOrders:\x1b[0m ${settings.GRID_LIMITS.MIN_SPREAD_ORDERS}`);
+          console.log(`\x1b[1;33m3) Timing (Core):\x1b[0m \x1b[38;5;208mFetchInterval:\x1b[0m ${settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN}min, \x1b[38;5;208mSyncDelay:\x1b[0m ${settings.TIMING.SYNC_DELAY_MS / 1000}s, \x1b[38;5;208mLockTimeout:\x1b[0m ${settings.TIMING.LOCK_TIMEOUT_MS / 1000}s`);
+          console.log(`\x1b[1;33m4) Timing (Fill):\x1b[0m \x1b[38;5;208mDedupeWindow:\x1b[0m ${settings.TIMING.FILL_DEDUPE_WINDOW_MS / 1000}s, \x1b[38;5;208mCleanupInterval:\x1b[0m ${settings.TIMING.FILL_CLEANUP_INTERVAL_MS / 1000}s, \x1b[38;5;208mRetention:\x1b[0m ${settings.TIMING.FILL_RECORD_RETENTION_MS / 1000}s`);
+          console.log(`\x1b[1;33m5) Log lvl:\x1b[0m      \x1b[38;5;208m${settings.LOG_LEVEL}\x1b[0m (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `\x1b[32mON\x1b[0m` : `\x1b[31mOFF\x1b[0m`;
           const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");
-          console.log(`\x1b[1;33m5) Updater:\x1b[0m       [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mInterval:\x1b[0m ${currentSched.days}d, \x1b[38;5;208mTime:\x1b[0m ${currentSched.time}`);
+          console.log(`\x1b[1;33m6) Updater:\x1b[0m      [${updaterStatus}] \x1b[38;5;208mBranch:\x1b[0m ${settings.UPDATER.BRANCH}, \x1b[38;5;208mInterval:\x1b[0m ${currentSched.days}d, \x1b[38;5;208mTime:\x1b[0m ${currentSched.time}`);
           console.log('--------------------------------------------------');
           console.log('\x1b[1;32mS) Save & Exit\x1b[0m');
           console.log('\x1b[37mC) Cancel (Discard changes)\x1b[0m');
 
          const choice = (await readInput('Select section to edit or action: ', {
-             validate: (input) => ['1', '2', '3', '4', '5', 's', 'c'].includes(input)
+             validate: (input) => ['1', '2', '3', '4', '5', '6', 's', 'c'].includes(input)
          })).trim().toLowerCase();
 
         if (choice === '\x1b') {
@@ -971,6 +977,14 @@ async function promptGeneralSettings() {
                 settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE = dust;
                 break;
             case '2':
+                const mFactor = await askNumberWithBounds('Minimum Spread Factor (Inc x Factor)', settings.GRID_LIMITS.MIN_SPREAD_FACTOR, 1.0, 10.0);
+                if (mFactor === '\x1b') break;
+                const mOrders = await askIntegerInRange('Minimum Spread Orders (Empty Slots)', settings.GRID_LIMITS.MIN_SPREAD_ORDERS, 1, 10);
+                if (mOrders === '\x1b') break;
+                settings.GRID_LIMITS.MIN_SPREAD_FACTOR = mFactor;
+                settings.GRID_LIMITS.MIN_SPREAD_ORDERS = mOrders;
+                break;
+            case '3':
                 const fetch = await askNumberWithBounds('Blockchain Fetch Interval (min)', settings.TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN, 1, 1440);
                 if (fetch === '\x1b') break;
                 const delay = await askNumberWithBounds('Sync Delay (s)', settings.TIMING.SYNC_DELAY_MS / 1000, 0.1, 10);
@@ -981,7 +995,7 @@ async function promptGeneralSettings() {
                 settings.TIMING.SYNC_DELAY_MS = delay * 1000;
                 settings.TIMING.LOCK_TIMEOUT_MS = lock * 1000;
                 break;
-            case '3':
+            case '4':
                 const dedupe = await askNumberWithBounds('Fill Dedup Window (s)', settings.TIMING.FILL_DEDUPE_WINDOW_MS / 1000, 0.1, 30);
                 if (dedupe === '\x1b') break;
                 const clean = await askNumberWithBounds('Fill Cleanup Interval (s)', settings.TIMING.FILL_CLEANUP_INTERVAL_MS / 1000, 1, 60);
@@ -992,12 +1006,12 @@ async function promptGeneralSettings() {
                 settings.TIMING.FILL_CLEANUP_INTERVAL_MS = clean * 1000;
                 settings.TIMING.FILL_RECORD_RETENTION_MS = retain * 1000;
                 break;
-            case '4':
+            case '5':
                 const newLevel = await askLogLevel('Enter log level', settings.LOG_LEVEL);
                 if (newLevel === '\x1b') break;
                 settings.LOG_LEVEL = newLevel;
                 break;
-            case '5':
+            case '6':
                 const upActive = await askBoolean('Enable Automated Updater', settings.UPDATER.ACTIVE !== false);
                 if (upActive === '\x1b') break;
                 settings.UPDATER.ACTIVE = upActive;

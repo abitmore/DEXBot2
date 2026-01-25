@@ -78,8 +78,8 @@ let TIMING = {
 let GRID_LIMITS = {
     // Minimum spread factor: Ensures spread is at least (incrementPercent × MIN_SPREAD_FACTOR)
     // Prevents spread from being too narrow relative to grid spacing
-    // Default: 2 (spread must be at least 2× the increment)
-    MIN_SPREAD_FACTOR: 2,
+    // Default: 2.1 (ensures 3-gap minimum stays below Target + Increment limit)
+    MIN_SPREAD_FACTOR: 2.1,
 
     // Minimum order size safety factor: Multiplied by blockchain minimum to ensure orders are well above limits
     // Prevents orders from being rejected due to rounding or fee deductions

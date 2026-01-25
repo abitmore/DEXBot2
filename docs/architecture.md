@@ -697,11 +697,10 @@ The strategy engine has been significantly strengthened with improvements to fun
 - Prevents fund leaks from missing fee calculations
 - Located in: `modules/order/strategy.js` - `processFilledOrders()`
 
-**6. Rotation Completion Logic**
-- Rotation now correctly skips over insufficient slots
-- Continues to next candidate instead of stalling
-- Prevents partial rotations from leaving grid incomplete
-- Ensures all eligible orders are rotated per cycle
+**7. Precision Spread Management (Logarithmic Logic)**
+- **Discrete Step Tracking**: Replaced the legacy linear multiplier (`SPREAD_WIDENING_MULTIPLIER`) with a discrete 1-slot logarithmic buffer. This ensures correction triggers exactly when the market moves by one full increment.
+- **Center-Gap Awareness**: Refined the grid initialization math to account for the "Center Gap" naturally created during symmetric centering. This reduces the initial spread by ~0.5% (one full increment) compared to the previous version.
+- **Collision-Free Safety**: Increased `MIN_SPREAD_FACTOR` to 2.1 to ensure that the security minimum (2 spread orders) never conflicts with the spread correction threshold, even at micro-spread configurations.
 
 ### Related Documentation
 
