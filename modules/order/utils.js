@@ -2326,12 +2326,19 @@ function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 /**
- * Determine if the spread is too wide and should be flagged for rebalancing.
-  * @param {number} targetSpread - Target spread threshold
-  * @param {number} buyCount - Number of BUY orders
-  * @param {number} sellCount - Number of SELL orders
-  * @returns {boolean} True if spread is too wide and should be flagged
-  */
+ * Determine if the spread is too wide and calculate how many extra slots are needed.
+ *
+ * Returns the number of extra order slots required to bring the spread back within
+ * the tolerated limit. Returns 0 if spread is acceptable.
+ *
+ * @param {number} currentSpread - Current spread percentage between best buy and sell
+ * @param {number} nominalSpread - Target spread percentage the grid was built for
+ * @param {number} toleranceSteps - Number of extra steps allowed before triggering (includes doubled sides)
+ * @param {number} buyCount - Number of active BUY orders
+ * @param {number} sellCount - Number of active SELL orders
+ * @param {number} [incrementPercent=0.5] - Grid increment percentage for step calculation
+ * @returns {number} Number of extra slots needed (0 if spread is acceptable, 1+ if correction needed)
+ */
 function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, incrementPercent = 0.5) {
     // CRITICAL: If either side is empty, we ARE out of spread (infinite spread)
     // Return at least 1 slot to start filling the side

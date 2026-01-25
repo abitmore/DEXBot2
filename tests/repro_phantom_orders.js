@@ -4,7 +4,7 @@
  * Test that verifies phantom orders (ACTIVE/PARTIAL without orderId) are now PREVENTED.
  * 
  * Historical context: Before the fix, phantom orders could be created via:
- * 1. Grid._updateOrdersForSide moving VIRTUAL to ACTIVE without an orderId
+ * 1. Grid resize operations promoting VIRTUAL to ACTIVE without an orderId
  * 2. SyncEngine skipping ACTIVE orders without orderId during cleanup
  * 3. Strategy upgrading PARTIAL to ACTIVE without checking orderId
  * 
@@ -14,7 +14,6 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
-const Grid = require('../modules/order/grid.js');
 
 async function runTest() {
     console.log('Running Phantom Orders Prevention Test...');
@@ -50,18 +49,24 @@ async function runTest() {
     console.log('   ✓ Phantom order blocked - downgraded to VIRTUAL');
 
     // ============================================================================
-    // TEST 2: Grid resize preserves VIRTUAL state (doesn't create phantoms)
+    // TEST 2: Order resizing preserves VIRTUAL state (doesn't create phantoms)
     // ============================================================================
-    console.log(' - Test 2: Grid resize preserves VIRTUAL state');
-    const dummyOrders = [{ id: 'slot-2', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, size: 0 }];
-    mgr.orders.set('slot-2', dummyOrders[0]);
+    console.log(' - Test 2: Order resizing preserves VIRTUAL state');
 
-    Grid._updateOrdersForSide(mgr, ORDER_TYPES.SELL, [20], dummyOrders);
+    // Create a VIRTUAL order and resize it
+    mgr._updateOrder({
+        id: 'slot-2',
+        type: ORDER_TYPES.SELL,
+        state: ORDER_STATES.VIRTUAL,
+        size: 20,  // Resized from 0 to 20
+        price: 1.2,
+        orderId: ''  // No blockchain ID (still VIRTUAL)
+    });
 
     const resizedOrder = mgr.orders.get('slot-2');
     assert.strictEqual(resizedOrder.state, ORDER_STATES.VIRTUAL, 'Resized VIRTUAL order should stay VIRTUAL');
     assert.strictEqual(resizedOrder.size, 20, 'Size should be updated correctly');
-    console.log('   ✓ Grid resize preserves VIRTUAL state (no phantom created)');
+    console.log('   ✓ Order resizing preserves VIRTUAL state (no phantom created)');
 
     // ============================================================================
     // TEST 3: SyncEngine cleanup of orphaned ACTIVE (no orderId on chain)
