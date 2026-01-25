@@ -2074,19 +2074,27 @@ class DEXBot {
                     await this.manager.fetchAccountTotals(this.accountId);
 
                     // 2. Refresh market price for valuation ratios
-                    try {
-                        const freshPrice = await OrderUtils.derivePrice(
-                            BitShares, 
-                            this.manager.assets.assetA.symbol, 
-                            this.manager.assets.assetB.symbol, 
-                            this.config.priceMode || 'pool'
-                        );
-                        if (freshPrice && Number.isFinite(freshPrice)) {
-                            this.manager.config.startPrice = freshPrice;
-                            this.manager.logger.log(`✓ Periodic price refresh: ${Format.formatPrice6(freshPrice)}`, 'info');
+                    // Skip if startPrice is a fixed numeric value (explicitly set in bots.json)
+                    const isNumeric = (val) => typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
+                    const isFixedPrice = isNumeric(this.config.startPrice);
+
+                    if (!isFixedPrice) {
+                        try {
+                            const freshPrice = await OrderUtils.derivePrice(
+                                BitShares, 
+                                this.manager.assets.assetA.symbol, 
+                                this.manager.assets.assetB.symbol, 
+                                this.config.priceMode || 'pool'
+                            );
+                            if (freshPrice && Number.isFinite(freshPrice)) {
+                                this.manager.config.startPrice = freshPrice;
+                                this.manager.logger.log(`✓ Periodic price refresh: ${Format.formatPrice6(freshPrice)}`, 'info');
+                            }
+                        } catch (err) {
+                            this._warn(`Periodic price refresh failed: ${err.message}`);
                         }
-                    } catch (err) {
-                        this._warn(`Periodic price refresh failed: ${err.message}`);
+                    } else {
+                        this.manager.logger.log(`Skipping periodic price refresh: using fixed startPrice ${this.config.startPrice}`, 'debug');
                     }
 
                     // 3. Sync with current on-chain orders to detect divergence
