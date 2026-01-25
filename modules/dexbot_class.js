@@ -333,7 +333,6 @@ class DEXBot {
                                     // Log funding state after rotation completes
                                     this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${filledOrder.id}`);
                                 }
-                                await this.manager.persistGrid();
 
                                 // NOTE: Interrupt logic removed to prevent stale chain state race conditions.
                                 // New fills accumulating in _incomingFillQueue will be processed in the next consumer cycle.
@@ -1014,6 +1013,10 @@ class DEXBot {
             try {
                 const batchResult = await this._processBatchResults(result, opContexts, ordersToPlace, ordersToRotate);
                 this._metrics.batchesExecuted++;
+
+                // CRITICAL: Persist grid state after successful batch execution
+                await this.manager.persistGrid();
+
                 return batchResult;
             } finally {
                 this.manager.resumeFundRecalc();
@@ -1318,7 +1321,8 @@ class DEXBot {
      * @param {boolean} [isBootstrap=false] - Whether this is the startup check
      * @private
      */
-    async _performGridChecks(isBootstrap = false) {
+    async _performGridChecks(isBootstrap = false, options = {}) {
+        const { skipFillLock = false } = options;
         try {
             // Only run grid checks if orders exist
             if (!this.manager || !this.manager.orders || this.manager.orders.size === 0) {
@@ -1327,8 +1331,38 @@ class DEXBot {
 
             const phase = isBootstrap ? 'startup' : 'periodic';
 
+            // 1. Check spread condition first (updates manager.outOfSpread)
+            // This requires fill processing lock for safety
+            let spreadResult = null;
+            const executeSpreadActions = async () => {
+                // CRITICAL: Recalculate funds before spread correction
+                this.manager.recalculateFunds();
+
+                spreadResult = await this.manager.checkSpreadCondition(
+                    BitShares,
+                    this.updateOrdersOnChainBatch.bind(this)
+                );
+                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                    const checkPhase = isBootstrap ? 'startup' : '4h fetch';
+                    this._log(`✓ Spread correction at ${checkPhase}: ${spreadResult.ordersPlaced} order(s) placed`);
+                }
+            };
+
+            if (skipFillLock) {
+                await executeSpreadActions();
+            } else {
+                await this.manager._fillProcessingLock.acquire(executeSpreadActions);
+            }
+
+            // 2. Run divergence and threshold checks
             // CRITICAL: Use divergence lock to prevent race with fill processing
             await this.manager._divergenceLock.acquire(async () => {
+                // NEW: Sync boundary to funds distribution if grid is out of spread.
+                // This ensures zones are aligned before checking side-specific RMS divergence.
+                if (this.manager.outOfSpread > 0) {
+                    OrderUtils.syncBoundaryToFunds(this.manager);
+                }
+
                 const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
 
                 // Step 1: Threshold check
@@ -1386,43 +1420,28 @@ class DEXBot {
                     }
                 }
             });
-        } catch (err) {
-            this._warn(`Error checking grid at ${phase}: ${err.message}`);
-        }
 
-        // Check spread condition (requires fill processing lock for safety)
-        try {
-            // SAFE: AsyncLock ensures lock is released even if callback throws (finally block in _processQueue)
-            await this.manager._fillProcessingLock.acquire(async () => {
-                // CRITICAL: Recalculate funds before spread correction
-                this.manager.recalculateFunds();
-
-                const spreadResult = await this.manager.checkSpreadCondition(
-                    BitShares,
-                    this.updateOrdersOnChainBatch.bind(this)
-                );
-                if (spreadResult && spreadResult.ordersPlaced > 0) {
-                    const phase = isBootstrap ? 'startup' : '4h fetch';
-                    this._log(`✓ Spread correction at ${phase}: ${spreadResult.ordersPlaced} order(s) placed`);
-                    await this.manager.persistGrid();
-                }
-
-                // Check grid health only if pipeline is empty
+            // 3. Final grid health check (if pipeline is empty)
+            const executeHealthCheck = async () => {
                 const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
                 if (pipelineStatus.isEmpty) {
-                    const healthResult = await this.manager.checkGridHealth(
+                    await this.manager.checkGridHealth(
                         this.updateOrdersOnChainBatch.bind(this)
                     );
-                    if (healthResult.buyDust && healthResult.sellDust) {
-                        await this.manager.persistGrid();
-                    }
                 } else {
-                    const phase = isBootstrap ? 'Startup' : 'Periodic';
-                    this._log(`${phase} grid health check deferred: ${pipelineStatus.reasons.join(', ')}`, 'debug');
+                    const healthPhase = isBootstrap ? 'Startup' : 'Periodic';
+                    this._log(`${healthPhase} grid health check deferred: ${pipelineStatus.reasons.join(', ')}`, 'debug');
                 }
-            });
+            };
+
+            if (skipFillLock) {
+                await executeHealthCheck();
+            } else {
+                await this.manager._fillProcessingLock.acquire(executeHealthCheck);
+            }
+
         } catch (err) {
-            this._warn(`Error checking spread condition at ${phase}: ${err.message}`);
+            this._warn(`Error checking grid at ${phase}: ${err.message}`);
         }
     }
 
@@ -1827,7 +1846,6 @@ class DEXBot {
                     this._log('Generating new grid and placing initial orders on-chain...');
                     await this.placeInitialOrders();
                 }
-                await this.manager.persistGrid();
             } else {
                 this._log('Found active session. Loading and syncing existing grid.');
                 await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
@@ -1846,8 +1864,6 @@ class DEXBot {
                 // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
                 // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
                 await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
-
-                await this.manager.persistGrid();
             }
         });
 

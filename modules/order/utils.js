@@ -1245,23 +1245,15 @@ async function initializeFeeCache(botsConfig, BitShares) {
  * Get total fees (blockchain + market) for a filled order amount
  *
  * @param {string} assetSymbol - Asset symbol (e.g., 'IOB.XRP', 'TWENTIX', 'BTS')
- * @param {number} assetAmount - Amount of asset to calculate fees for
- * @returns {number|object} Fee amount in the asset's native units
- *   For BTS: object with { total: number, createFee: number }
- *     - total: blockchain fees (creation 10% + update)
- *     - createFee: the full limit order creation fee
- *   For market assets: total fee amount (number)
+ * @param {number|null} assetAmount - Amount of asset to calculate fees for. If null, returns fee info object.
+ * @param {boolean} isMaker - Whether the fill was a maker or taker operation
+ * @returns {number|object} Net proceeds (number) or Fee info object
  */
-function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
+function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
     const cachedFees = feeCache[assetSymbol];
 
     if (!cachedFees) {
         throw new Error(`Fees not cached for ${assetSymbol}. Call initializeFeeCache first.`);
-    }
-
-    assetAmount = Number(assetAmount);
-    if (!Number.isFinite(assetAmount) || assetAmount < 0) {
-        throw new Error(`Invalid assetAmount: ${assetAmount}`);
     }
 
     // Special handling for BTS (blockchain fees only)
@@ -1275,11 +1267,16 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
         const takerNetFee = orderCreationFee; // Taker pays full fee with no refund
         const netFee = isMaker ? makerNetFee : takerNetFee;
 
+        // If amount is provided (including 0), we're calculating NET PROCEEDS (what actually hits the wallet)
         // On BitShares, proceeds = raw amount + (90% refund if maker)
-        const refund = isMaker ? (orderCreationFee * 0.9) : 0;
-        const netProceeds = assetAmount + refund;
+        // Note: Takers don't get a refund, so proceeds = raw amount.
+        if (assetAmount !== null && assetAmount !== undefined) {
+            const amount = Number(assetAmount);
+            const refund = isMaker ? (orderCreationFee * 0.9) : 0;
+            return amount + refund;
+        }
 
-        // ALWAYS return the object for BTS to avoid breaking fee lookups elsewhere
+        // Default: return the fee info object (legacy behavior used for estimations)
         return {
             total: netFee + orderUpdateFee,
             createFee: orderCreationFee,
@@ -1287,20 +1284,56 @@ function getAssetFees(assetSymbol, assetAmount, isMaker = true) {
             makerNetFee: makerNetFee,
             takerNetFee: takerNetFee,
             netFee: netFee,
-            netProceeds: netProceeds, // New field for accounting.js
             isMaker: isMaker
         };
     }
 
     // Handle regular assets - deduct market or taker fee from the amount received
-    // Takers pay higher fee if configured, otherwise use market fee
     const feePercent = isMaker
         ? (cachedFees.marketFee?.percent || 0)
         : (cachedFees.takerFee?.percent || cachedFees.marketFee?.percent || 0);
-    const feeAmount = (assetAmount * feePercent) / 100;
 
-    // Return amount after fees are deducted (Net Proceeds)
-    return assetAmount - feeAmount;
+    if (assetAmount !== null && assetAmount !== undefined) {
+        const amount = Number(assetAmount);
+        const feeAmount = (amount * feePercent) / 100;
+        return amount - feeAmount;
+    }
+
+    // Default: return fee info object
+    return {
+        marketFee: cachedFees.marketFee?.percent || 0,
+        takerFee: cachedFees.takerFee?.percent || 0,
+        percent: feePercent
+    };
+}
+
+/**
+ * Synchronize the grid boundary based on the current distribution of funds.
+ * This ensures the BUY/SELL zones align with where the bot actually has capital.
+ *
+ * @param {Object} manager - The OrderManager instance
+ * @returns {boolean} True if the boundary was changed
+ */
+function syncBoundaryToFunds(manager) {
+    const { ORDER_TYPES } = require('../constants');
+    const availA = (manager.funds?.available?.sell || 0);
+    const availB = (manager.funds?.available?.buy || 0);
+    const startPrice = manager.config.startPrice;
+
+    const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
+    const gapSlots = (typeof manager.calculateGapSlots === 'function')
+        ? manager.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent)
+        : (manager.targetSpreadCount || 2);
+
+    const newBoundary = calculateFundDrivenBoundary(allSlots, availA, availB, startPrice, gapSlots);
+
+    if (newBoundary !== manager.boundaryIdx) {
+        manager.logger?.log?.(`[BOUNDARY] Syncing boundary to fund distribution: ${manager.boundaryIdx} -> ${newBoundary} (ratio: ${Format.formatPercent2((availB / (availA * startPrice + availB)) * 100)})`, 'info');
+        manager.boundaryIdx = newBoundary;
+        assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES);
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -1666,22 +1699,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         // If the grid is lagging behind the market, shift the boundary based on the
         // mathematical ideal distribution of funds. Market price is used only for valuation.
         if (manager.outOfSpread > 0) {
-            const availA = (manager.funds?.available?.sell || 0);
-            const availB = (manager.funds?.available?.buy || 0);
-            const startPrice = manager.config.startPrice;
-
-            const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
-            const gapSlots = (typeof manager.calculateGapSlots === 'function')
-                ? manager.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent)
-                : (manager.targetSpreadCount || 2);
-
-            const newBoundary = calculateFundDrivenBoundary(allSlots, availA, availB, startPrice, gapSlots);
-
-            if (newBoundary !== manager.boundaryIdx) {
-                manager.logger?.log?.(`[DIVERGENCE] Syncing boundary to fund distribution: ${manager.boundaryIdx} -> ${newBoundary} (ratio: ${Format.formatPercent2((availB / (availA * startPrice + availB)) * 100)})`, 'info');
-                manager.boundaryIdx = newBoundary;
-                assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES);
-            }
+            syncBoundaryToFunds(manager);
         }
 
         // Process each divergent side independently
@@ -1774,7 +1792,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             const ordersToRotate = manager.ordersNeedingPriceCorrection
                 .filter(c => !c.isNewPlacement && !c.isSurplus)
                 .map(correction => ({
-                    oldOrder: { orderId: correction.chainOrderId },
+                    oldOrder: { orderId: correction.chainOrderId, id: correction.gridOrder.id },
                     newPrice: correction.expectedPrice,
                     newSize: correction.size,
                     type: correction.type,
@@ -2480,6 +2498,7 @@ module.exports = {
     // Grid comparisons
     runGridComparisons,
     applyGridDivergenceCorrections,
+    syncBoundaryToFunds,
 
     // Order building
     buildCreateOrderArgs,
