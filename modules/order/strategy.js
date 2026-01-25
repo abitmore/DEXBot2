@@ -836,6 +836,17 @@ class StrategyEngine {
             mgr.recalculateFunds();
             await mgr.persistGrid();
 
+            // Layer 2: Stabilization gate - verify funds before rebalancing (prevents cascade corruption)
+            const driftCheck = mgr.checkFundDriftAfterFills();
+            if (!driftCheck.isValid) {
+                mgr.logger.log(
+                    `[STABILIZATION-GATE] Fund invariant violated after fills: ${driftCheck.reason}. ` +
+                    `Aborting rebalance to prevent cascade. Triggering state recovery on next cycle.`,
+                    'error'
+                );
+                return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
+            }
+
             let shouldRebalance = (fillsToSettle > 0);
 
             if (!shouldRebalance) {

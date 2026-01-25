@@ -869,6 +869,67 @@ class OrderManager {
     }
 
     /**
+     * Layer 2: Stabilization gate - Check if fund invariants are satisfied after fill processing.
+     * This prevents cascade corruption from spreading to rebalancing operations.
+     *
+     * Compares expected funds (grid + free from blockchain) vs actual blockchain totals,
+     * using the same logic as accounting._verifyFundInvariants() but returns result instead of logging.
+     *
+     * @returns {Object} { isValid: boolean, driftBuy: number, driftSell: number, reason: string }
+     */
+    checkFundDriftAfterFills() {
+        const { GRID_LIMITS } = require('../constants');
+        const Format = require('./format');
+
+        // Get grid allocation and free balance from blockchain
+        let gridBuy = 0, gridSell = 0;
+        for (const order of Array.from(this.orders.values())) {
+            const isActive = (order.state === 'active' || order.state === 'partial');
+            const size = Number(order.size) || 0;
+            if (size <= 0 || !isActive) continue;
+
+            if (order.type === 'buy') gridBuy += size;
+            else if (order.type === 'sell') gridSell += size;
+        }
+
+        const chainFreeBuy = this.accountTotals?.buyFree || 0;
+        const chainFreeSell = this.accountTotals?.sellFree || 0;
+        const actualBuy = this.accountTotals?.buy || 0;
+        const actualSell = this.accountTotals?.sell || 0;
+
+        // Calculate expected totals based on current grid state
+        const expectedBuy = chainFreeBuy + gridBuy;
+        const expectedSell = chainFreeSell + gridSell;
+
+        // Compute drift
+        const driftBuy = Math.abs(actualBuy - expectedBuy);
+        const driftSell = Math.abs(actualSell - expectedSell);
+
+        // Calculate precision tolerances
+        const buyPrecision = this.assets?.assetB?.precision || 8;
+        const sellPrecision = this.assets?.assetA?.precision || 8;
+        const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
+        const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
+        const percentTolerance = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
+
+        const allowedDriftBuy = Math.max(precisionSlackBuy, actualBuy * percentTolerance);
+        const allowedDriftSell = Math.max(precisionSlackSell, actualSell * percentTolerance);
+
+        const buyOk = driftBuy <= allowedDriftBuy;
+        const sellOk = driftSell <= allowedDriftSell;
+
+        return {
+            isValid: buyOk && sellOk,
+            driftBuy,
+            driftSell,
+            allowedDriftBuy,
+            allowedDriftSell,
+            reason: !buyOk ? `BUY drift ${Format.formatAmount8(driftBuy)} > ${Format.formatAmount8(allowedDriftBuy)}` :
+                    !sellOk ? `SELL drift ${Format.formatAmount8(driftSell)} > ${Format.formatAmount8(allowedDriftSell)}` : null
+        };
+    }
+
+    /**
      * Generic retry wrapper for persistence operations.
      * Handles transient failures gracefully without crashing.
      */
