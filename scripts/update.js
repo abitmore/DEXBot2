@@ -74,26 +74,34 @@ try {
     
     const localHash = execSync('git rev-parse HEAD').toString().trim();
     const remoteHash = execSync(`git rev-parse origin/${branch}`).toString().trim();
+    
+    // Check for incoming updates: commits that are in origin/branch but NOT in HEAD
+    const incomingCommits = parseInt(execSync(`git rev-list --count HEAD..origin/${branch}`).toString().trim(), 10);
+    const updatesAvailable = incomingCommits > 0;
+    const branchSwitchNeeded = currentBranch !== branch;
 
-    // If hashes match, the code is identical. 
-    // We only need to switch the branch name if it differs, then exit without reloading.
-    if (localHash === remoteHash) {
-        if (currentBranch !== branch) {
-            log(`Aligning branch reference: ${currentBranch} -> ${branch} (code is identical).`);
+    // Logic:
+    // 1. If code is exactly identical (hashes match) -> Switch branch if needed, then exit.
+    // 2. If local is AHEAD of remote (updatesAvailable=false but hashes differ) -> Switch branch if needed, then exit.
+    // 3. If there are INCOMING commits (updatesAvailable=true) -> Proceed with update and reload.
+
+    if (!updatesAvailable) {
+        if (branchSwitchNeeded) {
+            log(`Aligning branch reference: ${currentBranch} -> ${branch} (no incoming updates).`);
             run(`git checkout ${branch}`);
             log('DEXBot2 is now tracking the correct branch.');
         }
-        log('DEXBot2 is already up to date.');
+        log('DEXBot2 is already up to date (local is equal or ahead of remote).');
         process.exit(0);
     }
 
-    log('Updates available. Proceeding with update process...');
+    log(`${incomingCommits} update(s) available. Proceeding with update process...`);
 
     // List changes
     console.log('\n----------------------------------------------------------------');
     console.log('Incoming Changes:');
     try {
-        execSync(`git log --oneline --graph --decorate ${localHash}..${remoteHash}`, { stdio: 'inherit', cwd: ROOT });
+        execSync(`git log --oneline --graph --decorate HEAD..origin/${branch}`, { stdio: 'inherit', cwd: ROOT });
     } catch (e) {
         log('Warning: Could not list changes.');
     }
