@@ -27,6 +27,12 @@ utils.getAssetFees = (asset, amount, isMaker = true) => {
     return amount;
 };
 
+// SUPPRESS BitShares CONNECTION LOGGING IN TESTS
+const bsModule = require('../modules/bitshares_client');
+if (bsModule.setSuppressConnectionLog) {
+    bsModule.setSuppressConnectionLog(true);
+}
+
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
@@ -181,8 +187,10 @@ async function testMultifillOppositePartial() {
     console.log('\n  ✓ Scenario: Multi-fill with opposite partial handled correctly');
 }
 
-testMultifillOppositePartial().catch(err => {
-    console.error('Test failed!');
-    console.error(err);
-    process.exit(1);
-});
+testMultifillOppositePartial()
+    .then(() => process.exit(0))
+    .catch(err => {
+        console.error('Test failed!');
+        console.error(err);
+        process.exit(1);
+    });

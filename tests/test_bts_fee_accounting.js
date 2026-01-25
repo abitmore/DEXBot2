@@ -26,7 +26,13 @@ utils.getAssetFees = (asset, amount, isMaker = true) => {
      if (asset === 'USD') return amount;
      return amount;
  };
- 
+
+// SUPPRESS BitShares CONNECTION LOGGING IN TESTS
+const bsModule = require('../modules/bitshares_client');
+if (bsModule.setSuppressConnectionLog) {
+    bsModule.setSuppressConnectionLog(true);
+}
+
  const assert = require('assert');
  const { OrderManager } = require('../modules/order/manager');
  const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
@@ -254,6 +260,7 @@ async function runAllTests() {
         await testFeeSettlementCorrectness();
         await testInsufficientFundsDeferral();
         console.log('\n✓ All tests passed!');
+        process.exit(0);
     } catch (err) {
         console.error('\n✗ Tests failed!');
         console.error(err);
