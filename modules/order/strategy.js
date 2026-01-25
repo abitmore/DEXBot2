@@ -586,7 +586,11 @@ class StrategyEngine {
             const cappedIncrease = Math.min(gridDifference, remainingAvail);
             const finalSize = destinationSize + cappedIncrease;
 
-            if (finalSize > 0) {
+            // SAFETY: Ensure final size is above double-dust threshold
+            const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
+            const minHealthySize = idealSize * dustThresholdFactor * 2;
+
+            if (finalSize >= minHealthySize && finalSize > 0) {
                 ordersToRotate.push({
                     oldOrder: { ...currentSurplus },
                     newPrice: shortageSlot.price,
@@ -612,6 +616,7 @@ class StrategyEngine {
                 rotationsPerformed++;
                 budgetRemaining--;
             } else {
+                mgr.logger.log(`[ROTATION] Skipping rotation: resulting size ${Format.formatAmount8(finalSize)} below double-dust threshold ${Format.formatAmount8(minHealthySize)}`, 'debug');
                 surplusIdx++;
                 continue;
             }
@@ -637,24 +642,23 @@ class StrategyEngine {
                 const currentSize = slot.size || 0;
                 const sizeIncrease = Math.max(0, idealSize - currentSize);
 
-                if (sizeIncrease > 0) {
-                    const remainingOrders = placeCount - i;
-                    const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
-                    const finalSize = currentSize + cappedIncrease;
+                const remainingOrders = placeCount - i;
+                const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
+                const finalSize = currentSize + cappedIncrease;
 
-                    if (finalSize > 0) {
-                        // NEW: Set new placement to VIRTUAL until confirmed on-chain
-                        ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
-                        stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
-                        totalNewPlacementSize += cappedIncrease;
-                        remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
-                        budgetRemaining--;
-                    }
-                } else if (idealSize > 0) {
+                // SAFETY: Ensure final size is above double-dust threshold
+                const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
+                const minHealthySize = idealSize * dustThresholdFactor * 2;
+
+                if (finalSize >= minHealthySize && finalSize > 0) {
                     // NEW: Set new placement to VIRTUAL until confirmed on-chain
-                    ordersToPlace.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.VIRTUAL });
-                    stateUpdates.push({ ...slot, type: type, size: idealSize, state: ORDER_STATES.VIRTUAL });
+                    ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
+                    stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
+                    totalNewPlacementSize += cappedIncrease;
+                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                     budgetRemaining--;
+                } else {
+                    mgr.logger.log(`[PLACEMENT] Skipping placement: resulting size ${Format.formatAmount8(finalSize)} below double-dust threshold ${Format.formatAmount8(minHealthySize)}`, 'debug');
                 }
             }
         }
