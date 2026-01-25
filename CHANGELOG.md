@@ -7,6 +7,10 @@ All notable changes to this project will be documented in this file.
 ## [0.6.0-patch.8] - 2026-01-25 - Spread Refinement, Inventory Sync & Operational Hardening
 
 ### Added
+- **Layer 2 Self-Healing Recovery** (commit 8e88a6d)
+  - **Feature**: Enhanced stabilization gate with automated recovery when transient fund drift is detected.
+  - **Mechanism**: Attempts account refresh and full syncFromOpenOrders before re-verifying invariants.
+  - **Benefit**: Prevents unnecessary halting from transient optimistic tracking drifts while maintaining safety against persistent corruption.
 - **Fund-Driven Boundary Sync** (commit 7a443f5)
   - **Feature**: Implemented a new synchronization layer that aligns the grid boundary with the account's actual inventory distribution (buy/sell fund ratio).
   - **Benefit**: Automatically shifts the grid to favor the "heavier" side, ensuring the bot remains positioned where it has the most capital to trade.
@@ -18,6 +22,22 @@ All notable changes to this project will be documented in this file.
   - **Impact**: Ensures that fund valuation and grid anchoring remain accurate even during long-running sessions without fills.
 
 ### Fixed
+- **Rapid-Restart Cascade Defense (Layer 1 & Layer 2)** (commit ebca167)
+  - **Problem**: Rapid bot restarts caused cascading fund drift (416 BTS), 2,470x order size mismatches, and 43 billion BTS delta calculation errors when orders filled on-chain while bot was offline.
+  - **Solution - Layer 1**: Session timestamps (sessionId, createdAtMs) prevent stale grid orders from being matched to chain orders via orphan-fallback. Pre-restart orders are marked with `previousSessionMarker=true` and automatically skipped.
+  - **Solution - Layer 2**: Stabilization gate (`checkFundDriftAfterFills()`) compares grid allocation + free balance vs actual blockchain totals before rebalancing. Aborts if drift exceeds tolerance, preventing cascade corruption spread.
+  - **Impact**: Defense-in-depth protection with negligible overhead (O(1) check + <1ms scan).
+- **Periodic Fetch Deadlock Resolution** (commit a2f76c9)
+  - **Problem**: Periodic fetch operations could deadlock during boundary sync or fill processing, causing bot to hang.
+  - **Solution**: Refined timeout logic and acquisition sequencing in periodic fetch handler.
+  - **Impact**: Smooth background updates without blocking core operations.
+- **Updater Restart Loop Prevention** (commits 95b6d15, 230af49)
+  - **Problem**: Updater would trigger redundant restarts and fail to gracefully handle branches where local is ahead of remote.
+  - **Solution**: Optimized branch switching detection and added checks to prevent unnecessary reloads when local is ahead.
+  - **Impact**: Cleaner update cycle, fewer spurious restarts.
+- **Grid Check API Breakage** (commit bf41543)
+  - **Problem**: Periodic grid checks broke API contract and caused deadlock during fill processing.
+  - **Solution**: Fixed deadlock and restored API compatibility.
 - **Spread Gap Over-calculation & Alignment** (commit 77d01cd)
   - **Problem**: The grid was creating one more price gap than intended because it didn't account for the naturally occurring 'Center Gap' during symmetric centering.
   - **Solution**: Refined `gapSlots` calculation to `requiredSteps - 1` and standardized spread-check logic to use `gapSlots + 1` as the true gap distance.
@@ -30,6 +50,9 @@ All notable changes to this project will be documented in this file.
   - **Logic**: Implemented automatic target count reduction (-1) on "doubled" sides (sides with dust-consolidated orders) to prevent structural grid drift and maintain symmetry.
 
 ### Refactored
+- **Unused Stabilization Constants Removal** (commit ebca167)
+  - **Cleanup**: Removed unused STABILIZATION constants (MAX_DRIFT_BTS, MAX_DRIFT_PERCENT, INVARIANT_CHECK_TIMEOUT_MS, SESSION_BOUNDARY_GRACE_PERIOD_MS) from Layer 2 defense implementation.
+  - **Rationale**: Implementation uses existing GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE instead; preset constants added unnecessary complexity without usage.
 - **PM2 Orchestration & Credential Management** (commits 5ddd6cb, 3685332)
   - **Cleanup**: Integrated the credential daemon directly into the PM2 lifecycle and simplified the launcher logic.
   - **Visibility**: Renamed PM2 processes to `dexbot-cred` and `dexbot-update` for easier monitoring via `pm2 list`.
