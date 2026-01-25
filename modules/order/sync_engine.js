@@ -252,11 +252,6 @@ class SyncEngine {
         chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection, options) {
 
         for (const gridOrder of mgr.orders.values()) {
-            // Layer 1: Skip grid orders from previous session (prevents stale order mismatches in Pass 1)
-            if (gridOrder.previousSessionMarker === true) {
-                mgr.logger?.log?.(`[sync-pass1] Skipping grid order ${gridOrder.id} from previous session (prevents stale order mismatch)`, 'debug');
-                continue;
-            }
 
             if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) {
                 const chainOrder = parsedChainOrders.get(gridOrder.orderId);

@@ -425,6 +425,13 @@ class Grid {
                 }
                 await Grid._updateOrderAtomic(manager, order, 'grid-load', true);
             }
+            
+            // RC-FIX: Restore targetSpreadCount from loaded grid
+            // Without this, targetSpreadCount defaults to 0, causing false positive "Spread too wide" detections
+            const spreadCount = grid.filter(o => o.type === ORDER_TYPES.SPREAD).length;
+            manager.targetSpreadCount = spreadCount;
+            manager.currentSpreadCount = spreadCount;
+
         } finally {
             manager.resumeFundRecalc();
             manager.resumeRecalcLogging();
