@@ -5,10 +5,11 @@ echo "🔄 Starting rebase-based branch synchronization..."
 
 git fetch origin
 
-# Update test branch
-echo "📍 Updating test branch..."
+# Start from test branch
+echo "📍 Starting from test branch..."
 git checkout test
 git pull origin test
+git push origin test
 
 # Rebase dev on test
 echo "📍 Rebasing dev on test..."
