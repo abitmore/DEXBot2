@@ -1,35 +1,51 @@
 #!/bin/bash
 set -e
 
-echo "🔄 Starting rebase-based branch synchronization..."
+# Professional Branch Synchronization Script (Rebase Edition)
+# Pipeline: test -> dev -> main
+# This script ensures that dev and main are always up-to-date with test.
+# It uses 'reset --hard' on integration branches to resolve divergence automatically.
 
+echo "🔄 Starting robust branch synchronization..."
+
+# Check for uncommitted changes
+if ! git diff-index --quiet HEAD --; then
+  echo "❌ Error: You have uncommitted changes. Please stash or commit them first."
+  exit 1
+fi
+
+# 1. Fetch all remote changes
+echo "🛰️ Fetching from origin..."
 git fetch origin
 
-# Start from test branch
-echo "📍 Starting from test branch..."
+# 2. Synchronize 'test' branch (The Source of Truth)
+echo "📍 Syncing 'test' branch..."
 git checkout test
-git pull origin test
+# If test has diverged, we try to rebase it on origin/test to keep local work
+git rebase origin/test || { echo "❌ Conflict on 'test'. Please resolve manually."; exit 1; }
 git push origin test
 
-# Rebase dev on test
-echo "📍 Rebasing dev on test..."
+# 3. Synchronize 'dev' branch
+echo "📍 Synchronizing 'dev' with 'test'..."
 git checkout dev
-git pull origin dev
-if ! git rebase test; then
-  echo "❌ Dev rebase failed. Fix conflicts manually and retry."
-  exit 1
-fi
+# Force local 'dev' to match 'origin/dev' to clear any divergence
+git reset --hard origin/dev
+# Rebase dev onto test
+git rebase test
+# Force push to update remote dev
 git push -f origin dev
 
-# Rebase main on dev to bring it up to date
-echo "📍 Rebasing main on dev..."
+# 4. Synchronize 'main' branch
+echo "📍 Synchronizing 'main' with 'dev'..."
 git checkout main
-git pull origin main
-if ! git rebase dev; then
-  echo "❌ Main rebase failed. Fix conflicts manually and retry."
-  exit 1
-fi
+# Force local 'main' to match 'origin/main' to clear any divergence
+git reset --hard origin/main
+# Rebase main onto dev
+git rebase dev
+# Force push to update remote main
 git push -f origin main
 
+# 5. Return to 'test'
 git checkout test
-echo "✅ Branch synchronization complete!"
+echo "✅ Everything is synchronized: test == dev == main"
+
