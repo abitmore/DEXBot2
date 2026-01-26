@@ -276,7 +276,9 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         logger?.log?.(`[_createOrderFromGrid] CRITICAL: createOrder succeeded but chainOrderId extraction failed`, 'error');
         try {
             const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
-            await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'chainOrderIdExtractionFailure' });
+            // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
+            // Orphan order requires fund deduction to prevent phantom capital
+            await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'chainOrderIdExtractionFailure' });
         } catch (syncErr) {
             logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${syncErr.message}`, 'error');
         }
@@ -562,7 +564,9 @@ async function reconcileStartupOrders({
             try {
                 logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL update failure`, 'warn');
                 const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
-                await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'startupReconcileFailure' });
+                // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
+                // Pre-adjustment happened but post-deduction didn't; sync must correct fund tracking
+                await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'startupReconcileFailure' });
             } catch (syncErr) {
                 logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
             }
@@ -585,7 +589,9 @@ async function reconcileStartupOrders({
                 try {
                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL creation failure`, 'warn');
                     const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
-                    await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'phase3CreationFailure' });
+                    // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
+                    // Orphan order requires fund deduction to prevent phantom capital (same pattern as line 279)
+                    await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'phase3CreationFailure' });
                 } catch (syncErr) {
                     logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
                 }
@@ -730,7 +736,9 @@ async function reconcileStartupOrders({
             try {
                 logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY update failure`, 'warn');
                 const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
-                await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'startupReconcileFailure' });
+                // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
+                // Pre-adjustment happened but post-deduction didn't; sync must correct fund tracking
+                await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'startupReconcileFailure' });
             } catch (syncErr) {
                 logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
             }
@@ -753,7 +761,9 @@ async function reconcileStartupOrders({
                 try {
                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY creation failure`, 'warn');
                     const freshChainOrders = await chainOrders.readOpenOrders(null, 30000);
-                    await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: true, source: 'phase3CreationFailure' });
+                    // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
+                    // Orphan order requires fund deduction to prevent phantom capital (same pattern as line 588)
+                    await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'phase3CreationFailure' });
                 } catch (syncErr) {
                     logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
                 }
