@@ -743,6 +743,9 @@ class StrategyEngine {
         const mgr = this.manager;
         if (!mgr || !Array.isArray(filledOrders)) return;
 
+        // Reset recovery flag at start of each cycle to allow recovery attempts
+        mgr._recoveryAttempted = false;
+
         const skipAccountTotals = options.skipAccountTotalsUpdate === true;
         mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders${skipAccountTotals ? ' (skipping accountTotals update)' : ''}`, "info");
         mgr.pauseFundRecalc();
@@ -865,25 +868,25 @@ class StrategyEngine {
 
             // Layer 2: Stabilization gate - if persist validation failed, attempt self-healing before rebalance
             if (!validation.isValid) {
+                // Skip recovery if immediate recovery already attempted this cycle
+                if (mgr._recoveryAttempted) {
+                    mgr.logger.log(
+                        `[STABILIZATION-GATE] Validation failed: ${validation.reason}. ` +
+                        `Immediate recovery already attempted. Aborting rebalance to prevent cascade.`,
+                        'warn'
+                    );
+                    return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
+                }
+
                 mgr.logger.log(`[STABILIZATION-GATE] Validation failed: ${validation.reason}. Attempting self-healing recovery...`, 'warn');
 
                 try {
-                    // 1. Refresh account totals from blockchain to get ground truth
-                    await mgr.fetchAccountTotals();
-
-                    // 2. Perform a full synchronization from open orders to reconcile grid state
-                    // CRITICAL: We require chain_orders dynamically to avoid circular dependencies
-                    const chainOrders = require('../chain_orders');
-                    const openOrders = await chainOrders.readOpenOrders(mgr.accountId);
-                    // CRITICAL FIX: Use skipAccounting: false so fund accounting is properly updated during recovery
-                    // skipAccounting: true was causing fund invariants to remain violated after recovery
-                    await mgr.syncFromOpenOrders(openOrders, { skipAccounting: false });
-
-                    // 3. Re-validate after recovery (both grid AND fund accounting)
-                    validation = mgr.validateGridStateForPersistence();
+                    // Use centralized recovery method from accountant
+                    validation = await mgr.accountant._performStateRecovery(mgr);
 
                     if (validation.isValid) {
                         mgr.logger.log(`[STABILIZATION-GATE] Self-healing recovery succeeded`, 'info');
+                        mgr._recoveryAttempted = true;
                         // Persist the recovered state immediately
                         await mgr.persistGrid();
                     } else {
@@ -892,10 +895,12 @@ class StrategyEngine {
                             `Aborting rebalance to prevent cascade. Triggering state recovery on next cycle.`,
                             'error'
                         );
+                        mgr._recoveryAttempted = true;
                         return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
                     }
                 } catch (recoveryErr) {
                     mgr.logger.log(`[STABILIZATION-GATE] Recovery failed: ${recoveryErr.message}. Aborting rebalance.`, 'error');
+                    mgr._recoveryAttempted = true;
                     return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
                 }
             }

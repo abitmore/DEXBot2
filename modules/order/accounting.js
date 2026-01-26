@@ -31,6 +31,7 @@ class Accountant {
      */
     constructor(manager) {
         this.manager = manager;
+        this._isRecovering = false;  // Prevents nested recovery attempts
     }
 
     /**
@@ -117,19 +118,25 @@ class Accountant {
         }
 
         if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping && !mgr._isBroadcasting) {
-            this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell);
+            // Don't await - allow recovery to run in background without blocking
+            this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell).catch(err => {
+                mgr.logger?.log?.(`[RECOVERY] Verification error: ${err.message}`, 'error');
+            });
         }
     }
 
     /**
      * Verify critical fund tracking invariants.
+     * Now async to support immediate recovery attempts without blocking.
      */
-    _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
+    async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
         const buyPrecision = mgr.assets?.assetB?.precision || 8;
         const sellPrecision = mgr.assets?.assetA?.precision || 8;
         const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
         const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
+
+        let hasViolation = false;
 
         // INVARIANT 1: Drift detection
         const expectedBuy = chainFreeBuy + chainBuy;
@@ -138,9 +145,10 @@ class Accountant {
         const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * PERCENT_TOLERANCE);
 
         if (actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance) {
+            hasViolation = true;
             // CRITICAL FIX: Log as ERROR instead of WARN
             // Invariant violations indicate serious fund tracking corruption and must not be silent
-            // This triggers stabilizationGate recovery on next rebalance
+            // This triggers immediate recovery attempt
             mgr.logger?.log?.(`CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'error');
         }
 
@@ -150,6 +158,7 @@ class Accountant {
         const allowedSellTolerance = Math.max(precisionSlackSell, (actualSell || expectedSell) * PERCENT_TOLERANCE);
 
         if (actualSell !== null && actualSell !== undefined && diffSell > allowedSellTolerance) {
+            hasViolation = true;
             // CRITICAL FIX: Log as ERROR instead of WARN
             mgr.logger?.log?.(`CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'error');
         }
@@ -158,12 +167,85 @@ class Accountant {
         const cacheBuy = mgr.funds?.cacheFunds?.buy || 0;
         const cacheSell = mgr.funds?.cacheFunds?.sell || 0;
         if (cacheBuy > chainFreeBuy + allowedBuyTolerance) {
+            hasViolation = true;
             // CRITICAL FIX: Log as ERROR - surplus over-estimation can cause overdrafts
             mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmount8(cacheBuy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`, 'error');
         }
         if (cacheSell > chainFreeSell + allowedSellTolerance) {
+            hasViolation = true;
             // CRITICAL FIX: Log as ERROR
             mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'error');
+        }
+
+        // NEW: Attempt immediate recovery if violation detected
+        if (hasViolation) {
+            await this._attemptFundRecovery(mgr, 'Fund invariant violation');
+        }
+    }
+
+    /**
+     * Perform centralized state recovery (fetch + sync + validate).
+     * Shared by both immediate recovery and stabilization gate.
+     *
+     * @param {Object} mgr - Manager instance
+     * @returns {Promise<Object>} - Validation result from validateGridStateForPersistence()
+     */
+    async _performStateRecovery(mgr) {
+        // 1. Fetch fresh blockchain state
+        await mgr.fetchAccountTotals();
+
+        // 2. Sync from open orders
+        const chainOrders = require('../chain_orders');
+        const openOrders = await chainOrders.readOpenOrders(mgr.accountId);
+        await mgr.syncFromOpenOrders(openOrders, { skipAccounting: false });
+
+        // 3. Validate recovery
+        return mgr.validateGridStateForPersistence();
+    }
+
+    /**
+     * Attempt immediate recovery from fund invariant violations.
+     * Runs asynchronously in background without blocking operations.
+     * Only runs if stabilization gate hasn't already attempted recovery this cycle.
+     *
+     * @param {Object} mgr - Manager instance
+     * @param {string} violationType - Description of the violation for logging
+     * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
+     */
+    async _attemptFundRecovery(mgr, violationType) {
+        // Prevent nested recovery attempts
+        if (this._isRecovering) {
+            mgr.logger?.log?.(`[RECOVERY] Recovery already in progress, skipping nested attempt`, 'debug');
+            return false;
+        }
+
+        // Prevent double recovery if stabilization gate already attempted it
+        if (mgr._recoveryAttempted) {
+            mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery already attempted this cycle, skipping`, 'debug');
+            return false;
+        }
+
+        this._isRecovering = true;
+        mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] ${violationType} detected. Attempting recovery...`, 'warn');
+
+        try {
+            const validation = await this._performStateRecovery(mgr);
+
+            if (validation.isValid) {
+                mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery succeeded`, 'info');
+                mgr._recoveryAttempted = true;  // Mark recovery as attempted
+                return true;
+            } else {
+                mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery failed: ${validation.reason}. Will retry on next cycle.`, 'error');
+                mgr._recoveryAttempted = true;  // Mark recovery as attempted even on failure
+                return false;
+            }
+        } catch (err) {
+            mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery exception: ${err.message}`, 'error');
+            mgr._recoveryAttempted = true;  // Mark recovery as attempted
+            return false;
+        } finally {
+            this._isRecovering = false;
         }
     }
 
