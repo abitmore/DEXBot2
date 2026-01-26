@@ -30,7 +30,7 @@ class StrategyEngine {
     calculateGapSlots(incrementPercent, targetSpreadPercent) {
         const safeIncrement = incrementPercent || 0.5;
         const step = 1 + (safeIncrement / 100);
-        const minSpreadPercent = safeIncrement * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
+        const minSpreadPercent = safeIncrement * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1);
         const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
         const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
         return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps - 1);

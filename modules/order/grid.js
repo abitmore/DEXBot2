@@ -248,7 +248,7 @@ class Grid {
         // See formula documentation in JSDoc above.
 
         // Enforce minimum spread (prevents spread from being too narrow)
-        const minSpreadPercent = incrementPercent * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2);
+        const minSpreadPercent = incrementPercent * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1);
         const targetSpreadPercent = Math.max(config.targetSpreadPercent || 0, minSpreadPercent);
 
         // Calculate number of steps (gaps) needed to achieve target spread
