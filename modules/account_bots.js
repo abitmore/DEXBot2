@@ -555,7 +555,7 @@ async function askNumberWithBounds(promptText, defaultValue, minVal, maxVal) {
  * @returns {Promise<number|string>} The spread percentage or '\x1b' if ESC.
  */
 async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor = 2.1) {
-    const minRequired = incrementPercent * minSpreadFactor;
+    const minRequired = parseFloat((incrementPercent * minSpreadFactor).toFixed(2));
     const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue.toFixed(2)}]` : '';
     const raw = (await readInput(`${promptText} (>= ${minRequired.toFixed(2)})${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
@@ -570,7 +570,7 @@ async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent
         console.log('Please enter a valid finite number.');
         return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
-    // Validate >= minSpreadFactor x incrementPercent
+    // Validate >= minSpreadFactor x incrementPercent (with floating point precision handling)
     if (parsed < minRequired) {
         console.log(`Invalid ${promptText}: ${parsed}. Must be >= ${minSpreadFactor}x incrementPercent (${minRequired.toFixed(2)})`);
         return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
