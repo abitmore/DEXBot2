@@ -62,8 +62,8 @@ async function testCompleteLifecycle() {
     console.log('📌 PHASE 2: Save Grid with PendingProceeds\n');
 
     const mockOrders = [
-        { id: 'sell-50', type: 'sell', price: 1.5, size: 10, state: 'VIRTUAL', orderId: null },
-        { id: 'buy-50', type: 'buy', price: 0.9, size: 10, state: 'VIRTUAL', orderId: null }
+        { id: 'sell-50', type: 'sell', price: 1.5, size: 10, state: 'virtual', orderId: null },
+        { id: 'buy-50', type: 'buy', price: 0.9, size: 10, state: 'virtual', orderId: null }
     ];
 
     console.log('   Calling storeMasterGrid() with:');

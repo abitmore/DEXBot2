@@ -884,7 +884,7 @@ class OrderManager {
         // Get grid allocation and free balance from blockchain
         let gridBuy = 0, gridSell = 0;
         for (const order of Array.from(this.orders.values())) {
-            const isActive = (order.state === 'active' || order.state === 'partial');
+            const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
             const size = Number(order.size) || 0;
             if (size <= 0 || !isActive) continue;
 

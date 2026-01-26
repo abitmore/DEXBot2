@@ -532,7 +532,7 @@ class DEXBot {
                 const activeOpposite = allOrders.filter(o =>
                     o.type === oppositeType &&
                     o.orderId &&
-                    o.state === 'ACTIVE'
+                    o.state === ORDER_STATES.ACTIVE
                 );
 
                 if (activeOpposite.length === 0) {
@@ -551,7 +551,7 @@ class DEXBot {
                 const emptySlotsOpposite = allOrders.filter(o =>
                     o.type === oppositeType &&
                     !o.orderId &&
-                    o.state === 'VIRTUAL'
+                    o.state === ORDER_STATES.VIRTUAL
                 );
 
                 if (emptySlotsOpposite.length === 0) {
