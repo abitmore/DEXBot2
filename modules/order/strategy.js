@@ -361,11 +361,12 @@ class StrategyEngine {
         // NOTE: BTS fees are already deducted from totalSideBudget in rebalance().
         // Do NOT subtract them again here - that was causing double fee deduction.
 
-        // - BUY: descending (b.price - a.price) = highest price first = MARKET to EDGE
-        // - SELL: ascending (a.price - b.price) = lowest price first = MARKET to EDGE
-        // Since both are now MARKET to EDGE, we always use reverse=false to align
-        // maximum weight with the first element (index 0).
-        const reverse = false;
+        // CRITICAL: Sort order differs between sides:
+        // - BUY: descending (b.price - a.price) = highest price first = EDGE to MARKET (reversed)
+        // - SELL: ascending (a.price - b.price) = lowest price first = MARKET to EDGE (normal)
+        // Use reverse=true for BUY to flip weight distribution so market (index n-1) gets max weight.
+        // Use reverse=false for SELL so market (index 0) gets max weight.
+        const reverse = (type === ORDER_TYPES.BUY);
         const sideIdealSizes = allocateFundsByWeights(totalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
