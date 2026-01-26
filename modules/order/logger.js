@@ -28,7 +28,7 @@
 
 const Format = require('./format');
 const LoggerState = require('./logger_state');
-const { LOGGING_CONFIG } = require('../constants');
+const { LOGGING_CONFIG, ORDER_STATES } = require('../constants');
 
 class Logger {
     /**
@@ -317,9 +317,9 @@ class Logger {
         // Check if status summary is enabled (unless forced)
         if (!this.config.display.statusSummary.enabled && !forceOutput) return;
         const market = manager.marketName || manager.config?.market || 'unknown';
-        const activeOrders = manager.getOrdersByTypeAndState(null, 'active');
-        const partialOrders = manager.getOrdersByTypeAndState(null, 'partial');
-        const virtualOrders = manager.getOrdersByTypeAndState(null, 'virtual');
+        const activeOrders = manager.getOrdersByTypeAndState(null, ORDER_STATES.ACTIVE);
+        const partialOrders = manager.getOrdersByTypeAndState(null, ORDER_STATES.PARTIAL);
+        const virtualOrders = manager.getOrdersByTypeAndState(null, ORDER_STATES.VIRTUAL);
         console.log('\n===== STATUS =====');
         console.log(`Market: ${market}`);
         const buyName = manager.config?.assetB || 'quote';
