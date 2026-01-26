@@ -698,7 +698,8 @@ class Grid {
                 const newSize = newSizes[i] || 0;
                 // Update size but preserve existing state and orderId
                 if (slot.size === undefined || Math.abs(slot.size - newSize) > 1e-8) {
-                    manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', true, 0);
+                    // CRITICAL: Set skipAccounting=false to ensure delta is consumed/released from ChainFree
+                    manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', false, 0);
                 }
             });
 

@@ -38,7 +38,7 @@ class BlockchainSource {
         // Let's use the pattern from test_blockchain_fill_history.js:
         // get_account_history(accountId, '1.11.0', 100, '1.11.0')
         
-        const history = await BitShares.history.get_account_history(accountId, '1.11.0', limit, '1.11.0');
+        const history = await BitShares.history.get_account_history(accountId, '1.11.999999999', limit, '1.11.0');
         
         const fills = [];
         for (const entry of history) {

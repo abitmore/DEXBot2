@@ -1315,7 +1315,7 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
  * @returns {boolean} True if the boundary was changed
  */
 function syncBoundaryToFunds(manager) {
-    const { ORDER_TYPES } = require('../constants');
+    const { ORDER_TYPES, ORDER_STATES } = require('../constants');
     const availA = (manager.funds?.available?.sell || 0);
     const availB = (manager.funds?.available?.buy || 0);
     const startPrice = manager.config.startPrice;
@@ -1330,7 +1330,7 @@ function syncBoundaryToFunds(manager) {
     if (newBoundary !== manager.boundaryIdx) {
         manager.logger?.log?.(`[BOUNDARY] Syncing boundary to fund distribution: ${manager.boundaryIdx} -> ${newBoundary} (ratio: ${Format.formatPercent2((availB / (availA * startPrice + availB)) * 100)})`, 'info');
         manager.boundaryIdx = newBoundary;
-        assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES);
+        assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES, ORDER_STATES);
         return true;
     }
     return false;
@@ -1699,7 +1699,12 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
         // If the grid is lagging behind the market, shift the boundary based on the
         // mathematical ideal distribution of funds. Market price is used only for valuation.
         if (manager.outOfSpread > 0) {
-            syncBoundaryToFunds(manager);
+            const boundaryChanged = syncBoundaryToFunds(manager);
+            if (boundaryChanged) {
+                // If boundary changed, we MUST recalculate geometric sizes for the new rail roles
+                // to avoid placing zero-sized orders in newly-assigned slots.
+                await Grid.updateGridFromBlockchainSnapshot(manager, 'both', true);
+            }
         }
 
         // Process each divergent side independently
@@ -1741,19 +1746,29 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 if (desiredSlotIds.has(active.id)) {
                     // CASE 1: MATCH - Active order is in the desired window, update it
                     const slot = desiredSlots.find(s => s.id === active.id);
-                    manager.ordersNeedingPriceCorrection.push({
-                        gridOrder: { ...slot },
-                        chainOrderId: active.orderId,
-                        oldOrder: { ...active },
-                        expectedPrice: slot.price,
-                        actualPrice: slot.price,
-                        expectedSize: slot.size,
-                        size: slot.size,
-                        type: slot.type,
-                        sideUpdated: sideName,
-                        sizeChanged: true,
-                        newGridId: (active.id !== slot.id) ? slot.id : null // Only set newGridId if it's a structural rotation
-                    });
+                    if (slot.size > 0) {
+                        manager.ordersNeedingPriceCorrection.push({
+                            gridOrder: { ...slot },
+                            chainOrderId: active.orderId,
+                            oldOrder: { ...active },
+                            expectedPrice: slot.price,
+                            actualPrice: slot.price,
+                            expectedSize: slot.size,
+                            size: slot.size,
+                            type: slot.type,
+                            sideUpdated: sideName,
+                            sizeChanged: true,
+                            newGridId: (active.id !== slot.id) ? slot.id : null // Only set newGridId if it's a structural rotation
+                        });
+                    } else {
+                        // If ideal size is 0, treat as surplus (cancel)
+                        manager.ordersNeedingPriceCorrection.push({
+                            gridOrder: { ...active },
+                            chainOrderId: active.orderId,
+                            isSurplus: true,
+                            sideUpdated: sideName
+                        });
+                    }
                 } else {
                     // CASE 2: SURPLUS - Active order is outside the desired window
                     manager.ordersNeedingPriceCorrection.push({
@@ -1768,7 +1783,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             // CASE 3: Process all desired slots
             // - If no active order exists for this slot: mark as shortage
             for (const slot of desiredSlots) {
-                if (!activeBySlotId.has(slot.id)) {
+                if (!activeBySlotId.has(slot.id) && slot.size > 0) {
                     // CASE 3: SHORTAGE - Slot has no active order yet
                     manager.ordersNeedingPriceCorrection.push({
                         gridOrder: { ...slot },
@@ -2318,19 +2333,24 @@ function calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) 
  * @param {number} boundaryIdx - The boundary index (last BUY slot)
  * @param {number} gapSlots - The number of slots in the spread zone
  * @param {Object} ORDER_TYPES - The ORDER_TYPES constant
+ * @param {Object} ORDER_STATES - The ORDER_STATES constant
  * @returns {Array} The updated slots
  */
-function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES) {
+function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES) {
     const buyEndIdx = boundaryIdx;
     const sellStartIdx = boundaryIdx + gapSlots + 1;
 
     allSlots.forEach((slot, i) => {
-        if (i <= buyEndIdx) {
-            slot.type = ORDER_TYPES.BUY;
-        } else if (i >= sellStartIdx) {
-            slot.type = ORDER_TYPES.SELL;
-        } else {
-            slot.type = ORDER_TYPES.SPREAD;
+        // Only update VIRTUAL slots. ACTIVE/PARTIAL orders must keep their assigned role
+        // until they fill or are rotated, to prevent fund tracking corruption.
+        if (slot.state !== ORDER_STATES.ACTIVE && slot.state !== ORDER_STATES.PARTIAL) {
+            if (i <= buyEndIdx) {
+                slot.type = ORDER_TYPES.BUY;
+            } else if (i >= sellStartIdx) {
+                slot.type = ORDER_TYPES.SELL;
+            } else {
+                slot.type = ORDER_TYPES.SPREAD;
+            }
         }
     });
     return allSlots;
