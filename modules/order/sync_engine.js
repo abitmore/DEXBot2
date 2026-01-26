@@ -261,10 +261,11 @@ class SyncEngine {
                 updatedOrder.rawOnChain = rawChainOrders.get(gridOrder.orderId);
 
                 // Calculate price tolerance for comparison
-                const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets) ?? 0;
+                // CRITICAL FIX: Skip orders where tolerance is null (e.g., size=0, which happens for SPREAD placeholders)
+                const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
 
-                // Flag order if chain price exceeds the tolerance threshold
-                if (Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
+                // Skip price correction for orders with null tolerance (zero-sized slots, SPREADs, etc)
+                if (priceTolerance !== null && Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
                     ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
                 }
 

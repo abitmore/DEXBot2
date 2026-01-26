@@ -1491,9 +1491,14 @@ class DEXBot {
             const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
             const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
 
-            // Restore and consolidate cacheFunds
+            // Restore and consolidate cacheFunds and BTS fees
             // SAFE: Done during startup before fill listener activates, so no concurrent access yet
             this.manager.resetFunds();
+            // CRITICAL FIX: Restore BTS fees owed from persistence
+            // These fees represent transactions pending on-chain that must be accounted for
+            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
+                this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
+            }
             if (persistedCacheFunds) {
                 await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
                 await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
@@ -1900,6 +1905,10 @@ class DEXBot {
             const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
 
             this.manager.resetFunds();
+            // CRITICAL FIX: Restore BTS fees owed from persistence
+            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
+                this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
+            }
             if (persistedCacheFunds) {
                 await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
                 await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');

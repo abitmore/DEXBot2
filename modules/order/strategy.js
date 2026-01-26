@@ -875,9 +875,11 @@ class StrategyEngine {
                     // CRITICAL: We require chain_orders dynamically to avoid circular dependencies
                     const chainOrders = require('../chain_orders');
                     const openOrders = await chainOrders.readOpenOrders(mgr.accountId);
-                    await mgr.syncFromOpenOrders(openOrders, { skipAccounting: true });
+                    // CRITICAL FIX: Use skipAccounting: false so fund accounting is properly updated during recovery
+                    // skipAccounting: true was causing fund invariants to remain violated after recovery
+                    await mgr.syncFromOpenOrders(openOrders, { skipAccounting: false });
 
-                    // 3. Re-validate after recovery
+                    // 3. Re-validate after recovery (both grid AND fund accounting)
                     validation = mgr.validateGridStateForPersistence();
 
                     if (validation.isValid) {

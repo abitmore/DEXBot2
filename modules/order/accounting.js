@@ -138,7 +138,10 @@ class Accountant {
         const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * PERCENT_TOLERANCE);
 
         if (actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance) {
-            mgr.logger?.log?.(`WARNING: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'warn');
+            // CRITICAL FIX: Log as ERROR instead of WARN
+            // Invariant violations indicate serious fund tracking corruption and must not be silent
+            // This triggers stabilizationGate recovery on next rebalance
+            mgr.logger?.log?.(`CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'error');
         }
 
         const expectedSell = chainFreeSell + chainSell;
@@ -147,17 +150,20 @@ class Accountant {
         const allowedSellTolerance = Math.max(precisionSlackSell, (actualSell || expectedSell) * PERCENT_TOLERANCE);
 
         if (actualSell !== null && actualSell !== undefined && diffSell > allowedSellTolerance) {
-            mgr.logger?.log?.(`WARNING: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'warn');
+            // CRITICAL FIX: Log as ERROR instead of WARN
+            mgr.logger?.log?.(`CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'error');
         }
 
         // INVARIANT 2: Surplus check
         const cacheBuy = mgr.funds?.cacheFunds?.buy || 0;
         const cacheSell = mgr.funds?.cacheFunds?.sell || 0;
         if (cacheBuy > chainFreeBuy + allowedBuyTolerance) {
-            mgr.logger?.log?.(`WARNING: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmount8(cacheBuy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`, 'warn');
+            // CRITICAL FIX: Log as ERROR - surplus over-estimation can cause overdrafts
+            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmount8(cacheBuy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`, 'error');
         }
         if (cacheSell > chainFreeSell + allowedSellTolerance) {
-            mgr.logger?.log?.(`WARNING: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'warn');
+            // CRITICAL FIX: Log as ERROR
+            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'error');
         }
     }
 

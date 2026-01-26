@@ -451,12 +451,15 @@ async function reconcileStartupOrders({
                 }
 
                 // Use manager._updateOrder to maintain indices
+                // CRITICAL FIX: Use skipAccounting: false so fund accounting is properly updated
+                // When converting from ACTIVE/PARTIAL to VIRTUAL, funds must be recalculated
+                // skipAccounting: true was causing fund invariants to remain violated
                 manager._updateOrder({
                     ...order,
                     state: ORDER_STATES.VIRTUAL,
                     orderId: "",
                     rawOnChain: null
-                }, 'startup-phantom', true, 0);
+                }, 'startup-phantom', false, 0);
             }
         }
     }
