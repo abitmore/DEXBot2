@@ -1021,10 +1021,11 @@ class OrderManager {
                 `[PERSISTENCE-GATE] Skipping persistence of corrupted state: ${validation.reason}`,
                 'warn'
             );
-            return false;
+            return validation; // Return validation result for caller to handle
         }
 
-        return await persistGridSnapshot(this, this.accountOrders, this.config.botKey);
+        await persistGridSnapshot(this, this.accountOrders, this.config.botKey);
+        return validation; // Return successful validation
     }
 
     /**

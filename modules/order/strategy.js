@@ -836,8 +836,8 @@ class StrategyEngine {
             mgr.recalculateFunds();
 
             // Persist grid state after fill processing
-            // This ensures we save the current state before attempting rebalance
-            await mgr.persistGrid();
+            // Returns validation result to avoid redundant validation check later
+            let validation = await mgr.persistGrid();
 
             let shouldRebalance = (fillsToSettle > 0);
 
@@ -862,9 +862,7 @@ class StrategyEngine {
                 return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
             }
 
-            // Layer 2: Stabilization gate - verify grid state before rebalancing (prevents cascade corruption)
-            // Only validated when we're about to proceed with rebalance
-            let validation = mgr.validateGridStateForPersistence();
+            // Layer 2: Stabilization gate - if persist validation failed, attempt self-healing before rebalance
             if (!validation.isValid) {
                 mgr.logger.log(`[STABILIZATION-GATE] Validation failed: ${validation.reason}. Attempting self-healing recovery...`, 'warn');
 
@@ -883,6 +881,8 @@ class StrategyEngine {
 
                     if (validation.isValid) {
                         mgr.logger.log(`[STABILIZATION-GATE] Self-healing recovery succeeded`, 'info');
+                        // Persist the recovered state immediately
+                        await mgr.persistGrid();
                     } else {
                         mgr.logger.log(
                             `[STABILIZATION-GATE] Recovery failed: ${validation.reason}. ` +
