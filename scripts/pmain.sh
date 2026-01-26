@@ -20,15 +20,15 @@ if ! git rebase test; then
 fi
 git push -f origin dev
 
-# Merge dev into main with fast-forward only
-echo "📍 Fast-forward merging dev into main..."
+# Rebase main on dev to bring it up to date
+echo "📍 Rebasing main on dev..."
 git checkout main
 git pull origin main
-if ! git merge --ff-only dev; then
-  echo "❌ Fast-forward merge failed. Branches may have diverged."
+if ! git rebase dev; then
+  echo "❌ Main rebase failed. Fix conflicts manually and retry."
   exit 1
 fi
-git push origin main
+git push -f origin main
 
 git checkout test
 echo "✅ Branch synchronization complete!"
