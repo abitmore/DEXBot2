@@ -1725,16 +1725,22 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
             const desiredSlots = allSideSlots.slice(0, targetCount);
 
-            // 4. Match existing orders to desired slots (Rotation Pairing)
+            // 4. Match existing orders to desired slots (by Slot ID, not by index position)
             // Sort existing active orders to match desiredSlots orientation (Closest to Market first)
             const sortedActive = currentActiveOrders.sort((a, b) => sideName === 'buy' ? b.price - a.price : a.price - b.price);
 
-            for (let i = 0; i < Math.max(sortedActive.length, desiredSlots.length); i++) {
-                const active = sortedActive[i];
-                const slot = desiredSlots[i];
+            // FIX: Match by slot ID, not by index position, to avoid false surplus/shortage detection
+            // Create lookup maps for O(1) matching
+            const desiredSlotIds = new Set(desiredSlots.map(s => s.id));
+            const activeBySlotId = new Map(sortedActive.map(a => [a.id, a]));
 
-                if (active && slot) {
-                    // CASE 1: MATCH - Update existing order to match target slot (Price and/or Size)
+            // CASE 1 & 2: Process all active orders
+            // - If in desired window: update to match slot
+            // - If outside desired window: mark as surplus
+            for (const active of sortedActive) {
+                if (desiredSlotIds.has(active.id)) {
+                    // CASE 1: MATCH - Active order is in the desired window, update it
+                    const slot = desiredSlots.find(s => s.id === active.id);
                     manager.ordersNeedingPriceCorrection.push({
                         gridOrder: { ...slot },
                         chainOrderId: active.orderId,
@@ -1748,16 +1754,22 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                         sizeChanged: true,
                         newGridId: (active.id !== slot.id) ? slot.id : null // Only set newGridId if it's a structural rotation
                     });
-                } else if (active) {
-                    // CASE 2: SURPLUS - Order is outside the target window and no slot left to fill
+                } else {
+                    // CASE 2: SURPLUS - Active order is outside the desired window
                     manager.ordersNeedingPriceCorrection.push({
                         gridOrder: { ...active },
                         chainOrderId: active.orderId,
                         isSurplus: true,
                         sideUpdated: sideName
                     });
-                } else if (slot) {
-                    // CASE 3: SHORTAGE - Target window needs more orders than we have active
+                }
+            }
+
+            // CASE 3: Process all desired slots
+            // - If no active order exists for this slot: mark as shortage
+            for (const slot of desiredSlots) {
+                if (!activeBySlotId.has(slot.id)) {
+                    // CASE 3: SHORTAGE - Slot has no active order yet
                     manager.ordersNeedingPriceCorrection.push({
                         gridOrder: { ...slot },
                         chainOrderId: null,
