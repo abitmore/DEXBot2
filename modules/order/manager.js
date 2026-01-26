@@ -930,6 +930,46 @@ class OrderManager {
     }
 
     /**
+     * Validates grid state before persistence.
+     * Single validation gate that prevents corrupted state from being saved.
+     *
+     * @returns {Object} { isValid: boolean, reason: string|null }
+     */
+    validateGridStateForPersistence() {
+        const mgr = this;
+
+        // Check 1: Fund drift validation (existing Layer 2 logic)
+        const driftCheck = this.checkFundDriftAfterFills();
+        if (!driftCheck.isValid) {
+            return {
+                isValid: false,
+                reason: `Fund invariant violated: ${driftCheck.reason}`
+            };
+        }
+
+        // Check 2: Phantom order detection
+        for (const order of mgr.orders.values()) {
+            if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL)
+                && !order.orderId) {
+                return {
+                    isValid: false,
+                    reason: `Phantom order detected: order ${order.id} is ${order.state} but has no orderId`
+                };
+            }
+        }
+
+        // Check 3: Account totals initialized
+        if (!hasValidAccountTotals(mgr.accountTotals)) {
+            return {
+                isValid: false,
+                reason: 'Account totals not initialized'
+            };
+        }
+
+        return { isValid: true, reason: null };
+    }
+
+    /**
      * Generic retry wrapper for persistence operations.
      * Handles transient failures gracefully without crashing.
      */
@@ -973,6 +1013,17 @@ class OrderManager {
      */
     async persistGrid() {
         const { persistGridSnapshot } = require('./utils');
+
+        // CRITICAL: Validate grid state before persistence
+        const validation = this.validateGridStateForPersistence();
+        if (!validation.isValid) {
+            this.logger.log(
+                `[PERSISTENCE-GATE] Skipping persistence of corrupted state: ${validation.reason}`,
+                'warn'
+            );
+            return false;
+        }
+
         return await persistGridSnapshot(this, this.accountOrders, this.config.botKey);
     }
 

@@ -80,10 +80,6 @@ class DEXBot {
 
         // Blockchain fetch interval state tracking
         this._blockchainFetchIntervalActive = false;
-
-        // Session tracking to prevent stale order mismatches after restart (Layer 1)
-        this.sessionStartMs = Date.now();
-        this.sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     }
 
     /**
@@ -668,11 +664,7 @@ class DEXBot {
             this._warn(`Could not fetch account totals before initializing grid: ${errFetch && errFetch.message ? errFetch.message : errFetch}`);
         }
 
-        // Pass session info to prevent stale order mismatches (Layer 1)
-        await Grid.initializeGrid(this.manager, {
-            sessionId: this.sessionId,
-            sessionStartMs: this.sessionStartMs
-        });
+        await Grid.initializeGrid(this.manager);
 
         if (this.config.dryRun) {
             this.manager.logger.log('Dry run enabled, skipping on-chain order placement.', 'info');
@@ -1510,8 +1502,6 @@ class DEXBot {
                 account: this.account,
                 privateKey: this.privateKey,
                 config: this.config,
-                sessionId: this.sessionId,
-                sessionStartMs: this.sessionStartMs,
             });
 
             // 3. Reset funds for clean slate
@@ -1855,11 +1845,7 @@ class DEXBot {
                 // If there are existing on-chain orders, reconcile them with the new grid
                 if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
                     this._log('Generating new grid and syncing with existing on-chain orders...');
-                    // Pass session info to prevent stale order mismatches (Layer 1)
-                    await Grid.initializeGrid(this.manager, {
-                        sessionId: this.sessionId,
-                        sessionStartMs: this.sessionStartMs
-                    });
+                    await Grid.initializeGrid(this.manager);
                     await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
                     await this._reconcileStartupOrders(chainOrders, chainOpenOrders);
                 } else {

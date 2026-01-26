@@ -835,43 +835,8 @@ class StrategyEngine {
 
             mgr.recalculateFunds();
 
-            // Layer 2: Stabilization gate - verify funds before rebalancing (prevents cascade corruption)
-            // CRITICAL: persistGrid() is called AFTER this gate passes to avoid persisting corrupted state
-            let driftCheck = mgr.checkFundDriftAfterFills();
-            if (!driftCheck.isValid) {
-                mgr.logger.log(`[STABILIZATION-GATE] Fund invariant violated after fills: ${driftCheck.reason}. Attempting self-healing recovery...`, 'warn');
-
-                try {
-                    // 1. Refresh account totals from blockchain to get ground truth
-                    await mgr.fetchAccountTotals();
-
-                    // 2. Perform a full synchronization from open orders to reconcile grid state
-                    // CRITICAL: We require chain_orders dynamically to avoid circular dependencies
-                    const chainOrders = require('../chain_orders');
-                    const openOrders = await chainOrders.readOpenOrders(mgr.accountId);
-                    await mgr.syncFromOpenOrders(openOrders, { skipAccounting: true });
-
-                    // 3. Re-verify drift after recovery
-                    driftCheck = mgr.checkFundDriftAfterFills();
-
-                    if (driftCheck.isValid) {
-                        mgr.logger.log(`[STABILIZATION-GATE] Self-healing successful. Proceeding with rebalance.`, 'info');
-                    } else {
-                        mgr.logger.log(
-                            `[STABILIZATION-GATE] Self-healing failed: ${driftCheck.reason}. ` +
-                            `Aborting rebalance to prevent cascade. Triggering state recovery on next cycle.`,
-                            'error'
-                        );
-                        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
-                    }
-                } catch (recoveryErr) {
-                    mgr.logger.log(`[STABILIZATION-GATE] Self-healing recovery failed: ${recoveryErr.message}. Aborting rebalance.`, 'error');
-                    return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
-                }
-            }
-
-            // Persist grid state only AFTER Layer 2 gate passes (or self-healing succeeds)
-            // This ensures corrupted state is never written to disk
+            // Persist grid state after fill processing
+            // This ensures we save the current state before attempting rebalance
             await mgr.persistGrid();
 
             let shouldRebalance = (fillsToSettle > 0);
@@ -895,6 +860,41 @@ class StrategyEngine {
             if (!shouldRebalance) {
                 mgr.logger.log("[BOUNDARY] Skipping rebalance: No full fills and no dual-side dust partials.", "info");
                 return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
+            }
+
+            // Layer 2: Stabilization gate - verify grid state before rebalancing (prevents cascade corruption)
+            // Only validated when we're about to proceed with rebalance
+            let validation = mgr.validateGridStateForPersistence();
+            if (!validation.isValid) {
+                mgr.logger.log(`[STABILIZATION-GATE] Validation failed: ${validation.reason}. Attempting self-healing recovery...`, 'warn');
+
+                try {
+                    // 1. Refresh account totals from blockchain to get ground truth
+                    await mgr.fetchAccountTotals();
+
+                    // 2. Perform a full synchronization from open orders to reconcile grid state
+                    // CRITICAL: We require chain_orders dynamically to avoid circular dependencies
+                    const chainOrders = require('../chain_orders');
+                    const openOrders = await chainOrders.readOpenOrders(mgr.accountId);
+                    await mgr.syncFromOpenOrders(openOrders, { skipAccounting: true });
+
+                    // 3. Re-validate after recovery
+                    validation = mgr.validateGridStateForPersistence();
+
+                    if (validation.isValid) {
+                        mgr.logger.log(`[STABILIZATION-GATE] Self-healing recovery succeeded`, 'info');
+                    } else {
+                        mgr.logger.log(
+                            `[STABILIZATION-GATE] Recovery failed: ${validation.reason}. ` +
+                            `Aborting rebalance to prevent cascade. Triggering state recovery on next cycle.`,
+                            'error'
+                        );
+                        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
+                    }
+                } catch (recoveryErr) {
+                    mgr.logger.log(`[STABILIZATION-GATE] Recovery failed: ${recoveryErr.message}. Aborting rebalance.`, 'error');
+                    return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
+                }
             }
 
             // Log detailed fund state before entering rebalance

@@ -172,12 +172,9 @@ class Grid {
      * @param {number} config.maxPrice - Maximum price bound
      * @param {number} config.incrementPercent - Price step percentage (e.g., 0.5 for 0.5%)
      * @param {number} config.targetSpreadPercent - Target spread width (e.g., 2 for 2%)
-     * @param {Object} [sessionInfo] - Session tracking info (Layer 1: prevent stale order mismatch)
-     * @param {string} [sessionInfo.sessionId] - Unique session identifier
-     * @param {number} [sessionInfo.sessionStartMs] - Timestamp when session started
      * @returns {Object} { orders: Array, boundaryIdx: number, initialSpreadCount: {buy, sell} }
      */
-    static createOrderGrid(config, sessionInfo = null) {
+    static createOrderGrid(config) {
         const { startPrice, minPrice, maxPrice, incrementPercent } = config;
 
         // FIX: Add comprehensive input validation to prevent silent grid creation failures
@@ -320,13 +317,6 @@ class Grid {
                 size: 0
             };
 
-            // Layer 1: Add session tracking to prevent stale order mismatches after restart
-            if (sessionInfo) {
-                order.sessionId = sessionInfo.sessionId;
-                order.createdAtMs = sessionInfo.sessionStartMs;
-                order.sessionStartMs = sessionInfo.sessionStartMs;
-            }
-
             return order;
         });
 
@@ -413,9 +403,6 @@ class Grid {
         try {
             // RC-2: Use atomic order updates to prevent concurrent state corruption
             for (const order of grid) {
-                // Layer 1: Mark all loaded orders as from previous session (prevent stale order mismatches)
-                order.previousSessionMarker = true;
-
                 // SANITY CHECK: If order is ACTIVE/PARTIAL but has no orderId, downgrade to VIRTUAL
                 // This fixes "Wrong active order" bugs where state gets corrupted
                 if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !order.orderId) {
@@ -443,27 +430,11 @@ class Grid {
     /**
      * Initialize the order grid with blockchain-aware sizing.
      * @param {OrderManager} manager - The manager instance.
-     * @param {Object} [sessionInfo] - Session tracking info (Layer 1: prevent stale order mismatch)
-     * @param {string} [sessionInfo.sessionId] - Unique session identifier
-     * @param {number} [sessionInfo.sessionStartMs] - Timestamp when session started
      * @returns {Promise<void>}
      * @throws {Error} If initialization fails or account totals are missing.
      */
-    static async initializeGrid(manager, sessionInfo = null) {
+    static async initializeGrid(manager) {
         if (!manager) throw new Error('initializeGrid requires a manager instance');
-
-        // Layer 1: Validate session info to ensure orders are properly marked
-        if (sessionInfo) {
-            if (!sessionInfo.sessionId || typeof sessionInfo.sessionId !== 'string') {
-                throw new Error(`Invalid sessionId: must be a non-empty string. Got: ${sessionInfo.sessionId}`);
-            }
-            if (!Number.isFinite(sessionInfo.sessionStartMs) || sessionInfo.sessionStartMs <= 0) {
-                throw new Error(`Invalid sessionStartMs: must be a positive number. Got: ${sessionInfo.sessionStartMs}`);
-            }
-            if (sessionInfo.sessionStartMs > Date.now() + 5000) { // Allow 5s clock skew
-                throw new Error(`Invalid sessionStartMs: appears to be in the future. Got: ${sessionInfo.sessionStartMs}`);
-            }
-        }
 
         await manager._initializeAssets();
 
@@ -508,7 +479,7 @@ class Grid {
             throw new Error(`Cannot initialize grid without account totals: ${e.message}`);
         }
 
-        const { orders, boundaryIdx, initialSpreadCount } = Grid.createOrderGrid(manager.config, sessionInfo);
+        const { orders, boundaryIdx, initialSpreadCount } = Grid.createOrderGrid(manager.config);
 
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine
@@ -604,7 +575,7 @@ class Grid {
      * @returns {Promise<void>}
      */
     static async recalculateGrid(manager, opts) {
-        const { readOpenOrdersFn, chainOrders, account, privateKey, sessionId, sessionStartMs } = opts;
+        const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
 
         // Suppress invariant warnings during full resync
         if (typeof manager.startBootstrap === 'function') {
@@ -626,11 +597,7 @@ class Grid {
         manager.resetFunds();
 
         await manager.persistGrid();
-        // Pass session info to prevent stale order mismatches (Layer 1)
-        await Grid.initializeGrid(manager, {
-            sessionId: sessionId,
-            sessionStartMs: sessionStartMs
-        });
+        await Grid.initializeGrid(manager);
 
         const { reconcileStartupOrders } = require('./startup_reconcile');
 

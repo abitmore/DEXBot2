@@ -331,12 +331,6 @@ class SyncEngine {
                     // Candidate must be VIRTUAL and NOT have an orderId (if it has one, it should have matched in Pass 1)
                     if (gridOrder.state !== ORDER_STATES.VIRTUAL || gridOrder.orderId) continue;
 
-                    // Layer 1: Reject orphan matches from previous session (prevent stale order mismatches)
-                    if (gridOrder.previousSessionMarker === true) {
-                        mgr.logger?.log?.(`[orphan-fallback] Skipping grid order ${gridOrder.id} from previous session (prevents stale order mismatch)`, 'debug');
-                        continue;
-                    }
-
                     const priceDiffPercent = Math.abs(gridOrder.price - chainOrder.price) / gridOrder.price * 100;
                     // Use a lax tolerance (e.g., 2x increment or minimum 2%)
                     const laxTolerance = Math.max((mgr.config?.incrementPercent || 0.5) * 2, 2);
