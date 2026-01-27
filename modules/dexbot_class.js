@@ -125,172 +125,272 @@ class DEXBot {
     }
 
     /**
+     * Initialize bot state from storage and blockchain.
+     * Consolidates common initialization logic for start() and startWithPrivateKey().
+     * @private
+     */
+    async _initializeStartupState() {
+        // Create AccountOrders with bot-specific file (one file per bot)
+        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
+
+        // Load persisted processed fills to prevent reprocessing after restart
+        const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
+        for (const [fillKey, timestamp] of persistedFills) {
+            this._recentlyProcessedFills.set(fillKey, timestamp);
+        }
+        if (persistedFills.size > 0) {
+            this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
+        }
+
+        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
+        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
+        const allActiveBots = allBotsConfig
+            .filter(b => b.active !== false)
+            .map((b, idx) => normalizeBotEntry(b, idx));
+
+        await this.accountOrders.ensureBotEntries(allActiveBots);
+
+        if (!this.manager) {
+            this.manager = new OrderManager(this.config || {});
+            this.manager.account = this.account;
+            this.manager.accountId = this.accountId;
+            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
+        }
+        this.manager.isBootstrapping = true;
+
+        // Fetch account totals from blockchain at startup to initialize funds
+        try {
+            if (this.accountId && this.config.assetA && this.config.assetB) {
+                await this.manager._initializeAssets();
+                await this.manager.fetchAccountTotals(this.accountId);
+                this._log('Fetched blockchain account balances at startup');
+            }
+        } catch (err) {
+            this._warn(`Failed to fetch account totals at startup: ${err.message}`);
+        }
+
+        // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
+        try {
+            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
+        } catch (err) {
+            this._warn(`Fee cache initialization failed: ${err.message}`);
+        }
+
+        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
+
+        // CRITICAL REPAIR: Strip fake orderIds where orderId === id (e.g. "slot-0")
+        if (persistedGrid && persistedGrid.length > 0) {
+            let repairCount = 0;
+            for (const order of persistedGrid) {
+                if (order && order.orderId && order.orderId === order.id) {
+                    order.orderId = '';
+                    if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
+                        order.state = ORDER_STATES.VIRTUAL;
+                    }
+                    repairCount++;
+                }
+            }
+            if (repairCount > 0) {
+                this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
+            }
+        }
+
+        const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
+        const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
+        const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
+        const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
+
+        return {
+            persistedGrid,
+            persistedCacheFunds,
+            persistedBtsFeesOwed,
+            persistedBoundaryIdx,
+            persistedDoubleSideFlags
+        };
+    }
+
+    /**
      * Finalize the bot startup after account and initial grid sync are complete.
      * Consolidates common logic for start() and startWithPrivateKey().
      * @private
      */
-    async _finishStartupSequence() {
-        // CRITICAL: Bootstrap complete - allow invariant checks to resume
-        this.manager.finishBootstrap();
+    async _finishStartupSequence(startupState) {
+        const {
+            persistedGrid,
+            persistedCacheFunds,
+            persistedBtsFeesOwed,
+            persistedBoundaryIdx,
+            persistedDoubleSideFlags
+        } = startupState;
 
-        // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
-        // Note: Grid checks only run if no fills are being processed
-        // Fill listener is now active, so fills could arrive during checks - use locks appropriately
-
-        // Step 1: Threshold check (available funds)
         try {
-            // Only run grid checks if no fills are being processed
-            if (this.manager && this.manager.orders && this.manager.orders.size > 0) {
-                // CRITICAL: Use divergence lock to prevent race with fill processing
-                // Even though fill listener is just being set up, fills could arrive immediately
-                // We must serialize grid updates with fund modifications to prevent TOCTOU races
-                // NOTE: This consolidates grid sync logic - same lock used for both startup and periodic checks
-                await this.manager._divergenceLock.acquire(async () => {
-                    const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
-
-                    // Step 1: Threshold check result
-                    if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                        this._log(`Grid updated at startup due to available funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
-
-                        // CRITICAL: First recalculate grid sizes with chain totals
-                        // This updates order sizes in memory to include newly deposited funds
-                        const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-
-                        await this._persistAndRecoverIfNeeded();
-
-                        // Apply grid corrections on-chain immediately to use new funds
-                        try {
-                            await OrderUtils.applyGridDivergenceCorrections(
-                                this.manager,
-                                this.accountOrders,
-                                this.config.botKey,
-                                this.updateOrdersOnChainBatch.bind(this)
-                            );
-                            this._log(`Grid corrections applied on-chain at startup`);
-                        } catch (err) {
-                            this._warn(`Error applying grid corrections at startup: ${err.message}`);
-                        }
-                    } else {
-                        // Step 2: Divergence check (only if threshold didn't trigger)
-                        // Detects structural mismatch between calculated and persisted grid
-                        try {
-                            const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
-                            const calculatedGrid = Array.from(this.manager.orders.values());
-                            const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGrid, this.manager, this.manager.funds.cacheFunds);
-
-                            // Safety check: ensure comparisonResult has valid structure before accessing properties
-                            if (comparisonResult?.buy?.updated !== undefined && comparisonResult?.sell?.updated !== undefined) {
-                                if (comparisonResult.buy.updated || comparisonResult.sell.updated) {
-                                    this._log(`Grid divergence detected at startup: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
-
-                                    // Update grid with blockchain snapshot already fresh from initialization
-                                    // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
-                                    const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
-                                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-
-                                    await this._persistAndRecoverIfNeeded();
-
-                                    // Apply grid corrections on-chain immediately
-                                    try {
-                                        await OrderUtils.applyGridDivergenceCorrections(
-                                            this.manager,
-                                            this.accountOrders,
-                                            this.config.botKey,
-                                            this.updateOrdersOnChainBatch.bind(this)
-                                        );
-                                        this._log(`Grid divergence corrections applied on-chain at startup`);
-                                    } catch (err) {
-                                        this._warn(`Error applying divergence corrections at startup: ${err.message}`);
-                                    }
-                                }
-                            } else {
-                                this._warn(`Warning: Grid comparison returned invalid structure at startup: ${JSON.stringify(comparisonResult)}`);
-                            }
-                        } catch (err) {
-                            this._warn(`Error running divergence check at startup: ${err.message}`);
-                        }
-                    }
-                });
+            // Restore and consolidate cacheFunds and BTS fees
+            // SAFE: Done during startup before fill listener activates, so no concurrent access yet
+            this.manager.resetFunds();
+            // CRITICAL FIX: Restore BTS fees owed from persistence
+            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
+                this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
             }
-        } catch (err) {
-            this._warn(`Error checking grid at startup: ${err.message}`);
-        }
+            if (persistedCacheFunds) {
+                await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
+                await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
+            }
 
-        // Check spread condition at startup (after grid operations complete)
-        // Protected by _fillProcessingLock to respect AsyncLock pattern and prevent races with early fills
-        try {
-            await this.manager._fillProcessingLock.acquire(async () => {
-                // CRITICAL: Recalculate funds before spread correction to ensure accurate available values
-                // During startup, funds may be in inconsistent state until recalculated
-                // SAFE: Protected by _fillProcessingLock.acquire()
-                this.manager.recalculateFunds();
-
-                // spreadResult: { ordersPlaced: number, didCorrect: boolean }
-                // Returned by checkSpreadCondition with count of orders placed during spread correction
-                const spreadResult = await this.manager.checkSpreadCondition(
-                    BitShares,
-                    this.updateOrdersOnChainBatch.bind(this)
-                );
-                if (spreadResult && spreadResult.ordersPlaced > 0) {
-                    this._log(`✓ Spread correction at startup: ${spreadResult.ordersPlaced} order(s) placed`);
-                    await this._persistAndRecoverIfNeeded();
+            // Restore doubled side flags
+            if (persistedDoubleSideFlags) {
+                this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
+                this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
+                if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
+                    this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
                 }
+            }
 
-                // Check grid health at startup only if pipeline is empty
-                const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
-                if (pipelineStatus.isEmpty) {
-                    const healthResult = await this.manager.checkGridHealth(
-                        this.updateOrdersOnChainBatch.bind(this)
-                    );
-                    if (healthResult.buyDust && healthResult.sellDust) {
+            // Use this.accountId which was set during initialize()
+            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
+
+            let shouldRegenerate = false;
+            if (!persistedGrid || persistedGrid.length === 0) {
+                shouldRegenerate = true;
+                this._log('No persisted grid found. Generating new grid.');
+            } else {
+                await this.manager._initializeAssets();
+                const decision = await decideStartupGridAction({
+                    persistedGrid,
+                    chainOpenOrders,
+                    manager: this.manager,
+                    logger: { log: (msg) => this._log(msg) },
+                    storeGrid: async (orders) => {
+                        // Temporarily replace manager.orders to persist the specific orders
+                        const originalOrders = this.manager.orders;
+                        this.manager.orders = new Map(orders.map(o => [o.id, o]));
+                        await this.manager.persistGrid();
+                        this.manager.orders = originalOrders;
+                    },
+                    attemptResumeFn: attemptResumePersistedGridByPriceMatch,
+                });
+                shouldRegenerate = decision.shouldRegenerate;
+
+                if (shouldRegenerate && chainOpenOrders.length === 0) {
+                    this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
+                }
+            }
+
+            // Restore BTS fees owed ONLY if we're NOT regenerating the grid
+            if (!shouldRegenerate) {
+                // CRITICAL: Restore BTS fees owed from blockchain operations
+                if (persistedBtsFeesOwed > 0) {
+                    this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
+                    this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
+                }
+            } else {
+                this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
+                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+                this.manager.funds.btsFeesOwed = 0;
+            }
+
+            // CRITICAL: Activate fill listener BEFORE any grid operations or order placement
+            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+            this._log('Fill listener activated (ready to process fills during startup)');
+
+            // CRITICAL: Use fill lock during ENTIRE startup synchronization to prevent races.
+            // This includes grid init, finishBootstrap, and maintenance - all in one atomic block.
+            // Lock order: _fillProcessingLock → _divergenceLock (canonical order, same as _consumeFillQueue)
+            await this.manager._fillProcessingLock.acquire(async () => {
+                try {
+                    if (shouldRegenerate) {
+                        await this.manager._initializeAssets();
+
+                        if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
+                            this._log('Generating new grid and syncing with existing on-chain orders...');
+                            await Grid.initializeGrid(this.manager);
+                            await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+                            const rebalanceResult = await reconcileStartupOrders({
+                                manager: this.manager,
+                                config: this.config,
+                                account: this.account,
+                                privateKey: this.privateKey,
+                                chainOrders,
+                                chainOpenOrders,
+                            });
+
+                            if (rebalanceResult) {
+                                await this.updateOrdersOnChainBatch(rebalanceResult);
+                            }
+                        } else {
+                            this._log('Generating new grid and placing initial orders on-chain...');
+                            await this.placeInitialOrders();
+                        }
+                        await this._persistAndRecoverIfNeeded();
+                    } else {
+                        this._log('Found active session. Loading and syncing existing grid.');
+                        await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
+                        const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+
+                        if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
+                            this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
+                            await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
+                        }
+
+                        const rebalanceResult = await reconcileStartupOrders({
+                            manager: this.manager,
+                            config: this.config,
+                            account: this.account,
+                            privateKey: this.privateKey,
+                            chainOrders,
+                            chainOpenOrders,
+                        });
+
+                        if (rebalanceResult) {
+                            await this.updateOrdersOnChainBatch(rebalanceResult);
+                        }
+
                         await this._persistAndRecoverIfNeeded();
                     }
-                } else {
-                    this._log(`Startup grid health check deferred: ${pipelineStatus.reasons.join(', ')}`, 'debug');
+
+                    this.manager.finishBootstrap();
+
+                    // Perform initial grid maintenance (thresholds, divergence, spread, health)
+                    // Consolidated into shared logic to ensure consistent behavior at boot and runtime.
+                    // CRITICAL: Pass lockAlreadyHeld=true since we're inside _fillProcessingLock.acquire()
+                    await this._runGridMaintenance('startup', true);
+
+                    this._log('Bootstrap phase complete - fill processing resumed', 'info');
+                } finally {
+                    // CRITICAL: Always clear bootstrap flag, even on error
+                    this.manager.isBootstrapping = false;
                 }
             });
-        } catch (err) {
-            this._warn(`Error checking spread condition at startup: ${err.message}`);
-        }
 
-        // CRITICAL: Mark bootstrap complete - allow fill processing to resume
-        this.manager.isBootstrapping = false;
-        this._log('Bootstrap phase complete - fill processing resumed', 'info');
+            await this._setupTriggerFileDetection();
+            this._setupBlockchainFetchInterval();
 
-        // Setup trigger file detection for grid reset (shared with startWithPrivateKey)
-        await this._setupTriggerFileDetection();
+            // Main loop
+            const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
+            this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
 
-        // Start periodic blockchain fetch to keep blockchain variables updated
-        this._setupBlockchainFetchInterval();
-
-        // Main loop
-        const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
-        this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
-
-        (async () => {
-            while (true) {
-                try {
-                    if (this.manager && !this.config.dryRun) {
-                        // OPTIMIZATION: Reduce lock thrashing by checking if lock is already held
-                        // Only acquire if we actually need to do work AND lock is available
-                        // This prevents busy-looping that continuously acquires/releases the lock
-                        if (!this.manager._fillProcessingLock.isLocked() &&
-                            this.manager._fillProcessingLock.getQueueLength() === 0) {
-                            await this.manager._fillProcessingLock.acquire(async () => {
-                                await this.manager.syncFromOpenOrders();
-                            });
-                        } else {
-                            // Lock is busy with fill processing, skip this iteration
-                            this.manager.logger.log('Sync deferred: fill processing in progress', 'debug');
+            (async () => {
+                while (true) {
+                    try {
+                        if (this.manager && !this.config.dryRun) {
+                            if (!this.manager._fillProcessingLock.isLocked() &&
+                                this.manager._fillProcessingLock.getQueueLength() === 0) {
+                                await this.manager._fillProcessingLock.acquire(async () => {
+                                    await this.manager.syncFromOpenOrders();
+                                });
+                            }
                         }
-                    }
-                } catch (err) { console.error('Order manager loop error:', err.message); }
-                await new Promise(resolve => setTimeout(resolve, loopDelayMs));
-            }
-        })();
+                    } catch (err) { console.error('Order manager loop error:', err.message); }
+                    await new Promise(resolve => setTimeout(resolve, loopDelayMs));
+                }
+            })();
 
-        console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
+            console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
+
+        } catch (err) {
+            this._warn(`Error during grid initialization: ${err.message}`);
+            await this.shutdown();
+            throw err;
+        }
     }
 
     /**
@@ -560,21 +660,29 @@ class DEXBot {
                         }
 
                         // Only run divergence checks if rotation was completed
+                        // LOCK ORDER: _fillProcessingLock (held) → _divergenceLock (acquiring)
+                        // This matches the canonical order used in _runGridMaintenance.
                         if (anyRotations) {
-                            await this.manager._divergenceLock.acquire(async () => {
-                                await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
-                                if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.size > 0) {
-                                    const orderType = getOrderTypeFromUpdatedFlags(
-                                        this.manager._gridSidesUpdated.has(ORDER_TYPES.BUY),
-                                        this.manager._gridSidesUpdated.has(ORDER_TYPES.SELL)
+                            try {
+                                await this.manager._divergenceLock.acquire(async () => {
+                                    await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
+                                    if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.size > 0) {
+                                        const orderType = getOrderTypeFromUpdatedFlags(
+                                            this.manager._gridSidesUpdated.has(ORDER_TYPES.BUY),
+                                            this.manager._gridSidesUpdated.has(ORDER_TYPES.SELL)
+                                        );
+                                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
+                                        await this.manager.persistGrid();
+                                    }
+                                    await OrderUtils.applyGridDivergenceCorrections(
+                                        this.manager, this.accountOrders, this.config.botKey, this.updateOrdersOnChainBatch.bind(this)
                                     );
-                                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
-                                    await this.manager.persistGrid();
-                                }
-                                await OrderUtils.applyGridDivergenceCorrections(
-                                    this.manager, this.accountOrders, this.config.botKey, this.updateOrdersOnChainBatch.bind(this)
-                                );
-                            });
+                                });
+                            } catch (err) {
+                                // Log error but don't fail the entire fill processing batch
+                                // Grid divergence will be corrected on next periodic check
+                                this.manager.logger.log(`Error in divergence correction after rotation: ${err.message}`, 'error');
+                            }
                         }
                     }
 
@@ -794,6 +902,28 @@ class DEXBot {
     }
 
     /**
+     * Set up account identifier and configure global context.
+     * @param {string} accountName - The name of the account to set up
+     * @private
+     */
+    async _setupAccountContext(accountName) {
+        let accId = null;
+        try {
+            const full = await BitShares.db.get_full_accounts([accountName], false);
+            if (full && full[0]) {
+                const maybe = full[0][0];
+                if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
+                else if (full[0][1] && full[0][1].account && full[0][1].account.id) accId = full[0][1].account.id;
+            }
+        } catch (e) { /* best-effort */ }
+
+        if (accId) chainOrders.setPreferredAccount(accId, accountName);
+        this.account = accountName;
+        this.accountId = accId || null;
+        this._log(`Initialized DEXBot for account: ${this.account}`);
+    }
+
+    /**
      * Initialize the bot by connecting to BitShares and setting up the account.
      * @param {string} [masterPassword=null] - The master password for authentication.
      * @returns {Promise<void>}
@@ -801,28 +931,18 @@ class DEXBot {
      */
     async initialize(masterPassword = null) {
         await waitForConnected(30000);
-        let accountData = null;
         if (this.config && this.config.preferredAccount) {
             try {
                 const pwd = masterPassword || await chainKeys.authenticate();
-                const privateKey = chainKeys.getPrivateKey(this.config.preferredAccount, pwd);
-                let accId = null;
-                try {
-                    const full = await BitShares.db.get_full_accounts([this.config.preferredAccount], false);
-                    if (full && full[0]) {
-                        const maybe = full[0][0];
-                        if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
-                        else if (full[0][1] && full[0][1].account && full[0][1].account.id) accId = full[0][1].account.id;
-                    }
-                } catch (e) { /* best-effort */ }
-
-                if (accId) chainOrders.setPreferredAccount(accId, this.config.preferredAccount);
-                accountData = { accountName: this.config.preferredAccount, privateKey, id: accId };
+                this.privateKey = chainKeys.getPrivateKey(this.config.preferredAccount, pwd);
+                await this._setupAccountContext(this.config.preferredAccount);
             } catch (err) {
                 this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
                 // dexbot.js has fallback to selectAccount, bot.js throws
                 if (typeof chainOrders.selectAccount === 'function') {
-                    accountData = await chainOrders.selectAccount();
+                    const accountData = await chainOrders.selectAccount();
+                    this.privateKey = accountData.privateKey;
+                    await this._setupAccountContext(accountData.accountName);
                 } else {
                     throw err;
                 }
@@ -830,10 +950,6 @@ class DEXBot {
         } else {
             throw new Error('No preferredAccount configured');
         }
-        this.account = accountData.accountName;
-        this.accountId = accountData.id || null;
-        this.privateKey = accountData.privateKey;
-        this._log(`Initialized DEXBot for account: ${this.account}`);
     }
 
     /**
@@ -877,58 +993,13 @@ class DEXBot {
             if (i < buyOrders.length) interleavedOrders.push(buyOrders[i]);
         }
 
-        const { assetA, assetB } = this.manager.assets;
-        const btsFeeData = OrderUtils.getAssetFees('BTS', 1);
-
-        const createAndSyncOrder = async (order) => {
-            this.manager.logger.log(`Placing ${order.type} order: size=${order.size}, price=${order.price}`, 'debug');
-            const args = buildCreateOrderArgs(order, assetA, assetB);
-
-            // CRITICAL: Update order size in manager if buildCreateOrderArgs quantized it
-            // This ensures the order object matches what was actually placed on blockchain
-            if (args.amountToSell !== order.size) {
-                const gridOrder = this.manager.orders.get(order.id);
-                if (gridOrder) {
-                    gridOrder.size = args.amountToSell;
-                    this.manager._updateOrder(gridOrder, 'size-quantize', false, 0);
-                    this.manager.logger.log(
-                        `Order ${order.id} size quantized: ${order.size} -> ${args.amountToSell}`,
-                        'debug'
-                    );
-                }
-            }
-
-            const result = await chainOrders.createOrder(
-                this.account, this.privateKey, args.amountToSell, args.sellAssetId,
-                args.minToReceive, args.receiveAssetId, null, false
-            );
-            const chainOrderId = result && result[0] && result[0].trx && result[0].trx.operation_results && result[0].trx.operation_results[0] && result[0].trx.operation_results[0][1];
-            if (!chainOrderId) {
-                throw new Error('Order creation response missing order_id');
-            }
-            await this.manager.synchronizeWithChain({
-                gridOrderId: order.id,
-                chainOrderId,
-                fee: btsFeeData.createFee
-            }, 'createOrder');
-        };
-
-        const placeOrderGroup = async (ordersGroup) => {
-            const settled = await Promise.allSettled(ordersGroup.map(order => createAndSyncOrder(order)));
-            settled.forEach((result, index) => {
-                if (result.status === 'rejected') {
-                    const order = ordersGroup[index];
-                    const reason = result.reason;
-                    const errMsg = reason && reason.message ? reason.message : `${reason}`;
-                    this.manager.logger.log(`Failed to place ${order.type} order ${order.id}: ${errMsg}`, 'error');
-                }
-            });
-        };
-
+        // Refactored to use the batch logic while maintaining sequential execution in small groups.
+        // This prevents hitting blockchain transaction size limits and provides incremental feedback.
         const orderGroups = [];
         for (let i = 0; i < interleavedOrders.length;) {
             const current = interleavedOrders[i];
             const next = interleavedOrders[i + 1];
+            // Prefer grouping sell+buy pairs to balance side-specific limits
             if (next && current.type === 'sell' && next.type === 'buy') {
                 orderGroups.push([current, next]);
                 i += 2;
@@ -939,8 +1010,9 @@ class DEXBot {
         }
 
         for (const group of orderGroups) {
-            await placeOrderGroup(group);
+            await this.updateOrdersOnChainBatch({ ordersToPlace: group });
         }
+
         await this.manager.persistGrid();
         this.manager.finishBootstrap();
     }
@@ -1612,247 +1684,23 @@ class DEXBot {
      */
     async start(masterPassword = null) {
         await this.initialize(masterPassword);
+        await this._runStartupSequence();
+    }
 
-        // Create AccountOrders with bot-specific file (one file per bot)
-        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
-
-        // Load persisted processed fills to prevent reprocessing after restart
-        // This prevents double-deduction of fees if fills are reprocessed
-        const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
-        for (const [fillKey, timestamp] of persistedFills) {
-            this._recentlyProcessedFills.set(fillKey, timestamp);
-        }
-        if (persistedFills.size > 0) {
-            this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
-        }
-
-        // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
-        const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
-
-        await this.accountOrders.ensureBotEntries(allActiveBots);
-
-        if (!this.manager) {
-            this.manager = new OrderManager(this.config || {});
-            this.manager.account = this.account;
-            this.manager.accountId = this.accountId;
-            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
-        }
-        this.manager.isBootstrapping = true;
-
-        // Fetch account totals from blockchain at startup to initialize funds
-        try {
-            if (this.accountId && this.config.assetA && this.config.assetB) {
-                await this.manager._initializeAssets();
-                await this.manager.fetchAccountTotals(this.accountId);
-                this._log('Fetched blockchain account balances at startup');
-            }
-        } catch (err) {
-            this._warn(`Failed to fetch account totals at startup: ${err.message}`);
-        }
-
-        // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
-        try {
-            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
-        } catch (err) {
-            this._warn(`Fee cache initialization failed: ${err.message}`);
-        }
-
-        // NOTE: Fill listener activation deferred to after startup reconciliation completes
-        // This prevents fills from arriving during grid initialization/syncing
-
-        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
-
-        // CRITICAL REPAIR: Strip fake orderIds where orderId === id (e.g. "slot-0")
-        // These were caused by a bug in AccountOrders serialization and block rebalancing.
-        if (persistedGrid && persistedGrid.length > 0) {
-            let repairCount = 0;
-            for (const order of persistedGrid) {
-                if (order && order.orderId && order.orderId === order.id) {
-                    order.orderId = '';
-                    // If it was marked ACTIVE/PARTIAL because of the fake ID, revert to VIRTUAL
-                    if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                        order.state = ORDER_STATES.VIRTUAL;
-                    }
-                    repairCount++;
-                }
-            }
-            if (repairCount > 0) {
-                this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
-            }
-        }
-
-        // CRITICAL: Set bootstrap flag to defer fill processing until startup completes
-        // This prevents TOCTOU races during cacheFunds restore, fill listener activation, and grid operations
-        // Fills arriving during startup are queued in _incomingFillQueue but not processed until isBootstrapping=false
-        try {
-            const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
-            const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
-            const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
-            const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
-
-            // Restore and consolidate cacheFunds and BTS fees
-            // SAFE: Done during startup before fill listener activates, so no concurrent access yet
-            this.manager.resetFunds();
-            // CRITICAL FIX: Restore BTS fees owed from persistence
-            // These fees represent transactions pending on-chain that must be accounted for
-            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
-                this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
-            }
-            if (persistedCacheFunds) {
-                await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
-                await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
-            }
-
-            // Restore doubled side flags
-            if (persistedDoubleSideFlags) {
-                this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
-                this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
-                if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
-                    this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
-                }
-            }
-
-            // Use this.accountId which was set during initialize()
-            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
-
-            let shouldRegenerate = false;
-            if (!persistedGrid || persistedGrid.length === 0) {
-                shouldRegenerate = true;
-                this._log('No persisted grid found. Generating new grid.');
-            } else {
-                await this.manager._initializeAssets();
-                const decision = await decideStartupGridAction({
-                    persistedGrid,
-                    chainOpenOrders,
-                    manager: this.manager,
-                    logger: { log: (msg) => this._log(msg) },
-                    storeGrid: async (orders) => {
-                        // Temporarily replace manager.orders to persist the specific orders
-                        const originalOrders = this.manager.orders;
-                        this.manager.orders = new Map(orders.map(o => [o.id, o]));
-                        await this.manager.persistGrid();
-                        this.manager.orders = originalOrders;
-                    },
-                    attemptResumeFn: attemptResumePersistedGridByPriceMatch,
-                });
-                shouldRegenerate = decision.shouldRegenerate;
-
-                if (shouldRegenerate && chainOpenOrders.length === 0) {
-                    this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
-                }
-            }
-
-            // Restore BTS fees owed ONLY if we're NOT regenerating the grid
-            if (!shouldRegenerate) {
-                // CRITICAL: Restore BTS fees owed from blockchain operations
-                if (persistedBtsFeesOwed > 0) {
-                    this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
-                    this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
-                }
-            } else {
-                this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
-                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                this.manager.funds.btsFeesOwed = 0;
-            }
-
-            // CRITICAL: Activate fill listener BEFORE any grid operations or order placement
-            // This ensures we capture fills that occur during startup (initial placement, syncing, corrections)
-            // The divergence lock at startup grid checks prevents races with concurrent fill processing
-            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-            this._log('Fill listener activated (ready to process fills during startup)');
-
-            // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
-            // Fills that arrive during this phase will be queued and processed only after 
-            // the initial reconciliation and placement are complete.
-            await this.manager._fillProcessingLock.acquire(async () => {
-                if (shouldRegenerate) {
-                    await this.manager._initializeAssets();
-
-                    // If there are existing on-chain orders, reconcile them with the new grid
-                    if (Array.isArray(chainOpenOrders) && chainOpenOrders.length > 0) {
-                        this._log('Generating new grid and syncing with existing on-chain orders...');
-                        await Grid.initializeGrid(this.manager);
-                        await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-                        const rebalanceResult = await reconcileStartupOrders({
-                            manager: this.manager,
-                            config: this.config,
-                            account: this.account,
-                            privateKey: this.privateKey,
-                            chainOrders,
-                            chainOpenOrders,
-                        });
-
-                        if (rebalanceResult) {
-                            await this.updateOrdersOnChainBatch(rebalanceResult);
-                        }
-                    } else {
-                        // No existing orders: place initial orders on-chain
-                        // placeInitialOrders() handles both Grid.initializeGrid() and broadcast
-                        this._log('Generating new grid and placing initial orders on-chain...');
-                        await this.placeInitialOrders();
-                    }
-                    await this._persistAndRecoverIfNeeded();
-                } else {
-                    this._log('Found active session. Loading and syncing existing grid.');
-                    await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
-                    const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-
-                    // Process fills discovered during startup sync (happened while bot was offline)
-                    if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                        this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                        // CRITICAL: Set skipAccountTotalsUpdate=true because accountTotals were just fetched from chain
-                        // and already reflect these fills. Adding them again would cause fund inflation.
-                        await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
-                    }
-
-                    // Reconcile existing on-chain orders to the configured target counts.
-                    // This ensures activeOrders changes in bots.json are applied on restart:
-                    // - If user increased activeOrders (e.g., 10→20), new virtual orders activate
-                    // - If user decreased activeOrders (e.g., 20→10), excess orders are cancelled
-                    const rebalanceResult = await reconcileStartupOrders({
-                        manager: this.manager,
-                        config: this.config,
-                        account: this.account,
-                        privateKey: this.privateKey,
-                        chainOrders,
-                        chainOpenOrders,
-                    });
-
-                    if (rebalanceResult) {
-                        await this.updateOrdersOnChainBatch(rebalanceResult);
-                    }
-
-                    await this._persistAndRecoverIfNeeded();
-                }
-            });
-
-            await this._finishStartupSequence();
-
-        } catch (err) {
+    /**
+     * Start bot with a pre-decrypted private key.
+     * Alternative to start(masterPassword) when key is already decrypted.
+     * @param {string} privateKey - Pre-decrypted private key
+     * @returns {Promise<void>}
+     */
+    async startWithPrivateKey(privateKey) {
         // Initialize account data with provided private key
         await waitForConnected(30000);
 
         if (this.config && this.config.preferredAccount) {
             try {
-                let accId = null;
-                try {
-                    const full = await BitShares.db.get_full_accounts([this.config.preferredAccount], false);
-                    if (full && full[0]) {
-                        const maybe = full[0][0];
-                        if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
-                        else if (full[0][1] && full[0][1].account && full[0][1].account.id) accId = full[0][1].account.id;
-                    }
-                } catch (e) { /* best-effort */ }
-
-                if (accId) chainOrders.setPreferredAccount(accId, this.config.preferredAccount);
-
-                this.account = this.config.preferredAccount;
-                this.accountId = accId || null;
                 this.privateKey = privateKey;
-                this._log(`Initialized DEXBot for account: ${this.account}`);
+                await this._setupAccountContext(this.config.preferredAccount);
             } catch (err) {
                 this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);
                 throw err;
@@ -1861,177 +1709,17 @@ class DEXBot {
             throw new Error('No preferredAccount configured');
         }
 
-        // Continue with standard start sequence (grid initialization)
-        // Create AccountOrders with bot-specific file (one file per bot)
-        this.accountOrders = new AccountOrders({ botKey: this.config.botKey });
+        await this._runStartupSequence();
+    }
 
-        // Load persisted processed fills to prevent reprocessing after restart
-        const persistedFills = this.accountOrders.loadProcessedFills(this.config.botKey);
-        for (const [fillKey, timestamp] of persistedFills) {
-            this._recentlyProcessedFills.set(fillKey, timestamp);
-        }
-        if (persistedFills.size > 0) {
-            this._log(`Loaded ${persistedFills.size} persisted fill records to prevent reprocessing`);
-        }
-
-        // Ensure bot metadata is properly initialized in storage
-        const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
-        const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
-
-        await this.accountOrders.ensureBotEntries(allActiveBots);
-
-        if (!this.manager) {
-            this.manager = new OrderManager(this.config || {});
-            this.manager.account = this.account;
-            this.manager.accountId = this.accountId;
-            this.manager.accountOrders = this.accountOrders;
-        }
-        this.manager.isBootstrapping = true;
-
-        // Fetch account totals from blockchain at startup to initialize funds
+    /**
+     * Common startup sequence logic shared between start() and startWithPrivateKey().
+     * @private
+     */
+    async _runStartupSequence() {
         try {
-            if (this.accountId && this.config.assetA && this.config.assetB) {
-                await this.manager._initializeAssets();
-                await this.manager.fetchAccountTotals(this.accountId);
-                this._log('Fetched blockchain account balances at startup');
-            }
-        } catch (err) {
-            this._warn(`Failed to fetch account totals at startup: ${err.message}`);
-        }
-
-        // Ensure fee cache is initialized before any fill processing
-        try {
-            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
-        } catch (err) {
-            this._warn(`Fee cache initialization failed: ${err.message}`);
-        }
-
-        const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
-
-        // CRITICAL REPAIR: Strip fake orderIds where orderId === id
-        if (persistedGrid && persistedGrid.length > 0) {
-            let repairCount = 0;
-            for (const order of persistedGrid) {
-                if (order && order.orderId && order.orderId === order.id) {
-                    order.orderId = '';
-                    if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                        order.state = ORDER_STATES.VIRTUAL;
-                    }
-                    repairCount++;
-                }
-            }
-            if (repairCount > 0) {
-                this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
-            }
-        }
-
-        this.manager.isBootstrapping = true;
-
-        try {
-            const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
-            const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
-            const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
-            const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
-
-            this.manager.resetFunds();
-            // CRITICAL FIX: Restore BTS fees owed from persistence
-            if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
-                this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
-            }
-            if (persistedCacheFunds) {
-                await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
-                await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
-            }
-
-            if (persistedDoubleSideFlags) {
-                this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
-                this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
-                if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
-                    this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
-                }
-            }
-
-            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
-
-            let shouldRegenerate = false;
-            if (!persistedGrid || persistedGrid.length === 0) {
-                shouldRegenerate = true;
-                this._log('No persisted grid found. Generating new grid.');
-            } else {
-                await this.manager._initializeAssets();
-                const decision = await decideStartupGridAction({
-                    persistedGrid,
-                    chainOpenOrders,
-                    manager: this.manager,
-                    logger: { log: (msg) => this._log(msg) },
-                    storeGrid: async (orders) => {
-                        const originalOrders = this.manager.orders;
-                        this.manager.orders = new Map(orders.map(o => [o.id, o]));
-                        await this.manager.persistGrid();
-                        this.manager.orders = originalOrders;
-                    },
-                    attemptResumeFn: attemptResumePersistedGridByPriceMatch,
-                });
-                shouldRegenerate = decision.shouldRegenerate;
-
-                if (shouldRegenerate && chainOpenOrders.length === 0) {
-                    this._log('Persisted grid found, but no matching active orders on-chain. Generating new grid.');
-                }
-            }
-
-            if (!shouldRegenerate) {
-                if (persistedBtsFeesOwed > 0) {
-                    this.manager.funds.btsFeesOwed = persistedBtsFeesOwed;
-                    this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
-                }
-            } else {
-                this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
-                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                this.manager.funds.btsFeesOwed = 0;
-            }
-
-            // Activate fill listener
-            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-            this._log('Fill listener activated (ready to process fills during startup)');
-
-            // CRITICAL: Use fill lock during startup synchronization to prevent races with early fills.
-            await this.manager._fillProcessingLock.acquire(async () => {
-                if (shouldRegenerate) {
-                    await this.placeInitialOrders();
-                    await this._persistAndRecoverIfNeeded();
-                } else {
-                    this._log('Found active session. Loading and syncing existing grid.');
-                    await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
-                    const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
-
-                    // Process fills discovered during startup sync
-                    if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
-                        this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                        await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
-                    }
-
-                    // Reconcile existing on-chain orders to the configured target counts.
-                    const rebalanceResult = await reconcileStartupOrders({
-                        manager: this.manager,
-                        config: this.config,
-                        account: this.account,
-                        privateKey: this.privateKey,
-                        chainOrders,
-                        chainOpenOrders
-                    });
-
-                    if (rebalanceResult) {
-                        await this.updateOrdersOnChainBatch(rebalanceResult);
-                    }
-
-                    await this._persistAndRecoverIfNeeded();
-                }
-            });
-
-            await this._finishStartupSequence();
-
+            const startupState = await this._initializeStartupState();
+            await this._finishStartupSequence(startupState);
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
             await this.shutdown();
@@ -2042,72 +1730,16 @@ class DEXBot {
     /**
      * Perform periodic grid checks: fund thresholds, spread condition, grid health.
      * Called by the periodic blockchain fetch interval to check if grid needs updates.
-     * Uses _divergenceLock for synchronization (consolidated from _correctionsLock).
+     *
+     * IMPORTANT: This method MUST only be called from within _fillProcessingLock.acquire()
+     * (specifically from _setupBlockchainFetchInterval). It passes fillLockAlreadyHeld=true
+     * to avoid deadlock with _consumeFillQueue which uses the same lock ordering.
+     *
      * @private
      */
     async _performPeriodicGridChecks() {
-        try {
-            // Check if newly fetched blockchain funds trigger a grid update
-            if (!this.manager || !this.manager.orders || this.manager.orders.size === 0) return;
-
-            // SAFE: Called inside _fillProcessingLock.acquire() from periodic fetch interval
-            // cacheFunds access is synchronized via lock
-            const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
-            if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                this._log(`Cache ratio threshold triggered grid update (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
-
-                // Divergence lock for grid updates (nested inside fill lock)
-                // CONSOLIDATED: Uses _divergenceLock for all grid sync operations (startup + periodic)
-                await this.manager._divergenceLock.acquire(async () => {
-                    // Update grid with fresh blockchain snapshot from 4-hour timer
-                    const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-
-                    await this.manager.persistGrid();
-
-                    // Apply grid corrections on-chain to use new funds
-                    await OrderUtils.applyGridDivergenceCorrections(
-                        this.manager,
-                        this.accountOrders,
-                        this.config.botKey,
-                        this.updateOrdersOnChainBatch.bind(this)
-                    );
-                    this._log(`Grid corrections applied on-chain from periodic blockchain fetch`);
-                });
-            }
-
-            // Check spread condition after periodic blockchain fetch
-            // Protected by outer _fillProcessingLock - respects AsyncLock pattern
-            // CRITICAL: Recalculate funds before spread correction to ensure accurate state
-            // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications
-            this.manager.recalculateFunds();
-
-            // spreadResult: { ordersPlaced: number, didCorrect: boolean }
-            // Returned by checkSpreadCondition with count of orders placed during spread correction
-            const spreadResult = await this.manager.checkSpreadCondition(
-                BitShares,
-                this.updateOrdersOnChainBatch.bind(this)
-            );
-            if (spreadResult && spreadResult.ordersPlaced > 0) {
-                this._log(`✓ Spread correction at 4h fetch: ${spreadResult.ordersPlaced} order(s) placed`);
-                await this.manager.persistGrid();
-            }
-
-            // Check grid health after periodic blockchain fetch only if pipeline is empty
-            const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
-            if (pipelineStatus.isEmpty) {
-                const healthResult = await this.manager.checkGridHealth(
-                    this.updateOrdersOnChainBatch.bind(this)
-                );
-                if (healthResult.buyDust && healthResult.sellDust) {
-                    await this.manager.persistGrid();
-                }
-            } else {
-                this._log(`Deferring periodic grid health check: ${pipelineStatus.reasons.join(', ')}`, 'debug');
-            }
-        } catch (err) {
-            this._warn(`Error during periodic grid checks: ${err && err.message ? err.message : err}`);
-        }
+        // CRITICAL: Caller (_setupBlockchainFetchInterval) already holds _fillProcessingLock
+        await this._runGridMaintenance('periodic', true);
     }
 
     /**
@@ -2206,6 +1838,124 @@ class DEXBot {
             shadowLocksActive: this.manager?.shadowOrderIds?.size || 0,
             recentFillsTracked: this._recentlyProcessedFills.size
         };
+    }
+
+    /**
+     * Internal grid maintenance logic. Must be called with appropriate locks held.
+     * @private
+     */
+    async _executeMaintenanceLogic(context) {
+        // Step 1: Threshold and Divergence checks
+        // NOTE: These typically require _divergenceLock
+        const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+
+        if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
+            this._log(`Grid updated during ${context} due to funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+            const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
+            await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+            await this._persistAndRecoverIfNeeded();
+
+            try {
+                await OrderUtils.applyGridDivergenceCorrections(
+                    this.manager,
+                    this.accountOrders,
+                    this.config.botKey,
+                    this.updateOrdersOnChainBatch.bind(this)
+                );
+                this._log(`Grid corrections applied on-chain during ${context}`);
+            } catch (err) {
+                this._warn(`Error applying grid corrections during ${context}: ${err.message}`);
+            }
+        } else {
+            // Detect structural mismatch between calculated and persisted grid
+            try {
+                const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
+                const calculatedGrid = Array.from(this.manager.orders.values());
+                const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGridData, this.manager, this.manager.funds.cacheFunds);
+
+                if (comparisonResult?.buy?.updated || comparisonResult?.sell?.updated) {
+                    this._log(`Grid divergence detected during ${context}: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
+                    const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
+                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+                    await this._persistAndRecoverIfNeeded();
+
+                    try {
+                        await OrderUtils.applyGridDivergenceCorrections(
+                            this.manager,
+                            this.accountOrders,
+                            this.config.botKey,
+                            this.updateOrdersOnChainBatch.bind(this)
+                        );
+                        this._log(`Grid divergence corrections applied during ${context}`);
+                    } catch (err) {
+                        this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
+                    }
+                }
+            } catch (err) {
+                this._warn(`Error running divergence check during ${context}: ${err.message}`);
+            }
+        }
+
+        // Step 2: Spread and Health checks
+        // NOTE: These typically require _fillProcessingLock
+        this.manager.recalculateFunds();
+        const spreadResult = await this.manager.checkSpreadCondition(
+            BitShares,
+            this.updateOrdersOnChainBatch.bind(this)
+        );
+        if (spreadResult && spreadResult.ordersPlaced > 0) {
+            this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+            await this._persistAndRecoverIfNeeded();
+        }
+
+        const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
+        if (pipelineStatus.isEmpty) {
+            const healthResult = await this.manager.checkGridHealth(
+                this.updateOrdersOnChainBatch.bind(this)
+            );
+            if (healthResult.buyDust && healthResult.sellDust) {
+                await this._persistAndRecoverIfNeeded();
+            }
+        }
+    }
+
+    /**
+     * Perform grid maintenance: fund thresholds, spread condition, grid health.
+     * Consolidates checks used during startup and periodic runtime updates.
+     *
+     * LOCK ORDERING: _fillProcessingLock → _divergenceLock (canonical order)
+     * This matches the order used in _consumeFillQueue to prevent deadlocks.
+     *
+     * @param {string} context - Maintenance context for logging (e.g. 'startup', 'periodic')
+     * @param {boolean} fillLockAlreadyHeld - If true, caller already holds _fillProcessingLock
+     * @private
+     */
+    async _runGridMaintenance(context = 'periodic', fillLockAlreadyHeld = false) {
+        try {
+            if (!this.manager || !this.manager.orders || this.manager.orders.size === 0) return;
+
+            // Core maintenance logic wrapped in divergence lock
+            const runWithDivergenceLock = async () => {
+                await this.manager._divergenceLock.acquire(async () => {
+                    await this._executeMaintenanceLogic(context);
+                });
+            };
+
+            // CANONICAL LOCK ORDER: _fillProcessingLock → _divergenceLock
+            // This prevents deadlocks with _consumeFillQueue which uses the same order.
+            if (fillLockAlreadyHeld) {
+                // Caller guarantees they hold _fillProcessingLock - just acquire inner lock
+                await runWithDivergenceLock();
+            } else {
+                // Acquire outer lock first, then inner lock
+                await this.manager._fillProcessingLock.acquire(async () => {
+                    await runWithDivergenceLock();
+                });
+            }
+
+        } catch (err) {
+            this._warn(`Error during ${context} grid maintenance: ${err.message}`);
+        }
     }
 
     /**
