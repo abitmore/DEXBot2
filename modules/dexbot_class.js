@@ -105,6 +105,195 @@ class DEXBot {
     }
 
     /**
+     * Persist the grid and trigger immediate recovery if validation fails.
+     * Used during startup to ensure bot begins in a stable state.
+     * @private
+     */
+    async _persistAndRecoverIfNeeded() {
+        const validation = await this.manager.persistGrid();
+        if (!validation.isValid) {
+            this._warn(`Startup validation failed: ${validation.reason}. Triggering immediate recovery...`);
+            // Trigger centralized recovery (Hard Reset)
+            const recoveryValidation = await this.manager.accountant._performStateRecovery(this.manager);
+            if (recoveryValidation.isValid) {
+                this._log(`✓ Startup recovery successful. Persistent state restored.`);
+                await this.manager.persistGrid();
+            } else {
+                this._warn(`Startup recovery failed: ${recoveryValidation.reason}. Bot proceeding with caution.`);
+            }
+        }
+    }
+
+    /**
+     * Finalize the bot startup after account and initial grid sync are complete.
+     * Consolidates common logic for start() and startWithPrivateKey().
+     * @private
+     */
+    async _finishStartupSequence() {
+        // CRITICAL: Bootstrap complete - allow invariant checks to resume
+        this.manager.finishBootstrap();
+
+        // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
+        // Note: Grid checks only run if no fills are being processed
+        // Fill listener is now active, so fills could arrive during checks - use locks appropriately
+
+        // Step 1: Threshold check (available funds)
+        try {
+            // Only run grid checks if no fills are being processed
+            if (this.manager && this.manager.orders && this.manager.orders.size > 0) {
+                // CRITICAL: Use divergence lock to prevent race with fill processing
+                // Even though fill listener is just being set up, fills could arrive immediately
+                // We must serialize grid updates with fund modifications to prevent TOCTOU races
+                // NOTE: This consolidates grid sync logic - same lock used for both startup and periodic checks
+                await this.manager._divergenceLock.acquire(async () => {
+                    const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+
+                    // Step 1: Threshold check result
+                    if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
+                        this._log(`Grid updated at startup due to available funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+
+                        // CRITICAL: First recalculate grid sizes with chain totals
+                        // This updates order sizes in memory to include newly deposited funds
+                        const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
+                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+
+                        await this._persistAndRecoverIfNeeded();
+
+                        // Apply grid corrections on-chain immediately to use new funds
+                        try {
+                            await OrderUtils.applyGridDivergenceCorrections(
+                                this.manager,
+                                this.accountOrders,
+                                this.config.botKey,
+                                this.updateOrdersOnChainBatch.bind(this)
+                            );
+                            this._log(`Grid corrections applied on-chain at startup`);
+                        } catch (err) {
+                            this._warn(`Error applying grid corrections at startup: ${err.message}`);
+                        }
+                    } else {
+                        // Step 2: Divergence check (only if threshold didn't trigger)
+                        // Detects structural mismatch between calculated and persisted grid
+                        try {
+                            const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
+                            const calculatedGrid = Array.from(this.manager.orders.values());
+                            const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGrid, this.manager, this.manager.funds.cacheFunds);
+
+                            // Safety check: ensure comparisonResult has valid structure before accessing properties
+                            if (comparisonResult?.buy?.updated !== undefined && comparisonResult?.sell?.updated !== undefined) {
+                                if (comparisonResult.buy.updated || comparisonResult.sell.updated) {
+                                    this._log(`Grid divergence detected at startup: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
+
+                                    // Update grid with blockchain snapshot already fresh from initialization
+                                    // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
+                                    const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
+                                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+
+                                    await this._persistAndRecoverIfNeeded();
+
+                                    // Apply grid corrections on-chain immediately
+                                    try {
+                                        await OrderUtils.applyGridDivergenceCorrections(
+                                            this.manager,
+                                            this.accountOrders,
+                                            this.config.botKey,
+                                            this.updateOrdersOnChainBatch.bind(this)
+                                        );
+                                        this._log(`Grid divergence corrections applied on-chain at startup`);
+                                    } catch (err) {
+                                        this._warn(`Error applying divergence corrections at startup: ${err.message}`);
+                                    }
+                                }
+                            } else {
+                                this._warn(`Warning: Grid comparison returned invalid structure at startup: ${JSON.stringify(comparisonResult)}`);
+                            }
+                        } catch (err) {
+                            this._warn(`Error running divergence check at startup: ${err.message}`);
+                        }
+                    }
+                });
+            }
+        } catch (err) {
+            this._warn(`Error checking grid at startup: ${err.message}`);
+        }
+
+        // Check spread condition at startup (after grid operations complete)
+        // Protected by _fillProcessingLock to respect AsyncLock pattern and prevent races with early fills
+        try {
+            await this.manager._fillProcessingLock.acquire(async () => {
+                // CRITICAL: Recalculate funds before spread correction to ensure accurate available values
+                // During startup, funds may be in inconsistent state until recalculated
+                // SAFE: Protected by _fillProcessingLock.acquire()
+                this.manager.recalculateFunds();
+
+                // spreadResult: { ordersPlaced: number, didCorrect: boolean }
+                // Returned by checkSpreadCondition with count of orders placed during spread correction
+                const spreadResult = await this.manager.checkSpreadCondition(
+                    BitShares,
+                    this.updateOrdersOnChainBatch.bind(this)
+                );
+                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                    this._log(`✓ Spread correction at startup: ${spreadResult.ordersPlaced} order(s) placed`);
+                    await this._persistAndRecoverIfNeeded();
+                }
+
+                // Check grid health at startup only if pipeline is empty
+                const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
+                if (pipelineStatus.isEmpty) {
+                    const healthResult = await this.manager.checkGridHealth(
+                        this.updateOrdersOnChainBatch.bind(this)
+                    );
+                    if (healthResult.buyDust && healthResult.sellDust) {
+                        await this._persistAndRecoverIfNeeded();
+                    }
+                } else {
+                    this._log(`Startup grid health check deferred: ${pipelineStatus.reasons.join(', ')}`, 'debug');
+                }
+            });
+        } catch (err) {
+            this._warn(`Error checking spread condition at startup: ${err.message}`);
+        }
+
+        // CRITICAL: Mark bootstrap complete - allow fill processing to resume
+        this.manager.isBootstrapping = false;
+        this._log('Bootstrap phase complete - fill processing resumed', 'info');
+
+        // Setup trigger file detection for grid reset (shared with startWithPrivateKey)
+        await this._setupTriggerFileDetection();
+
+        // Start periodic blockchain fetch to keep blockchain variables updated
+        this._setupBlockchainFetchInterval();
+
+        // Main loop
+        const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
+        this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
+
+        (async () => {
+            while (true) {
+                try {
+                    if (this.manager && !this.config.dryRun) {
+                        // OPTIMIZATION: Reduce lock thrashing by checking if lock is already held
+                        // Only acquire if we actually need to do work AND lock is available
+                        // This prevents busy-looping that continuously acquires/releases the lock
+                        if (!this.manager._fillProcessingLock.isLocked() &&
+                            this.manager._fillProcessingLock.getQueueLength() === 0) {
+                            await this.manager._fillProcessingLock.acquire(async () => {
+                                await this.manager.syncFromOpenOrders();
+                            });
+                        } else {
+                            // Lock is busy with fill processing, skip this iteration
+                            this.manager.logger.log('Sync deferred: fill processing in progress', 'debug');
+                        }
+                    }
+                } catch (err) { console.error('Order manager loop error:', err.message); }
+                await new Promise(resolve => setTimeout(resolve, loopDelayMs));
+            }
+        })();
+
+        console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
+    }
+
+    /**
      * Create the fill callback for listenForFills.
      * Separated from start() to allow deferred activation after startup completes.
      * @param {Object} chainOrders - Chain orders module for blockchain operations
@@ -1605,7 +1794,7 @@ class DEXBot {
                         this._log('Generating new grid and placing initial orders on-chain...');
                         await this.placeInitialOrders();
                     }
-                    await this.manager.persistGrid();
+                    await this._persistAndRecoverIfNeeded();
                 } else {
                     this._log('Found active session. Loading and syncing existing grid.');
                     await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
@@ -1636,184 +1825,13 @@ class DEXBot {
                         await this.updateOrdersOnChainBatch(rebalanceResult);
                     }
 
-                    await this.manager.persistGrid();
+                    await this._persistAndRecoverIfNeeded();
                 }
             });
 
-            // CRITICAL: Bootstrap complete - allow invariant checks to resume
-            this.manager.finishBootstrap();
+            await this._finishStartupSequence();
 
-            // Check if newly fetched blockchain funds or divergence trigger a grid update at startup
-            // Note: Grid checks only run if no fills are being processed
-            // Fill listener is now active, so fills could arrive during checks - use locks appropriately
-
-            // Step 1: Threshold check (available funds)
-            try {
-                // Only run grid checks if no fills are being processed
-                if (this.manager && this.manager.orders && this.manager.orders.size > 0) {
-                    // CRITICAL: Use divergence lock to prevent race with fill processing
-                    // Even though fill listener is just being set up, fills could arrive immediately
-                    // We must serialize grid updates with fund modifications to prevent TOCTOU races
-                    // NOTE: This consolidates grid sync logic - same lock used for both startup and periodic checks
-                    await this.manager._divergenceLock.acquire(async () => {
-                        const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
-
-                        // Step 1: Threshold check result
-                        if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                            this._log(`Grid updated at startup due to available funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
-
-                            // CRITICAL: First recalculate grid sizes with chain totals
-                            // This updates order sizes in memory to include newly deposited funds
-                            const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-                            await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-
-                            await this.manager.persistGrid();
-
-                            // Apply grid corrections on-chain immediately to use new funds
-                            try {
-                                await OrderUtils.applyGridDivergenceCorrections(
-                                    this.manager,
-                                    this.accountOrders,
-                                    this.config.botKey,
-                                    this.updateOrdersOnChainBatch.bind(this)
-                                );
-                                this._log(`Grid corrections applied on-chain at startup`);
-                            } catch (err) {
-                                this._warn(`Error applying grid corrections at startup: ${err.message}`);
-                            }
-                        } else {
-                            // Step 2: Divergence check (only if threshold didn't trigger)
-                            // Detects structural mismatch between calculated and persisted grid
-                            try {
-                                const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
-                                const calculatedGrid = Array.from(this.manager.orders.values());
-                                const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGrid, this.manager, this.manager.funds.cacheFunds);
-
-                                // Safety check: ensure comparisonResult has valid structure before accessing properties
-                                if (comparisonResult?.buy?.updated !== undefined && comparisonResult?.sell?.updated !== undefined) {
-                                    if (comparisonResult.buy.updated || comparisonResult.sell.updated) {
-                                        this._log(`Grid divergence detected at startup: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
-
-                                        // Update grid with blockchain snapshot already fresh from initialization
-                                        // fromBlockchainTimer=true because blockchain was just fetched at startup (line 499)
-                                        const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
-                                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-
-                                        await this.manager.persistGrid();
-
-                                        // Apply grid corrections on-chain immediately
-                                        try {
-                                            await OrderUtils.applyGridDivergenceCorrections(
-                                                this.manager,
-                                                this.accountOrders,
-                                                this.config.botKey,
-                                                this.updateOrdersOnChainBatch.bind(this)
-                                            );
-                                            this._log(`Grid divergence corrections applied on-chain at startup`);
-                                        } catch (err) {
-                                            this._warn(`Error applying divergence corrections at startup: ${err.message}`);
-                                        }
-                                    }
-                                } else {
-                                    this._warn(`Warning: Grid comparison returned invalid structure at startup: ${JSON.stringify(comparisonResult)}`);
-                                }
-                            } catch (err) {
-                                this._warn(`Error running divergence check at startup: ${err.message}`);
-                            }
-                        }
-                    });
-                }
-            } catch (err) {
-                this._warn(`Error checking grid at startup: ${err.message}`);
-            }
-
-            // Check spread condition at startup (after grid operations complete)
-            // Protected by _fillProcessingLock to respect AsyncLock pattern and prevent races with early fills
-            try {
-                await this.manager._fillProcessingLock.acquire(async () => {
-                    // CRITICAL: Recalculate funds before spread correction to ensure accurate available values
-                    // During startup, funds may be in inconsistent state until recalculated
-                    // SAFE: Protected by _fillProcessingLock.acquire()
-                    this.manager.recalculateFunds();
-
-                    // spreadResult: { ordersPlaced: number, didCorrect: boolean }
-                    // Returned by checkSpreadCondition with count of orders placed during spread correction
-                    const spreadResult = await this.manager.checkSpreadCondition(
-                        BitShares,
-                        this.updateOrdersOnChainBatch.bind(this)
-                    );
-                    if (spreadResult && spreadResult.ordersPlaced > 0) {
-                        this._log(`✓ Spread correction at startup: ${spreadResult.ordersPlaced} order(s) placed`);
-                        await this.manager.persistGrid();
-                    }
-
-                    // Check grid health at startup only if pipeline is empty
-                    const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
-                    if (pipelineStatus.isEmpty) {
-                        const healthResult = await this.manager.checkGridHealth(
-                            this.updateOrdersOnChainBatch.bind(this)
-                        );
-                        if (healthResult.buyDust && healthResult.sellDust) {
-                            await this.manager.persistGrid();
-                        }
-                    } else {
-                        this._log(`Startup grid health check deferred: ${pipelineStatus.reasons.join(', ')}`, 'debug');
-                    }
-                });
-            } catch (err) {
-                this._warn(`Error checking spread condition at startup: ${err.message}`);
-            }
-
-        } finally {
-            // CRITICAL: Mark bootstrap complete - allow fill processing to resume
-            this.manager.isBootstrapping = false;
-            this._log('Bootstrap phase complete - fill processing resumed', 'info');
-        }
-
-        // Setup trigger file detection for grid reset (shared with startWithPrivateKey)
-        await this._setupTriggerFileDetection();
-
-        // Start periodic blockchain fetch to keep blockchain variables updated
-        this._setupBlockchainFetchInterval();
-
-        // Main loop
-        const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
-        this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
-
-        (async () => {
-            while (true) {
-                try {
-                    if (this.manager && !this.config.dryRun) {
-                        // OPTIMIZATION: Reduce lock thrashing by checking if lock is already held
-                        // Only acquire if we actually need to do work AND lock is available
-                        // This prevents busy-looping that continuously acquires/releases the lock
-                        if (!this.manager._fillProcessingLock.isLocked() &&
-                            this.manager._fillProcessingLock.getQueueLength() === 0) {
-                            await this.manager._fillProcessingLock.acquire(async () => {
-                                await this.manager.syncFromOpenOrders();
-                            });
-                        } else {
-                            // Lock is busy with fill processing, skip this iteration
-                            this.manager.logger.log('Sync deferred: fill processing in progress', 'debug');
-                        }
-                    }
-                } catch (err) { console.error('Order manager loop error:', err.message); }
-                await new Promise(resolve => setTimeout(resolve, loopDelayMs));
-            }
-        })();
-
-        console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
-    }
-
-    /**
-     * Start bot with a pre-decrypted private key.
-     * Alternative to start(masterPassword) when key is already decrypted.
-     * Used by bot.js when receiving key from credential daemon.
-     * @param {string} privateKey - Pre-decrypted private key
-     * @returns {Promise<void>}
-     * @throws {Error} If initialization fails
-     */
-    async startWithPrivateKey(privateKey) {
+        } catch (err) {
         // Initialize account data with provided private key
         await waitForConnected(30000);
 
@@ -1982,7 +2000,7 @@ class DEXBot {
             await this.manager._fillProcessingLock.acquire(async () => {
                 if (shouldRegenerate) {
                     await this.placeInitialOrders();
-                    await this.manager.persistGrid();
+                    await this._persistAndRecoverIfNeeded();
                 } else {
                     this._log('Found active session. Loading and syncing existing grid.');
                     await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
@@ -2008,48 +2026,17 @@ class DEXBot {
                         await this.updateOrdersOnChainBatch(rebalanceResult);
                     }
 
-                    await this.manager.persistGrid();
+                    await this._persistAndRecoverIfNeeded();
                 }
             });
 
-            this.manager.isBootstrapping = false;
-            this._log('Bootstrap completed successfully');
+            await this._finishStartupSequence();
 
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
             await this.shutdown();
             throw err;
         }
-
-        // Setup trigger file detection for grid reset (shared with start method)
-        await this._setupTriggerFileDetection();
-
-        // Start periodic blockchain fetch to keep blockchain variables updated
-        this._setupBlockchainFetchInterval();
-
-        // Main loop
-        const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
-        this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
-
-        (async () => {
-            while (true) {
-                try {
-                    if (this.manager && !this.config.dryRun) {
-                        if (!this.manager._fillProcessingLock.isLocked() &&
-                            this.manager._fillProcessingLock.getQueueLength() === 0) {
-                            await this.manager._fillProcessingLock.acquire(async () => {
-                                await this.manager.syncFromOpenOrders();
-                            });
-                        } else {
-                            this.manager.logger.log('Sync deferred: fill processing in progress', 'debug');
-                        }
-                    }
-                } catch (err) { console.error('Order manager loop error:', err.message); }
-                await new Promise(resolve => setTimeout(resolve, loopDelayMs));
-            }
-        })();
-
-        console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
     }
 
     /**
