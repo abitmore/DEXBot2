@@ -1136,15 +1136,17 @@ class Grid {
             const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType, snap);
             const availableFund = (manager.funds?.available?.[sideName] || 0);
 
-            if (idealSize && idealSize > 0) {
+            const minAbsoluteSize = getMinOrderSize(railType, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+
+            if (idealSize && idealSize >= minAbsoluteSize) {
                 // Scale down to available funds if necessary
                 const size = Math.min(idealSize, availableFund);
 
-                // Calculate minimum healthy size (double the standard dust threshold)
+                // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
                 const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
                 const minHealthySize = idealSize * dustThresholdFactor * 2;
 
-                if (size >= minHealthySize && size > 0) {
+                if (size >= minHealthySize && size >= minAbsoluteSize) {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
 
                     // Log if we are scaling down

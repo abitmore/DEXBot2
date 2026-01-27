@@ -816,9 +816,18 @@ class DEXBot {
                 sellAmountInt = op.op_data.new_price?.base?.amount;
             }
 
-            if (sellAssetId && sellAmountInt) {
+            if (sellAssetId && (sellAmountInt !== undefined && sellAmountInt !== null)) {
                 const precision = (sellAssetId === assetA.id) ? assetA.precision : assetB.precision;
                 const assetSymbol = (sellAssetId === assetA.id) ? assetA.symbol : assetB.symbol;
+
+                // CRITICAL SAFETY CHECK: Ensure amount is greater than zero
+                if (Number(sellAmountInt) <= 0) {
+                    return {
+                        isValid: false,
+                        summary: `[VALIDATION] CRITICAL: Zero amount order detected for ${assetSymbol} (assetId=${sellAssetId})`,
+                        violations: [{ asset: assetSymbol, sizeInt: sellAmountInt, reason: 'Zero amount' }]
+                    };
+                }
 
                 // CRITICAL SAFETY CHECK: Use integer comparison for max size
                 // Converts float maxOrderSize to blockchain int to avoid float issues
@@ -996,6 +1005,8 @@ class DEXBot {
                 // Trigger sync to revert optimistic state on validation failure
                 try {
                     this.manager.logger.log('Triggering state recovery sync...', 'info');
+                    // FETCH FRESH BALANCES FIRST to reset optimistic drift
+                    await this.manager.fetchAccountTotals(this.accountId);
                     const openOrders = await chainOrders.readOpenOrders(this.accountId);
                     await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
                 } catch (syncErr) {
@@ -1026,6 +1037,8 @@ class DEXBot {
             // Trigger sync to revert optimistic state on execution failure
             try {
                 this.manager.logger.log('Triggering state recovery sync...', 'info');
+                // FETCH FRESH BALANCES FIRST to reset optimistic drift
+                await this.manager.fetchAccountTotals(this.accountId);
                 const openOrders = await chainOrders.readOpenOrders(this.accountId);
                 await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
             } catch (syncErr) {

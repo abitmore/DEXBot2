@@ -8,6 +8,7 @@
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS } = require("../constants");
 const {
     getPrecisionForSide,
+    getMinOrderSize,
     getAssetFees,
     allocateFundsByWeights,
     floatToBlockchainInt,
@@ -472,7 +473,9 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
                 const finalSize = currentSize + cappedIncrease;
 
-                if (finalSize > 0) {
+                const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+
+                if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
                     mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and flagging side as doubled.`, 'info');
 
                     if (type === ORDER_TYPES.BUY) mgr.buySideIsDoubled = true;
@@ -513,7 +516,9 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
                 const finalSize = oldSize + cappedIncrease;
 
-                if (finalSize > 0) {
+                const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+
+                if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
                     mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
                     ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
                     // CRITICAL: Only upgrade to ACTIVE if order has valid orderId to prevent phantom orders
@@ -587,11 +592,15 @@ class StrategyEngine {
             const cappedIncrease = Math.min(gridDifference, remainingAvail);
             const finalSize = destinationSize + cappedIncrease;
 
-            // SAFETY: Ensure final size is above double-dust threshold
+            // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
             const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
             const minHealthySize = idealSize * dustThresholdFactor * 2;
+            const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
 
-            if (finalSize >= minHealthySize && finalSize > 0) {
+            // Logic: 
+            // 1. If the ideal target is too small (dust), skip it.
+            // 2. If available funds cap the order below the healthy threshold, skip it.
+            if (idealSize >= minAbsoluteSize && finalSize >= minHealthySize) {
                 ordersToRotate.push({
                     oldOrder: { ...currentSurplus },
                     newPrice: shortageSlot.price,
@@ -647,11 +656,12 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
                 const finalSize = currentSize + cappedIncrease;
 
-                // SAFETY: Ensure final size is above double-dust threshold
+                // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
                 const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
                 const minHealthySize = idealSize * dustThresholdFactor * 2;
+                const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
 
-                if (finalSize >= minHealthySize && finalSize > 0) {
+                if (idealSize >= minAbsoluteSize && finalSize >= minHealthySize) {
                     // NEW: Set new placement to VIRTUAL until confirmed on-chain
                     ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
                     stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });

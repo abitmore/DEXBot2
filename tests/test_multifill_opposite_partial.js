@@ -62,6 +62,17 @@ async function testMultifillOppositePartial() {
         return true;
     };
 
+    // Mock recovery methods to allow stabilization gate to 'succeed'
+    manager.fetchAccountTotals = async function() {
+        return true;
+    };
+    manager.syncFromOpenOrders = async function() {
+        return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
+    };
+    manager.persistGrid = async function() {
+        return { isValid: true, reason: null };
+    };
+
     // Mock checkGridHealth to bypass the stabilization gate during rebalance
     manager.checkGridHealth = async function() {
         return { buyDust: false, sellDust: false };
