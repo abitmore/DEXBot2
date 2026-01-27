@@ -15,6 +15,7 @@
     "pm2:reload": "pm2 reload profiles/ecosystem.config.js",
     "pmain": "bash scripts/pmain.sh",
     "pdev": "bash scripts/pdev.sh",
+    "ptest": "bash scripts/ptest.sh",
     "test": "node tests/test_utils.js && node tests/test_order_grid.js && node tests/test_logger.js && node tests/test_manager.js && node tests/test_account_totals.js && node tests/connection_test.js && node tests/test_key_validation.js && node tests/test_subscriptions.js && node tests/test_fills.js && node tests/test_account_selection.js && node tests/test_autoderive.js && node tests/test_price_derive.js && node tests/test_price_no_positional.js && node tests/test_price_orientation.js && node tests/test_price_tolerance.js && node tests/test_chain_helpers.js && node tests/test_templates_ordering.js && node tests/test_startup_decision.js && node tests/test_partial_order_edge_cases.js && node tests/test_integration_partial_complex.js && node tests/test_precision_quantization.js && node tests/test_precision_integration.js && node tests/test_dust_rebalance_logic.js && node tests/test_bts_fee_accounting.js && node tests/test_multifill_opposite_partial.js && node tests/test_accounting_logic.js && node tests/test_strategy_logic.js && node tests/test_sync_logic.js && node tests/test_grid_logic.js && node tests/test_manager_logic.js && node tests/test_bts_fee_logic.js && node tests/test_boundary_sync_logic.js && node tests/test_fee_backwards_compat.js && node tests/test_layer2_self_healing.js && node tests/repro_phantom_orders.js"
   },
   "repository": {
