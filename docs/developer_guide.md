@@ -452,6 +452,154 @@ fetchAccountBalancesAndSetTotals()
 
 ---
 
+## Startup Sequence & Lock Ordering (Patch 9 Consolidation)
+
+### Unified Startup Flow
+
+The bot startup has been consolidated into a shared sequence used by all entry points (`start()`, `startWithPrivateKey()`, CLI, PM2). This ensures identical behavior and eliminates maintenance burden from duplicate code.
+
+#### Startup Phases (In Order)
+
+```javascript
+// Phase 1: Initialize state
+_initializeStartupState()
+  ├─ Verify account configuration
+  └─ Load existing or generate new grid state
+
+// Phase 2: Set up account context
+_setupAccountContext()
+  ├─ Resolve account ID
+  ├─ Load fund balances
+  └─ Initialize AccountOrders subscription
+
+// Phase 3: Create order manager
+// (OrderManager spawned with initial state)
+
+// Phase 4: Run grid maintenance
+_runGridMaintenance()
+  ├─ Acquire _fillProcessingLock
+  └─ Execute maintenance logic:
+      ├─ Threshold check (cache ratio)
+      ├─ Divergence check (if threshold fails)
+      ├─ Spread check (out-of-spread recovery)
+      └─ Health check (invariant verification)
+
+// Phase 5: Finish startup
+_finishStartupSequence()
+  ├─ Mark bootstrap complete
+  ├─ Begin fill processing
+  └─ Start periodic maintenance timer
+```
+
+### Lock Ordering for Deadlock Prevention
+
+**Critical Rule: Always acquire locks in canonical order**
+
+```
+_fillProcessingLock → _divergenceLock
+```
+
+**Why This Order?**
+
+- Fill processing is the most frequent operation (high contention)
+- Grid maintenance is less frequent but synchronous
+- By acquiring fill lock first, we ensure fills can't be blocked by slower divergence checks
+- Reverse order (divergence first) would create deadlock when fills arrive during maintenance
+
+**Example: Safe Pattern**
+
+```javascript
+// ✅ CORRECT: Fill lock acquired, then divergence lock
+async processFill(fill) {
+    await this._fillProcessingLock.acquire();
+    try {
+        // Do fill processing...
+
+        // If divergence check needed:
+        await this._divergenceLock.acquire();
+        try {
+            // Check divergence...
+        } finally {
+            this._divergenceLock.release();
+        }
+    } finally {
+        this._fillProcessingLock.release();
+    }
+}
+
+// ❌ WRONG: Would deadlock if fill arrives during divergence check
+async checkDivergence() {
+    await this._divergenceLock.acquire();  // This blocks fills!
+    try {
+        // ...
+    }
+}
+```
+
+**Lock Scope in Startup**
+
+The startup sequence extends lock scope to ensure atomic operations:
+
+```javascript
+async _runGridMaintenance(fillLockAlreadyHeld = false) {
+    const lockHeld = fillLockAlreadyHeld || await this._fillProcessingLock.acquire();
+    try {
+        // All maintenance operations run atomically
+        // Fills cannot arrive mid-startup
+    } finally {
+        if (!fillLockAlreadyHeld) {
+            this._fillProcessingLock.release();
+        }
+    }
+}
+```
+
+**Bootstrap Flag Safety**
+
+The `isBootstrapping` flag is guaranteed to be cleared using try-finally:
+
+```javascript
+async start() {
+    this.isBootstrapping = true;
+    try {
+        // All startup phases...
+    } finally {
+        this.isBootstrapping = false;  // Always cleared, even on error
+    }
+}
+```
+
+### Zero-Amount Order Prevention
+
+All new orders pass through two validation gates:
+
+1. **Strategy/Grid Logic** (`strategy.js`, `grid.js`):
+   - Check: `size >= getMinOrderSize(type, assets, factor)`
+   - Double-dust threshold: `size >= minHealthySize`
+   - Prevents undersized placement attempts
+
+2. **Broadcast Validation** (`dexbot_class.js`):
+   - Check: `amount > 0` for each order
+   - Rejects zero-amount operations before blockchain transmission
+   - Triggers recovery sync on validation failure
+
+**Recovery from Failed Batches**
+
+If a batch broadcast fails, the bot performs recovery:
+
+```javascript
+try {
+    await broadcastBatch(orders);  // Broadcasting
+} catch (error) {
+    // Fresh balance fetch resets optimistic drift
+    await this.manager.fetchAccountTotals(this.accountId);
+
+    // Full sync aligns grid with blockchain reality
+    const openOrders = await chainOrders.readOpenOrders(this.accountId);
+    await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
+}
+```
+
 ---
 
 ## Managing Bot Configuration

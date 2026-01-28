@@ -165,6 +165,29 @@ git checkout test
 git pull origin test
 ```
 
+## NPM Scripts for Branch Synchronization
+
+The following npm scripts provide safe, automated branch synchronization:
+
+```bash
+# Sync local test to origin/test (safe, no branch switching)
+npm run ptest
+
+# Sync test to dev with safe remote push
+npm run pdev
+
+# Promote dev to main (full release)
+npm run pmain
+```
+
+### Script Details
+
+| Script | Purpose | What It Does | When to Use |
+|--------|---------|-------------|-----------|
+| `npm run ptest` | Safe test sync | Pushes local test commits to origin/test without switching branches | Daily development; ensures origin/test is up-to-date |
+| `npm run pdev` | Integrate to dev | Merges test → dev with safe remote push | When test is stable and ready for staging |
+| `npm run pmain` | Release to main | Promotes dev → main with validation and tagging | For official releases only |
+
 ## Commands Summary
 
 ```bash
@@ -181,13 +204,14 @@ git push -u origin feature/xyz
 # Merge to test - Integrate feature into primary branch
 git checkout test && git pull && git merge --no-ff feature/xyz && git push origin test
 
-# Merge test to dev - Promote tested code to staging
-git checkout dev && git pull && git merge --no-ff test && git push origin dev
+# Quick: Sync test to origin/test (no branch switch)
+npm run ptest
+
+# Sync test to dev - Promote tested code to staging
+npm run pdev
 
 # Merge dev to main (releases only) - Promote to production
-git checkout main && git pull && git merge --no-ff dev && git push origin main
-git tag -a v0.X.Y -m "Release version 0.X.Y"
-git push origin v0.X.Y
+npm run pmain
 ```
 
 ## Troubleshooting

@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.9] - 2026-01-28 - Startup Consolidation, Zero-Amount Prevention & Auto-Recovery
+
+### Added
+- **Startup Auto-Recovery for Accounting Drift** (commit 6f2e481)
+  - **Feature**: Automatic recovery mechanism triggered during startup when accounting drift is detected.
+  - **Mechanism**: Performs fresh blockchain balance fetch and full synchronization from open orders to reset optimistic drift.
+  - **Benefit**: Prevents accumulated accounting errors from affecting bot operations and ensures clean state initialization.
+
+### Fixed
+- **Zero-Amount Order Prevention** (commit ca2a28e)
+  - **Problem**: Strict minimum order size validation was missing, allowing zero-amount orders to be created and broadcast to blockchain, causing transaction failures and accounting drift.
+  - **Solution**:
+    - Enforced absolute minimum order size in both strategy and grid logic using `getMinOrderSize()`.
+    - Added validation gate in `broadcastBatch()` to reject zero-amount operations before blockchain submission.
+    - Implemented fresh balance fetch during batch failure recovery to reset optimistic drift to blockchain reality.
+  - **Impact**: Prevents zero-size orders from corrupting chain state and triggering cascading recovery cycles.
+
+- **Optimistic Accounting Drift Recovery** (commit ca2a28e)
+  - **Problem**: Failed batch operations could leave optimistic accounting state desynchronized from actual blockchain totals.
+  - **Solution**: Fresh `fetchAccountTotals()` call before synchronization resets optimistic tracking to true blockchain values.
+  - **Safety**: Applied in both validation failure and execution failure paths to ensure consistent recovery.
+
+### Refactored
+- **Startup Sequence Deduplication** (commit f11cc3c)
+  - **Problem**: 697 lines of duplicated startup code between `start()` and `startWithPrivateKey()` created maintenance burden and inconsistency risk.
+  - **Solution**: Extracted shared logic into unified private methods:
+    - `_initializeStartupState()`: Centralized state initialization
+    - `_finishStartupSequence()`: Unified startup completion logic
+    - `_setupAccountContext()`: Consolidated account setup
+    - `_runGridMaintenance()`: Single grid maintenance entry point
+    - `_executeMaintenanceLogic()`: Centralized threshold, divergence, spread, and health checks
+  - **Refactored `placeInitialOrders()`**: Now uses `updateOrdersOnChainBatch()` for consistency.
+  - **Impact**: Net reduction of ~280 lines with guaranteed identical startup behavior across all entry points.
+
+- **Lock Ordering Fixes for Deadlock Prevention** (commit f11cc3c)
+  - **Problem**: Inconsistent lock acquisition order between fill processing and grid maintenance could cause deadlocks.
+  - **Solution**:
+    - Enforce canonical lock order: `_fillProcessingLock → _divergenceLock`
+    - Replace fragile `isLocked()` checks with explicit `fillLockAlreadyHeld` parameter
+    - Add try-finally to ensure `isBootstrapping` flag is always cleared
+    - Extend lock scope in startup to cover finishBootstrap and maintenance atomically
+    - Add error handling in `_consumeFillQueue()` divergence lock
+  - **Impact**: Eliminates potential deadlock scenarios and ensures atomic startup operations.
+
+### Changed
+- **Package Scripts Enhancement** (commits f02497d, 2f4a938)
+  - Added `pdev` npm script: Synchronizes test branch to dev branch with safe remote push mode
+  - Added `ptest` npm script: Synchronizes local test branch to origin/test safely without branch switching
+  - **Benefit**: Streamlined development workflow with safer branch promotion
+
+### Performance
+- **No Performance Impact**: Startup deduplication maintains identical execution paths; refactoring is internal only.
+
+### Quality Assurance
+- **Code Quality Improvements**
+  - Consolidated ~280 lines of duplicate startup code
+  - Improved lock management with explicit parameter passing
+  - Enhanced error handling in divergence lock acquisition
+  - Maintainability improvement: Single source of truth for startup sequence and grid maintenance logic
+
+---
+
 ## [0.6.0-patch.8] - 2026-01-25 - Spread Refinement, Inventory Sync & Operational Hardening
 
 ### Added
