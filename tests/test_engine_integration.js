@@ -19,13 +19,19 @@ const mockBitShares = {
         }),
         lookupAssetSymbols: async (symbols) => {
             return symbols.map(s => ({
-                id: '1.3.1',
+                id: s === 'BTS' ? '1.3.0' : '1.3.1',
                 symbol: s,
-                options: { market_fee_percent: 0 }
+                options: { market_fee_percent: 0 },
+                precision: s === 'BTS' ? 8 : 5
             }));
+        },
+        get_full_accounts: async (names) => {
+            return [[names[0], { account: { id: '1.2.1' } }]];
         }
     }
 };
+
+global.BitShares = mockBitShares; // Make it global as some modules might expect it
 
 console.log('='.repeat(80));
 console.log('Testing Engine Integration: Fill → Rebalance → Sync Cycle');
@@ -56,6 +62,13 @@ function setupManager() {
         assetA: { id: '1.3.0', precision: 8 },
         assetB: { id: '1.3.121', precision: 5 }
     };
+
+    mgr.accountTotals = { 
+        buy: 50000, buyFree: 50000, 
+        sell: 50000, sellFree: 50000 
+    };
+
+    mgr.fetchAccountTotals = async () => mgr.accountTotals;
 
     // Setup initial grid
     for (let i = 0; i < 6; i++) {
