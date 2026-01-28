@@ -20,7 +20,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const readlineSync = require('readline-sync');
 
 /**
  * Securely read a password from stdin with asterisk masking.

@@ -1,7 +1,6 @@
 // Interactive CLI helper for editing the tracked bot profiles stored in profiles/bots.json.
 const fs = require('fs');
 const path = require('path');
-const readlineSync = require('readline-sync');
 const readline = require('readline');
 const { execSync } = require('child_process');
 const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER } = require('./constants');
