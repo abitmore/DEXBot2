@@ -658,7 +658,9 @@ class SyncEngine {
             }
             case 'readOpenOrders':
             case 'periodicBlockchainFetch': {
-                return this.syncFromOpenOrders(chainData, { skipAccounting: true });
+                // Must update accounting when blockchain state has changed (fills detected)
+                // Using skipAccounting: true leaves phantom funds in system, causing invariant violations
+                return this.syncFromOpenOrders(chainData, { skipAccounting: false });
             }
         }
         return { newOrders: [], ordersNeedingCorrection: [] };

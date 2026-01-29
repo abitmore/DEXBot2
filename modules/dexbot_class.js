@@ -1269,7 +1269,7 @@ class DEXBot {
                     // FETCH FRESH BALANCES FIRST to reset optimistic drift
                     await this.manager.fetchAccountTotals(this.accountId);
                     const openOrders = await chainOrders.readOpenOrders(this.accountId);
-                    await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
+                    await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: false });
                 } catch (syncErr) {
                     this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
                 }
@@ -1301,7 +1301,7 @@ class DEXBot {
                 // FETCH FRESH BALANCES FIRST to reset optimistic drift
                 await this.manager.fetchAccountTotals(this.accountId);
                 const openOrders = await chainOrders.readOpenOrders(this.accountId);
-                await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: true });
+                await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: false });
             } catch (syncErr) {
                 this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
             }

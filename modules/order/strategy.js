@@ -248,7 +248,16 @@ class StrategyEngine {
         // Apply all state updates to manager with batched fund recalculation
         // ATOMIC BLOCK: All fund changes happen before recalculation and resume
         mgr.pauseFundRecalc();
-        const allUpdates = [...stateUpdates, ...buyResult.stateUpdates, ...sellResult.stateUpdates];
+
+        // CRITICAL FIX: Process state transitions (releases) BEFORE type changes.
+        // When an order changes type (e.g., SELL→BUY) AND state (active→virtual) in the same batch:
+        // - If type changes first: oldOrder.type becomes BUY, release goes to buyFree (WRONG!)
+        // - If state changes first: oldOrder.type is still SELL, release goes to sellFree (CORRECT!)
+        // The stateUpdates array contains type changes from boundary reassignment (lines 174-175).
+        // The buyResult/sellResult.stateUpdates contain state transitions (active→virtual for surpluses).
+        // By putting state transitions first, we ensure capital is released to the correct asset bucket
+        // before the type is changed.
+        const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates, ...stateUpdates];
 
         // Step 1: Apply state transitions (reduces chainFree via updateOptimisticFreeBalance)
         allUpdates.forEach(upd => {
