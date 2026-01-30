@@ -306,10 +306,10 @@ class StrategyEngine {
         };
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 6: SPREAD CONDITION CHECK (Post-rebalance)
+        // STEP 6: SPREAD CONDITION CHECK (Deferred logging, validated after broadcast)
         // ════════════════════════════════════════════════════════════════════════════════
-        // Determine if spread is too wide after rebalancing. This informs the manager's
-        // state and can trigger structural shifts if RMS/Cache triggers follow.
+        // Calculate spread condition now (for state), but log after broadcast (when grid is persisted).
+        // This ensures mgr.outOfSpread is set before any subsequent operations run.
         const currentSpread = mgr.calculateCurrentSpread();
         const step = 1 + (mgr.config.incrementPercent / 100);
 
@@ -326,10 +326,18 @@ class StrategyEngine {
 
         if (mgr.outOfSpread > 0) {
             const limitSpread = (Math.pow(step, gapSlots + 1 + toleranceSteps) - 1) * 100;
-            mgr.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${limitSpread.toFixed(2)}%). ${mgr.outOfSpread} extra orderslot(s) identified.`, "info");
+            // Store spread info for logging after broadcast
+            result.spreadInfo = {
+                currentSpread,
+                limitSpread,
+                outOfSpread: mgr.outOfSpread
+            };
         }
 
         mgr.logger.log(`[BOUNDARY] Sequence complete: ${result.ordersToPlace.length} place, ${result.ordersToRotate.length} rotate. Gap size: ${gapSlots} slots.`, "info");
+
+        // Store gapSlots for deferred logging
+        result.gapSlots = gapSlots;
 
         return result;
     }

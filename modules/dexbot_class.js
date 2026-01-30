@@ -629,6 +629,13 @@ class DEXBot {
                                 }
                                 await this.manager.persistGrid();
 
+                                // Log spread condition after broadcast and persistGrid (when actual on-chain state is finalized)
+                                // outOfSpread was set during rebalance(), but we log it here for sequence clarity
+                                if (rebalanceResult.spreadInfo) {
+                                    const { currentSpread, limitSpread, outOfSpread } = rebalanceResult.spreadInfo;
+                                    this.manager.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${limitSpread.toFixed(2)}%). ${outOfSpread} extra orderslot(s) identified.`, "info");
+                                }
+
                                 // NOTE: Interrupt logic removed to prevent stale chain state race conditions.
                                 // New fills accumulating in _incomingFillQueue will be processed in the next consumer cycle.
                             }
