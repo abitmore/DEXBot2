@@ -939,12 +939,15 @@ class OrderManager {
         const mgr = this;
 
         // Check 1: Fund drift validation (existing Layer 2 logic)
-        const driftCheck = this.checkFundDriftAfterFills();
-        if (!driftCheck.isValid) {
-            return {
-                isValid: false,
-                reason: `Fund invariant violated: ${driftCheck.reason}`
-            };
+        // SKIP during bootstrap since grid is being rebuilt and fund state is temporary
+        if (!this.isBootstrapping) {
+            const driftCheck = this.checkFundDriftAfterFills();
+            if (!driftCheck.isValid) {
+                return {
+                    isValid: false,
+                    reason: `Fund invariant violated: ${driftCheck.reason}`
+                };
+            }
         }
 
         // Check 2: Phantom order detection

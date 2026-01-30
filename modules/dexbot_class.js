@@ -224,8 +224,22 @@ class DEXBot {
         } = startupState;
 
         try {
+            // CRITICAL: Activate fill listener EARLY - before ANY operations that place orders
+            // This ensures fills during trigger reset and grid initialization are captured
+            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+            this._log('Fill listener activated (ready to process fills during startup)');
+
+            // CRITICAL: Handle any pending trigger file reset FIRST before any other startup operations
+            const hadTriggerReset = await this._handlePendingTriggerReset();
+
+            // CRITICAL: After trigger reset, reload persisted grid from storage since a new one was just created
+            if (hadTriggerReset) {
+                const newPersistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
+                Object.assign(startupState, { persistedGrid: newPersistedGrid });
+            }
+
             // Restore and consolidate cacheFunds and BTS fees
-            // SAFE: Done during startup before fill listener activates, so no concurrent access yet
+            // SAFE: Done at startup before orders are created, and within fill lock when needed
             this.manager.resetFunds();
             // CRITICAL FIX: Restore BTS fees owed from persistence
             if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
@@ -287,10 +301,6 @@ class DEXBot {
                 this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
                 this.manager.funds.btsFeesOwed = 0;
             }
-
-            // CRITICAL: Activate fill listener BEFORE any grid operations or order placement
-            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
-            this._log('Fill listener activated (ready to process fills during startup)');
 
             // CRITICAL: Use fill lock during ENTIRE startup synchronization to prevent races.
             // This includes grid init, finishBootstrap, and maintenance - all in one atomic block.
@@ -1587,72 +1597,95 @@ class DEXBot {
     }
 
     /**
+     * Perform grid recalculation triggered by trigger file.
+     * Reloads config from disk, recalculates grid, resets funds, and removes trigger file.
+     * Must be called with _fillProcessingLock already held.
+     * @private
+     */
+    async _performGridResync() {
+        this.manager.startBootstrap();
+        this._log('Grid regeneration triggered. Performing full grid resync...');
+        try {
+            // 1. Reload configuration from disk to pick up any changes
+            try {
+                const { parseJsonWithComments } = require('./account_bots');
+                const { createBotKey } = require('./account_orders');
+                const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
+                const allBotsConfig = parseJsonWithComments(content).bots || [];
+
+                // Find this bot by name or fallback to index if name changed?
+                // Better: find by current name.
+                const myName = this.config.name;
+                const updatedBot = allBotsConfig.find(b => b.name === myName);
+
+                if (updatedBot) {
+                    this._log(`Reloaded configuration for bot '${myName}'`);
+                    // Keep botKey and index if they were set
+                    const oldKey = this.config.botKey;
+                    const oldIndex = this.config.botIndex;
+                    this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
+                    this.manager.config = { ...this.manager.config, ...this.config };
+                }
+            } catch (e) {
+                this._warn(`Failed to reload config during resync (using current settings): ${e.message}`);
+            }
+
+            // 2. Perform the actual grid recalculation
+            const readFn = () => chainOrders.readOpenOrders(this.accountId);
+            await Grid.recalculateGrid(this.manager, {
+                readOpenOrdersFn: readFn,
+                chainOrders,
+                account: this.account,
+                privateKey: this.privateKey,
+                config: this.config,
+            });
+
+            // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
+            // SAFE: Protected by _fillProcessingLock held by caller
+            this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+            this.manager.funds.btsFeesOwed = 0;
+            await this.manager.persistGrid();
+
+            if (fs.existsSync(this.triggerFile)) {
+                fs.unlinkSync(this.triggerFile);
+                this._log('Removed trigger file.');
+            }
+        } catch (err) {
+            this._log(`Error during triggered resync: ${err.message}`);
+        } finally {
+            this.manager.finishBootstrap();
+        }
+    }
+
+    /**
+     * Handle any pending trigger file reset at startup.
+     * This is called FIRST during startup before any grid operations.
+     * @returns {Promise<boolean>} True if a trigger reset was performed, false otherwise
+     * @private
+     */
+    async _handlePendingTriggerReset() {
+        if (!fs.existsSync(this.triggerFile)) {
+            return false; // No pending reset
+        }
+
+        this._log('Pending trigger file detected. Processing reset before startup...');
+
+        // Use fill lock to prevent concurrent modifications during resync
+        await this.manager._fillProcessingLock.acquire(async () => {
+            await this._performGridResync();
+        });
+
+        return true; // Reset was performed
+    }
+
+    /**
      * Setup trigger file detection for grid reset.
      * Monitors the trigger file and performs grid resync when it's created.
      * @private
      */
     async _setupTriggerFileDetection() {
-        const performResync = async () => {
-            // Use fill lock to prevent concurrent modifications during resync
-            await this.manager._fillProcessingLock.acquire(async () => {
-                this.manager.startBootstrap();
-                this._log('Grid regeneration triggered. Performing full grid resync...');
-                try {
-                    // 1. Reload configuration from disk to pick up any changes
-                    try {
-                        const { parseJsonWithComments } = require('./account_bots');
-                        const { createBotKey } = require('./account_orders');
-                        const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
-                        const allBotsConfig = parseJsonWithComments(content).bots || [];
-
-                        // Find this bot by name or fallback to index if name changed?
-                        // Better: find by current name.
-                        const myName = this.config.name;
-                        const updatedBot = allBotsConfig.find(b => b.name === myName);
-
-                        if (updatedBot) {
-                            this._log(`Reloaded configuration for bot '${myName}'`);
-                            // Keep botKey and index if they were set
-                            const oldKey = this.config.botKey;
-                            const oldIndex = this.config.botIndex;
-                            this.config = { ...updatedBot, botKey: oldKey, botIndex: oldIndex };
-                            this.manager.config = { ...this.manager.config, ...this.config };
-                        }
-                    } catch (e) {
-                        this._warn(`Failed to reload config during resync (using current settings): ${e.message}`);
-                    }
-
-                    // 2. Perform the actual grid recalculation
-                    const readFn = () => chainOrders.readOpenOrders(this.accountId);
-                    await Grid.recalculateGrid(this.manager, {
-                        readOpenOrdersFn: readFn,
-                        chainOrders,
-                        account: this.account,
-                        privateKey: this.privateKey,
-                        config: this.config,
-                    });
-
-                    // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
-                    // SAFE: Protected by _fillProcessingLock held by performResync caller
-                    this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
-                    this.manager.funds.btsFeesOwed = 0;
-                    await this.manager.persistGrid();
-
-                    if (fs.existsSync(this.triggerFile)) {
-                        fs.unlinkSync(this.triggerFile);
-                        this._log('Removed trigger file.');
-                    }
-                } catch (err) {
-                    this._log(`Error during triggered resync: ${err.message}`);
-                } finally {
-                    this.manager.finishBootstrap();
-                }
-            });
-        };
-
-        if (fs.existsSync(this.triggerFile)) {
-            await performResync();
-        }
+        // NOTE: Startup trigger file check is now handled in _handlePendingTriggerReset()
+        // This method now only sets up the runtime file watcher for trigger detection.
 
         // Debounced watcher to avoid duplicate rapid triggers on some platforms
         let _triggerDebounce = null;
@@ -1664,7 +1697,10 @@ class DEXBot {
                             if (_triggerDebounce) clearTimeout(_triggerDebounce);
                             _triggerDebounce = setTimeout(() => {
                                 _triggerDebounce = null;
-                                performResync();
+                                // Use fill lock to prevent concurrent modifications during resync
+                                this.manager._fillProcessingLock.acquire(async () => {
+                                    await this._performGridResync();
+                                });
                             }, 200);
                         }
                     }
