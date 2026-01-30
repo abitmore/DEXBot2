@@ -215,7 +215,7 @@ class DEXBot {
      * @private
      */
     async _finishStartupSequence(startupState) {
-        const {
+        let {
             persistedGrid,
             persistedCacheFunds,
             persistedBtsFeesOwed,
@@ -234,8 +234,7 @@ class DEXBot {
 
             // CRITICAL: After trigger reset, reload persisted grid from storage since a new one was just created
             if (hadTriggerReset) {
-                const newPersistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
-                Object.assign(startupState, { persistedGrid: newPersistedGrid });
+                persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
             }
 
             // Restore and consolidate cacheFunds and BTS fees
