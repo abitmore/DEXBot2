@@ -656,7 +656,10 @@ async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToR
             extensions: []
         }
     };
-    return op;
+    return {
+        op,
+        finalInts: { sell: amountToSellInt, receive: minToReceiveInt, sellAssetId, receiveAssetId }
+    };
 }
 
 /**
@@ -674,7 +677,7 @@ async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToR
  */
 async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false) {
     try {
-        const op = await buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration);
+        const { op } = await buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration);
 
         if (dryRun) {
             console.log(`Dry run: Limit order prepared for account ${accountName} (not broadcasted)`);

@@ -775,7 +775,7 @@ class DEXBot {
         const fills = this._incomingFillQueue.splice(0);
         const validFills = [];
         const processedFillKeys = new Set();
-        const ORDER_TYPES = require('./order/constants').ORDER_TYPES;
+        const ORDER_TYPES = require('./constants').ORDER_TYPES;
 
         // 1. Validate and deduplicate fills
         for (const fill of fills) {
@@ -1347,12 +1347,12 @@ class DEXBot {
         for (const order of ordersToPlace) {
             try {
                 const args = buildCreateOrderArgs(order, assetA, assetB);
-                const op = await chainOrders.buildCreateOrderOp(
+                const { op, finalInts } = await chainOrders.buildCreateOrderOp(
                     this.account, args.amountToSell, args.sellAssetId,
                     args.minToReceive, args.receiveAssetId, null
                 );
                 operations.push(op);
-                opContexts.push({ kind: 'create', order, args });
+                opContexts.push({ kind: 'create', order, args, finalInts });
             } catch (err) {
                 this.manager.logger.log(`Failed to prepare create op for ${order.type} order ${order.id}: ${err.message}`, 'error');
             }
@@ -1500,14 +1500,14 @@ class DEXBot {
                     const gridOrder = this.manager.orders.get(ctx.order.id);
                     if (gridOrder) {
                         const updatedOrder = { ...gridOrder };
-                        // Populate rawOnChain cache for newly created order
-                        if (ctx.args) {
+                        // Populate rawOnChain cache for newly created order with blockchain integers
+                        if (ctx.finalInts) {
                             updatedOrder.rawOnChain = {
                                 id: chainOrderId,
-                                for_sale: String(ctx.args.amountToSell),
+                                for_sale: String(ctx.finalInts.sell),
                                 sell_price: {
-                                    base: { amount: String(ctx.args.amountToSell), asset_id: ctx.args.sellAssetId },
-                                    quote: { amount: String(ctx.args.minToReceive), asset_id: ctx.args.receiveAssetId }
+                                    base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                                    quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
                                 }
                             };
                         }
