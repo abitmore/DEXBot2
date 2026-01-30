@@ -66,8 +66,6 @@ class StrategyEngine {
         const mgr = this.manager;
         mgr.logger.log("[BOUNDARY] Starting robust boundary-crawl rebalance.", "info");
 
-        const stateUpdates = [];
-
         // Sort all grid slots by price (Master Rail order)
         const allSlots = Array.from(mgr.orders.values())
             .filter(o => o.price != null)
@@ -170,18 +168,40 @@ class StrategyEngine {
         const sellSlots = allSlots.slice(sellStartIdx);
         const spreadSlots = allSlots.slice(buyEndIdx + 1, sellStartIdx);
 
-        // Update slot types (triggers state transitions if role changed)
-        buySlots.forEach(s => { if (s.type !== ORDER_TYPES.BUY) stateUpdates.push({ ...s, type: ORDER_TYPES.BUY }); });
-        sellSlots.forEach(s => { if (s.type !== ORDER_TYPES.SELL) stateUpdates.push({ ...s, type: ORDER_TYPES.SELL }); });
+        // PHASE 1: Apply type changes immediately (before rebalancing logic runs)
+        // This ensures rebalanceSideRobust sees updated types, not old types
+        // Fund accounting is safe because no-op changes (same size, same state) don't move funds
+        mgr.pauseFundRecalc();
+
+        buySlots.forEach(s => {
+            if (s.type !== ORDER_TYPES.BUY) {
+                mgr._updateOrder({ ...s, type: ORDER_TYPES.BUY }, 'role-assignment', false, 0);
+            }
+        });
+
+        sellSlots.forEach(s => {
+            if (s.type !== ORDER_TYPES.SELL) {
+                mgr._updateOrder({ ...s, type: ORDER_TYPES.SELL }, 'role-assignment', false, 0);
+            }
+        });
+
         spreadSlots.forEach(s => {
             // Only convert to SPREAD if it doesn't have an active on-chain order!
             // FIX: Check state (ACTIVE/PARTIAL means on-chain order exists) rather than just orderId
             // This prevents converting slots that have real orders to SPREAD prematurely
             const hasOnChainOrder = s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
             if (s.type !== ORDER_TYPES.SPREAD && !hasOnChainOrder) {
-                stateUpdates.push({ ...s, type: ORDER_TYPES.SPREAD, size: 0, orderId: null });
+                mgr._updateOrder(
+                    { ...s, type: ORDER_TYPES.SPREAD, size: 0, orderId: null },
+                    'role-assignment',
+                    false,
+                    0
+                );
             }
         });
+
+        mgr.resumeFundRecalc();
+        mgr.logger.log('[ROLE-ASSIGNMENT] Type updates applied. All slots assigned to correct zones.', 'debug');
 
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 4: BUDGET CALCULATION (Total Capital with BTS Fee Deduction)
@@ -245,22 +265,17 @@ class StrategyEngine {
         const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availBuy, excludeIds, reactionCapBuy, fills);
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availSell, excludeIds, reactionCapSell, fills);
 
-        // Apply all state updates to manager with batched fund recalculation
+        // Apply state updates to manager with batched fund recalculation
         // ATOMIC BLOCK: All fund changes happen before recalculation and resume
         mgr.pauseFundRecalc();
 
-        // CRITICAL FIX: Process state transitions (releases) BEFORE type changes.
-        // When an order changes type (e.g., SELL→BUY) AND state (active→virtual) in the same batch:
-        // - If type changes first: oldOrder.type becomes BUY, release goes to buyFree (WRONG!)
-        // - If state changes first: oldOrder.type is still SELL, release goes to sellFree (CORRECT!)
-        // The stateUpdates array contains type changes from boundary reassignment (lines 174-175).
-        // The buyResult/sellResult.stateUpdates contain state transitions (active→virtual for surpluses).
-        // By putting state transitions first, we ensure capital is released to the correct asset bucket
-        // before the type is changed.
-        const allUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates, ...stateUpdates];
+        // Type changes already applied in STEP 3 after boundary assignment
+        // This batch contains ONLY state changes (cancellations/virtualizations)
+        // No collision possible - type and state changes happen in separate phases
+        const stateOnlyUpdates = [...buyResult.stateUpdates, ...sellResult.stateUpdates];
 
         // Step 1: Apply state transitions (reduces chainFree via updateOptimisticFreeBalance)
-        allUpdates.forEach(upd => {
+        stateOnlyUpdates.forEach(upd => {
             mgr._updateOrder(upd, 'rebalance-batch', false, 0);
         });
 
@@ -286,7 +301,7 @@ class StrategyEngine {
             ordersToRotate: [...buyResult.ordersToRotate, ...sellResult.ordersToRotate],
             ordersToUpdate: [...buyResult.ordersToUpdate, ...sellResult.ordersToUpdate],
             ordersToCancel: [...buyResult.ordersToCancel, ...sellResult.ordersToCancel],
-            stateUpdates: allUpdates,
+            stateUpdates: stateOnlyUpdates,  // Only state changes; types already updated in STEP 3
             hadRotation: (buyResult.ordersToRotate.length > 0 || sellResult.ordersToRotate.length > 0)
         };
 
