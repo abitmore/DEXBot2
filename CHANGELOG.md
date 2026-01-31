@@ -4,6 +4,110 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.10] - 2026-01-30 - Trigger Reset Stabilization, Fund Loss Prevention & Order State Management
+
+### Added
+- **Bootstrap Validation During Trigger Reset** (commit d1989eb)
+  - **Feature**: Added fund drift validation at bootstrap completion to detect real bugs vs transient state mismatches.
+  - **Mechanism**: `finishBootstrap()` validates drift when grid is stable; `validateGridStateForPersistence()` logs transient drift for observability without blocking regeneration.
+  - **Benefit**: Distinguishes between genuine accounting errors and expected temporary state changes during grid rebuild.
+
+- **Immediate Fill Processing After Trigger Reset** (commit d1989eb)
+  - **Feature**: Checks `_incomingFillQueue` immediately after trigger reset completes and processes fills through rebalance pipeline.
+  - **Mechanism**: Fills that occur during grid regeneration are now detected and replacement orders placed before spread check, maintaining grid consistency.
+  - **Benefit**: Eliminates "holes" where filled orders aren't replaced, ensuring no gaps in grid coverage after reset.
+
+- **Git Diff Watcher Script** (commit 165f380)
+  - **Feature**: Added `scripts/watch-all-changes.sh` for interactive monitoring of uncommitted, committed, and pushed changes.
+  - **Capabilities**: Smart auto-refresh (1s for uncommitted, 15s for committed), split-view file/diff search with fzf, toggle between full file and diff-only views.
+  - **Benefit**: Enhanced development workflow for tracking changes across multiple states.
+
+### Fixed
+- **Comprehensive Trigger Reset Flow** (commit 3d90b2a)
+  - **Problem**: Trigger reset was redundantly reinitializing fully-prepared state and running spread checks at wrong time, causing race conditions with partial order integration.
+  - **Solution**:
+    - Skip normal startup initialization after trigger reset (grid already fully initialized with orders placed, synced, and persisted).
+    - Run only spread correction and bootstrap after reset instead of full initialization sequence.
+    - Reorder maintenance steps: spread check FIRST, then divergence check (ensures wide spreads from reset are corrected before structural analysis).
+    - Filter PARTIAL orders from chain sync before grid regeneration (remnants of old grid shouldn't be re-integrated).
+    - Fix VIRTUAL→ACTIVE transitions: only mark as PARTIAL if previously ACTIVE (genuine partial fills), not on new matches with precision variance.
+  - **Impact**: Eliminates race conditions and improves grid state consistency after trigger reset.
+
+- **Grid Persistence After Trigger Reset** (commit 1ede196)
+  - **Problem**: Destructured `persistedGrid` variable was stale after trigger reset, causing duplicate orders at same slots.
+  - **Solution**: Changed `const persistedGrid` to `let` and directly reassign after reset so subsequent code uses regenerated grid.
+  - **Impact**: Prevents duplicate order placement from using stale grid state.
+
+- **Trigger File Reset Sequencing** (commit c7e5da9)
+  - **Problem**: Trigger reset was handled after persisting old grid state, causing fund invariant violations (8 BTS) and persistence gate warnings.
+  - **Solution**:
+    - Activate fill listener FIRST before any orders placed.
+    - Handle pending trigger reset IMMEDIATELY after listener activation.
+    - Reload persisted grid from storage after reset (ensures grid matches regenerated state).
+    - Skip fund drift validation during bootstrap (temporary mismatches expected during rebuild).
+    - Refactor shared `_performGridResync()` for both startup and runtime trigger detection.
+  - **Impact**: Eliminates fund invariant violations and persistence warnings during trigger reset.
+
+- **100,000x Order Size Multiplier Bug** (commit c1dd906)
+  - **Problem**: `rawOnChain.for_sale` was populated with float strings ("60.10317") instead of blockchain integers ("6010317"), causing delta calculations to be 100,000x too large.
+  - **Solution**: Modified `buildCreateOrderOp()` to return both operation and `finalInts` (blockchain integers), updated `rawOnChain` population to use blockchain integers instead of float values.
+  - **Impact**: Prevents massive order size mismatches and funding errors during order creation.
+
+- **Phantom Fund Losses During Boundary-Crawl Rebalance** (commit 43ace9b)
+  - **Problem**: 3,950 IOB.XRP phantom fund loss caused by three issues:
+    1. Grid-resize calculated SELL sizes using wrong asset units (drained sellFree by 18.21 IOB.XRP).
+    2. Accounting skipped in recovery paths, leaving funds locked in grid.committed.
+    3. Type changes (SELL→BUY) applied before state transitions, releasing capital to wrong bucket.
+  - **Solution**:
+    - Enable accounting in batch validation/execution recovery paths (lines 1272, 1304 in dexbot_class.js).
+    - Enable accounting in periodic blockchain fetch (line 661 in sync_engine.js).
+    - Fix capital release order: state transitions applied BEFORE type changes so releases use original type.
+  - **Impact**: Prevents phantom fund cascades, oversized orders, and grid invariant violations.
+
+- **Type/State Change Processing Order** (commit ac329cd)
+  - **Problem**: Boundary-driven type changes (BUY/SELL/SPREAD reassignment) and state changes (cancellations/virtualizations) applied in wrong order, causing fund releases with incorrect types.
+  - **Solution**: Implement two-phase architecture:
+    - PHASE 1: Apply type changes immediately via `mgr._updateOrder()` with `context='role-assignment'` BEFORE rebalancing logic runs.
+    - PHASE 2: Apply state changes AFTER `rebalanceSideRobust()` completes.
+  - **Impact**: Eliminates race condition where same order receives type + state change in one batch; improves code clarity and prevents future bugs.
+
+- **Spread Check Logging Timing** (commit 09bf17f)
+  - **Problem**: Spread condition check logic timing and logging were misaligned, causing state to be set at wrong time.
+  - **Solution**: Keep spread check logic inside `rebalance()` to set `mgr.outOfSpread` at correct time, defer logging to AFTER persistGrid() via stored spread info.
+  - **Impact**: Maintains correct state timing for subsequent operations while deferring log output to show actual on-chain state.
+
+### Refactored
+- **Mid-Price Calculation for Spread Correction** (commit 3d90b2a)
+  - **Mechanism**: Added mid-price calculation in grid regeneration to identify valid order zones (BUY orders below mid-price, SELL orders above).
+  - **Benefit**: Improves spread correction accuracy by properly validating order positioning.
+
+- **Simplified Startup Resumption** (commit 3d90b2a)
+  - **Change**: After trigger reset, resume main order manager loop with correct sequencing (spread check → health check → main loop) instead of full initialization.
+  - **Impact**: Cleaner, more predictable flow with reduced redundant operations.
+
+### Changed
+- **Unused Imports Cleanup** (commit 165f380)
+  - Removed unused `readline-sync` imports from `modules/account_bots.js` and `modules/chain_keys.js` (already using custom async methods).
+  - Reduces unnecessary dependencies and improves code clarity.
+
+- **Project Documentation** (commits 4a08821, d6be00b)
+  - Added `CLAUDE.md` reference file for Claude AI context tracking.
+  - Added `GEMINI.md` for project context tracking.
+  - Renamed `opencode.md` to `OPENCODE.md` for consistency with convention.
+
+### Performance
+- **No Performance Regression**: All refactoring maintains identical operation counts; improvements are correctness-focused.
+
+### Quality Assurance
+- **Test Coverage**: All 35 test suites pass ✓
+- **Correctness Improvements**:
+  - Eliminated phantom fund loss scenarios through proper accounting and release ordering.
+  - Fixed race conditions in trigger reset flow with explicit sequencing.
+  - Prevented order duplication through proper grid state management.
+  - Improved type/state change atomicity with two-phase architecture.
+
+---
+
 ## [0.6.0-patch.9] - 2026-01-28 - Startup Consolidation, Zero-Amount Prevention & Auto-Recovery
 
 ### Added
