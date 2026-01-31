@@ -237,9 +237,53 @@ class DEXBot {
             if (hadTriggerReset) {
                 this._log('Trigger reset completed. Skipping normal startup grid initialization.');
 
-                // Just ensure bootstrap is finished and start the main loop
+                // Post-bootstrap validation and fill processing
                 await this.manager._fillProcessingLock.acquire(async () => {
-                    // Spread check AFTER everything is stable
+                    // STEP 1: Check for fills that occurred during trigger reset
+                    // These are orders that got filled while Grid.recalculateGrid() was running.
+                    // The filled slots need new orders placed on them.
+                    if (this._incomingFillQueue.length > 0) {
+                        this._log(`[POST-RESET] ${this._incomingFillQueue.length} fill(s) detected during trigger reset. Processing...`);
+
+                        // Process fills - this will place new orders on the filled slots
+                        // Use normal fill processing since bootstrap is complete
+                        const fills = this._incomingFillQueue.splice(0);
+                        for (const fill of fills) {
+                            if (!fill || fill.op?.[0] !== 4) continue;
+
+                            const fillOp = fill.op[1];
+                            const gridOrder = this.manager.orders.get(fillOp.order_id) ||
+                                Array.from(this.manager.orders.values()).find(o => o.orderId === fillOp.order_id);
+
+                            if (!gridOrder) {
+                                this._log(`[POST-RESET] Skipping fill for unknown order ${fillOp.order_id}`, 'debug');
+                                continue;
+                            }
+
+                            this._log(`[POST-RESET] Processing fill for ${gridOrder.type} order ${gridOrder.id} at price ${gridOrder.price}`);
+
+                            // Process this fill through the full rebalance pipeline
+                            // This will shift the boundary and place a new order on the filled slot
+                            const rebalanceResult = await this.manager.processFilledOrders([gridOrder], new Set());
+
+                            if (rebalanceResult) {
+                                // Place the orders identified by rebalance
+                                const allOrders = [
+                                    ...(rebalanceResult.ordersToPlace || []),
+                                    ...(rebalanceResult.ordersToRotate || []),
+                                    ...(rebalanceResult.ordersToUpdate || [])
+                                ];
+
+                                if (allOrders.length > 0) {
+                                    this._log(`[POST-RESET] Placing ${allOrders.length} order(s) for filled slot`);
+                                    await this.updateOrdersOnChainBatch(allOrders);
+                                }
+                            }
+                        }
+                        await this.manager.persistGrid();
+                    }
+
+                    // STEP 2: Spread check AFTER fills are processed
                     this.manager.recalculateFunds();
                     const spreadResult = await this.manager.checkSpreadCondition(
                         BitShares,

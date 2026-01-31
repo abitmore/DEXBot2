@@ -127,12 +127,32 @@ class OrderManager {
 
     /**
      * Finish the bootstrap phase and activate grid health monitoring.
+     * Validates fund state at transition point - if drift exists here, it's not transient.
+     * @returns {Object} { hadDrift: boolean, driftInfo: Object|null }
      */
     finishBootstrap() {
+        const result = { hadDrift: false, driftInfo: null };
+
         if (this.isBootstrapping) {
             this.isBootstrapping = false;
+
+            // Validate fund state at bootstrap completion - if drift exists here,
+            // it's not transient (grid is now stable) and indicates a potential bug
+            const driftCheck = this.checkFundDriftAfterFills();
+            if (!driftCheck.isValid) {
+                result.hadDrift = true;
+                result.driftInfo = driftCheck;
+                this.logger.log(
+                    `[BOOTSTRAP-END] Fund drift detected after bootstrap: ${driftCheck.reason}. ` +
+                    `This may indicate a bug in grid initialization.`,
+                    'warn'
+                );
+            }
+
             this.logger.log("Bootstrap phase complete. Grid health monitoring and fund invariants active.", "info");
         }
+
+        return result;
     }
 
     // --- Accounting Delegation ---
@@ -939,10 +959,15 @@ class OrderManager {
         const mgr = this;
 
         // Check 1: Fund drift validation (existing Layer 2 logic)
-        // SKIP during bootstrap since grid is being rebuilt and fund state is temporary
-        if (!this.isBootstrapping) {
-            const driftCheck = this.checkFundDriftAfterFills();
-            if (!driftCheck.isValid) {
+        const driftCheck = this.checkFundDriftAfterFills();
+        if (!driftCheck.isValid) {
+            if (this.isBootstrapping) {
+                // Log for observability but don't block - temporary drift expected during bootstrap
+                this.logger.log(
+                    `[BOOTSTRAP] Transient fund drift (expected): ${driftCheck.reason}`,
+                    'debug'
+                );
+            } else {
                 return {
                     isValid: false,
                     reason: `Fund invariant violated: ${driftCheck.reason}`
