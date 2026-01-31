@@ -306,38 +306,12 @@ class StrategyEngine {
         };
 
         // ════════════════════════════════════════════════════════════════════════════════
-        // STEP 6: SPREAD CONDITION CHECK (Deferred logging, validated after broadcast)
+        // STEP 6: POST-REBALANCE COMPLETION
         // ════════════════════════════════════════════════════════════════════════════════
-        // Calculate spread condition now (for state), but log after broadcast (when grid is persisted).
-        // This ensures mgr.outOfSpread is set before any subsequent operations run.
-        const currentSpread = mgr.calculateCurrentSpread();
-        const step = 1 + (mgr.config.incrementPercent / 100);
-
-        // Nominal spread is what the grid was built for (gapSlots + 1 gaps)
-        const nominalSpread = (Math.pow(step, gapSlots + 1) - 1) * 100;
-
-        // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
-        const toleranceSteps = 1 + (mgr.buySideIsDoubled ? 1 : 0) + (mgr.sellSideIsDoubled ? 1 : 0);
-
-        const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
-        const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
-
-        mgr.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, mgr.config.incrementPercent);
-
-        if (mgr.outOfSpread > 0) {
-            const limitSpread = (Math.pow(step, gapSlots + 1 + toleranceSteps) - 1) * 100;
-            // Store spread info for logging after broadcast
-            result.spreadInfo = {
-                currentSpread,
-                limitSpread,
-                outOfSpread: mgr.outOfSpread
-            };
-        }
+        // Spread condition check removed - runs in maintenance cycle instead.
+        // This prevents premature logging on stale pre-broadcast state.
 
         mgr.logger.log(`[BOUNDARY] Sequence complete: ${result.ordersToPlace.length} place, ${result.ordersToRotate.length} rotate. Gap size: ${gapSlots} slots.`, "info");
-
-        // Store gapSlots for deferred logging
-        result.gapSlots = gapSlots;
 
         return result;
     }

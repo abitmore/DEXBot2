@@ -232,9 +232,51 @@ class DEXBot {
             // CRITICAL: Handle any pending trigger file reset FIRST before any other startup operations
             const hadTriggerReset = await this._handlePendingTriggerReset();
 
-            // CRITICAL: After trigger reset, reload persisted grid from storage since a new one was just created
+            // CRITICAL: After trigger reset, skip normal startup - grid is already fully initialized
+            // The trigger reset already did: grid init, order placement, sync, and persistence
             if (hadTriggerReset) {
-                persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
+                this._log('Trigger reset completed. Skipping normal startup grid initialization.');
+
+                // Just ensure bootstrap is finished and start the main loop
+                await this.manager._fillProcessingLock.acquire(async () => {
+                    // Spread check AFTER everything is stable
+                    this.manager.recalculateFunds();
+                    const spreadResult = await this.manager.checkSpreadCondition(
+                        BitShares,
+                        this.updateOrdersOnChainBatch.bind(this)
+                    );
+                    if (spreadResult && spreadResult.ordersPlaced > 0) {
+                        this._log(`✓ Spread correction after trigger reset: ${spreadResult.ordersPlaced} order(s) placed`);
+                        await this._persistAndRecoverIfNeeded();
+                    }
+                    this._log('Bootstrap phase complete - fill processing resumed', 'info');
+                });
+
+                await this._setupTriggerFileDetection();
+                this._setupBlockchainFetchInterval();
+
+                // Main loop
+                const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
+                this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
+
+                (async () => {
+                    while (true) {
+                        try {
+                            if (this.manager && !this.config.dryRun) {
+                                if (!this.manager._fillProcessingLock.isLocked() &&
+                                    this.manager._fillProcessingLock.getQueueLength() === 0) {
+                                    await this.manager._fillProcessingLock.acquire(async () => {
+                                        await this.manager.syncFromOpenOrders();
+                                    });
+                                }
+                            }
+                        } catch (err) { console.error('Order manager loop error:', err.message); }
+                        await new Promise(resolve => setTimeout(resolve, loopDelayMs));
+                    }
+                })();
+
+                console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
+                return; // Skip normal startup path
             }
 
             // Restore and consolidate cacheFunds and BTS fees
@@ -628,13 +670,6 @@ class DEXBot {
                                     this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${filledOrder.id}`);
                                 }
                                 await this.manager.persistGrid();
-
-                                // Log spread condition after broadcast and persistGrid (when actual on-chain state is finalized)
-                                // outOfSpread was set during rebalance(), but we log it here for sequence clarity
-                                if (rebalanceResult.spreadInfo) {
-                                    const { currentSpread, limitSpread, outOfSpread } = rebalanceResult.spreadInfo;
-                                    this.manager.logger.log(`[STRATEGY] Spread too wide (${currentSpread.toFixed(2)}% > ${limitSpread.toFixed(2)}%). ${outOfSpread} extra orderslot(s) identified.`, "info");
-                                }
 
                                 // NOTE: Interrupt logic removed to prevent stale chain state race conditions.
                                 // New fills accumulating in _incomingFillQueue will be processed in the next consumer cycle.
@@ -1887,8 +1922,38 @@ class DEXBot {
      * @private
      */
     async _executeMaintenanceLogic(context) {
-        // Step 1: Threshold and Divergence checks
-        // NOTE: These typically require _divergenceLock
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 1: SPREAD AND HEALTH CHECKS
+        // ════════════════════════════════════════════════════════════════════════════════
+        // Run spread check FIRST to correct wide spreads before divergence detection.
+        // This ensures divergence calculation sees corrected spread state.
+
+        this.manager.recalculateFunds();
+        const spreadResult = await this.manager.checkSpreadCondition(
+            BitShares,
+            this.updateOrdersOnChainBatch.bind(this)
+        );
+        if (spreadResult && spreadResult.ordersPlaced > 0) {
+            this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+            await this._persistAndRecoverIfNeeded();
+        }
+
+        const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
+        if (pipelineStatus.isEmpty) {
+            const healthResult = await this.manager.checkGridHealth(
+                this.updateOrdersOnChainBatch.bind(this)
+            );
+            if (healthResult.buyDust && healthResult.sellDust) {
+                await this._persistAndRecoverIfNeeded();
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════════════════
+        // STEP 2: THRESHOLD AND DIVERGENCE CHECKS
+        // ════════════════════════════════════════════════════════════════════════════════
+        // Run divergence check AFTER spread correction to detect structural issues
+        // on the corrected grid state.
+
         const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
 
         if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
@@ -1935,28 +2000,6 @@ class DEXBot {
                 }
             } catch (err) {
                 this._warn(`Error running divergence check during ${context}: ${err.message}`);
-            }
-        }
-
-        // Step 2: Spread and Health checks
-        // NOTE: These typically require _fillProcessingLock
-        this.manager.recalculateFunds();
-        const spreadResult = await this.manager.checkSpreadCondition(
-            BitShares,
-            this.updateOrdersOnChainBatch.bind(this)
-        );
-        if (spreadResult && spreadResult.ordersPlaced > 0) {
-            this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-            await this._persistAndRecoverIfNeeded();
-        }
-
-        const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
-        if (pipelineStatus.isEmpty) {
-            const healthResult = await this.manager.checkGridHealth(
-                this.updateOrdersOnChainBatch.bind(this)
-            );
-            if (healthResult.buyDust && healthResult.sellDust) {
-                await this._persistAndRecoverIfNeeded();
             }
         }
     }

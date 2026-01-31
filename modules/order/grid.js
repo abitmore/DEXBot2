@@ -593,7 +593,11 @@ class Grid {
         const chainOpenOrders = await readOpenOrdersFn();
         if (!Array.isArray(chainOpenOrders)) return;
 
-        await manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+        // CRITICAL: Filter out PARTIAL orders before synchronizing - they're from old grid
+        // and shouldn't be part of the fresh regenerated grid structure
+        const activeOrders = chainOpenOrders.filter(o => o.state !== ORDER_STATES.PARTIAL);
+
+        await manager.synchronizeWithChain(activeOrders, 'readOpenOrders');
         manager.resetFunds();
 
         await manager.persistGrid();
@@ -1122,9 +1126,38 @@ class Grid {
         const ordersToPlace = [];
         const railType = preferredSide;
 
+        // Calculate mid-price from current spread boundaries to determine valid zone
+        // Use the geometric mean of best buy and best sell prices
+        const activeBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
+        const activeSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE);
+        const partialBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL);
+        const partialSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL);
+        const onChainBuys = [...activeBuys, ...partialBuys];
+        const onChainSells = [...activeSells, ...partialSells];
+
+        const bestBuy = onChainBuys.length > 0 ? Math.max(...onChainBuys.map(o => o.price)) : null;
+        const bestSell = onChainSells.length > 0 ? Math.min(...onChainSells.map(o => o.price)) : null;
+
+        // Calculate mid-price: geometric mean of spread boundaries, or fall back to startPrice
+        const midPrice = (bestBuy && bestSell) ? Math.sqrt(bestBuy * bestSell) : (manager.config.startPrice || 0);
+
+        if (!midPrice || midPrice <= 0) {
+            manager.logger?.log?.(`Cannot determine mid-price for spread correction. Skipping.`, 'warn');
+            return { ordersToPlace: [], partialMoves: [] };
+        }
+
         // Find all virtual slots that could potentially take this role
+        // CRITICAL FIX: Only pick slots in the correct price zone for the order type
+        // - BUY orders must be BELOW mid-price (we're buying at lower prices)
+        // - SELL orders must be ABOVE mid-price (we're selling at higher prices)
         const candidateSlots = Array.from(manager.orders.values())
-            .filter(o => o.state === ORDER_STATES.VIRTUAL && !o.orderId)
+            .filter(o => {
+                if (o.state !== ORDER_STATES.VIRTUAL || o.orderId) return false;
+                // Only allow slots in the correct zone
+                if (railType === ORDER_TYPES.BUY && o.price >= midPrice) return false;
+                if (railType === ORDER_TYPES.SELL && o.price <= midPrice) return false;
+                return true;
+            })
             .sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
 
         // Process up to manager.outOfSpread slots (at least 1 if we're here)

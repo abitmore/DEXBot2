@@ -352,6 +352,7 @@ class SyncEngine {
             // If another chain order already claimed this grid order, skip silently but log
             if (match && !matchedGridOrderIds.has(match.id)) {
                 const bestMatch = { ...match }; // CLONE HERE
+                const wasVirtual = match.state === ORDER_STATES.VIRTUAL; // Track original state
                 bestMatch.orderId = chainOrderId;
                 bestMatch.state = ORDER_STATES.ACTIVE;
                 bestMatch.rawOnChain = rawChainOrders.get(chainOrderId);
@@ -361,7 +362,13 @@ class SyncEngine {
                 if (floatToBlockchainInt(bestMatch.size, precision) !== floatToBlockchainInt(chainOrder.size, precision)) {
                     applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size, options?.skipAccounting);
                     if (floatToBlockchainInt(chainOrder.size, precision) > 0) {
-                        if (bestMatch.state === ORDER_STATES.ACTIVE) bestMatch.state = ORDER_STATES.PARTIAL;
+                        // FIX: Only mark as PARTIAL if this was already an ACTIVE/PARTIAL order
+                        // that had its size reduced (genuine partial fill).
+                        // Orphan matches to VIRTUAL slots are fresh matches - size differences
+                        // are due to precision, not partial fills. Keep them as ACTIVE.
+                        if (!wasVirtual && bestMatch.state === ORDER_STATES.ACTIVE) {
+                            bestMatch.state = ORDER_STATES.PARTIAL;
+                        }
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
