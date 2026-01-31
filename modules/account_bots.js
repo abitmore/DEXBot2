@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
+const { ensureProfilesDirectory, readInput } = require('./order/utils');
 const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER } = require('./constants');
 
 /**
@@ -17,102 +18,7 @@ function parseJsonWithComments(raw) {
 
 const BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
 const SETTINGS_FILE = path.join(__dirname, '..', 'profiles', 'general.settings.json');
-
-/**
- * Async version of readlineSync.question that supports ESC key.
- * @param {string} prompt - The prompt text to display.
- * @param {Object} [options={}] - Input options.
- * @param {string} [options.mask] - Mask character for hidden input.
- * @param {boolean} [options.hideEchoBack=false] - Whether to hide input as it is typed.
- * @param {Function} [options.validate] - Validation function for the input.
- * @returns {Promise<string>} The input string, or '\x1b' if ESC is pressed.
- */
-function readInput(prompt, options = {}) {
-    const { mask, hideEchoBack = false, validate } = options;
-    return new Promise((resolve) => {
-        const stdin = process.stdin;
-        const stdout = process.stdout;
-        let input = '';
-
-        stdout.write(prompt);
-
-        const isRaw = stdin.isRaw;
-        if (stdin.isTTY) stdin.setRawMode(true);
-        stdin.resume();
-        stdin.setEncoding('utf8');
-
-        const onData = (chunk) => {
-            const s = String(chunk);
-            for (let i = 0; i < s.length; i++) {
-                const ch = s[i];
-
-                if (ch === '\x1b') { // ESC
-                    if (s.length === 1) {
-                        cleanup();
-                        stdout.write('\n');
-                        return resolve('\x1b');
-                    }
-                    continue;
-                }
-
-                if (ch === '\r' || ch === '\n' || ch === '\u0004') {
-                    const trimmedInput = input.trim().toLowerCase();
-                    // If validation function exists, check if input is valid
-                    if (validate && !validate(trimmedInput)) {
-                        // Invalid input - clear line and restart
-                        for (let j = 0; j < input.length; j++) {
-                            stdout.write('\b \b');
-                        }
-                        input = '';
-                        return;
-                    }
-                    cleanup();
-                    stdout.write('\n');
-                    return resolve(input);
-                }
-
-                if (ch === '\u0003') { // Ctrl+C
-                    cleanup();
-                    process.exit();
-                }
-
-                if (ch === '\u007f' || ch === '\u0008') { // Backspace
-                    if (input.length > 0) {
-                        input = input.slice(0, -1);
-                        stdout.write('\b \b');
-                    }
-                    continue;
-                }
-
-                const code = ch.charCodeAt(0);
-                if (code >= 32 && code <= 126) {
-                    input += ch;
-                    if (!hideEchoBack) {
-                        stdout.write(mask || ch);
-                    }
-                }
-            }
-        };
-
-        const cleanup = () => {
-            stdin.removeListener('data', onData);
-            if (stdin.isTTY) stdin.setRawMode(isRaw);
-        };
-
-        stdin.on('data', onData);
-    });
-}
-
-/**
- * Ensures that the profiles directory exists.
- * @private
- */
-function ensureProfilesDirectory() {
-    const dir = path.dirname(BOTS_FILE);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-}
+const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 
 /**
  * Loads the bots configuration from profiles/bots.json.
@@ -142,7 +48,7 @@ function loadBotsConfig() {
  */
 function saveBotsConfig(config, filePath) {
     try {
-            ensureProfilesDirectory();
+        ensureProfilesDirectory(PROFILES_DIR);
         fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + '\n', 'utf8');
     } catch (err) {
         console.error('Failed to save bots configuration:', err.message);
@@ -188,7 +94,7 @@ function loadGeneralSettings() {
  */
 function saveGeneralSettings(settings) {
     try {
-        ensureProfilesDirectory();
+        ensureProfilesDirectory(PROFILES_DIR);
         fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n', 'utf8');
         console.log(`\n✓ General settings saved to ${path.basename(SETTINGS_FILE)}`);
     } catch (err) {

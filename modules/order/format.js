@@ -186,18 +186,27 @@ function formatMetric5(value) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Check if value is a valid finite number
- * Note: Also defined in utils.js - kept here to avoid circular dependency
- *
- * @param {*} value - The value to check
- * @returns {boolean} True if value is a finite number
+ * Check if a value is defined and represents a finite number.
+ * @param {*} value - Value to check
+ * @returns {boolean} True if value is defined and finite
  */
 function isValidNumber(value) {
-	return Number.isFinite(Number(value));
+	return value !== null && value !== undefined && Number.isFinite(Number(value));
 }
 
 /**
- * Safely format a value to fixed decimals with fallback for invalid inputs
+ * Safely convert a value to a finite number with fallback.
+ * @param {*} value - Value to convert
+ * @param {number} defaultValue - Fallback if not finite (default: 0)
+ * @returns {number} Finite number or default
+ */
+function toFiniteNumber(value, defaultValue = 0) {
+	const num = Number(value);
+	return Number.isFinite(num) ? num : defaultValue;
+}
+
+/**
+ * Safely format a numeric value with specified decimals and fallback.
  *
  * @param {*} value - The value to format
  * @param {number} decimals - Number of decimal places
@@ -241,5 +250,6 @@ module.exports = {
 
 	// Helper utilities
 	isValidNumber,
+	toFiniteNumber,
 	safeFormat,
 };

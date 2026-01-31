@@ -1055,16 +1055,6 @@ class OrderManager {
         await persistGridSnapshot(this, this.accountOrders, this.config.botKey);
         return validation; // Return successful validation
     }
-
-    /**
-     * Alias for persistGrid to satisfy legacy callers.
-     */
-    async _persistCacheFunds() { return await this.persistGrid(); }
-
-    /**
-     * Alias for persistGrid to satisfy legacy callers.
-     */
-    async _persistBtsFeesOwed() { return await this.persistGrid(); }
 }
 
 module.exports = { OrderManager };

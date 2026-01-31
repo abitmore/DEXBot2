@@ -915,9 +915,6 @@ class Grid {
         let correction = null;
         let shouldApplyCorrection = false;
 
-        // Use chain snapshot to get consistent total capital context
-        const snap = manager.getChainFundsSnapshot ? manager.getChainFundsSnapshot() : {};
-
         // Market price is only used for valuation during side-selection decision.
         // We rely on config.startPrice (which is updated periodically) to avoid redundant blockchain calls.
         const startPrice = manager.config.startPrice;
@@ -945,8 +942,8 @@ class Grid {
             const decision = Grid.determineOrderSideByFunds(manager, startPrice);
             if (!decision.side) return false;
 
-            // Pass the chain snapshot for consistent sizing context
-            correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side, snap);
+            // Perform spread correction by placing orders on the side with more available funds
+            correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side);
             return correction && correction.ordersToPlace.length > 0;
         };
 
@@ -1071,13 +1068,12 @@ class Grid {
     }
 
     /**
-     * Calculate simulated size for spread correction order.
-     * @param {OrderManager} manager - The manager instance.
+     * Calculates the ideal size for a spread correction order using geometric weighting.
+     * @param {Object} manager - The OrderManager instance.
      * @param {string} targetType - The type of order (BUY/SELL).
-     * @param {Object|null} [snap=null] - Optional fund snapshot (unused in unified logic).
      * @returns {number|null} The calculated size or null if failed.
      */
-    static calculateGeometricSizeForSpreadCorrection(manager, targetType, snap = null) {
+    static calculateGeometricSizeForSpreadCorrection(manager, targetType) {
         const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
 
@@ -1110,14 +1106,13 @@ class Grid {
     }
 
     /**
-     * Prepare order operations for spread correction.
-     * @param {OrderManager} manager - The manager instance.
-     * @param {string} preferredSide - The preferred side for the new order.
-     * @param {Object|null} [snap=null] - Optional fund snapshot.
+     * Prepares one or more orders to correct a wide spread.
+     * @param {Object} manager - The OrderManager instance.
+     * @param {string} preferredSide - The side to place the correction on (ORDER_TYPES.BUY/SELL).
      * @returns {Object} Correction result { ordersToPlace, partialMoves }.
      * @throws {Error} If preferredSide is invalid.
      */
-    static prepareSpreadCorrectionOrders(manager, preferredSide, snap = null) {
+    static prepareSpreadCorrectionOrders(manager, preferredSide) {
         // FIX: Validate preferredSide parameter to prevent silent logic errors
         if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
             throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
@@ -1166,7 +1161,7 @@ class Grid {
 
         for (let i = 0; i < Math.min(maxSlots, candidateSlots.length); i++) {
             const candidate = candidateSlots[i];
-            const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType, snap);
+            const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
             const availableFund = (manager.funds?.available?.[sideName] || 0);
 
             const minAbsoluteSize = getMinOrderSize(railType, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);

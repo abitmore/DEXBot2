@@ -19,7 +19,7 @@ const path = require('path');
 const readline = require('readline-sync');
 const chainKeys = require('./modules/chain_keys');
 const { utils: OrderUtils } = require('./modules/order');
-const accountKeys = require('./modules/chain_keys');
+const { ensureProfilesDirectory } = OrderUtils;
 const accountBots = require('./modules/account_bots');
 const { parseJsonWithComments } = accountBots;
 const { createBotKey } = require('./modules/account_orders');
@@ -37,19 +37,6 @@ setupGracefulShutdown();
 // Primary CLI driver that manages tracked bots and helper utilities such as key/bot editors.
 const PROFILES_BOTS_FILE = path.join(__dirname, 'profiles', 'bots.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
-
-/**
- * Initialize profiles directory if it doesn't exist.
- * @returns {boolean} True if directory was created.
- */
-function ensureProfilesDirectory() {
-    if (!fs.existsSync(PROFILES_DIR)) {
-        fs.mkdirSync(PROFILES_DIR, { recursive: true });
-        console.log('✓ Created profiles directory');
-        return true;
-    }
-    return false;
-}
 
 
 const CLI_COMMANDS = ['start', 'reset', 'disable', 'drystart', 'keys', 'bots', 'pm2', 'update', 'export'];
@@ -229,7 +216,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
 
      let succeeded = false;
      try {
-         await accountKeys.main();
+         await chainKeys.main();
          succeeded = true;
      } finally {
          if (disconnectAfter) {
@@ -683,7 +670,7 @@ async function runDefaultBots({ forceDryRun = false, sourceName = 'settings' } =
  */
 async function bootstrap() {
     // Ensure profiles directory exists
-    const isNewSetup = ensureProfilesDirectory();
+    const isNewSetup = ensureProfilesDirectory(PROFILES_DIR);
 
     // If this is a new setup, prompt to set up keys
     if (isNewSetup) {
@@ -719,7 +706,7 @@ async function bootstrap() {
         const setupKeys = readline.keyInYN('Set up master password now?');
         if (setupKeys) {
             console.log();
-            await accountKeys.main();
+            await chainKeys.main();
             console.log();
             console.log('Master password configured! Now you can:');
             console.log('  node dexbot bots   - Create and manage bots');

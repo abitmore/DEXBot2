@@ -1,7 +1,7 @@
 /**
  * modules/order/utils.js - Order subsystem utilities
  *
- * Centralized utility helpers organized into 10 functional categories:
+ * Centralized utility helpers organized into 11 functional categories:
  * - Parsing & validation of configuration values
  * - Blockchain conversions and precision handling
  * - Fund calculations and analysis
@@ -12,6 +12,7 @@
  * - Grid state persistence and comparison
  * - Order object building and manipulation
  * - Order filtering, counting, and analysis
+ * - UI & interactive utilities
  *
  * ═══════════════════════════════════════════════════════════════════════════════
  * TABLE OF CONTENTS
@@ -19,7 +20,8 @@
  *
  * SECTION 1: PARSING & VALIDATION
  *   - isPercentageString, parsePercentageString
- *   - resolveRelativePrice, toFiniteNumber, isValidNumber
+ *   - resolveRelativePrice
+ *   - toFiniteNumber, isValidNumber (shared helpers)
  *   Purpose: Parse and validate configuration strings
  *
  * SECTION 2: FUND CALCULATIONS
@@ -75,6 +77,10 @@
  *   - shouldFlagOutOfSpread
  *   Purpose: Filter, count, and analyze orders
  *
+ * SECTION 11: UI & INTERACTIVE UTILITIES
+ *   - ensureProfilesDirectory, readInput, readPassword
+ *   Purpose: Shared UI and interactive functions for CLI interaction
+ *
  * ═══════════════════════════════════════════════════════════════════════════════
  *
  * Fund-aware functions call manager.recalculateFunds() to keep the funds
@@ -85,32 +91,15 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS } = require('../constants');
+const fs = require('fs');
+const path = require('path');
 const Format = require('./format');
+const { isValidNumber, toFiniteNumber } = Format;
 
 // ════════════════════════════════════════════════════════════════════════════════
 // SECTION 1: PARSING & VALIDATION
 // ════════════════════════════════════════════════════════════════════════════════
 // Parse and validate configuration strings and values
-
-/**
- * Safely convert a value to a finite number with fallback.
- * @param {*} value - Value to convert
- * @param {number} defaultValue - Fallback if not finite (default: 0)
- * @returns {number} Finite number or default
- */
-function toFiniteNumber(value, defaultValue = 0) {
-    const num = Number(value);
-    return Number.isFinite(num) ? num : defaultValue;
-}
-
-/**
- * Check if a value is defined and represents a finite number.
- * @param {*} value - Value to check
- * @returns {boolean} True if value is defined and finite
- */
-function isValidNumber(value) {
-    return value !== null && value !== undefined && Number.isFinite(Number(value));
-}
 
 /**
  * Check if a value represents a numeric value (number or numeric string).
@@ -1566,13 +1555,13 @@ async function retryPersistenceIfNeeded(manager) {
 
     try {
         if (warning.type === 'pendingProceeds' || warning.type === 'cacheFunds') {
-            const success = typeof manager._persistCacheFunds === 'function' ? await manager._persistCacheFunds() : true;
+            const success = typeof manager.persistGrid === 'function' ? await manager.persistGrid() : true;
             if (success && manager.logger) {
                 manager.logger.log(`✓ Successfully retried cacheFunds persistence (was: ${warning.type})`, 'info');
             }
             return success;
         } else if (warning.type === 'btsFeesOwed') {
-            const success = await manager._persistBtsFeesOwed();
+            const success = typeof manager.persistGrid === 'function' ? await manager.persistGrid() : true;
             if (success && manager.logger) {
                 manager.logger.log(`✓ Successfully retried btsFeesOwed persistence`, 'info');
             }
@@ -2490,6 +2479,119 @@ async function withRetry(fn, options = {}) {
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECTION 11: UI & INTERACTIVE UTILITIES
+// ════════════════════════════════════════════════════════════════════════════════
+// Shared UI and interactive functions for CLI interaction
+
+/**
+ * Ensures that the profiles directory exists.
+ * @param {string} profilesDir - Path to the profiles directory.
+ * @returns {boolean} True if directory was created.
+ */
+function ensureProfilesDirectory(profilesDir) {
+    if (!fs.existsSync(profilesDir)) {
+        fs.mkdirSync(profilesDir, { recursive: true });
+        console.log('✓ Created profiles directory');
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Async version of readlineSync.question that supports ESC key and masking.
+ * @param {string} prompt - The prompt text to display.
+ * @param {Object} [options={}] - Input options.
+ * @param {string} [options.mask] - Mask character for hidden input (e.g. '*').
+ * @param {boolean} [options.hideEchoBack=false] - Whether to hide input as it is typed.
+ * @param {Function} [options.validate] - Validation function for the input.
+ * @returns {Promise<string>} The input string, or '\x1b' if ESC is pressed.
+ */
+function readInput(prompt, options = {}) {
+    const { mask, hideEchoBack = false, validate } = options;
+    return new Promise((resolve) => {
+        const stdin = process.stdin;
+        const stdout = process.stdout;
+        let input = '';
+
+        stdout.write(prompt);
+
+        const isRaw = stdin.isRaw;
+        if (stdin.isTTY) stdin.setRawMode(true);
+        stdin.resume();
+        stdin.setEncoding('utf8');
+
+        const onData = (chunk) => {
+            const s = String(chunk);
+            for (let i = 0; i < s.length; i++) {
+                const ch = s[i];
+
+                if (ch === '\x1b') { // ESC
+                    if (s.length === 1) {
+                        cleanup();
+                        stdout.write('\n');
+                        return resolve('\x1b');
+                    }
+                    continue;
+                }
+
+                if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+                    const trimmedInput = input.trim();
+                    // If validation function exists, check if input is valid
+                    if (validate && !validate(trimmedInput)) {
+                        // Invalid input - clear line and restart
+                        for (let j = 0; j < input.length; j++) {
+                            stdout.write('\b \b');
+                        }
+                        input = '';
+                        return;
+                    }
+                    cleanup();
+                    stdout.write('\n');
+                    return resolve(input);
+                }
+
+                if (ch === '\u0003') { // Ctrl+C
+                    cleanup();
+                    process.exit();
+                }
+
+                if (ch === '\u007f' || ch === '\u0008') { // Backspace
+                    if (input.length > 0) {
+                        input = input.slice(0, -1);
+                        stdout.write('\b \b');
+                    }
+                    continue;
+                }
+
+                const code = ch.charCodeAt(0);
+                if (code >= 32 && code <= 126) {
+                    input += ch;
+                    if (!hideEchoBack) {
+                        stdout.write(mask || ch);
+                    }
+                }
+            }
+        };
+
+        const cleanup = () => {
+            stdin.removeListener('data', onData);
+            if (stdin.isTTY) stdin.setRawMode(isRaw);
+        };
+
+        stdin.on('data', onData);
+    });
+}
+
+/**
+ * Securely read a password from stdin with asterisk masking.
+ * @param {string} prompt - Text to display before input
+ * @returns {Promise<string>} The entered password
+ */
+async function readPassword(prompt) {
+    return readInput(prompt, { mask: '*', hideEchoBack: false });
+}
 module.exports = {
     // Retry helper
     withRetry,
@@ -2590,5 +2692,9 @@ module.exports = {
     // Validation helpers
     hasValidAccountTotals,
     shouldFlagOutOfSpread,
-    isSignificantSizeChange
+
+    // UI & Interactive utilities
+    ensureProfilesDirectory,
+    readInput,
+    readPassword
 };
