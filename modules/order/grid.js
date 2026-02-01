@@ -35,7 +35,6 @@ const {
     calculateRotationOrderSizes,
     calculateGridSideDivergenceMetric,
     resolveConfiguredPriceBound,
-    getMinOrderSize,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
     getDoubleDustThreshold,

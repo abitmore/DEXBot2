@@ -1237,7 +1237,7 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
     const orderSizeFloat = toFiniteNumber(orderSize);
 
     // 1. Check absolute minimum based on precision
-    const minAbsoluteSize = getMinOrderSize(orderType, assets, minFactor);
+    const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, assets, minFactor);
     if (orderSizeFloat < minAbsoluteSize) {
         return {
             isValid: false,
@@ -1249,8 +1249,7 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
 
     // 2. Check double-dust threshold (if ideal size provided)
     if (idealSize !== null && idealSize !== undefined && idealSize > 0) {
-        const dustFactor = (dustThresholdPercent / 100) || 0.05;
-        const minDustSize = idealSize * dustFactor * 2;  // Double the threshold
+        const minDustSize = getDoubleDustThreshold(idealSize, dustThresholdPercent);
 
         if (orderSizeFloat < minDustSize) {
             return {
@@ -1276,7 +1275,7 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
                 isValid: false,
                 reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain (precision ${precision}, int: ${orderSizeInt})`,
                 minAbsoluteSize,
-                minDustSize: idealSize ? idealSize * ((dustThresholdPercent / 100) || 0.05) * 2 : null
+                minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null
             };
         }
     }
@@ -1286,7 +1285,7 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
         isValid: true,
         reason: null,
         minAbsoluteSize,
-        minDustSize: idealSize ? idealSize * ((dustThresholdPercent / 100) || 0.05) * 2 : null
+        minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null
     };
 }
 

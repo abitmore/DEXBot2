@@ -14,7 +14,6 @@ const {
     calculatePriceTolerance,
     findMatchingGridOrderByOpenOrder,
     calculateAvailableFundsValue,
-    getMinOrderSize,
     getMinAbsoluteOrderSize,
     getAssetFees,
     computeChainFundTotals,

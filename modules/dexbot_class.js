@@ -16,7 +16,7 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange, getMinOrderSize, validateOrderSize } = OrderUtils;
+const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange, validateOrderSize } = OrderUtils;
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
@@ -1144,8 +1144,8 @@ class DEXBot {
      */
     _getMaxOrderSize() {
         const { GRID_LIMITS } = require('./constants');
-        const dustThresholdPercent = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5) / 100;
-        const maxMultiplier = 1 + (2 * dustThresholdPercent); // 1 + 2*5% = 1.1
+        const dustThresholdFactor = OrderUtils.getDustThresholdFactor(GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE);
+        const maxMultiplier = 1 + (2 * dustThresholdFactor); // 1 + 2*5% = 1.1
 
         // Get all orders and find the biggest by size
         const allOrders = Array.from(this.manager.orders.values());
@@ -1469,7 +1469,6 @@ class DEXBot {
         const sideOfOrders = ordersToPlace[0]?.type || 'unknown';
         const sideName = sideOfOrders === 'buy' ? 'buy' : 'sell';
 
-        // Use actual blockchain free funds from accountTotals
         // BUY orders require sell asset (paying with what you're selling)
         // SELL orders require buy asset (selling what you're buying)
         const availableFund = sideName === 'buy'

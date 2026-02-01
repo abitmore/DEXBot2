@@ -8,7 +8,6 @@
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS } = require("../constants");
 const {
     getPrecisionForSide,
-    getMinOrderSize,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
     getDoubleDustThreshold,
