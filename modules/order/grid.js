@@ -1171,6 +1171,9 @@ class Grid {
                 const size = Math.min(idealSize, availableFund);
 
                 // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
+                // NOTE: idealSize is already quantized from blockchainToFloat(), so multiplying by float
+                // threshold (0.1) is safe. Both values are floats in the same "domain" and the comparison
+                // is consistent. When orders are placed, sizes are quantized again via blockchainToFloat().
                 const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
                 const minHealthySize = idealSize * dustThresholdFactor * 2;
 
@@ -1186,7 +1189,14 @@ class Grid {
                     manager._updateOrder(activated, 'spread-correct', false, 0);
                     // availableFund will be updated on next iteration via recalculateFunds inside _updateOrder
                 } else {
-                    manager.logger?.log?.(`Spread correction order skipped: available funds ${Format.formatAmount8(availableFund)} below double-dust threshold ${Format.formatAmount8(minHealthySize)} (ideal: ${Format.formatAmount8(idealSize)})`, 'warn');
+                    const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
+                    manager.logger?.log?.(
+                        `Spread correction skipped at slot ${candidate.id}: ` +
+                        `size=${Format.formatAmount8(size)} < threshold=${Format.formatAmount8(minHealthySize)} ` +
+                        `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatAmount8(idealSize)}). ` +
+                        `Available funds: ${Format.formatAmount8(availableFund)}`,
+                        'debug'
+                    );
                     break; // Stop if we run out of usable funds
                 }
             }

@@ -599,11 +599,13 @@ class StrategyEngine {
             const finalSize = destinationSize + cappedIncrease;
 
             // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
+            // NOTE: idealSize is quantized from blockchain integers, so multiplying by float threshold
+            // (0.1) is safe - both values are in the same float domain. Size comparisons remain consistent.
             const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
             const minHealthySize = idealSize * dustThresholdFactor * 2;
             const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
 
-            // Logic: 
+            // Logic:
             // 1. If the ideal target is too small (dust), skip it.
             // 2. If available funds cap the order below the healthy threshold, skip it.
             if (idealSize >= minAbsoluteSize && finalSize >= minHealthySize) {
@@ -663,6 +665,8 @@ class StrategyEngine {
                 const finalSize = currentSize + cappedIncrease;
 
                 // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
+                // NOTE: idealSize is quantized from blockchain integers, so multiplying by float threshold
+                // (0.1) is safe - both values are in the same float domain. Size comparisons remain consistent.
                 const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
                 const minHealthySize = idealSize * dustThresholdFactor * 2;
                 const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);

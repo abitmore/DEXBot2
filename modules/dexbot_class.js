@@ -256,7 +256,14 @@ class DEXBot {
                                 Array.from(this.manager.orders.values()).find(o => o.orderId === fillOp.order_id);
 
                             if (!gridOrder) {
-                                this._log(`[POST-RESET] Skipping fill for unknown order ${fillOp.order_id}`, 'debug');
+                                // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
+                                // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
+                                this._log(`[POST-RESET] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
+                                try {
+                                    this.manager.accountant.processFillAccounting(fillOp);
+                                } catch (accErr) {
+                                    this._log(`[POST-RESET] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                                }
                                 continue;
                             }
 
@@ -578,7 +585,17 @@ class DEXBot {
                             const gridOrder = this.manager.orders.get(fillOp.order_id) ||
                                 Array.from(this.manager.orders.values()).find(o => o.orderId === fillOp.order_id);
                             if (!gridOrder) {
-                                this.manager.logger.log(`Skipping fill for unknown order ${fillOp.order_id} (not in grid)`, 'debug');
+                                // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
+                                // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
+                                // Without this, we get fund invariant violations (blockchain has more funds than we track)
+                                this.manager.logger.log(`[ORPHAN-FILL] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
+                                try {
+                                    this.manager.accountant.processFillAccounting(fillOp);
+                                } catch (accErr) {
+                                    this.manager.logger.log(`[ORPHAN-FILL] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                                }
+                                // Don't add to validFills - we can't do rebalancing without a grid slot
+                                // But the funds are now credited, preventing fund invariant violation
                                 continue;
                             }
 
@@ -881,7 +898,14 @@ class DEXBot {
                 Array.from(this.manager.orders.values()).find(o => o.orderId === fillOp.order_id);
 
             if (!gridOrder) {
-                this.manager.logger.log(`[BOOTSTRAP] Skipping fill for unknown order ${fillOp.order_id}`, 'debug');
+                // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
+                // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
+                this.manager.logger.log(`[BOOTSTRAP] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
+                try {
+                    this.manager.accountant.processFillAccounting(fillOp);
+                } catch (accErr) {
+                    this.manager.logger.log(`[BOOTSTRAP] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                }
                 continue;
             }
 
@@ -1439,13 +1463,42 @@ class DEXBot {
 
     async _buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts) {
         if (!ordersToPlace || ordersToPlace.length === 0) return;
+
+        // Pre-check: Verify available funds before attempting to build operations
+        const totalSize = ordersToPlace.reduce((sum, o) => sum + o.size, 0);
+        const sideOfOrders = ordersToPlace[0]?.type || 'unknown';
+        const sideName = sideOfOrders === 'buy' ? 'buy' : 'sell';
+        const availableFund = this.manager.funds?.available?.[sideName] || 0;
+
+        if (totalSize > availableFund) {
+            this.manager.logger.log(
+                `Warning: total order size (${totalSize.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)}) for ${sideName}. ` +
+                `Some orders may be skipped or placed at reduced size.`,
+                'warn'
+            );
+        }
+
         for (const order of ordersToPlace) {
             try {
                 const args = buildCreateOrderArgs(order, assetA, assetB);
-                const { op, finalInts } = await chainOrders.buildCreateOrderOp(
+
+                // Build the operation - returns null if amounts would round to 0 on blockchain
+                const result = await chainOrders.buildCreateOrderOp(
                     this.account, args.amountToSell, args.sellAssetId,
                     args.minToReceive, args.receiveAssetId, null
                 );
+
+                // Skip if order amounts are invalid (would round to 0)
+                if (!result) {
+                    this.manager.logger.log(
+                        `Skipping placement: amounts would round to 0 on blockchain. ` +
+                        `Order: ${order.type} ${order.id} size=${order.size} @ price=${order.price}`,
+                        'warn'
+                    );
+                    continue;
+                }
+
+                const { op, finalInts } = result;
                 operations.push(op);
                 opContexts.push({ kind: 'create', order, args, finalInts });
             } catch (err) {
@@ -1512,8 +1565,8 @@ class DEXBot {
             if (!oldOrder.orderId || seenOrderIds.has(oldOrder.orderId)) continue;
             seenOrderIds.add(oldOrder.orderId);
 
-            // Trust internal grid state: if orderId exists and no rawOnChain cache, 
-            // it's likely a newly placed order. buildUpdateOrderOp will handle 
+            // Trust internal grid state: if orderId exists and no rawOnChain cache,
+            // it's likely a newly placed order. buildUpdateOrderOp will handle
             // the fetch if cache is missing.
             try {
                 const { amountToSell, minToReceive } = buildCreateOrderArgs({ type, size: newSize, price: newPrice }, assetA, assetB);

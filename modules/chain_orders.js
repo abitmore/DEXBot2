@@ -644,6 +644,20 @@ async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToR
     const amountToSellInt = floatToBlockchainInt(amountToSell, sellPrecision);
     const minToReceiveInt = floatToBlockchainInt(minToReceive, receivePrecision);
 
+    // CRITICAL: Validate order amounts before creating operation
+    // This prevents "Assert Exception: min_to_receive.amount > 0" errors from BitShares
+    // when order sizes are too small and round to 0 after precision conversion
+    // Returns null instead of throwing to allow caller to skip invalid orders gracefully
+    if (!validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecision, receivePrecision)) {
+        console.warn(
+            `[buildCreateOrderOp] Order skipped: amounts would round to 0 on blockchain\n` +
+            `  Float values: sell=${amountToSell}, receive=${minToReceive}\n` +
+            `  Blockchain integers: sell=${amountToSellInt} (prec ${sellPrecision}), receive=${minToReceiveInt} (prec ${receivePrecision})\n` +
+            `  Required: both > 0`
+        );
+        return null;
+    }
+
     const op = {
         op_name: 'limit_order_create',
         op_data: {
