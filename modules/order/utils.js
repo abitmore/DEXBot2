@@ -1167,6 +1167,129 @@ function getMinOrderSize(orderType, assets, factor = 50) {
     return Number(f) * smallestUnit;
 }
 
+/**
+ * Get dust threshold factor from percentage.
+ * Converts PARTIAL_DUST_THRESHOLD_PERCENTAGE to decimal (e.g., 5% → 0.05)
+ *
+ * @param {number} [dustThresholdPercent] - Dust threshold % (default 5)
+ * @returns {number} Decimal factor (e.g., 0.05)
+ */
+function getDustThresholdFactor(dustThresholdPercent = 5) {
+    return (dustThresholdPercent / 100) || 0.05;
+}
+
+/**
+ * Calculate single-dust threshold for an ideal size.
+ * Used for checking if order is above minimum percentage of ideal.
+ *
+ * @param {number} idealSize - The ideal order size
+ * @param {number} [dustThresholdPercent] - Dust threshold % (default 5)
+ * @returns {number} Minimum threshold (e.g., 5% of ideal)
+ */
+function getSingleDustThreshold(idealSize, dustThresholdPercent = 5) {
+    if (!idealSize || idealSize <= 0) return 0;
+    return idealSize * getDustThresholdFactor(dustThresholdPercent);
+}
+
+/**
+ * Calculate double-dust threshold for an ideal size.
+ * Used for minHealthySize checks: threshold × 2 (e.g., 10% of ideal)
+ *
+ * @param {number} idealSize - The ideal order size
+ * @param {number} [dustThresholdPercent] - Dust threshold % (default 5)
+ * @returns {number} Double-dust minimum (e.g., 10% of ideal)
+ */
+function getDoubleDustThreshold(idealSize, dustThresholdPercent = 5) {
+    if (!idealSize || idealSize <= 0) return 0;
+    return idealSize * getDustThresholdFactor(dustThresholdPercent) * 2;
+}
+
+/**
+ * Get minimum absolute order size with defaults.
+ * Wrapper for getMinOrderSize with sensible defaults.
+ *
+ * @param {number} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {Object} assets - Asset information with precision
+ * @param {number} [minFactor] - MIN_ORDER_SIZE_FACTOR (default 50)
+ * @returns {number} Minimum order size
+ */
+function getMinAbsoluteOrderSize(orderType, assets, minFactor = 50) {
+    return getMinOrderSize(orderType, assets, minFactor || 50);
+}
+
+/**
+ * Comprehensive order size validation combining all checks.
+ *
+ * Validates that an order size meets multiple criteria:
+ * 1. Absolute minimum: size ≥ MIN_ORDER_SIZE_FACTOR × 10^-precision
+ * 2. Double-dust threshold: size ≥ idealSize × dustThresholdFactor × 2 (if idealSize provided)
+ * 3. Blockchain integer validity: amount won't round to 0 after precision conversion
+ *
+ * @param {number} orderSize - The order size to validate (float)
+ * @param {number} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
+ * @param {Object} assets - Asset information with precision
+ * @param {number} minFactor - MIN_ORDER_SIZE_FACTOR (default 50)
+ * @param {number} [idealSize] - Optional ideal size for double-dust check
+ * @param {number} [dustThresholdPercent] - Dust threshold percentage (default 5 for 10% with ×2)
+ * @returns {Object} { isValid: boolean, reason: string|null, minAbsoluteSize: number, minDustSize: number }
+ */
+function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSize = null, dustThresholdPercent = 5) {
+    const orderSizeFloat = toFiniteNumber(orderSize);
+
+    // 1. Check absolute minimum based on precision
+    const minAbsoluteSize = getMinOrderSize(orderType, assets, minFactor);
+    if (orderSizeFloat < minAbsoluteSize) {
+        return {
+            isValid: false,
+            reason: `Order size (${orderSizeFloat.toFixed(8)}) below absolute minimum (${minAbsoluteSize.toFixed(8)} = ${minFactor}× precision)`,
+            minAbsoluteSize,
+            minDustSize: null
+        };
+    }
+
+    // 2. Check double-dust threshold (if ideal size provided)
+    if (idealSize !== null && idealSize !== undefined && idealSize > 0) {
+        const dustFactor = (dustThresholdPercent / 100) || 0.05;
+        const minDustSize = idealSize * dustFactor * 2;  // Double the threshold
+
+        if (orderSizeFloat < minDustSize) {
+            return {
+                isValid: false,
+                reason: `Order size (${orderSizeFloat.toFixed(8)}) below double-dust threshold (${minDustSize.toFixed(8)} = ${dustThresholdPercent}% × 2 of ideal ${idealSize.toFixed(8)})`,
+                minAbsoluteSize,
+                minDustSize
+            };
+        }
+    }
+
+    // 3. Check blockchain integer validity (won't round to 0)
+    let precision = null;
+    if (assets) {
+        if ((orderType === ORDER_TYPES.SELL) && assets.assetA) precision = assets.assetA.precision;
+        else if ((orderType === ORDER_TYPES.BUY) && assets.assetB) precision = assets.assetB.precision;
+    }
+
+    if (typeof precision === 'number') {
+        const orderSizeInt = floatToBlockchainInt(orderSizeFloat, precision);
+        if (orderSizeInt <= 0) {
+            return {
+                isValid: false,
+                reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain (precision ${precision}, int: ${orderSizeInt})`,
+                minAbsoluteSize,
+                minDustSize: idealSize ? idealSize * ((dustThresholdPercent / 100) || 0.05) * 2 : null
+            };
+        }
+    }
+
+    // All checks passed
+    return {
+        isValid: true,
+        reason: null,
+        minAbsoluteSize,
+        minDustSize: idealSize ? idealSize * ((dustThresholdPercent / 100) || 0.05) * 2 : null
+    };
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // SECTION 6: FEE MANAGEMENT
 // ════════════════════════════════════════════════════════════════════════════════
@@ -2624,6 +2747,11 @@ module.exports = {
     correctOrderPriceOnChain,
     correctAllPriceMismatches,
     getMinOrderSize,
+    getDustThresholdFactor,
+    getSingleDustThreshold,
+    getDoubleDustThreshold,
+    getMinAbsoluteOrderSize,
+    validateOrderSize,
 
     // Price derivation
     lookupAsset,

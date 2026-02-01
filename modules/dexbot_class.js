@@ -16,7 +16,7 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange } = OrderUtils;
+const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange, getMinOrderSize, validateOrderSize } = OrderUtils;
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
@@ -1468,7 +1468,13 @@ class DEXBot {
         const totalSize = ordersToPlace.reduce((sum, o) => sum + o.size, 0);
         const sideOfOrders = ordersToPlace[0]?.type || 'unknown';
         const sideName = sideOfOrders === 'buy' ? 'buy' : 'sell';
-        const availableFund = this.manager.funds?.available?.[sideName] || 0;
+
+        // Use actual blockchain free funds from accountTotals
+        // BUY orders require sell asset (paying with what you're selling)
+        // SELL orders require buy asset (selling what you're buying)
+        const availableFund = sideName === 'buy'
+            ? (this.manager.accountTotals?.sellFree ?? 0)
+            : (this.manager.accountTotals?.buyFree ?? 0);
 
         if (totalSize > availableFund) {
             this.manager.logger.log(
@@ -1480,6 +1486,24 @@ class DEXBot {
 
         for (const order of ordersToPlace) {
             try {
+                // Comprehensive order size validation (absolute minimum + double-dust threshold)
+                const sizeValidation = validateOrderSize(
+                    order.size,
+                    sideOfOrders,
+                    this.manager.assets,
+                    GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50,
+                    null,  // No ideal size here; threshold checks already done in grid/strategy
+                    GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5
+                );
+
+                if (!sizeValidation.isValid) {
+                    this.manager.logger.log(
+                        `Skipping placement: ${sizeValidation.reason}. Order: ${order.id}`,
+                        'warn'
+                    );
+                    continue;
+                }
+
                 const args = buildCreateOrderArgs(order, assetA, assetB);
 
                 // Build the operation - returns null if amounts would round to 0 on blockchain

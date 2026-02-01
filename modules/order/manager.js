@@ -15,6 +15,7 @@ const {
     findMatchingGridOrderByOpenOrder,
     calculateAvailableFundsValue,
     getMinOrderSize,
+    getMinAbsoluteOrderSize,
     getAssetFees,
     computeChainFundTotals,
     hasValidAccountTotals,
@@ -707,8 +708,8 @@ class OrderManager {
         const sellCount = this.sellSideIsDoubled ? Math.max(1, sellCountRaw - 1) : sellCountRaw;
         const buyCount = this.buySideIsDoubled ? Math.max(1, buyCountRaw - 1) : buyCountRaw;
 
-        const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
-        const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
+        const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, this.assets);
+        const minBuySize = getMinAbsoluteOrderSize(ORDER_TYPES.BUY, this.assets);
 
         // Use integer arithmetic for size comparisons to match blockchain behavior
         const sellPrecision = this.assets?.assetA?.precision;

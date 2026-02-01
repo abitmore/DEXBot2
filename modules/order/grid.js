@@ -36,6 +36,9 @@ const {
     calculateGridSideDivergenceMetric,
     resolveConfiguredPriceBound,
     getMinOrderSize,
+    getMinAbsoluteOrderSize,
+    getSingleDustThreshold,
+    getDoubleDustThreshold,
     calculateAvailableFundsValue,
     calculateSpreadFromOrders,
     allocateFundsByWeights,
@@ -495,8 +498,8 @@ class Grid {
             }
         }
 
-        const minSellSize = getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
-        const minBuySize = getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
+        const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, manager.assets);
+        const minBuySize = getMinAbsoluteOrderSize(ORDER_TYPES.BUY, manager.assets);
 
         const { A: precA, B: precB } = getPrecisionsForManager(manager.assets);
 
@@ -525,8 +528,8 @@ class Grid {
         }
 
         // Check for warning if orders are near minimal size (regression fix)
-        const warningSellSize = minSellSize > 0 ? getMinOrderSize(ORDER_TYPES.SELL, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
-        const warningBuySize = minBuySize > 0 ? getMinOrderSize(ORDER_TYPES.BUY, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR * 2) : 0;
+        const warningSellSize = minSellSize > 0 ? getMinAbsoluteOrderSize(ORDER_TYPES.SELL, manager.assets, 100) : 0;
+        const warningBuySize = minBuySize > 0 ? getMinAbsoluteOrderSize(ORDER_TYPES.BUY, manager.assets, 100) : 0;
         if (checkSizeThreshold(sells, warningSellSize, precA, false) || checkSizeThreshold(buys, warningBuySize, precB, false)) {
             manager.logger?.log?.("WARNING: Order grid contains orders near minimum size. To ensure the bot runs properly, consider increasing the funds of your bot.", "warn");
         }
@@ -1032,7 +1035,7 @@ class Grid {
         return partials.some(p => {
             const idx = sideSlots.findIndex(s => s.id === p.id);
             if (idx === -1) return false;
-            const threshold = idealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            const threshold = getSingleDustThreshold(idealSizes[idx]);
             return p.size < threshold;
         });
     }
@@ -1164,7 +1167,7 @@ class Grid {
             const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
             const availableFund = (manager.funds?.available?.[sideName] || 0);
 
-            const minAbsoluteSize = getMinOrderSize(railType, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+            const minAbsoluteSize = getMinAbsoluteOrderSize(railType, manager.assets);
 
             if (idealSize && idealSize >= minAbsoluteSize) {
                 // Scale down to available funds if necessary
@@ -1174,8 +1177,7 @@ class Grid {
                 // NOTE: idealSize is already quantized from blockchainToFloat(), so multiplying by float
                 // threshold (0.1) is safe. Both values are floats in the same "domain" and the comparison
                 // is consistent. When orders are placed, sizes are quantized again via blockchainToFloat().
-                const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
-                const minHealthySize = idealSize * dustThresholdFactor * 2;
+                const minHealthySize = getDoubleDustThreshold(idealSize);
 
                 if (size >= minHealthySize && size >= minAbsoluteSize) {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };

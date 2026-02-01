@@ -34,7 +34,7 @@ function _pickVirtualSlotsToActivate(manager, type, count) {
 
     let effectiveMin = 0;
     try {
-        effectiveMin = OrderUtils.getMinOrderSize(type, manager.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
+        effectiveMin = OrderUtils.getMinAbsoluteOrderSize(type, manager.assets);
     } catch (e) { effectiveMin = 0; }
 
     const valid = [];

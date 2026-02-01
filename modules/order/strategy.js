@@ -9,6 +9,9 @@ const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS } = require("../c
 const {
     getPrecisionForSide,
     getMinOrderSize,
+    getMinAbsoluteOrderSize,
+    getSingleDustThreshold,
+    getDoubleDustThreshold,
     getAssetFees,
     allocateFundsByWeights,
     floatToBlockchainInt,
@@ -397,7 +400,7 @@ class StrategyEngine {
             // Dust detection: Treat slot as shortage if it has a dust order
             // This allows the strategy to "refill" it (either by rotation or update)
             if (slot.orderId && finalIdealSizes[idx] > 0) {
-                const threshold = finalIdealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+                const threshold = getSingleDustThreshold(finalIdealSizes[idx]);
                 if (slot.size < threshold) return true;
             }
             return false;
@@ -416,7 +419,7 @@ class StrategyEngine {
 
             // Dust Surplus: Inside window but dust (needs to be moved/updated)
             const idealSize = finalIdealSizes[idx];
-            const threshold = idealSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            const threshold = getSingleDustThreshold(idealSize);
             if (s.size < threshold) return true;
 
             return false;
@@ -468,7 +471,7 @@ class StrategyEngine {
                 continue;
             }
 
-            const threshold = idealSize * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            const threshold = getSingleDustThreshold(idealSize);
             const isDust = partial.size < threshold;
 
             if (isDust) {
@@ -479,7 +482,7 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
                 const finalSize = currentSize + cappedIncrease;
 
-                const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+                const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
 
                 if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
                     mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and flagging side as doubled.`, 'info');
@@ -522,7 +525,7 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
                 const finalSize = oldSize + cappedIncrease;
 
-                const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+                const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
 
                 if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
                     mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
@@ -601,9 +604,8 @@ class StrategyEngine {
             // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
             // NOTE: idealSize is quantized from blockchain integers, so multiplying by float threshold
             // (0.1) is safe - both values are in the same float domain. Size comparisons remain consistent.
-            const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
-            const minHealthySize = idealSize * dustThresholdFactor * 2;
-            const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+            const minHealthySize = getDoubleDustThreshold(idealSize);
+            const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
 
             // Logic:
             // 1. If the ideal target is too small (dust), skip it.
@@ -667,9 +669,8 @@ class StrategyEngine {
                 // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
                 // NOTE: idealSize is quantized from blockchain integers, so multiplying by float threshold
                 // (0.1) is safe - both values are in the same float domain. Size comparisons remain consistent.
-                const dustThresholdFactor = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100) || 0.05;
-                const minHealthySize = idealSize * dustThresholdFactor * 2;
-                const minAbsoluteSize = getMinOrderSize(type, mgr.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50);
+                const minHealthySize = getDoubleDustThreshold(idealSize);
+                const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
 
                 if (idealSize >= minAbsoluteSize && finalSize >= minHealthySize) {
                     // NEW: Set new placement to VIRTUAL until confirmed on-chain
@@ -746,7 +747,7 @@ class StrategyEngine {
         return partials.some(p => {
             const idx = slots.findIndex(s => s.id === p.id);
             if (idx === -1) return false;
-            const dustThreshold = idealSizes[idx] * (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE / 100);
+            const dustThreshold = getSingleDustThreshold(idealSizes[idx]);
             return p.size < dustThreshold;
         });
     }
