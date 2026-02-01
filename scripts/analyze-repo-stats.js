@@ -14,28 +14,80 @@ const fs = require('fs');
 const path = require('path');
 const Format = require('../modules/order/format');
 
+/**
+ * RepoAnalyzer Class
+ *
+ * Encapsulates git statistics analysis and report generation.
+ * Parses git history and generates both console and HTML visualizations.
+ */
 class RepoAnalyzer {
+    /**
+     * constructor: Initialize analyzer with empty stats and filter patterns
+     *
+     * Stats structure tracks:
+     * - files: Map of file paths to their add/delete/edit counts
+     * - totalAdded/Deleted/Edits: Cumulative counts across all files
+     * - commits: Total commits analyzed
+     * - dailyStats: Changes grouped by date (for trend analysis)
+     *
+     * Tracked files are filtered by patterns:
+     * - README* (any README file)
+     * - Root-level .js files (bot/*.js is excluded)
+     * - modules/* folder (core business logic)
+     * - scripts/* folder (utility scripts)
+     *
+     * This ensures we focus on actual project code, not generated/transient files
+     */
     constructor() {
+        // Statistics aggregation structure
         this.stats = {
-            files: {},
-            totalAdded: 0,
-            totalDeleted: 0,
-            totalEdits: 0,
-            commits: 0,
-            dailyStats: {} // Track changes by day
+            files: {},           // filename -> {added, deleted, edits}
+            totalAdded: 0,       // Total lines added across tracked files
+            totalDeleted: 0,     // Total lines deleted across tracked files
+            totalEdits: 0,       // Sum of added + deleted
+            commits: 0,          // Number of commits processed
+            dailyStats: {}       // date -> {added, deleted, edits, commits}
         };
+
+        // Regular expressions to filter which files to track
+        // This prevents noise from auto-generated files, tests, etc.
         this.filePatterns = [
-            /^README/i,
-            /^[^/]+\.js$/, // Root level .js files
-            /^modules\//,   // Anything in modules folder
-            /^scripts\//    // Anything in scripts folder
+            /^README/i,          // All README files
+            /^[^/]+\.js$/,       // Root-level .js files (no subdirectories)
+            /^modules\//,        // Everything under modules/ (core code)
+            /^scripts\//         // Everything under scripts/ (tooling)
         ];
     }
 
+    /**
+     * isTrackedFile: Check if file path matches tracked file patterns
+     *
+     * Returns true if file matches ANY pattern (OR logic)
+     * Used to filter git log entries to focus on project code
+     *
+     * @param {string} filePath - File path from git log
+     * @returns {boolean} - True if file should be included in stats
+     */
     isTrackedFile(filePath) {
         return this.filePatterns.some(pattern => pattern.test(filePath));
     }
 
+    /**
+     * analyzeGitLog: Parse git history and build statistics
+     *
+     * Executes: git log --numstat --date=short --pretty=format:"%ad %h %s"
+     * Output format (line by line):
+     * - Commit lines: "YYYY-MM-DD hash message"
+     * - File change lines: "added\tdeleted\tfilepath"
+     *
+     * Flow:
+     * 1. Parse commit lines to track current date
+     * 2. Parse file change lines (only tracked files)
+     * 3. Aggregate statistics per file and per day
+     * 4. Update cumulative totals
+     *
+     * Error handling: Throws if git command fails (not a repo, etc.)
+     */
     analyzeGitLog() {
         console.log('📊 Analyzing DEXBot2 Repository...\n');
 
@@ -116,18 +168,40 @@ class RepoAnalyzer {
         }
     }
 
+    /**
+     * generateCharts: Generate all output visualizations
+     *
+     * Creates two output formats:
+     * 1. Console output: Terminal-friendly ASCII tables and stats
+     * 2. HTML output: Interactive charts with Chart.js library
+     *
+     * Files are sorted by total edits (most active files first)
+     * for meaningful visualization
+     */
     generateCharts() {
-        // Sort files by total edits
+        // Sort files by total edits (descending) for most-active-first display
         const sortedFiles = Object.entries(this.stats.files)
             .sort((a, b) => b[1].edits - a[1].edits);
 
-        // Generate console visualization
+        // Output 1: Console visualization with tables
         this.printConsoleCharts(sortedFiles);
 
-        // Generate HTML chart
+        // Output 2: HTML file with interactive charts
         this.generateHtmlChart(sortedFiles);
     }
 
+    /**
+     * printConsoleCharts: Print formatted ASCII statistics to console
+     *
+     * Displays:
+     * 1. Summary stats: Total commits, lines added/deleted, net change
+     * 2. File listing: All tracked files with their change counts
+     * 3. Add/Delete ratio: Metric for code quality (more adds vs deletes)
+     * 4. Daily activity: Last 10 days of changes (trend analysis)
+     *
+     * Output format uses Unicode box drawing and padding for readability
+     * Suitable for terminal display with fixed-width fonts
+     */
     printConsoleCharts() {
         console.log('═'.repeat(80));
         console.log('📈 DEXBot2 Repository Statistics');
@@ -187,25 +261,58 @@ class RepoAnalyzer {
         }
     }
 
+    /**
+     * generateHtmlChart: Create interactive HTML visualization with Chart.js
+     *
+     * Generates an HTML file with 4 interactive charts:
+     * 1. File comparison: Stacked bar chart (added vs deleted by file)
+     * 2. Daily trends: Line chart (daily changes over time)
+     * 3. Cumulative progress: Line chart (total growth trajectory)
+     * 4. Net lines: Line chart (added - deleted over time)
+     *
+     * Data preparation:
+     * - Truncates file names to fit in chart labels
+     * - Escapes quotes in labels for JSON embedding
+     * - Builds daily stats arrays aligned with dates
+     * - Calculates cumulative sums for growth visualization
+     *
+     * Output: Writes file to repo-stats.html in current directory
+     * Browser compatible: Uses Chart.js from CDN
+     *
+     * @param {Array<[string, Object]>} sortedFiles - Sorted files with their stats
+     */
     generateHtmlChart(sortedFiles) {
+        // Prepare file labels with truncation for readability in charts
         const labels = sortedFiles.map(([file]) => {
+            // Truncate long filenames to 50 chars, add ellipsis
             const short = file.length > 50 ? file.slice(0, 47) + '...' : file;
+            // Escape quotes for safe JSON embedding in HTML
             return short.replace(/"/g, '\\"');
         });
 
+        // Extract added/deleted data arrays for chart datasets
         const addedData = sortedFiles.map(([_, stats]) => stats.added);
         const deletedData = sortedFiles.map(([_, stats]) => stats.deleted);
 
-        // Prepare daily stats (sorted by date)
+        /**
+         * Daily Statistics Preparation
+         * Sorted by date (ISO format) for chronological display
+         */
         const dailyDates = Object.keys(this.stats.dailyStats).sort();
         const dailyAdded = dailyDates.map(date => this.stats.dailyStats[date].added);
         const dailyDeleted = dailyDates.map(date => this.stats.dailyStats[date].deleted);
         const dailyEdits = dailyDates.map(date => this.stats.dailyStats[date].edits);
 
-        // Calculate cumulative stats
+        /**
+         * Cumulative Statistics Calculation
+         * Shows running total over time (useful for trend analysis)
+         * Cumulative sum: each value = sum of all previous + current
+         */
         let cumulativeAdded = 0;
         let cumulativeDeleted = 0;
         let cumulativeEdits = 0;
+
+        // Build cumulative arrays using running total pattern
         const cumulativeAddedData = dailyDates.map(date => {
             cumulativeAdded += this.stats.dailyStats[date].added;
             return cumulativeAdded;
@@ -218,7 +325,12 @@ class RepoAnalyzer {
             cumulativeEdits += this.stats.dailyStats[date].edits;
             return cumulativeEdits;
         });
-        // Calculate net lines over time (cumulative added - cumulative deleted)
+
+        /**
+         * Net Lines Calculation
+         * Shows net growth: (cumulative added) - (cumulative deleted)
+         * Positive value = code growing, negative = code shrinking
+         */
         const netLinesData = cumulativeAddedData.map((added, index) => {
             return added - cumulativeDeletedData[index];
         });

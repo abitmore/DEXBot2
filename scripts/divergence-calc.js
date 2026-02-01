@@ -1,8 +1,42 @@
+/**
+ * Quadratic Divergence Calculator
+ *
+ * Analyzes order grid divergence between persisted and calculated values.
+ * Calculates a quadratic divergence metric to measure grid consistency.
+ *
+ * Input: Order data in format: [Buy|Sell] [buy|sell]-[id] @ [price]: [persisted] → [calculated] [[state]]
+ * Source: Can read from file (argument) or stdin
+ *
+ * Output: Divergence metrics including:
+ * - Sum of squared relative differences
+ * - Normalized metric in promille (‰) units
+ * - Real average error percentage
+ * - Min/max errors with order details
+ * - Threshold comparison
+ *
+ * Order states:
+ * - 'active': Normal grid orders
+ * - 'virtual': Simulated orders
+ * - 'partial': Temporarily filled orders (excluded from calculation)
+ *
+ * Usage: node scripts/divergence-calc.js [file] or pipe: cat orders.txt | node scripts/divergence-calc.js
+ * Exit code: 0 (always)
+ */
+
 const fs = require('fs');
 const path = require('path');
 const Format = require('../modules/order/format');
 
-// Read data from file argument or stdin
+/**
+ * readData: Read order data from file or stdin
+ *
+ * Supports two input modes:
+ * 1. File argument: node divergence-calc.js /path/to/file
+ * 2. Stdin: cat file | node divergence-calc.js or node divergence-calc.js -
+ *
+ * @returns {string} Raw order data lines
+ * @throws {Error} If file cannot be read
+ */
 function readData() {
   const args = process.argv.slice(2);
 
