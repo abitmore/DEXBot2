@@ -872,13 +872,12 @@ class DEXBot {
                             await this.accountOrders.updateProcessedFillsBatch(this.config.botKey, fillsToSave);
                             this.manager.logger.log(`Persisted ${processedFillKeys.size} fill records to prevent reprocessing`, 'debug');
                         } catch (err) {
-                            this.manager?.logger?.log(`Warning: Failed to persist processed fills: ${err.message}`, 'warn');
+                            this.manager?.logger?.log(`Warning: Failed to persist processed fills - may be reprocessed on next run: ${err.message}`, 'warn');
                         }
                     }
 
-                    // Periodically clean up old fill records (deterministic: every N fills processed)
-                    // Track cleanup counter locally to avoid race conditions on shared state
-                    if (!this._fillCleanupCounter) this._fillCleanupCounter = 0;
+                    // Periodically clean up old fill records after processing N fills.
+                    // Counter is protected by _fillProcessingLock during fill consumption.
                     this._fillCleanupCounter += validFills.length;
 
                     const cleanupThreshold = MAINTENANCE.CLEANUP_PROBABILITY > 0 && MAINTENANCE.CLEANUP_PROBABILITY < 1
@@ -888,9 +887,9 @@ class DEXBot {
                     if (this._fillCleanupCounter >= cleanupThreshold) {
                         try {
                             await this.accountOrders.cleanOldProcessedFills(this.config.botKey, TIMING.FILL_RECORD_RETENTION_MS);
-                            this._fillCleanupCounter = 0;
+                            this._fillCleanupCounter = 0;  // Reset counter after cleanup (success or retry on next batch if failed)
                         } catch (err) {
-                            this.manager?.logger?.log(`Warning: Fill cleanup failed: ${err.message}`, 'warn');
+                            this.manager?.logger?.log(`Warning: Fill cleanup failed (will retry): ${err.message}`, 'warn');
                         }
                     }
 

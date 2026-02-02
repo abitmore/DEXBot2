@@ -4,6 +4,77 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.12] - 2026-02-02 - Pipeline Safety Enhancement & Code Quality Improvements
+
+### Added
+- **Pipeline Timeout Safeguard** in manager.js (commit 6737d35)
+  - 5-minute timeout on `isPipelineEmpty()` to prevent indefinite grid-maintenance blocking
+  - Automatic flag clearing with warning logs when timeout triggers
+  - `_pipelineBlockedSince` tracking for diagnostics
+  - Non-destructive recovery (clears flags only, not orders)
+
+- **Pipeline Health Diagnostic Method** in manager.js (commit 6737d35)
+  - `getPipelineHealth()` returns 8 diagnostic fields
+  - Blockage timestamp, duration (both milliseconds and human-readable), pending counts, affected sides
+  - Enables production monitoring dashboards and alerting systems
+  - Integrated into post-fill logging for operational visibility
+
+- **Pipeline Timing Configuration** in constants.js (commit 6737d35)
+  - `PIPELINE_TIMING.TIMEOUT_MS` (300000 ms / 5 minutes) - Conservative timeout preventing false positives
+  - `PIPELINE_TIMING.TIMEOUT_WARNING_INTERVAL` (60000 ms / 1 minute) - For future warning escalation
+
+### Refactored
+- **Fill Cleanup Counter Logic** in dexbot_class.js (commit 83b4dc6)
+  - Removed redundant lazy initialization (counter already initialized in constructor)
+  - Removed misleading "locally track" comment that incorrectly described synchronization
+  - Simplified from 14 to 10 lines while maintaining same functionality
+  - Clarified lock-based synchronization mechanism in comments
+
+### Fixed
+- **Critical Pipeline Vulnerability** (commit 6737d35)
+  - **Problem**: Pipeline checks could block indefinitely if operations hung (network issues, stuck corrections)
+  - **Solution**: 5-minute timeout with automatic recovery
+  - **Impact**: Prevents bot from entering permanent locked state
+
+- **Fill Persistence Error Clarity** in dexbot_class.js (commit ebc17ff)
+  - **Problem**: Unclear what happens when fill persistence fails
+  - **Solution**: Enhanced error message documents potential reprocessing on next run
+  - **Impact**: Operators understand expected behavior without false alarm about bugs
+
+### Documentation Enhancements
+- Enhanced `_executeMaintenanceLogic()` header with:
+  - 6-step maintenance sequence breakdown
+  - Race-to-resize prevention rationale
+  - Timeout safety guarantees
+  - Detailed explanation of why pipeline consensus matters
+
+- Enhanced `_runGridMaintenance()` header with:
+  - 3 entry points (startup, periodic, post-fill)
+  - Lock ordering explanation and deadlock prevention
+  - Pipeline protection details
+
+- Improved post-fill logging to show blockage duration
+- Added inline comments explaining retry behavior on cleanup failure
+
+### Benefits
+- **Stability**: Pipeline no longer blocks indefinitely due to stuck operations
+- **Observability**: getPipelineHealth() enables monitoring and alerting
+- **Clarity**: Removed misleading comments, improved documentation
+- **Quality**: Simplified code without losing functionality
+- **Safety**: Non-destructive timeout prevents resource leaks
+
+### Testing
+- All 107+ existing tests pass
+- No regressions detected
+- All integration tests verified
+- Backward compatible with existing code
+
+### Related Commits
+- Builds on commit a946c33 (grid maintenance race-to-resize fix)
+- Complements pipeline consensus enforcement from Patch 11
+
+---
+
 ## [0.6.0-patch.11] - 2026-02-02 - Order State Predicate Centralization
 
 ### Added
