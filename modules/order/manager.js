@@ -21,7 +21,8 @@ const {
     resolveConfigValue,
     floatToBlockchainInt,
     isOrderOnChain,
-    isPhantomOrder
+    isPhantomOrder,
+    getPrecisionSlack
 } = require('./utils');
 const Logger = require('./logger');
 const AsyncLock = require('./async_lock');
@@ -929,8 +930,8 @@ class OrderManager {
         // Calculate precision tolerances
         const buyPrecision = this.assets?.assetB?.precision || 8;
         const sellPrecision = this.assets?.assetA?.precision || 8;
-        const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
-        const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
+        const precisionSlackBuy = getPrecisionSlack(buyPrecision);
+        const precisionSlackSell = getPrecisionSlack(sellPrecision);
         const percentTolerance = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
         const allowedDriftBuy = Math.max(precisionSlackBuy, actualBuy * percentTolerance);

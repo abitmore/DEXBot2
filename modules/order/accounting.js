@@ -11,7 +11,8 @@ const {
     computeChainFundTotals,
     calculateAvailableFundsValue,
     getAssetFees,
-    blockchainToFloat
+    blockchainToFloat,
+    getPrecisionSlack
 } = require('./utils');
 const Format = require('./format');
 
@@ -133,8 +134,8 @@ class Accountant {
     async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
         const buyPrecision = mgr.assets?.assetB?.precision || 8;
         const sellPrecision = mgr.assets?.assetA?.precision || 8;
-        const precisionSlackBuy = 2 * Math.pow(10, -buyPrecision);
-        const precisionSlackSell = 2 * Math.pow(10, -sellPrecision);
+        const precisionSlackBuy = getPrecisionSlack(buyPrecision);
+        const precisionSlackSell = getPrecisionSlack(sellPrecision);
         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
         let hasViolation = false;

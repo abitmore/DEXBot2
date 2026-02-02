@@ -47,7 +47,8 @@ const {
     isNumeric,
     isOrderHealthy,
     isPhantomOrder,
-    isSlotAvailable
+    isSlotAvailable,
+    getPartialsByType
 } = require('./utils');
 
 class Grid {
@@ -997,9 +998,7 @@ class Grid {
         if (manager.isBootstrapping) return { buyDust: false, sellDust: false };
 
         const allOrders = Array.from(manager.orders.values());
-
-        const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
-        const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
+        const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
 
         const buyDust = buyPartials.length > 0 && Grid._hasAnyDust(manager, buyPartials, ORDER_TYPES.BUY);
         const sellDust = sellPartials.length > 0 && Grid._hasAnyDust(manager, sellPartials, ORDER_TYPES.SELL);

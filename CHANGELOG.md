@@ -17,13 +17,23 @@ All notable changes to this project will be documented in this file.
   - `virtualizeOrder()` - transitions order to VIRTUAL, clears blockchain metadata
   - `isOrderHealthy()` - comprehensive size validation (absolute + dust threshold)
 
+- **Additional Centralized Helpers** in utils.js (commit d6560a8)
+  - `getPartialsByType(orders)` - Returns `{buy: [], sell: []}` of partial orders by type
+  - `validateAssetPrecisions(assets)` - Validates both asset precisions at once
+  - `getPrecisionSlack(precision, factor)` - Calculates precision slack for float comparisons
+
 ### Refactored
-- Replaced 34+ inline state checks across 6 modules with semantic helpers
-- **strategy.js**: -27 lines (role-assignment, surplus/shortage detection)
-- **manager.js**: -2 lines (SPREAD validation, phantom prevention)
-- **sync_engine.js**: rotation/fill cleanup uses helpers
-- **grid.js**: -10 lines (slot availability, phantom sanitization)
-- **startup_reconcile.js**: edge validation, price matching
+- Replaced 34+ inline state checks across 6 modules with semantic helpers (commit 2fb171d)
+  - **strategy.js**: -27 lines (role-assignment, surplus/shortage detection)
+  - **manager.js**: -2 lines (SPREAD validation, phantom prevention)
+  - **sync_engine.js**: rotation/fill cleanup uses helpers
+  - **grid.js**: -10 lines (slot availability, phantom sanitization)
+  - **startup_reconcile.js**: edge validation, price matching
+
+- Replaced pattern duplications with centralized helpers (commit 56a7344)
+  - **`getPartialsByType()` eliminated 3 duplications**: strategy.js, grid.js, startup_reconcile.js
+  - **`getPrecisionSlack()` eliminated 2 duplications**: accounting.js, manager.js
+  - **Net result**: -15 lines of duplication across 5 modules
 
 ### Fixed
 - **Dynamic require in dexbot_class.js**: Moved `virtualizeOrder` import to module-level

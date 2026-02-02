@@ -23,7 +23,8 @@ const {
     isOrderOnChain,
     hasOnChainId,
     isOrderVirtual,
-    isOrderPlaced
+    isOrderPlaced,
+    getPartialsByType
 } = require("./utils");
 const Format = require('./format');
 
@@ -855,8 +856,7 @@ class StrategyEngine {
 
             if (!shouldRebalance) {
                 const allOrders = Array.from(mgr.orders.values());
-                const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
-                const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
+                const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
 
                 if (buyPartials.length > 0 || sellPartials.length > 0) {
                     const buyHasDust = buyPartials.length > 0 && this.hasAnyDust(buyPartials, "buy");

@@ -839,8 +839,7 @@ async function reconcileStartupOrders({
     // DUST CHECK: If startup reconcile resulted in partials on either side,
     // trigger a full rebalance to consolidate them.
     const allOrders = Array.from(manager.orders.values());
-    const buyPartials = allOrders.filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL);
-    const sellPartials = allOrders.filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL);
+    const { buy: buyPartials, sell: sellPartials } = OrderUtils.getPartialsByType(allOrders);
 
     if (buyPartials.length > 0 && sellPartials.length > 0) {
         const buyHasDust = manager.strategy.hasAnyDust(buyPartials, "buy");

@@ -451,6 +451,43 @@ function getPrecisionsForManager(assets) {
 }
 
 /**
+ * Validate that both assets have valid precision values.
+ * Centralizes precision validation logic across the codebase.
+ * @param {Object} assets - Assets object with assetA and assetB
+ * @returns {Object} { A: precisionA, B: precisionB } if valid
+ * @throws {Error} If precision is not available for either asset
+ */
+function validateAssetPrecisions(assets) {
+    if (typeof assets?.assetA?.precision !== 'number') {
+        const errorMsg = `CRITICAL: Asset A precision missing or invalid. Asset: ${assets?.assetA?.symbol || '(unknown)'}`;
+        console.error(`[validateAssetPrecisions] ${errorMsg}`);
+        throw new Error(errorMsg);
+    }
+
+    if (typeof assets?.assetB?.precision !== 'number') {
+        const errorMsg = `CRITICAL: Asset B precision missing or invalid. Asset: ${assets?.assetB?.symbol || '(unknown)'}`;
+        console.error(`[validateAssetPrecisions] ${errorMsg}`);
+        throw new Error(errorMsg);
+    }
+
+    return {
+        A: assets.assetA.precision,
+        B: assets.assetB.precision
+    };
+}
+
+/**
+ * Calculate precision slack (tolerance) for float comparisons.
+ * Used to avoid floating-point rounding errors in comparisons.
+ * @param {number} precision - Blockchain precision (decimal places)
+ * @param {number} [factor=2] - Multiplier for slack calculation
+ * @returns {number} Precision slack value
+ */
+function getPrecisionSlack(precision, factor = 2) {
+    return factor * Math.pow(10, -precision);
+}
+
+/**
  * Check if any order sizes fall below a minimum threshold.
  * Uses precision-aware integer comparison when available.
  * @param {Array<number>} sizes - Order sizes to check
@@ -2327,6 +2364,21 @@ function sumOrderSizes(orders) {
 }
 
 /**
+ * Get partial orders separated by type (BUY/SELL).
+ * Centralizes the common pattern of filtering partial orders by side.
+ * @param {Array<Object>} orders - Orders to filter
+ * @returns {Object} { buy: partialBuyOrders, sell: partialSellOrders }
+ */
+function getPartialsByType(orders) {
+    if (!Array.isArray(orders)) return { buy: [], sell: [] };
+
+    return {
+        buy: orders.filter(o => o && o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.PARTIAL),
+        sell: orders.filter(o => o && o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.PARTIAL)
+    };
+}
+
+/**
  * Count active and partial orders by type (used for target comparison).
  * Includes both ACTIVE and PARTIAL orders since both take up grid positions.
  * @param {string} orderType - ORDER_TYPES.BUY or ORDER_TYPES.SELL
@@ -2893,11 +2945,14 @@ module.exports = {
     filterOrdersByTypeAndState,
     sumOrderSizes,
     countOrdersByType,
+    getPartialsByType,
 
     // Precision helpers
     getPrecisionByOrderType,
     getPrecisionForSide,
     getPrecisionsForManager,
+    validateAssetPrecisions,
+    getPrecisionSlack,
 
     // Size validation helpers
     checkSizeThreshold,
