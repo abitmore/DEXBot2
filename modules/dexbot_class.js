@@ -2113,15 +2113,18 @@ class DEXBot {
      * - Solution: Wait for pipeline to empty (all rotations placed) before resizing
      *
      * TIMEOUT SAFETY:
-     * - isPipelineEmpty() includes 5-minute timeout for stuck operations
-     * - If pipeline is blocked beyond timeout, maintenance proceeds with warning
-     * - See manager.isPipelineEmpty() implementation for details
+     * - clearStalePipelineOperations() clears stuck operations after 5-minute timeout
+     * - Called before pipeline check to prevent indefinite blocking
+     * - See manager.clearStalePipelineOperations() for details
      *
      * @param {string} context - Maintenance context for logging ('startup', 'periodic', 'post-fill')
      * @private
      */
     async _executeMaintenanceLogic(context) {
         this.manager.recalculateFunds();
+
+        // Clear any operations that have been stuck beyond timeout threshold
+        this.manager.clearStalePipelineOperations();
 
         const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
         if (pipelineStatus.isEmpty) {

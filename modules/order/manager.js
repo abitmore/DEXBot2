@@ -972,51 +972,26 @@ class OrderManager {
 
     /**
      * Check if the processing pipeline is empty (no pending fills, corrections, or grid updates).
-     * Used to determine if it's safe to run non-urgent operations like grid health checks.
+     * Pure query method - does not modify state. Use clearStalePipelineOperations() to handle timeouts.
      * @param {number} [incomingFillQueueLength=0] - Length of incoming fill queue (from dexbot)
      * @returns {Object} { isEmpty: boolean, reasons: string[] }
      */
     isPipelineEmpty(incomingFillQueueLength = 0) {
         const reasons = [];
 
-        // Check 1: Queued fills
         if (incomingFillQueueLength > 0) {
             reasons.push(`${incomingFillQueueLength} fills queued`);
         }
 
-        // Check 2: Pending price corrections with timeout
         if (this.ordersNeedingPriceCorrection.length > 0) {
-            const age = Date.now() - (this._pipelineBlockedSince || Date.now());
-
-            if (age < PIPELINE_TIMING.TIMEOUT_MS) {
-                reasons.push(`${this.ordersNeedingPriceCorrection.length} corrections pending`);
-            } else {
-                this.logger?.log?.(
-                    `⚠️  PIPELINE TIMEOUT: Corrections stuck for ${Math.round(age/1000)}s. Forcing maintenance. ` +
-                    `Clearing ${this.ordersNeedingPriceCorrection.length} pending corrections.`,
-                    'warn'
-                );
-                this.ordersNeedingPriceCorrection = [];
-            }
+            reasons.push(`${this.ordersNeedingPriceCorrection.length} corrections pending`);
         }
 
-        // Check 3: Grid sides updated with timeout
         if (this._gridSidesUpdated && this._gridSidesUpdated.size > 0) {
-            const age = Date.now() - (this._pipelineBlockedSince || Date.now());
-
-            if (age < PIPELINE_TIMING.TIMEOUT_MS) {
-                reasons.push('grid divergence corrections pending');
-            } else {
-                this.logger?.log?.(
-                    `⚠️  PIPELINE TIMEOUT: Grid flags stuck for ${Math.round(age/1000)}s. Forcing maintenance. ` +
-                    `Clearing flags for sides: ${Array.from(this._gridSidesUpdated).join(', ')}`,
-                    'warn'
-                );
-                this._gridSidesUpdated.clear();
-            }
+            reasons.push('grid divergence corrections pending');
         }
 
-        // Track when pipeline became blocked
+        // Update blocked timestamp tracking
         if (reasons.length > 0 && !this._pipelineBlockedSince) {
             this._pipelineBlockedSince = Date.now();
         } else if (reasons.length === 0) {
@@ -1030,22 +1005,75 @@ class OrderManager {
     }
 
     /**
+     * Clear stale pipeline operations that have been blocked beyond the timeout threshold.
+     * Call this before maintenance operations to prevent indefinite blocking from stuck operations.
+     *
+     * IMPORTANT: This clears pending corrections/flags without retrying them. Only use when
+     * the pipeline has been blocked long enough that the operations are presumed stuck.
+     *
+     * @returns {boolean} True if any stale operations were cleared
+     */
+    clearStalePipelineOperations() {
+        if (!this._pipelineBlockedSince) {
+            return false;  // Pipeline not blocked, nothing to clear
+        }
+
+        const age = Date.now() - this._pipelineBlockedSince;
+        if (age < PIPELINE_TIMING.TIMEOUT_MS) {
+            return false;  // Not yet timed out
+        }
+
+        let cleared = false;
+
+        if (this.ordersNeedingPriceCorrection.length > 0) {
+            this.logger?.log?.(
+                `⚠️  PIPELINE TIMEOUT: Corrections stuck for ${Math.round(age/1000)}s. ` +
+                `Clearing ${this.ordersNeedingPriceCorrection.length} pending corrections.`,
+                'warn'
+            );
+            this.ordersNeedingPriceCorrection = [];
+            cleared = true;
+        }
+
+        if (this._gridSidesUpdated && this._gridSidesUpdated.size > 0) {
+            this.logger?.log?.(
+                `⚠️  PIPELINE TIMEOUT: Grid flags stuck for ${Math.round(age/1000)}s. ` +
+                `Clearing flags for sides: ${Array.from(this._gridSidesUpdated).join(', ')}`,
+                'warn'
+            );
+            this._gridSidesUpdated.clear();
+            cleared = true;
+        }
+
+        if (cleared) {
+            this._pipelineBlockedSince = null;  // Reset after clearing
+        }
+
+        return cleared;
+    }
+
+    /**
      * Get pipeline health diagnostics for monitoring and troubleshooting.
-     * Provides detailed timing information about pending operations.
+     * Pure query method - provides timing information about pending operations.
      * @returns {Object} Pipeline status with diagnostic details
      */
     getPipelineHealth() {
-        const status = this.isPipelineEmpty(0); // Don't pass queue length, check internal state only
+        const correctionsPending = this.ordersNeedingPriceCorrection.length;
+        const gridSidesUpdated = this._gridSidesUpdated ? Array.from(this._gridSidesUpdated) : [];
         const blockedDuration = this._pipelineBlockedSince ? Date.now() - this._pipelineBlockedSince : 0;
 
+        const reasons = [];
+        if (correctionsPending > 0) reasons.push(`${correctionsPending} corrections pending`);
+        if (gridSidesUpdated.length > 0) reasons.push('grid divergence corrections pending');
+
         return {
-            isEmpty: status.isEmpty,
-            reasons: status.reasons,
+            isEmpty: reasons.length === 0,
+            reasons,
             blockedSince: this._pipelineBlockedSince,
             blockedDurationMs: blockedDuration,
             blockedDurationHuman: blockedDuration > 0 ? `${Math.round(blockedDuration/1000)}s` : 'N/A',
-            correctionsPending: this.ordersNeedingPriceCorrection.length,
-            gridSidesUpdated: this._gridSidesUpdated ? Array.from(this._gridSidesUpdated) : []
+            correctionsPending,
+            gridSidesUpdated
         };
     }
 

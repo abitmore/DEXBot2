@@ -273,9 +273,7 @@ let MAINTENANCE = {
 // Pipeline timeout configuration
 let PIPELINE_TIMING = {
     // Force maintenance if pipeline stuck for this long (5 minutes)
-    TIMEOUT_MS: 300000,
-    // Log warning every minute if pipeline is blocked
-    TIMEOUT_WARNING_INTERVAL: 60000
+    TIMEOUT_MS: 300000
 };
 
 // Logging Level Configuration
