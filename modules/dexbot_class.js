@@ -844,30 +844,10 @@ class DEXBot {
                             }
                         }
 
-                        // Only run divergence checks if rotation was completed
-                        // LOCK ORDER: _fillProcessingLock (held) → _divergenceLock (acquiring)
-                        // This matches the canonical order used in _runGridMaintenance.
+                        // Only run grid maintenance if rotation was completed.
+                        // _runGridMaintenance handles pipeline status checks and lock ordering.
                         if (anyRotations) {
-                            try {
-                                await this.manager._divergenceLock.acquire(async () => {
-                                    await OrderUtils.runGridComparisons(this.manager, this.accountOrders, this.config.botKey);
-                                    if (this.manager._gridSidesUpdated && this.manager._gridSidesUpdated.size > 0) {
-                                        const orderType = getOrderTypeFromUpdatedFlags(
-                                            this.manager._gridSidesUpdated.has(ORDER_TYPES.BUY),
-                                            this.manager._gridSidesUpdated.has(ORDER_TYPES.SELL)
-                                        );
-                                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, false);
-                                        await this.manager.persistGrid();
-                                    }
-                                    await OrderUtils.applyGridDivergenceCorrections(
-                                        this.manager, this.accountOrders, this.config.botKey, this.updateOrdersOnChainBatch.bind(this)
-                                    );
-                                });
-                            } catch (err) {
-                                // Log error but don't fail the entire fill processing batch
-                                // Grid divergence will be corrected on next periodic check
-                                this.manager.logger.log(`Error in divergence correction after rotation: ${err.message}`, 'error');
-                            }
+                            await this._runGridMaintenance('post-fill', true);
                         }
                     }
 
@@ -2105,84 +2085,87 @@ class DEXBot {
      * @private
      */
     async _executeMaintenanceLogic(context) {
-        // ================================================================================
-        // STEP 1: SPREAD AND HEALTH CHECKS
-        // ================================================================================
-        // Run spread check FIRST to correct wide spreads before divergence detection.
-        // This ensures divergence calculation sees corrected spread state.
-
         this.manager.recalculateFunds();
-        const spreadResult = await this.manager.checkSpreadCondition(
-            BitShares,
-            this.updateOrdersOnChainBatch.bind(this)
-        );
-        if (spreadResult && spreadResult.ordersPlaced > 0) {
-            this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-            await this._persistAndRecoverIfNeeded();
-        }
 
         const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
         if (pipelineStatus.isEmpty) {
+            // ================================================================================
+            // STEP 1: SPREAD AND HEALTH CHECKS
+            // ================================================================================
+            // Run spread check FIRST to correct wide spreads before divergence detection.
+            // This ensures divergence calculation sees corrected spread state.
+            // Only performed when pipeline is empty to prevent cascading trades.
+
+            const spreadResult = await this.manager.checkSpreadCondition(
+                BitShares,
+                this.updateOrdersOnChainBatch.bind(this)
+            );
+            if (spreadResult && spreadResult.ordersPlaced > 0) {
+                this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+                await this._persistAndRecoverIfNeeded();
+            }
+
             const healthResult = await this.manager.checkGridHealth(
                 this.updateOrdersOnChainBatch.bind(this)
             );
             if (healthResult.buyDust && healthResult.sellDust) {
                 await this._persistAndRecoverIfNeeded();
             }
-        }
 
-        // ================================================================================
-        // STEP 2: THRESHOLD AND DIVERGENCE CHECKS
-        // ================================================================================
-        // Run divergence check AFTER spread correction to detect structural issues
-        // on the corrected grid state.
+            // ================================================================================
+            // STEP 2: THRESHOLD AND DIVERGENCE CHECKS
+            // ================================================================================
+            // Run divergence check AFTER spread correction to detect structural issues
+            // on the corrected grid state.
+            // Only performed when pipeline is empty to prevent premature resizing from temporary surplus.
 
-        const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+            const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
 
-        if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-            this._log(`Grid updated during ${context} due to funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
-            const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-            await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-            await this._persistAndRecoverIfNeeded();
+            if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
+                this._log(`Grid updated during ${context} due to funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
+                const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
+                await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+                await this._persistAndRecoverIfNeeded();
 
-            try {
-                await OrderUtils.applyGridDivergenceCorrections(
-                    this.manager,
-                    this.accountOrders,
-                    this.config.botKey,
-                    this.updateOrdersOnChainBatch.bind(this)
-                );
-                this._log(`Grid corrections applied on-chain during ${context}`);
-            } catch (err) {
-                this._warn(`Error applying grid corrections during ${context}: ${err.message}`);
-            }
-        } else {
-            // Detect structural mismatch between calculated and persisted grid
-            try {
-                const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
-                const calculatedGrid = Array.from(this.manager.orders.values());
-                const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGridData, this.manager, this.manager.funds.cacheFunds);
-
-                if (comparisonResult?.buy?.updated || comparisonResult?.sell?.updated) {
-                    this._log(`Grid divergence detected during ${context}: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
-                    const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
-                    await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-                    await this._persistAndRecoverIfNeeded();
-
-                    try {
-                        await OrderUtils.applyGridDivergenceCorrections(
-                            this.manager,
-                            this.accountOrders,
-                            this.config.botKey,
-                            this.updateOrdersOnChainBatch.bind(this)
-                        );
-                        this._log(`Grid divergence corrections applied during ${context}`);
-                    } catch (err) {
-                        this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
-                    }
+                try {
+                    await OrderUtils.applyGridDivergenceCorrections(
+                        this.manager,
+                        this.accountOrders,
+                        this.config.botKey,
+                        this.updateOrdersOnChainBatch.bind(this)
+                    );
+                    this._log(`Grid corrections applied on-chain during ${context}`);
+                } catch (err) {
+                    this._warn(`Error applying grid corrections during ${context}: ${err.message}`);
                 }
-            } catch (err) {
-                this._warn(`Error running divergence check during ${context}: ${err.message}`);
+            } else {
+                // Detect structural mismatch between calculated and persisted grid
+                try {
+                    const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
+                    const calculatedGrid = Array.from(this.manager.orders.values());
+                    const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGridData, this.manager, this.manager.funds.cacheFunds);
+
+                    if (comparisonResult?.buy?.updated || comparisonResult?.sell?.updated) {
+                        this._log(`Grid divergence detected during ${context}: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
+                        const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
+                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
+                        await this._persistAndRecoverIfNeeded();
+
+                        try {
+                            await OrderUtils.applyGridDivergenceCorrections(
+                                this.manager,
+                                this.accountOrders,
+                                this.config.botKey,
+                                this.updateOrdersOnChainBatch.bind(this)
+                            );
+                            this._log(`Grid divergence corrections applied during ${context}`);
+                        } catch (err) {
+                            this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
+                        }
+                    }
+                } catch (err) {
+                    this._warn(`Error running divergence check during ${context}: ${err.message}`);
+                }
             }
         }
     }
