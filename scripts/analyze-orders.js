@@ -19,6 +19,16 @@ const path = require('path');
 const ORDERS_DIR = path.join(__dirname, '../profiles/orders');
 const BOTS_CONFIG = path.join(__dirname, '../profiles/bots.json');
 
+// Color codes for terminal output
+const colors = {
+  reset: '\x1b[0m',
+  buy: '\x1b[32m',    // green
+  sell: '\x1b[31m',   // red
+  spread: '\x1b[33m', // yellow
+  cyan: '\x1b[36m',   // cyan
+  gray: '\x1b[90m'    // gray
+};
+
 /**
  * Utility Functions
  * Helper functions for file I/O, formatting, and data retrieval
@@ -169,6 +179,13 @@ function analyzeOrder(botData, config) {
   // Analyze how funds are distributed across slots
   const distribution = analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot);
 
+  // Calculate grid extremes and market price
+  const gridMinPrice = grid.length > 0 ? Math.min(...grid.map(s => s.price)) : null;
+  const gridMaxPrice = grid.length > 0 ? Math.max(...grid.map(s => s.price)) : null;
+  const marketPrice = bestBuySlot && bestSellSlot
+    ? (bestBuySlot.price + bestSellSlot.price) / 2
+    : null;
+
   /**
    * Return comprehensive analysis object
    * Includes all metrics needed for health check output
@@ -176,6 +193,9 @@ function analyzeOrder(botData, config) {
   return {
     pair: `${meta.assetA}/${meta.assetB}`,
     lastUpdated: new Date(meta.updatedAt || botData.lastUpdated),
+    gridMinPrice: gridMinPrice,
+    marketPrice: marketPrice,
+    gridMaxPrice: gridMaxPrice,
     doubleSided: botData.buySideIsDoubled || botData.sellSideIsDoubled,
     hasConfig: !!config,
     // Spread metrics
@@ -333,6 +353,58 @@ function calculateGridFunds(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
 }
 
 /**
+ * getDeltaColor: Return color code based on delta percentage value
+ * Under 10%: green, 10-20%: yellow, over 20%: red
+ * @param {number} deltaValue - The delta percentage value
+ * @returns {string} Color code
+ */
+function getDeltaColor(deltaValue) {
+  if (deltaValue < 10) return colors.buy;      // green
+  if (deltaValue <= 20) return colors.spread;  // yellow
+  return colors.sell;                          // red
+}
+
+/**
+ * createDistributionBar: Create a horizontal bar chart showing BUY/SELL/spread distribution
+ * @param {number} buySlots - Percentage of buy slots
+ * @param {number} spreadSlots - Percentage of spread slots
+ * @param {number} sellSlots - Percentage of sell slots
+ * @returns {string} Colored bar visualization
+ */
+function createDistributionBar(buySlots, spreadSlots, sellSlots) {
+  const barWidth = 50; // total width in characters
+  const total = buySlots + spreadSlots + sellSlots;
+
+  // Calculate widths proportionally
+  let buyWidth = Math.round((buySlots / total) * barWidth);
+  let spreadWidth = Math.round((spreadSlots / total) * barWidth);
+  let sellWidth = Math.round((sellSlots / total) * barWidth);
+
+  // Ensure spread is visible if it exists
+  if (spreadSlots > 0 && spreadWidth === 0) {
+    spreadWidth = 1;
+    if (sellWidth > 0) {
+      sellWidth -= 1;
+    } else if (buyWidth > 0) {
+      buyWidth -= 1;
+    }
+  }
+
+  // Adjust to ensure total is exactly barWidth
+  const sum = buyWidth + spreadWidth + sellWidth;
+  if (sum !== barWidth) {
+    const diff = barWidth - sum;
+    sellWidth += diff;
+  }
+
+  const buyBar = colors.buy + '█'.repeat(buyWidth) + colors.reset;
+  const spreadBar = '\x1b[97m' + '█'.repeat(spreadWidth) + colors.reset; // white
+  const sellBar = colors.sell + '█'.repeat(sellWidth) + colors.reset;
+
+  return `${buyBar}${spreadBar}${sellBar}`;
+}
+
+/**
  * analyzeDistribution: Compare slot distribution vs fund distribution
  *
  * Identifies imbalances between:
@@ -451,12 +523,12 @@ function formatAnalysis(analysis) {
   const lines = [];
 
   // Header: Trading pair name
-  lines.push(`\n📊 ${analysis.pair}`);
-  lines.push(`   Updated: ${analysis.lastUpdated.toLocaleString()}`);
+  lines.push(`\n${colors.cyan}📊 ${analysis.pair}${colors.reset}`);
+  lines.push(`   Update: ${analysis.lastUpdated.toLocaleString()}`);
 
   // Warning: No config available for comparison
   if (!analysis.hasConfig) {
-    lines.push(`   ⚠️  No config found - showing grid data only`);
+    lines.push(`   ${colors.gray}⚠️  No config found - showing grid data only${colors.reset}`);
   }
 
   /**
@@ -466,13 +538,11 @@ function formatAnalysis(analysis) {
    * Direction: ↑ if above target, ↓ if below target
    */
   if (analysis.hasConfig) {
-    const spreadStatus = analysis.spread.pass ? '✓' : '✗';
-    const spreadDir = analysis.spread.diff < 0 ? '↓' : '↑';
     lines.push(
-      `   Spread:    ${spreadStatus} ${formatPercent(analysis.spread.real).padStart(6)} (target: ${formatPercent(analysis.spread.target)}) ${spreadDir}${formatPercent(Math.abs(analysis.spread.diff))}`
+      `   Spread:${formatPercent(analysis.spread.real).padStart(6)} (target: ${formatPercent(analysis.spread.target)})`
     );
   } else {
-    lines.push(`   Spread:    ${formatPercent(analysis.spread.real).padStart(6)}`);
+    lines.push(`   Spread:${formatPercent(analysis.spread.real).padStart(6)}`);
   }
 
   // Warning: Double-sided mode (intentional buy/sell imbalance)
@@ -489,17 +559,18 @@ function formatAnalysis(analysis) {
    *   High σ (>0.5%) = irregular slot spacing
    */
   if (analysis.hasConfig) {
-    const incStatus = analysis.increment.pass ? '✓' : '✗';
-    const incDir = analysis.increment.diff < 0 ? '↓' : '↑';
     lines.push(
-      `   Increment: ${incStatus} ${formatPercent(analysis.increment.avg).padStart(6)} (target: ${formatPercent(analysis.increment.target)}) ${incDir}${formatPercent(Math.abs(analysis.increment.diff))} σ=${formatPercent(analysis.increment.stdDev)}`
+      `   Incr.: ${formatPercent(analysis.increment.avg).padStart(6)} (target: ${formatPercent(analysis.increment.target)})`
     );
   } else {
-    lines.push(`   Increment: ${formatPercent(analysis.increment.avg).padStart(6)} σ=${formatPercent(analysis.increment.stdDev)}`);
+    lines.push(`   Incr.: ${formatPercent(analysis.increment.avg).padStart(6)}`);
   }
 
-  // Grid Composition: Count of slots on each side
-  lines.push(`   Slots:     ${analysis.slots.buy} buy + ${analysis.slots.spread} spread + ${analysis.slots.sell} sell`);
+  // Price Range
+  const priceRange = analysis.gridMinPrice && analysis.marketPrice && analysis.gridMaxPrice
+    ? `${colors.buy}${formatCurrency(analysis.gridMinPrice)}${colors.reset} - ${formatCurrency(analysis.marketPrice)} - ${colors.sell}${formatCurrency(analysis.gridMaxPrice)}${colors.reset}`
+    : 'N/A';
+  lines.push(`   Price:  ${priceRange}`);
 
   /**
    * Fund Allocation Breakdown
@@ -513,8 +584,8 @@ function formatAnalysis(analysis) {
   const sellXRP = analysis.funds.sell.xrp.toFixed(4);
   const sellBTS = formatCurrency(analysis.funds.sell.bts);
 
-  lines.push(`   Grid:      BUY ${buyBTS} ${assetBSymbol} ≈ ${buyXRP} ${assetASymbol}`);
-  lines.push(`            SELL ${sellXRP} ${assetASymbol} ≈ ${sellBTS} ${assetBSymbol}`);
+  // Grid Composition: Count of slots on each side
+  lines.push(`   Slots:  ${colors.buy}${analysis.slots.buy} buy${colors.reset} + ${analysis.slots.spread} spread + ${colors.sell}${analysis.slots.sell} sell${colors.reset}`);
 
   /**
    * Distribution Analysis
@@ -531,9 +602,25 @@ function formatAnalysis(analysis) {
   const buyMatch = analysis.distribution.match.buyDiff.toFixed(1);
   const sellMatch = analysis.distribution.match.sellDiff.toFixed(1);
 
+  // Calculate spread slot percentage
+  const totalSlots = analysis.slots.buy + analysis.slots.sell + analysis.slots.spread;
+  const spreadSlotPct = totalSlots > 0 ? ((analysis.slots.spread / totalSlots) * 100).toFixed(1) : '0.0';
+  // Recalculate buy/sell percentages to include spread in total
+  const buySlotPctWithSpread = totalSlots > 0 ? ((analysis.slots.buy / totalSlots) * 100).toFixed(1) : '0.0';
+  const sellSlotPctWithSpread = totalSlots > 0 ? ((analysis.slots.sell / totalSlots) * 100).toFixed(1) : '0.0';
+
+  const slotDistBar = createDistributionBar(parseFloat(buySlotPctWithSpread), parseFloat(spreadSlotPct), parseFloat(sellSlotPctWithSpread));
+  const fundDistBar = createDistributionBar(parseFloat(buyFundPct), 0, parseFloat(sellFundPct));
+
   lines.push(
-    `   Dist:      BUY slots ${buySlotPct}% vs funds ${buyFundPct}% (Δ${buyMatch}%) | SELL slots ${sellSlotPct}% vs funds ${sellFundPct}% (Δ${sellMatch}%)`
+    `   Slots:  ${slotDistBar}`
   );
+  lines.push(
+    `   Funds:  ${fundDistBar}  Δ ${buyMatch}%`
+  );
+
+  lines.push(`   Funds:  ${colors.buy}${buyBTS} ${assetBSymbol}${colors.reset} ≈ ${buyXRP} ${assetASymbol}`);
+  lines.push(`           ${colors.sell}${sellXRP} ${assetASymbol}${colors.reset} ≈ ${sellBTS} ${assetBSymbol}`);
 
   return lines.join('\n');
 }
@@ -560,11 +647,9 @@ function formatAnalysis(analysis) {
  * makes it easy to see which bots were most recently updated
  */
 function main() {
-  // Header with column legend
-  console.log('\n🔍 Order Analysis');
-  console.log('='.repeat(70));
-  console.log('Legend: ✓=pass  ✗=check  ↓=buy  ↑=sell  ~=spread  σ=std.dev');
-  console.log('='.repeat(70));
+  // Header
+  console.log(`\n${colors.cyan}🔍 Order Analysis${colors.reset}`);
+  console.log(`${colors.cyan}${'='.repeat(70)}${colors.reset}`);
 
   // Get all order files sorted by modification time (newest first)
   const files = getOrderFiles();
@@ -583,7 +668,7 @@ function main() {
    * Process each order file
    * Try-catch ensures one bad file doesn't stop analysis of others
    */
-  files.forEach(file => {
+  files.forEach((file, index) => {
     try {
       // Parse order file JSON
       const orderData = readJSON(file.path);
@@ -598,7 +683,15 @@ function main() {
       // Analyze the order grid
       const analysis = analyzeOrder(botData, config);
       // Display formatted results
-      console.log(formatAnalysis(analysis));
+      let output = formatAnalysis(analysis);
+      // Remove leading newline from first pair to avoid blank line after header
+      if (index === 0) {
+        output = output.replace(/^\n/, '');
+        console.log(output);
+        console.log('');  // Extra blank line after first batch
+      } else {
+        console.log(output);
+      }
       analyzed++;
 
     } catch (error) {
@@ -609,8 +702,8 @@ function main() {
   });
 
   // Summary line
-  console.log('='.repeat(70));
-  console.log(`Summary: ${analyzed} analyzed, ${skipped} skipped\n`);
+  console.log(`${colors.cyan}${'='.repeat(70)}${colors.reset}`);
+  console.log(`${colors.cyan}Summary: ${analyzed} analyzed, ${skipped} skipped${colors.reset}\n`);
 }
 
 // Execute analysis
