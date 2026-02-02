@@ -16,7 +16,7 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange, validateOrderSize } = OrderUtils;
+const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange, validateOrderSize, virtualizeOrder } = OrderUtils;
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
@@ -927,7 +927,6 @@ class DEXBot {
         // 2. Process fills with simple rotation (use pre-calculated sizes)
         try {
             this._log(`[BOOTSTRAP] Processing ${validFills.length} fill(s) with simple rotation`, 'info');
-            const { virtualizeOrder } = require('./order/utils');
 
             const ordersToPlace = [];
 

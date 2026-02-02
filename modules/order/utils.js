@@ -2377,18 +2377,6 @@ function resolveConfiguredPriceBound(value, fallback, startPrice, mode) {
 }
 
 /**
- * Determines which side (BUY or SELL) a price slot belongs to.
- * Base logic for zone identification and budget accounting.
- *
- * @param {number} price - Slot price
- * @param {number} boundaryPrice - The price at the center of the spread gap
- * @returns {number} ORDER_TYPES.BUY or ORDER_TYPES.SELL
- */
-function getSlotSide(price, boundaryPrice) {
-    return price < boundaryPrice ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-}
-
-/**
  * ============================================================================
  * STATE CHECK HELPERS - Centralized order state predicates
  * ============================================================================
@@ -2410,33 +2398,6 @@ function isOrderOnChain(order) {
  */
 function isOrderVirtual(order) {
     return order?.state === ORDER_STATES.VIRTUAL;
-}
-
-/**
- * Check if order is in ACTIVE state (confirmed, not partial).
- * @param {Object} order - Order to check
- * @returns {boolean} True if order is active
- */
-function isOrderActive(order) {
-    return order?.state === ORDER_STATES.ACTIVE;
-}
-
-/**
- * Check if order is in PARTIAL state (partially filled).
- * @param {Object} order - Order to check
- * @returns {boolean} True if order is partial
- */
-function isOrderPartial(order) {
-    return order?.state === ORDER_STATES.PARTIAL;
-}
-
-/**
- * Check if order is a SPREAD placeholder.
- * @param {Object} order - Order to check
- * @returns {boolean} True if order type is SPREAD
- */
-function isOrderSpread(order) {
-    return order?.type === ORDER_TYPES.SPREAD;
 }
 
 /**
@@ -2474,94 +2435,12 @@ function isPhantomOrder(order) {
 }
 
 /**
- * ============================================================================
- * ORDER SIZE VALIDATION - Size-based predicates
- * ============================================================================
- */
-
-/**
- * Check if order has meaningful size (> 0).
- * @param {Object} order - Order to check
- * @returns {boolean} True if order has size
- */
-function hasSize(order) {
-    return (order?.size || 0) > 0;
-}
-
-/**
- * Check if slot is empty (no size).
- * @param {Object} order - Order to check
- * @returns {boolean} True if slot is empty
- */
-function isEmptySlot(order) {
-    return !hasSize(order);
-}
-
-/**
- * ============================================================================
- * COMBINED STATE + PRESENCE CHECKS - Complex order state logic
- * ============================================================================
- */
-
-/**
- * Check if order can hold a position in the grid.
- * @param {Object} order - Order to check
- * @returns {boolean} True if order is viable in grid
- */
-function canHoldPosition(order) {
-    return isOrderOnChain(order) || isOrderVirtual(order);
-}
-
-/**
- * Check if order is ready for replacement or rotation.
- * Must be on-chain with valid ID to rotate out.
- * @param {Object} order - Order to check
- * @returns {boolean} True if order can be replaced
- */
-function isReplaceable(order) {
-    return isOrderOnChain(order) && hasOnChainId(order);
-}
-
-/**
- * Check if order is blockchain-ready (safe to interact with).
- * Must be on-chain, have ID, and not be in phantom state.
- * @param {Object} order - Order to check
- * @returns {boolean} True if order is safe for blockchain operations
- */
-function isBlockchainReady(order) {
-    return isOrderPlaced(order) && !isPhantomOrder(order);
-}
-
-/**
  * Check if slot is available for a new order (virtual and empty).
  * @param {Object} order - Order to check
  * @returns {boolean} True if slot can be reused
  */
 function isSlotAvailable(order) {
     return isOrderVirtual(order) && !hasOnChainId(order);
-}
-
-/**
- * ============================================================================
- * FUND MANAGEMENT HELPERS - Grid commitment and slot calculations
- * ============================================================================
- */
-
-/**
- * Calculate total grid commitment for a given order type.
- * Sums sizes of all on-chain orders of that type.
- * @param {Iterable} orders - Orders to sum
- * @param {string} type - ORDER_TYPES.BUY or SELL
- * @returns {number} Total committed size
- */
-function calculateGridCommitment(orders, type) {
-    let total = 0;
-    for (const order of orders) {
-        if (order?.type === type && isOrderOnChain(order)) {
-            total += (order?.size || 0);
-        }
-    }
-    return total;
 }
 
 /**
@@ -3044,32 +2923,18 @@ module.exports = {
 
     // Health checks
     isOrderHealthy,
-    getSlotSide,
 
     // State check helpers
     isOrderOnChain,
     isOrderVirtual,
-    isOrderActive,
-    isOrderPartial,
-    isOrderSpread,
 
     // Order presence checks
     hasOnChainId,
     isOrderPlaced,
     isPhantomOrder,
 
-    // Size validation helpers
-    hasSize,
-    isEmptySlot,
-
-    // Combined state + presence checks
-    canHoldPosition,
-    isReplaceable,
-    isBlockchainReady,
+    // Slot availability
     isSlotAvailable,
-
-    // Fund management helpers
-    calculateGridCommitment,
 
     // Logic helpers
     calculateIdealBoundary,

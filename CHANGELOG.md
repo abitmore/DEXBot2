@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.11] - 2026-02-02 - Order State Predicate Centralization
+
+### Added
+- **Centralized Order State Helpers** in utils.js (commit 2fb171d)
+  - `isOrderOnChain()` - ACTIVE or PARTIAL check
+  - `isOrderVirtual()` - VIRTUAL check
+  - `hasOnChainId()` - orderId existence check
+  - `isOrderPlaced()` - on-chain AND has ID (safe placement)
+  - `isPhantomOrder()` - on-chain WITHOUT ID (error detection)
+  - `isSlotAvailable()` - virtual + no ID (reusable slot)
+  - `virtualizeOrder()` - transitions order to VIRTUAL, clears blockchain metadata
+  - `isOrderHealthy()` - comprehensive size validation (absolute + dust threshold)
+
+### Refactored
+- Replaced 34+ inline state checks across 6 modules with semantic helpers
+- **strategy.js**: -27 lines (role-assignment, surplus/shortage detection)
+- **manager.js**: -2 lines (SPREAD validation, phantom prevention)
+- **sync_engine.js**: rotation/fill cleanup uses helpers
+- **grid.js**: -10 lines (slot availability, phantom sanitization)
+- **startup_reconcile.js**: edge validation, price matching
+
+### Fixed
+- **Dynamic require in dexbot_class.js**: Moved `virtualizeOrder` import to module-level
+
+### Benefits
+- Single source of truth for order state logic
+- Semantic function names improve readability
+- Centralized phantom order detection
+- Consistent patterns across all modules
+
+---
+
 ## [0.6.0-patch.10] - 2026-01-30 - Trigger Reset Stabilization, Fund Loss Prevention & Order State Management
 
 ### Added
