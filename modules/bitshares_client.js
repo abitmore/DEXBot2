@@ -1,19 +1,45 @@
 /**
- * BitShares Client Module - Shared connection wrapper
- * 
- * This module provides a centralized BitShares client for the application:
+ * modules/bitshares_client.js - BitShares Connection Manager
+ *
+ * Centralized BitShares client connection and account client factory.
+ *
+ * Features:
  * - Single shared connection for all database queries
  * - Connection state tracking with waitForConnected() helper
  * - Per-account client factory for signing/broadcasting transactions
- * 
- * Usage:
- * - Import { BitShares, waitForConnected } for database operations
- * - Use createAccountClient(name, key) for transaction signing
- * - Call waitForConnected() before any chain operations
- * 
- * The shared BitShares instance handles subscriptions and DB queries.
- * Per-account clients are created for operations that require signing.
+ * - Subscription and event handling
+ *
+ * ===============================================================================
+ * EXPORTS (3 items)
+ * ===============================================================================
+ *
+ * 1. BitShares - Shared BitShares instance for database operations
+ *    Used for: querying accounts, assets, orders, subscriptions
+ *    Never use for signing transactions
+ *
+ * 2. waitForConnected(timeoutMs) - Wait for connection to ready state (async)
+ *    Call before any chain operations
+ *    Returns promise that resolves when connected
+ *
+ * 3. createAccountClient(name, key) - Create per-account client for signing
+ *    Returns client instance with sign() and broadcast() methods
+ *    Used for: createOrder, updateOrder, cancelOrder operations
+ *
+ * ===============================================================================
+ *
+ * ARCHITECTURE:
+ * - Single shared connection: Reduces resource usage, centralized subscriptions
+ * - Per-account clients: Enables multi-account signing without connection overhead
+ * - Separation of concerns: Read ops on shared connection, write ops on account clients
+ *
+ * USAGE:
+ * - Database queries: await BitShares.db.call("get_accounts", [[accountId]])
+ * - Subscribe to events: BitShares.subscribe("connected", callback)
+ * - Create/update orders: const client = createAccountClient(name, key); client.broadcast(op)
+ *
+ * ===============================================================================
  */
+
 const BitSharesLib = require('btsdex');
 require('./btsdex_event_patch');
 

@@ -203,9 +203,9 @@ class RepoAnalyzer {
      * Suitable for terminal display with fixed-width fonts
      */
     printConsoleCharts() {
-        console.log('═'.repeat(80));
+        console.log('='.repeat(80));
         console.log('📈 DEXBot2 Repository Statistics');
-        console.log('═'.repeat(80));
+        console.log('='.repeat(80));
         console.log();
 
         // Summary stats

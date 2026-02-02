@@ -1,8 +1,88 @@
 /**
- * modules/order/sync_engine.js
+ * modules/order/sync_engine.js - SyncEngine
  *
- * Specialized engine for blockchain synchronization.
- * Responsible for matching chain orders to the grid and processing fill history.
+ * Blockchain synchronization and reconciliation engine.
+ * Exports a single SyncEngine class handling all blockchain state matching.
+ *
+ * Responsibilities:
+ * - Match blockchain open orders to grid orders
+ * - Detect and handle partial fills
+ * - Process fill history events
+ * - Update fund state based on blockchain
+ * - Fetch and cache account balances
+ * - Initialize asset metadata
+ *
+ * Uses AsyncLock to prevent concurrent sync operations (defense-in-depth locking).
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - SyncEngine Class (8 methods)
+ * ===============================================================================
+ *
+ * INITIALIZATION (1 method)
+ *   1. constructor(manager) - Create new SyncEngine with manager reference
+ *
+ * BLOCKCHAIN SYNCHRONIZATION (3 methods - async)
+ *   2. syncFromOpenOrders(chainOrders, options) - Main sync entry point (async)
+ *      Reconciles grid against fresh blockchain snapshot
+ *      Uses AsyncLock to ensure only one sync at a time (defense-in-depth)
+ *      Performs two-pass reconciliation (grid→chain, then chain→grid)
+ *
+ *   3. _doSyncFromOpenOrders(chainOrders, options) - Execute sync with locking (async, internal)
+ *      Acquires _syncLock, validates chain orders, calls _performSyncFromOpenOrders
+ *
+ *   4. _performSyncFromOpenOrders(mgr, precA, precB, parsedChain, rawChain, options) - Core sync logic (internal)
+ *      Performs actual two-pass reconciliation without locking
+ *      Pass 1: Match grid orders to chain (known grid → chain)
+ *      Pass 2: Add missing chain orders (unknown chain → grid)
+ *      Pass 3: Mark orphaned grid orders as VIRTUAL
+ *
+ * FILL PROCESSING (1 method)
+ *   5. syncFromFillHistory(fill) - Process fill event synchronously
+ *      Updates grid order state based on fill data
+ *      Updates fund state and accounting
+ *      Handles both maker and taker fills
+ *
+ * FULL SYNCHRONIZATION (1 method - async)
+ *   6. synchronizeWithChain(chainData, source) - Full sync (fetch + sync) (async)
+ *      Fetches fresh account balances
+ *      Calls syncFromOpenOrders() with chain data
+ *      Source: event type that triggered sync (fill, poll, broadcast, etc.)
+ *
+ * ACCOUNT STATE (2 methods - async)
+ *   7. fetchAccountBalancesAndSetTotals(accountId) - Fetch account totals (async)
+ *      Retrieves BUY/SELL totals and free balances from blockchain
+ *      Sets manager.accountTotals
+ *      Triggers fund recalculation
+ *
+ *   8. initializeAssets() - Initialize asset metadata (async)
+ *      Fetches asset precision and other metadata
+ *      Sets manager.assets
+ *      Called once at bot startup
+ *
+ * ===============================================================================
+ *
+ * LOCK HIERARCHY:
+ * 1. _syncLock (AsyncLock): Ensures only one full-sync at a time
+ * 2. Per-order locks (shadowOrderIds): Protect specific orders during sync
+ * 3. Lock refresh mechanism: Prevents timeout during long reconciliation
+ *
+ * TWO-PASS RECONCILIATION:
+ * PASS 1: Grid → Chain
+ * - For each grid order with orderId, find matching chain order
+ * - Detect partial fills (chain size < grid size)
+ * - Update sizes and mark as filled if needed
+ * - Downgrade to VIRTUAL if not found on-chain
+ *
+ * PASS 2: Chain → Grid
+ * - For each chain order not matched to grid order
+ * - Create new grid order for unexpected chain order
+ * - Mark as ACTIVE with blockchain orderId
+ *
+ * PASS 3: Cleanup
+ * - Mark orphaned grid orders as VIRTUAL
+ * - Update accounting for all changes
+ *
+ * ===============================================================================
  */
 
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');

@@ -1,12 +1,119 @@
 /**
- * OrderManager - Core grid-based order management system for DEXBot2
- * 
- * This module is responsible for:
- * - Maintaining the virtual order grid state (Map of orders + indices)
- * - Coordinating between specialized engines:
- *   - Accountant (accounting.js): Fund tracking and fee management
- *   - StrategyEngine (strategy.js): Grid rebalancing and anchoring
- *   - SyncEngine (sync_engine.js): Blockchain reconciliation
+ * modules/order/manager.js - OrderManager Engine
+ *
+ * Core grid-based order management system for DEXBot2.
+ * Exports a single OrderManager class that orchestrates all order operations.
+ *
+ * Responsibilities:
+ * - Maintain virtual order grid state (Map of orders + type/state indices)
+ * - Coordinate specialized engines:
+ *   - Accountant: Fund tracking and fee management
+ *   - StrategyEngine: Grid rebalancing and anchoring
+ *   - SyncEngine: Blockchain reconciliation
+ * - Manage order lifecycle (create, update, fill, cancel)
+ * - Track fund availability and committed capital
+ * - Synchronize with blockchain state
+ * - Persist grid snapshots for crash recovery
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - OrderManager Class (40+ methods)
+ * ===============================================================================
+ *
+ * INITIALIZATION & LIFECYCLE (4 methods)
+ *   1. constructor(config) - Create new OrderManager with engines and indices
+ *   2. startBootstrap() - Mark bootstrap phase start
+ *   3. finishBootstrap() - Mark bootstrap phase complete
+ *   4. resetFunds() - Reset funds structure to zeroed values
+ *
+ * FUND MANAGEMENT (9 methods)
+ *   5. recalculateFunds() - Master recalculation of all fund values
+ *   6. _deductFromChainFree(orderType, size, operation) - Deduct from free balance (internal)
+ *   7. _addToChainFree(orderType, size, operation) - Add to free balance (internal)
+ *   8. _getCacheFunds(side) - Get cache funds for side
+ *   9. _getGridTotal(side) - Get total grid allocation
+ *   10. getChainFundsSnapshot() - Get snapshot of fund state
+ *   11. applyBotFundsAllocation() - Apply fund allocation percentages
+ *   12. setAccountTotals(totals) - Set blockchain account totals
+ *   13. getMetrics() - Get performance metrics
+ *
+ * BLOCKCHAIN SYNCHRONIZATION (6 methods - async)
+ *   14. fetchAccountTotals(accountId) - Fetch account balances from blockchain
+ *   15. waitForAccountTotals(timeoutMs) - Wait for account totals to be set
+ *   16. syncFromOpenOrders(orders, info) - Sync grid from open orders (delegate)
+ *   17. syncFromFillHistory(fill) - Sync from fill event (delegate)
+ *   18. synchronizeWithChain(data, src) - Full chain synchronization (delegate, async)
+ *   19. _initializeAssets() - Initialize asset metadata (internal, async, delegate)
+ *
+ * BROADCASTING & TIMING (2 methods)
+ *   20. startBroadcasting() - Start order broadcast operations
+ *   21. stopBroadcasting() - Stop order broadcast operations
+ *
+ * ORDER MANAGEMENT (8 methods)
+ *   22. _updateOrder(order, context, skipAccounting, fee) - Update order state internally
+ *   23. getOrdersByTypeAndState(type, state) - Query orders by type and state
+ *   24. getInitialOrdersToActivate() - Get orders ready for activation
+ *   25. getPartialOrdersOnSide(type) - Get partial orders on side
+ *   26. processFilledOrders(orders, excl) - Process filled orders (delegate, async)
+ *   27. completeOrderRotation(oldInfo) - Complete order rotation (delegate)
+ *   28. isPipelineEmpty(incomingFillQueueLength) - Check if operation pipeline is empty
+ *   29. _logAvailable(label) - Log available funds (internal)
+ *
+ * ORDER LOCKING (4 methods)
+ *   30. lockOrders(orderIds) - Lock orders to prevent concurrent modification
+ *   31. unlockOrders(orderIds) - Unlock orders
+ *   32. isOrderLocked(id) - Check if order is locked
+ *   33. _cleanExpiredLocks() - Clean expired lock entries (internal)
+ *
+ * INDEX MANAGEMENT (3 methods)
+ *   34. validateIndices() - Validate index consistency with orders
+ *   35. assertIndexConsistency() - Assert indices match orders (throws on mismatch)
+ *   36. _repairIndices() - Repair corrupted indices (internal)
+ *
+ * CONFIGURATION & RESOLUTION (3 methods)
+ *   37. _resolveConfigValue(value, total) - Resolve config value with defaults
+ *   38. _triggerAccountTotalsFetchIfNeeded() - Fetch totals if stale
+ *   39. applyBotFundsAllocation() - Apply fund allocation logic
+ *
+ * FUND RECALC CONTROL (4 methods)
+ *   40. pauseFundRecalc() - Pause automatic fund recalculation
+ *   41. resumeFundRecalc() - Resume fund recalculation
+ *   42. pauseRecalcLogging() - Pause recalculation logging
+ *   43. resumeRecalcLogging() - Resume recalculation logging
+ *
+ * GRID HEALTH & SPREAD (4 methods)
+ *   44. checkSpreadCondition(BitShares, batchCb) - Check spread condition (async)
+ *   45. checkGridHealth(batchCb) - Check grid health (async)
+ *   46. calculateCurrentSpread() - Calculate current bid-ask spread
+ *   47. validateGridStateForPersistence() - Validate grid before persistence
+ *
+ * PERSISTENCE (2 methods - async)
+ *   48. persistGrid() - Persist grid snapshot to storage
+ *   49. _persistWithRetry(persistFn, dataType, dataValue, maxAttempts) - Retry persistence (internal)
+ *
+ * ===============================================================================
+ *
+ * CORE DATA STRUCTURES:
+ * - orders: Map<orderId, Order> - All orders by ID
+ * - _ordersByState: { VIRTUAL, ACTIVE, PARTIAL } - Set indices by state
+ * - _ordersByType: { BUY, SELL, SPREAD } - Set indices by type
+ * - funds: { available, committed, total, virtual, cacheFunds, btsFeesOwed }
+ * - accountTotals: { buy, sell, buyFree, sellFree }
+ * - config: Bot configuration (market, assets, grid params, funds)
+ *
+ * SPECIALIZED ENGINES:
+ * - accountant: Accountant instance for fund accounting
+ * - strategy: StrategyEngine instance for grid rebalancing
+ * - sync: SyncEngine instance for blockchain reconciliation
+ * - logger: Logger instance for output
+ *
+ * KEY INVARIANTS:
+ * - Orders are either VIRTUAL (not on blockchain) or ACTIVE (on blockchain with orderId)
+ * - Committed funds = sum of ACTIVE order sizes
+ * - Available funds = chainFree - virtual - applicable fees
+ * - Grid always maintains price order (ascending or descending)
+ * - Boundary is fixed at market start price (determines BUY/SELL sides)
+ *
+ * ===============================================================================
  */
 
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL } = require('../constants');

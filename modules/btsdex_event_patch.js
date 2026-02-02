@@ -1,8 +1,31 @@
 /**
- * Patch for the btsdex event subsystem.
- * Keeps account history in sync via the history API by overriding the updateAccounts method.
- * @module btsdex_event_patch
+ * modules/btsdex_event_patch.js - BitShares Event Subsystem Patch
+ *
+ * Monkey-patches btsdex event subsystem to keep account history in sync.
+ * Overrides updateAccounts method to use history API for real-time updates.
+ *
+ * Purpose:
+ * - Ensures account data stays synchronized with blockchain
+ * - Uses history API for efficient updates
+ * - Patches btsdex/lib/event.updateAccounts method
+ *
+ * ===============================================================================
+ * EXPORTS (1 item)
+ * ===============================================================================
+ *
+ * 1. patched - Boolean indicating if patch was successfully applied
+ *    true: Patch applied successfully
+ *    false: Patch failed (module not available)
+ *
+ * ===============================================================================
+ *
+ * IMPORT:
+ * Simply importing this module applies the patch automatically:
+ * require('./btsdex_event_patch');
+ *
+ * ===============================================================================
  */
+
 const historyApi = require('btsdex-api').history;
 let patched = false;
 try {

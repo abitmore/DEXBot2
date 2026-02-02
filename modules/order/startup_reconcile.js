@@ -1,3 +1,53 @@
+/**
+ * modules/order/startup_reconcile.js - Startup Reconciliation Module
+ *
+ * Grid reconciliation and recovery on bot startup.
+ * Handles resuming from persisted grids and resolving blockchain discrepancies.
+ *
+ * Purpose:
+ * - Resume previously persisted grids from storage
+ * - Match persisted grids with current blockchain state
+ * - Reconcile VIRTUAL orders with actual open orders
+ * - Activate appropriate orders based on blockchain state
+ * - Detect and handle partial order dust
+ * - Trigger rebalancing when needed
+ *
+ * ===============================================================================
+ * EXPORTS (3 functions)
+ * ===============================================================================
+ *
+ * PUBLIC FUNCTIONS:
+ *   1. reconcileStartupOrders(manager, logger) - Main reconciliation function (async)
+ *      Reconciles blockchain orders with persisted grid, activates as needed
+ *      Handles partial orders and triggers rebalancing if dust detected
+ *      Returns null or rebalance result
+ *
+ *   2. attemptResumePersistedGridByPriceMatch(manager, persistedGrid) - Resume from storage (async)
+ *      Matches persisted grid to current market state using price proximity
+ *      Validates grid structure, locks/activates orders as appropriate
+ *      Returns { success, reason, activatedIds } or { success: false, reason }
+ *
+ *   3. decideStartupGridAction(manager, chainOrders, persistedGrid) - Determine startup action
+ *      Decides whether to resume persisted grid, create new grid, or abort
+ *      Returns { action, reason } where action is 'resume', 'create_new', or 'abort'
+ *
+ * INTERNAL HELPERS (2 functions):
+ *   4. _countActiveOnGrid(manager, type) - Count active/partial orders by type (internal)
+ *   5. _pickVirtualSlotsToActivate(manager, type, count) - Pick virtual slots for activation (internal)
+ *
+ * ===============================================================================
+ *
+ * STARTUP FLOW:
+ * 1. Load persisted grid from storage (if exists)
+ * 2. Call decideStartupGridAction() to determine action
+ * 3. If resume: attemptResumePersistedGridByPriceMatch()
+ * 4. Call reconcileStartupOrders() to sync with blockchain
+ * 5. Activate appropriate orders
+ * 6. Check for dust partials and trigger rebalancing if needed
+ *
+ * ===============================================================================
+ */
+
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const OrderUtils = require('./utils');
 const Format = require('./format');

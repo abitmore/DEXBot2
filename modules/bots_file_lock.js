@@ -1,13 +1,32 @@
 /**
- * bots_file_lock.js - Thread-safe reading of bots.json with in-memory locking
- * 
- * Provides synchronized access to bots.json to prevent race conditions when
- * multiple processes or operations read/write the file simultaneously.
- * 
- * Uses a simple semaphore-based locking mechanism:
- * - Queues read operations while a write is in progress
+ * modules/bots_file_lock.js - File Synchronization Lock
+ *
+ * Thread-safe reading of bots.json with in-memory locking.
+ * Prevents race conditions when multiple processes access file simultaneously.
+ *
+ * Locking Strategy:
+ * - Semaphore-based mechanism
  * - Multiple reads can proceed in parallel
  * - Writes are exclusive (block all reads/writes)
+ * - Queues operations during conflicts
+ *
+ * ===============================================================================
+ * EXPORTS (1 function)
+ * ===============================================================================
+ *
+ * 1. readBotsFileSync(filePath, parser) - Thread-safe file read
+ *    filePath: Path to bots.json
+ *    parser: Function to parse file content (e.g., JSON.parse)
+ *    Returns: Parsed file content
+ *    Acquires read lock for duration of read operation
+ *
+ * ===============================================================================
+ *
+ * USAGE:
+ * const { readBotsFileSync } = require('./bots_file_lock');
+ * const config = readBotsFileSync('./profiles/bots.json', JSON.parse);
+ *
+ * ===============================================================================
  */
 
 const fs = require('fs');

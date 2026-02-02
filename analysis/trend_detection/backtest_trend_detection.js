@@ -245,9 +245,9 @@ function generateReport(backtest, metrics) {
     const cfg = backtest.config;
 
     let report = '';
-    report += '═════════════════════════════════════════════════════════════════\n';
+    report += '=================================================================\n';
     report += 'TREND DETECTION - BACKTEST REPORT (REAL VALIDATION)\n';
-    report += '═════════════════════════════════════════════════════════════════\n\n';
+    report += '=================================================================\n\n';
 
     // Configuration
     report += 'CONFIGURATION\n';
@@ -335,9 +335,9 @@ function generateReport(backtest, metrics) {
     report += 'These are the REAL metrics that matter for trading!\n\n';
 
     // Summary
-    report += '═════════════════════════════════════════════════════════════════\n';
+    report += '=================================================================\n';
     report += 'SUMMARY\n';
-    report += '═════════════════════════════════════════════════════════════════\n';
+    report += '=================================================================\n';
     if (metrics.totalTrades === 0) {
         report += 'No trades executed (no confirmed trends detected)\n';
     } else {
@@ -360,9 +360,9 @@ function generateReport(backtest, metrics) {
  * Main function
  */
 function backtest() {
-    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('===============================================================');
     console.log('TREND DETECTION - BACKTEST');
-    console.log('═══════════════════════════════════════════════════════════════\n');
+    console.log('===============================================================\n');
 
     // Get best configuration
     console.log('📊 Loading best configuration...');
@@ -405,9 +405,9 @@ function backtest() {
 
     // Create comparison report
     let comparison_report = '';
-    comparison_report += '═══════════════════════════════════════════════════════════════\n';
+    comparison_report += '===============================================================\n';
     comparison_report += 'PRICE ACTION FILTER - COMPARISON REPORT\n';
-    comparison_report += '═══════════════════════════════════════════════════════════════\n\n';
+    comparison_report += '===============================================================\n\n';
 
     comparison_report += 'BASELINE (No Price Action Filter)\n';
     comparison_report += '─────────────────────────────────────────────────────────────────\n';
@@ -435,7 +435,7 @@ function backtest() {
     comparison_report += `Trade Count Change:  ${tradeDiff > 0 ? '+' : ''}${tradeDiff}\n`;
     comparison_report += `Profit Factor Change: ${pfDiff > 0 ? '+' : ''}${pfDiff.toFixed(2)}\n\n`;
 
-    comparison_report += '═══════════════════════════════════════════════════════════════\n\n';
+    comparison_report += '===============================================================\n\n';
 
     // Save results
     fs.writeFileSync(BACKTEST_OUTPUT, JSON.stringify({
@@ -448,11 +448,11 @@ function backtest() {
     console.log(comparison_report);
     console.log(report_baseline);
 
-    console.log('\n\n═══════════════════════════════════════════════════════════════');
+    console.log('\n\n===============================================================');
     console.log('✅ BACKTEST COMPLETE\n');
     console.log(`   📄 Report: ${path.basename(REPORT_OUTPUT)}`);
     console.log(`   📊 Data:   ${path.basename(BACKTEST_OUTPUT)}`);
-    console.log('\n═══════════════════════════════════════════════════════════════');
+    console.log('\n===============================================================');
 }
 
 backtest();

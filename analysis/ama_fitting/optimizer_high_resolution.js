@@ -180,9 +180,9 @@ function normalizeMetric(value, min, max) {
 }
 
 function run() {
-    console.log("════════════════════════════════════════════════════════════════════════════════");
+    console.log("================================================================================");
     console.log("HIGH-RESOLUTION COMBINED METRICS OPTIMIZER");
-    console.log("════════════════════════════════════════════════════════════════════════════════");
+    console.log("================================================================================");
     console.log(`\nTesting FRACTIONAL parameter values for finer optimization:\n`);
 
     let btsData, xrpData;
@@ -255,9 +255,9 @@ function run() {
     // Sort by combined score
     results.sort((a, b) => b.combinedScore - a.combinedScore);
 
-    console.log("════════════════════════════════════════════════════════════════════════════════");
+    console.log("================================================================================");
     console.log("TOP 30 CONFIGURATIONS - COMBINED METRICS (HIGH RESOLUTION)");
-    console.log("════════════════════════════════════════════════════════════════════════════════\n");
+    console.log("================================================================================\n");
     console.log("Rank |  ER  | Fast | Slow | Area   | Fill%  | Norm A | Norm F | Combined");
     console.log("─────┼──────┼──────┼──────┼────────┼────────┼────────┼────────┼──────────");
 
@@ -277,9 +277,9 @@ function run() {
     }
 
     // Detailed analysis of top 5
-    console.log("\n════════════════════════════════════════════════════════════════════════════════");
+    console.log("\n================================================================================");
     console.log("DETAILED ANALYSIS - TOP 5 CONFIGURATIONS");
-    console.log("════════════════════════════════════════════════════════════════════════════════\n");
+    console.log("================================================================================\n");
 
     for (let i = 0; i < Math.min(5, results.length); i++) {
         const r = results[i];
@@ -302,9 +302,9 @@ function run() {
     }
 
     // Comparison with integer-only optimization
-    console.log("════════════════════════════════════════════════════════════════════════════════");
+    console.log("================================================================================");
     console.log("COMPARISON: Integer vs High-Resolution Optimization");
-    console.log("════════════════════════════════════════════════════════════════════════════════\n");
+    console.log("================================================================================\n");
 
     const topHR = results[0];
     console.log("HIGH-RESOLUTION (This Run):");
@@ -329,7 +329,7 @@ function run() {
     const outputFile = path.join(__dirname, 'optimization_results_high_resolution.json');
     fs.writeFileSync(outputFile, JSON.stringify(results, null, 2));
 
-    console.log("════════════════════════════════════════════════════════════════════════════════");
+    console.log("================================================================================");
     console.log(`✅ Full results saved to: optimization_results_high_resolution.json`);
     console.log(`   Total entries: ${results.length}\n`);
 }

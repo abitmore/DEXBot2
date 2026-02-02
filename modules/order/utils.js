@@ -14,74 +14,128 @@
  * - Order filtering, counting, and analysis
  * - UI & interactive utilities
  *
- * ═══════════════════════════════════════════════════════════════════════════════
- * TABLE OF CONTENTS
- * ═══════════════════════════════════════════════════════════════════════════════
+ * ===============================================================================
+ * TABLE OF CONTENTS (78 exported functions)
+ * ===============================================================================
  *
- * SECTION 1: PARSING & VALIDATION
- *   - isPercentageString, parsePercentageString
- *   - resolveRelativePrice
- *   - toFiniteNumber, isValidNumber (shared helpers)
- *   Purpose: Parse and validate configuration strings
+ * SECTION 1: PARSING & VALIDATION (4 functions)
+ *   1. isPercentageString(v) - Check if value is percentage string
+ *   2. parsePercentageString(v) - Parse percentage strings to decimal
+ *   3. resolveRelativePrice(value, startPrice, mode) - Resolve relative/absolute prices
+ *   4. isNumeric(val) - Check if value is numeric (number or numeric string)
  *
- * SECTION 2: FUND CALCULATIONS
- *   - computeChainFundTotals, calculateAvailableFundsValue
- *   - calculateSpreadFromOrders, resolveConfigValue
- *   - hasValidAccountTotals
- *   Purpose: Calculate fund-related values from state
+ * SECTION 2: FUND CALCULATIONS (5 functions)
+ *   5. computeChainFundTotals(accountTotals, committedChain) - Calculate blockchain fund totals
+ *   6. calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB) - Available funds for side
+ *   7. calculateSpreadFromOrders(activeBuys, activeSells) - Calculate spread from active orders
+ *   8. resolveConfigValue(value, total) - Resolve config value with defaults
+ *   9. hasValidAccountTotals(accountTotals, checkFree) - Validate account totals
  *
- * SECTION 3: BLOCKCHAIN CONVERSIONS & PRECISION
- *   - blockchainToFloat, floatToBlockchainInt
- *   - getPrecisionByOrderType, getPrecisionForSide, getPrecisionsForManager
- *   Purpose: Handle blockchain conversions and precision calculations
+ * SECTION 3: BLOCKCHAIN CONVERSIONS & PRECISION (7 functions)
+ *   10. blockchainToFloat(intValue, precision) - Convert blockchain int to float
+ *   11. floatToBlockchainInt(floatValue, precision) - Convert float to blockchain int
+ *   12. getPrecisionByOrderType(assets, orderType) - Get precision for order type
+ *   13. getPrecisionForSide(assets, side) - Get precision for buy/sell side
+ *   14. getPrecisionsForManager(assets) - Get precisions for manager
+ *   15. validateAssetPrecisions(assets) - Validate asset precisions
+ *   16. getPrecisionSlack(precision, factor) - Calculate precision slack
  *
- * SECTION 4: PRICE OPERATIONS
- *   - calculatePriceTolerance
- *   - deriveMarketPrice, derivePoolPrice, derivePrice
- *   - lookupAsset (helper)
- *   Purpose: Price calculation, tolerance checking, and derivation
+ * SECTION 4: PRICE OPERATIONS (5 functions)
+ *   Part 1 - Price Tolerance:
+ *   17. calculatePriceTolerance(gridPrice, orderSize, orderType, assets) - Calculate tolerance
  *
- * SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION
- *   - parseChainOrder
- *   - findMatchingGridOrderByOpenOrder
- *   - applyChainSizeToGridOrder, correctOrderPriceOnChain
- *   - correctAllPriceMismatches, validateOrderAmountsWithinLimits
- *   Purpose: Match grid orders to blockchain orders and reconcile state
+ *   Part 2 - Price Derivation (async):
+ *   18. lookupAsset(BitShares, symbol) - Lookup asset info
+ *   19. deriveMarketPrice(BitShares, symA, symB) - Derive market price
+ *   20. derivePoolPrice(BitShares, symA, symB) - Derive pool price
+ *   21. derivePrice(BitShares, symA, symB, mode) - Derive price (auto/market/pool)
  *
- * SECTION 6: FEE MANAGEMENT
- *   - initializeFeeCache, getAssetFees
- *   - _fetchBlockchainFees, _fetchAssetMarketFees
- *   - calculateOrderCreationFees, deductOrderFeesFromFunds
- *   Purpose: Cache and calculate market-making fees
+ * SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (13 functions)
+ *   Part 1 - Parsing & Matching:
+ *   22. parseChainOrder(chainOrder, assets) - Parse blockchain order
+ *   23. findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) - Find matching grid order
  *
- * SECTION 7: GRID STATE MANAGEMENT
- *   - persistGridSnapshot, retryPersistenceIfNeeded
- *   - runGridComparisons, applyGridDivergenceCorrections
- *   Purpose: Persist and compare grid state with blockchain
+ *   Part 2 - Reconciliation (async):
+ *   24. applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting) - Apply blockchain size
+ *   25. correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders) - Correct price
+ *   26. correctAllPriceMismatches(manager, accountName, privateKey, accountOrders) - Correct all price mismatches
  *
- * SECTION 8: ORDER UTILITIES
- *   - buildCreateOrderArgs, convertToSpreadPlaceholder
- *   - getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound
- *   Purpose: Build and manipulate order objects
+ *   Part 3 - Dust Threshold & Size Validation:
+ *   27. getMinOrderSize(orderType, assets, factor) - Get minimum order size
+ *   28. getDustThresholdFactor(dustThresholdPercent) - Get dust threshold factor
+ *   29. getSingleDustThreshold(idealSize, dustThresholdPercent) - Calculate single dust threshold
+ *   30. getDoubleDustThreshold(idealSize, dustThresholdPercent) - Calculate double dust threshold
+ *   31. getMinAbsoluteOrderSize(orderType, assets, minFactor) - Get minimum absolute size
+ *   32. validateOrderSize(orderSize, orderType, assets, minFactor, idealSize, dustThresholdPercent) - Validate size
+ *   33. validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecision, receivePrecision) - Validate amounts
  *
- * SECTION 9: ORDER SIZING & ALLOCATION
- *   - allocateFundsByWeights, calculateOrderSizes
- *   - calculateRotationOrderSizes, getMinOrderSize
- *   - calculateGridSideDivergenceMetric
- *   Purpose: Calculate order sizes based on funds and grid
+ * SECTION 6: FEE MANAGEMENT (6 functions)
+ *   34. initializeFeeCache(botsConfig, BitShares) - Initialize fee cache (async)
+ *   35. getAssetFees(assetSymbol, assetAmount, isMaker) - Get asset fees (cached)
+ *   36. _fetchBlockchainFees(BitShares) - Fetch blockchain fees (async, internal)
+ *   37. _fetchAssetMarketFees(assetSymbol, BitShares) - Fetch market fees (async, internal)
+ *   38. calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier) - Calculate creation fees
+ *   39. deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger) - Deduct fees from funds
  *
- * SECTION 10: FILTERING & ANALYSIS
- *   - filterOrdersByType, filterOrdersByTypeAndState
- *   - sumOrderSizes, countOrdersByType
- *   - checkSizesBeforeMinimum
- *   - shouldFlagOutOfSpread
- *   Purpose: Filter, count, and analyze orders
+ * SECTION 7: GRID STATE MANAGEMENT (4 functions)
+ *   40. persistGridSnapshot(manager, accountOrders, botKey) - Persist grid state snapshot (async)
+ *   41. retryPersistenceIfNeeded(manager) - Retry persistence with fallback (async)
+ *   42. runGridComparisons(manager, accountOrders, botKey) - Run grid vs blockchain comparisons (async)
+ *   43. applyGridDivergenceCorrections(manager, accountOrders, botKey, updateOrdersOnChainBatchFn) - Apply corrections (async)
  *
- * SECTION 11: UI & INTERACTIVE UTILITIES
- *   - ensureProfilesDirectory, readInput, readPassword
- *   Purpose: Shared UI and interactive functions for CLI interaction
+ * SECTION 8: ORDER UTILITIES (4 functions)
+ *   44. buildCreateOrderArgs(order, assetA, assetB) - Build order creation arguments
+ *   45. getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) - Determine type from flags
+ *   46. resolveConfiguredPriceBound(value, fallback, startPrice, mode) - Resolve price bound
+ *   47. convertToSpreadPlaceholder(order) - Convert order to spread placeholder
  *
- * ═══════════════════════════════════════════════════════════════════════════════
+ * SECTION 9: ORDER SIZING & ALLOCATION (5 functions)
+ *   48. allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse, minSize, precision) - Allocate by weights
+ *   49. calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize, minBuySize, precisionA, precisionB) - Calculate sizes
+ *   50. calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderCount, orderType, config, minSize, precision) - Rotation sizes
+ *   51. calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, sideName) - Calculate divergence metric
+ *   52. syncBoundaryToFunds(manager) - Sync grid boundary to funds
+ *
+ * SECTION 10: FILTERING & ANALYSIS (22 functions)
+ *   Part 1 - Order Filtering (7 functions):
+ *   53. filterOrdersByType(orders, orderType) - Filter by order type
+ *   54. filterOrdersByTypeAndState(orders, orderType, excludeState) - Filter by type and state
+ *   55. sumOrderSizes(orders) - Sum order sizes
+ *   56. countOrdersByType(orderType, ordersMap) - Count orders by type
+ *   57. getPartialsByType(orders) - Get partial orders by type
+ *   58. checkSizeThreshold(sizes, threshold, precision, includeNonFinite) - Check size threshold
+ *   59. checkSizesBeforeMinimum(sizes, minSize, precision) - Check sizes before minimum
+ *
+ *   Part 2 - State Check Helpers (7 functions - Centralized order state predicates):
+ *   60. isOrderOnChain(order) - Check if order is on blockchain
+ *   61. isOrderVirtual(order) - Check if order is virtual
+ *   62. hasOnChainId(order) - Check if order has blockchain ID
+ *   63. isOrderPlaced(order) - Check if order is placed
+ *   64. isPhantomOrder(order) - Check if order is phantom
+ *   65. isSlotAvailable(order) - Check if slot is available
+ *   66. isOrderHealthy(size, type, assets, idealSize) - Check if order is healthy
+ *
+ *   Part 3 - Validation & Analysis (8 functions):
+ *   67. shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, incrementPercent) - Flag out-of-spread
+ *   68. isSignificantSizeChange(currentSize, newSize, thresholdPercent) - Check significant size change
+ *   69. hasSignificantSizeChange(currentSize, newSize, thresholdPercent) - Has significant size change
+ *   70. calculateIdealBoundary(allSlots, referencePrice, gapSlots) - Calculate ideal boundary
+ *   71. assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES) - Assign grid roles
+ *   72. calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) - Calculate fund-driven boundary
+ *   73. virtualizeOrder(order) - Convert order to virtual state
+ *   74. shouldFlagOutOfSpread(...) - Determine if order is out of acceptable spread
+ *
+ * SECTION 11: UI & INTERACTIVE UTILITIES (4 functions)
+ *   75. ensureProfilesDirectory(profilesDir) - Ensure profiles directory exists
+ *   76. readInput(prompt, options) - Read user input from CLI
+ *   77. readPassword(prompt) - Read password securely (async)
+ *   78. withRetry(fn, options) - Retry helper function with exponential backoff (async)
+ *
+ * HELPER FUNCTIONS (from Format module, re-exported):
+ *   - toFiniteNumber(val, fallback) - Convert to finite number with fallback
+ *   - isValidNumber(val) - Validate finite numbers
+ *
+ * ===============================================================================
  *
  * Fund-aware functions call manager.recalculateFunds() to keep the funds
  * structure consistent with order state changes:
@@ -96,9 +150,9 @@ const path = require('path');
 const Format = require('./format');
 const { isValidNumber, toFiniteNumber } = Format;
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 1: PARSING & VALIDATION
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Parse and validate configuration strings and values
 
 /**
@@ -157,9 +211,9 @@ function resolveRelativePrice(value, startPrice, mode = 'min') {
     return null;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 2: FUND CALCULATIONS
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Calculate fund-related values from account state
 
 /**
@@ -329,9 +383,9 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
     return isValidNumber(accountTotals[buyKey]) && isValidNumber(accountTotals[sellKey]);
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 3: BLOCKCHAIN CONVERSIONS & PRECISION
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Handle blockchain integer/float conversions and precision calculations
 
 /**
@@ -530,9 +584,9 @@ function checkSizesBeforeMinimum(sizes, minSize, precision) {
     return checkSizeThreshold(sizes, minSize, precision, true);
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 4: PRICE OPERATIONS (PART 1 - Tolerance)
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Price tolerance calculation and checking (also see Section 4 Part 2: Price derivation)
 
 /**
@@ -580,9 +634,9 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
     return tolerance;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 4: PRICE OPERATIONS (PART 2 - Derivation)
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Derive market and pool prices from blockchain (moved from modules/order/price.js)
 
 // Simple module-level cache for Liquidity Pool IDs to avoid repeated scans
@@ -872,9 +926,9 @@ function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecis
     return withinLimits;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (PART 1 - Parsing & Matching)
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Parse blockchain orders and match them to grid orders
 
 /**
@@ -989,9 +1043,9 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
     return null;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION (PART 2 - Reconciliation)
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Apply blockchain order data to grid orders and correct price mismatches
 
 /**
@@ -1326,9 +1380,9 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
     };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 6: FEE MANAGEMENT
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Cache and calculate market-making fees
 
 /**
@@ -1635,9 +1689,9 @@ function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = nu
     return { buyFunds: finalBuy, sellFunds: finalSell };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 7: GRID STATE MANAGEMENT
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Persist and compare grid state with blockchain
 
 /**
@@ -2035,9 +2089,9 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
     });
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 8: ORDER UTILITIES
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Build and manipulate order objects
 
 /**
@@ -2096,9 +2150,9 @@ function buildCreateOrderArgs(order, assetA, assetB) {
     return { amountToSell, sellAssetId, minToReceive, receiveAssetId };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 9: ORDER SIZING & ALLOCATION
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Calculate order sizes based on funds and grid parameters (moved from grid.js)
 
 /**
@@ -2328,9 +2382,9 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
     return metric;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 10: FILTERING & ANALYSIS (PART 1 - Order Filtering)
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Filter, count, and analyze orders
 
 /**
@@ -2628,9 +2682,9 @@ function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STA
     return allSlots;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 10: FILTERING & ANALYSIS (PART 2 - Validation Helpers)
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 
 /**
  * Determine if the spread is too wide and calculate how many extra slots are needed.
@@ -2763,9 +2817,9 @@ async function withRetry(fn, options = {}) {
 // Exports
 // ---------------------------------------------------------------------------
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // SECTION 11: UI & INTERACTIVE UTILITIES
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Shared UI and interactive functions for CLI interaction
 
 /**

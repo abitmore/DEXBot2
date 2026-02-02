@@ -110,9 +110,9 @@ async function main() {
     const buyOrders = parsedOrders.filter(o => o.type === 'BUY').sort((a, b) => b.priceDisplay - a.priceDisplay);
     
     // Display
-    console.log('═'.repeat(90));
+    console.log('='.repeat(90));
     console.log('                              OPEN ORDERS ON BLOCKCHAIN');
-    console.log('═'.repeat(90));
+    console.log('='.repeat(90));
     
     console.log('\n┌─────────────────────────────────────────────────────────────────────────────────────────┐');
     console.log('│                                    SELL ORDERS                                          │');
@@ -147,9 +147,9 @@ async function main() {
     console.log('└──────────────────────┴─────────────────┴─────────────────┴──────────────────────────────┘');
     
     // Raw data dump for debugging
-    console.log('\n\n═'.repeat(90));
+    console.log('\n\n='.repeat(90));
     console.log('                              RAW ORDER DATA (for debugging)');
-    console.log('═'.repeat(90));
+    console.log('='.repeat(90));
     
     for (const order of limitOrders) {
         console.log(`\nOrder ${order.id}:`);

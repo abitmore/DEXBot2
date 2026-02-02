@@ -1,27 +1,74 @@
 /**
- * Logger - Color-coded console logger for OrderManager
+ * modules/order/logger.js - Logger Engine
  *
- * Provides structured logging with:
- * - Log levels: debug, info, warn, error
- * - Color coding for order types (buy=green, sell=red, spread=yellow)
+ * Color-coded console logger for OrderManager with structured output.
+ * Exports a single Logger class that manages all logging operations.
+ *
+ * Provides:
+ * - Log levels: debug, info, warn, error with color coding
+ * - Color coding for order types (buy=green, sell=red, spread=yellow, partial=blue)
  * - Color coding for order states (virtual=gray, active=green)
- * - Formatted order grid display
- * - Fund status display with change detection
+ * - Formatted order grid display (sample with sell/spread/buy sections)
+ * - Fund status display with smart change detection
  * - Configuration-driven output (enable/disable categories)
+ * - Comprehensive status summaries and grid diagnostics
  *
  * Configuration (LOGGING_CONFIG in constants.js):
  * - changeTracking: Smart detection of changes (only log what changed)
- * - categories: Enable/disable specific log categories (fundChanges, orderStateChanges, etc.)
- * - display: Control optional displays (gridDiagnostics, fundStatus, statusSummary)
+ * - display.colors.enabled: Force colors on/off (null = auto-detect TTY)
+ * - display.fundStatus: Enable/disable fund status display
+ * - display.statusSummary: Enable/disable comprehensive status summaries
+ * - display.gridDiagnostics: Enable/disable detailed grid diagnostics
  *
- * Fund display shows:
- * - available: max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
- * - cacheFunds: fill proceeds and rotation surplus
+ * Fund Structure Display:
+ * - available: Free funds for new orders (chainFree - virtual - fees - reservations)
+ * - cacheFunds: Fill proceeds and rotation surplus
  * - total.chain: chainFree + committed.chain (on-chain balance)
  * - total.grid: committed.grid + virtual (grid allocation)
  * - virtual: VIRTUAL order sizes (reserved for future placement)
  * - committed.grid: ACTIVE order sizes (internal tracking)
  * - committed.chain: ACTIVE orders with orderId (confirmed on-chain)
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - Logger Class (8 methods)
+ * ===============================================================================
+ *
+ * INITIALIZATION (1 method)
+ *   1. constructor(level, configOverride) - Create new Logger instance with TTY color detection
+ *
+ * BASIC LOGGING (1 method)
+ *   2. log(message, level) - Log message with timestamp, level color, and level filtering
+ *
+ * ORDER GRID DISPLAY (2 methods)
+ *   3. logOrderGrid(orders, startPrice) - Display formatted order grid sample (sell/spread/buy)
+ *   4. _logOrderRow(order) - Internal: Format and log single order row with colors
+ *
+ * FUND STATUS DISPLAY (2 methods)
+ *   5. logFundsStatus(manager, context, forceDetailed) - Print fund status summary with change detection
+ *      Supports one-liner mode and optional detailed breakdown on critical events
+ *   6. _logDetailedFunds(manager, headerContext) - Internal: Log complete fund structure breakdown
+ *      Shows available, chain balances, grid allocations, virtual, committed, cache, fees
+ *
+ * COMPREHENSIVE DIAGNOSTICS (2 methods)
+ *   7. displayStatus(manager, forceOutput) - Print comprehensive status summary (market, funds, order counts, spread)
+ *   8. logGridDiagnostics(manager, context, forceOutput) - Log detailed grid diagnostics (active/spread/partial/virtual)
+ *      Separates by type and state, shows boundary markers for virtual orders
+ *
+ * ===============================================================================
+ *
+ * COLOR SCHEME:
+ * - buy: Green (#32)    - BUY orders/side
+ * - sell: Red (#31)     - SELL orders/side
+ * - spread: Yellow (#33) - SPREAD orders
+ * - debug: Cyan (#36)   - Debug output
+ * - info: White (#37)   - Info messages
+ * - warn: Yellow (#33)  - Warning messages
+ * - error: Red (#31)    - Error messages
+ * - active: Green (#32) - ACTIVE state
+ * - partial: Blue (#34) - PARTIAL state
+ * - virtual: Gray (#90) - VIRTUAL state
+ *
+ * ===============================================================================
  *
  * @class
  */
@@ -282,7 +329,7 @@ class Logger {
         const committedChainSell = manager.funds?.committed?.chain?.sell ?? 0;
         const btsFeesOwed = manager.funds?.btsFeesOwed ?? 0;
 
-        console.log(`\n${debug}═══ DETAILED FUNDS STATUS${headerContext} ═══${reset}`);
+        console.log(`\n${debug}=== DETAILED FUNDS STATUS${headerContext} ===${reset}`);
 
         console.log(`${debug}AVAILABLE:${reset}`);
         console.log(`  ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`);
@@ -401,7 +448,7 @@ class Logger {
         const firstVirtualBuy = virtualOrders.find(o => o.type === ORDER_TYPES.BUY);
 
         const ctxStr = context ? ` [${context}]` : '';
-        console.log(`\n${spread}═══ GRID DIAGNOSTICS${ctxStr} ═══${reset}`);
+        console.log(`\n${spread}=== GRID DIAGNOSTICS${ctxStr} ===${reset}`);
 
         // Active orders summary
         console.log(`\n${active}ACTIVE ORDERS${reset}: ${buy}Buy=${activeBuys.length}${reset}, ${sell}Sell=${activeSells.length}${reset}`);

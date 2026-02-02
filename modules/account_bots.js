@@ -1,4 +1,56 @@
-// Interactive CLI helper for editing the tracked bot profiles stored in profiles/bots.json.
+/**
+ * modules/account_bots.js - Bot Configuration Management
+ *
+ * Interactive CLI helper for editing bot profiles in profiles/bots.json.
+ * Manages multi-bot configuration and metadata.
+ *
+ * ===============================================================================
+ * EXPORTS (4 functions + 1 helper)
+ * ===============================================================================
+ *
+ * MAIN ENTRY POINT:
+ *   1. main() - Interactive CLI for bot configuration management
+ *      Lists bots, allows add/edit/delete/activate operations
+ *      Loads and saves profiles/bots.json
+ *
+ * UTILITIES:
+ *   2. parseJsonWithComments(raw) - Parse JSON with comment stripping
+ *      Removes / * / and // style comments before JSON parsing
+ *
+ *   3. parseCronToDelta(cronString) - Parse cron expression to delta (minutes)
+ *      Converts cron schedule to rotation frequency
+ *
+ *   4. deltaToCron(deltaMinutes) - Convert delta (minutes) to cron expression
+ *      Converts rotation frequency to cron schedule
+ *
+ * ===============================================================================
+ *
+ * BOT CONFIGURATION (profiles/bots.json):
+ * {
+ *   "bots": [
+ *     {
+ *       "name": "BTS/USD",
+ *       "assetA": "BTS",
+ *       "assetB": "USD",
+ *       "active": true,
+ *       "startPrice": "pool",
+ *       "minPrice": "3x",
+ *       "maxPrice": "3x",
+ *       "incrementPercent": 0.5,
+ *       "targetSpreadPercent": 2,
+ *       "activeOrders": { "buy": 20, "sell": 20 },
+ *       "botFunds": { "buy": "100%", "sell": "100%" },
+ *       "weightDistribution": { "sell": 0.5, "buy": 0.5 },
+ *       "dryRun": false,
+ *       "rotationEnabled": false,
+ *       "rotationInterval": "1h"
+ *     }
+ *   ]
+ * }
+ *
+ * ===============================================================================
+ */
+
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');

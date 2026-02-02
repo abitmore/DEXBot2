@@ -1,12 +1,52 @@
 /**
- * Runner Module - Standalone order grid calculation utility
+ * modules/order/runner.js - Grid Calculation Runner
  *
- * Provides a command-line tool for testing order grid generation
- * without actually placing orders. Useful for:
+ * Standalone order grid calculation utility for testing and debugging.
+ * Provides command-line tools for grid verification without placing orders.
+ *
+ * Features:
+ * - Load bot configuration from profiles/bots.json
+ * - Derive market price from pool or market
+ * - Create and display order grid
+ * - Simulate multiple calculation cycles
+ * - Validate grid structure and fund calculations
+ *
+ * Useful for:
  * - Verifying configuration produces expected grid
- * - Testing price derivation from pool/market
+ * - Testing price derivation from pool/market sources
  * - Debugging order sizing and fund allocation
  * - Validating fund calculations (available, virtual, committed)
+ * - Testing grid synchronization logic
+ *
+ * ===============================================================================
+ * EXPORTS (1 function)
+ * ===============================================================================
+ *
+ * 1. runOrderManagerCalculation() - Main calculation runner (async)
+ *    Loads bot config, derives market price, initializes grid, runs calculation cycles
+ *    Validates config, derives startPrice, initializes OrderManager and Grid
+ *    Runs configurable cycles with optional delays
+ *    Displays grid status and metrics after each cycle
+ *
+ *    Environment variables:
+ *    - LIVE_BOT_NAME or BOT_NAME: Bot to use (defaults to first bot)
+ *    - CALC_CYCLES: Number of calculation cycles (default: 3)
+ *    - CALC_DELAY_MS: Delay between cycles (default: 500ms)
+ *
+ * ===============================================================================
+ *
+ * USAGE:
+ * Command line:
+ *   node -e "require('./runner').runOrderManagerCalculation()"
+ *
+ * With env vars:
+ *   CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e "require('./runner').runOrderManagerCalculation()"
+ *
+ * From code:
+ *   const { runOrderManagerCalculation } = require('./runner');
+ *   await runOrderManagerCalculation();
+ *
+ * ===============================================================================
  *
  * Fund model overview (see manager.js for full details):
  * - available = max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
@@ -15,8 +55,9 @@
  * - committed.grid = total sum of all grid order sizes (active + partial + virtual)
  * - committed.chain = sum of ACTIVE or PARTIAL orders that have an orderId on-chain
  *
- * Usage: CALC_CYCLES=5 CALC_DELAY_MS=1000 node -e \"require('./runner').runOrderManagerCalculation()\"
+ * ===============================================================================
  */
+
 const fs = require('fs');
 const path = require('path');
 const { OrderManager } = require('./manager');

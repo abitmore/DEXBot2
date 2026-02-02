@@ -426,9 +426,9 @@ async function testStartupDualDustTrigger() {
         await testEdgeBoundGridWithPartial();
         await testStartupDualDustTrigger();
 
-        console.log('═══════════════════════════════════════════════════');
+        console.log('===================================================');
         console.log('✓ All Integration Tests PASSED');
-        console.log('═══════════════════════════════════════════════════\n');
+        console.log('===================================================\n');
         process.exit(0);
     } catch (err) {
         console.error('\n✗ Test FAILED:', err.message);

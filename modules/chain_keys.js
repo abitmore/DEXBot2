@@ -1,22 +1,74 @@
 /**
- * Chain Keys Module - Authentication and encrypted private key storage
- * 
- * This module provides authentication and secure storage for BitShares private keys:
+ * modules/chain_keys.js - Authentication and Key Management
+ *
+ * Secure storage and management of BitShares private keys.
+ * Provides authentication, key storage, and transaction signing capabilities.
+ *
+ * Features:
  * - Master password authentication with SHA-256 hash verification
  * - AES-256-GCM encryption with random salt and IV
  * - Private key retrieval for transaction signing
  * - Interactive CLI for key management (add/modify/remove)
- * 
- * Storage location: profiles/keys.json (gitignored)
- * 
+ * - Daemon readiness checking
+ *
+ * Storage: profiles/keys.json (gitignored, never committed)
+ *
  * Supported key formats:
  * - WIF (Wallet Import Format): 51-52 character Base58Check encoded
  * - PVT_K1_* style keys used by some Graphene chains
  * - Raw 64-character hexadecimal private keys
- * 
- * Security note: The master password is never stored; only its hash is kept
- * for verification. All private keys are encrypted before storage.
+ *
+ * Security: Master password never stored; only SHA-256 hash kept for verification.
+ * All private keys encrypted before storage.
+ *
+ * ===============================================================================
+ * EXPORTS (6 functions + 1 error class)
+ * ===============================================================================
+ *
+ * AUTHENTICATION (1 function - async)
+ *   1. authenticate() - Authenticate with master password
+ *      Prompts user for password, verifies hash
+ *      Throws MasterPasswordError on failure
+ *
+ * KEY MANAGEMENT (3 functions - async)
+ *   2. getPrivateKey(accountName) - Get private key for account
+ *      Returns decrypted private key string
+ *      Returns null if not found
+ *
+ *   3. manageKeys() - Interactive CLI for key management
+ *      Add/modify/remove keys from storage
+ *      Re-encrypts entire key store
+ *
+ *   4. addKey(accountName, privateKey, masterPassword) - Add key to storage
+ *      Validates key format, encrypts, saves
+ *
+ * DAEMON READINESS (2 functions - async)
+ *   5. isDaemonReady() - Check if BitShares daemon is ready
+ *
+ *   6. waitForDaemon(timeoutMs) - Wait for daemon to become ready (async)
+ *
+ * ERROR HANDLING (1 error class)
+ *   7. MasterPasswordError - Thrown when authentication fails
+ *
+ * ===============================================================================
+ *
+ * KEY STORAGE STRUCTURE (profiles/keys.json):
+ * {
+ *   "masterPasswordHash": "sha256hash",
+ *   "keys": {
+ *     "accountName": "encrypted:salt:iv:authTag:ciphertext"
+ *   }
+ * }
+ *
+ * ENCRYPTION PROCESS:
+ * 1. Generate random salt (32 bytes) and IV (12 bytes)
+ * 2. Derive key from master password using pbkdf2
+ * 3. Encrypt private key with AES-256-GCM
+ * 4. Store: encrypted:salt:iv:authTag:ciphertext
+ *
+ * ===============================================================================
  */
+
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');

@@ -1,13 +1,62 @@
 /**
- * modules/order/export.js
+ * modules/order/export.js - QTradeX Export Module
  *
- * QTradeX Export Module
- * Parses PM2 log files to extract trading history and exports to CSV format.
- * Generates standardized output compatible with QTradeX backtesting system.
+ * Trading history extraction and CSV export engine.
+ * Parses PM2 log files to extract trading fills and exports to standardized format.
+ * Generates output compatible with QTradeX backtesting system.
  *
- * USAGE:
+ * Usage:
  *   const exporter = require('./order/export');
- *   await exporter.exportBotTrades(botKey, outputDir);
+ *   const result = await exporter.exportBotTrades(botKey, botConfig, outputDir);
+ *
+ * Output Format:
+ * - CSV: Trades in QTradeX format (unix, price, amount, side, fee_asset, fee_amount, order_id)
+ * - JSON: Sanitized bot settings (excludes private keys)
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS (4 exported functions + 3 internal helpers)
+ * ===============================================================================
+ *
+ * PUBLIC EXPORTS (4 functions)
+ *   1. exportBotTrades(botKey, botConfig, outputDir) - Main export function (async)
+ *      Orchestrates trade extraction and writing CSV/JSON exports
+ *      Returns: { success, trades_exported, csv_path, settings_path, output_dir, timestamp }
+ *
+ *   2. parseLogFile(logFilePath) - Parse PM2 log file to extract trades (async)
+ *      Reads line-by-line, extracts FILL entries, links with fee information
+ *      Returns: Array of trade objects with { timestamp, side, amount, price, proceeds, fee_asset, fee_amount }
+ *
+ *   3. writeTradesCSV(trades, outputPath) - Write trades to CSV file (async)
+ *      Generates QTradeX-compatible CSV with proper escaping and formatting
+ *      Returns: { success, count } or { success: false, error }
+ *
+ *   4. writeSettingsJSON(botConfig, botName, outputPath) - Write sanitized bot settings (async)
+ *      Exports bot parameters and configuration (excludes private keys)
+ *      Returns: { success } or { success: false, error }
+ *
+ * INTERNAL HELPERS (3 functions)
+ *   5. parseFillLine(line) - Parse fill entry from log line
+ *      Expected format: [TIMESTAMP] [DEBUG] [FILL] side fill: size=X, price=Y, proceeds=Z
+ *      Returns: { timestamp, side, amount, price, proceeds } or null
+ *
+ *   6. parseFeeLine(line) - Parse fee information from log line
+ *      Expected format: [TIMESTAMP] [INFO] [FEES] N maker fills @ FEE ASSET = TOTAL
+ *      Returns: { count, fee_per_fill, fee_asset, total_fee } or null
+ *
+ *   7. linkFillWithFee(fills, fees) - Match and link most recent fill with fee
+ *      Checks timestamp proximity (within 5 seconds) to associate fill with fee
+ *      Modifies fills array in-place
+ *
+ * ===============================================================================
+ *
+ * LOG FORMAT PATTERNS:
+ * Fill line: [2026-01-15T15:29:06.185Z] [DEBUG] [FILL] sell fill: size=0.0316, price=1791.30065898866, proceeds=56.60510082 BTS
+ * Fee line:  [2026-01-15T15:29:06.185Z] [INFO] [FEES] BTS fees calculated: 1 maker fills @ 0.04826000 BTS = 0.04826000 BTS
+ *
+ * CSV HEADER:
+ * unix, price, amount, side, fee_asset, fee_amount, order_id
+ *
+ * ===============================================================================
  */
 
 const fs = require('fs').promises;

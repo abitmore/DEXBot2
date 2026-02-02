@@ -1,58 +1,47 @@
 #!/usr/bin/env node
 /**
- * bot.js - PM2-friendly entry point for single bot instance
+ * bot.js - Single Bot Instance Launcher
  *
- * Standalone bot launcher executed by PM2 for each configured bot.
- * Handles bot initialization, authentication, and trading loop management.
+ * PM2-friendly entry point for single grid trading bot.
+ * Standalone launcher executed by PM2 for each configured bot.
+ * Handles bot initialization, authentication, and continuous trading loop.
  *
- * 1. Bot Configuration Loading
+ * ===============================================================================
+ * STARTUP SEQUENCE
+ * ===============================================================================
+ *
+ * 1. BOT CONFIGURATION LOADING
  *    - Reads bot settings from profiles/bots.json by bot name (from argv)
  *    - Validates bot exists in configuration
  *    - Reports market pair and account being used
+ *    - Loads trading parameters (grid size, spread, order count, etc.)
  *
- * 2. Private Key Authentication
- *    - First tries credential daemon (Unix socket) if available
- *    - Falls back to interactive master password prompt
- *    - Master password never stored in environment
+ * 2. AUTHENTICATION
+ *    - First attempts credential daemon (Unix socket) for pre-decrypted key
+ *    - Falls back to interactive master password prompt if daemon unavailable
+ *    - Master password never stored in environment variables
  *    - Private key loaded directly to bot memory
  *
- * 3. Bot Initialization
- *    - Waits for BitShares connection (30 second timeout)
- *    - Uses pre-decrypted private key
+ * 3. BOT INITIALIZATION
+ *    - Waits for BitShares blockchain connection (30 second timeout)
+ *    - Uses pre-decrypted private key for transaction signing
  *    - Resolves account ID from BitShares
  *    - Initializes OrderManager with bot configuration
+ *    - Sets up event handlers for fills and blockchain updates
  *
- * 4. Grid Initialization or Resume
- *    - Loads persisted grid if it exists and matches on-chain orders
- *    - Places initial orders if no existing grid found
+ * 4. GRID INITIALIZATION OR RESUME
+ *    - Loads persisted grid snapshot if it exists and matches on-chain orders
+ *    - Validates persisted grid against current blockchain state
+ *    - Creates fresh grid if no valid persisted state found
  *    - Synchronizes grid state with BitShares blockchain
+ *    - Places initial orders to reach target count
  *
- * 5. Trading Loop
- *    - Continuously monitors for fill events
- *    - Updates order status from chain
- *    - Regenerates grid as needed
- *    - Runs indefinitely (PM2 manages restart/stop)
- *
- * Usage:
- *   Direct (single bot): node bot.js <bot-name>
- *   Via PM2 ecosystem: pm2 start profiles/ecosystem.config.js
- *   Full setup: npm run pm2:unlock-start or node dexbot.js pm2
- *
- * Environment Variables:
- *   RUN_LOOP_MS     - Trading loop interval in ms (default: 5000)
- *   BOT_NAME        - Bot name (alternative to argv)
- *
- * Logs:
- *   - Bot output: profiles/logs/{botname}.log
- *   - Bot errors: profiles/logs/{botname}-error.log
- *   - Rotated automatically by PM2
- *
- * Security:
- *   - Private key requested from daemon (Unix socket)
- *   - Master password never in environment
- *   - No password written to disk
- *   - Private key kept in bot memory only
- *   - All sensitive operations in encrypted BitShares module
+ * 5. TRADING LOOP
+ *    - Continuously monitors for fill events via blockchain subscriptions
+ *    - Updates order status from chain data
+ *    - Processes fills and updates fund accounting
+ *    - Regenerates/rebalances grid as needed
+ *    - Runs indefinitely (PM2 manages restart/stop/monitoring)
  */
 
 const fs = require('fs');

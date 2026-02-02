@@ -206,9 +206,9 @@ function analyzeValidation(validation, bestConfig) {
  * Main
  */
 function validate() {
-    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('===============================================================');
     console.log('TREND DETECTION - MEDIAN-BASED VALIDATOR');
-    console.log('═══════════════════════════════════════════════════════════════\n');
+    console.log('===============================================================\n');
 
     console.log('📊 Loading best configuration...');
     const results = loadJSON(RESULTS_FILE);
@@ -235,7 +235,7 @@ function validate() {
     console.log(`✓ Analysis complete\n`);
 
     // Print results
-    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('===============================================================');
     console.log('VALIDATION RESULTS - MEDIAN-BASED TRENDS\n');
 
     console.log('CONFIGURATION');
@@ -278,7 +278,7 @@ function validate() {
     console.log(`When detector says NEUTRAL: ${corr.neutral}/${det.neutral} correct (${neutralAccuracy}%)\n`);
 
     // Assessment
-    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('===============================================================');
     console.log('ASSESSMENT\n');
 
     if (ov.accuracy >= 60) {
@@ -298,7 +298,7 @@ function validate() {
     console.log('  ✅ Adapts to price level (not fixed percentage)');
     console.log('  ✅ Answers: "Does detector find real price movements?"\n');
 
-    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('===============================================================');
 }
 
 validate();

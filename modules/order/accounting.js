@@ -1,9 +1,70 @@
 /**
- * modules/order/accounting.js
+ * modules/order/accounting.js - Accountant Engine
  *
  * Specialized engine for financial state and fund tracking.
- * Responsible for calculating available funds, committed capital,
- * and managing BTS blockchain fees.
+ * Responsible for calculating available funds, committed capital, and managing BTS blockchain fees.
+ * Exports a single Accountant class that manages all fund accounting operations.
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - Accountant Class (13 methods)
+ * ===============================================================================
+ *
+ * CORE INITIALIZATION & RECALCULATION (2 methods)
+ *   1. constructor(manager) - Create new Accountant instance
+ *   2. resetFunds() - Initialize funds structure with zeroed values
+ *
+ * MASTER FUND CALCULATIONS (1 method)
+ *   3. recalculateFunds() - MASTER FUND CALCULATION: Recalculate all fund values based on order states
+ *      Called after any state change. Aggregates committed/available funds and triggers allocation.
+ *
+ * VERIFICATION & RECOVERY (3 methods - async, internal)
+ *   4. _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) - Verify fund tracking invariants
+ *   5. _performStateRecovery(mgr) - Centralized state recovery (fetch + sync + validate)
+ *   6. _attemptFundRecovery(mgr, violationType) - Attempt immediate recovery from invariant violations
+ *
+ * CHAINFREEE BALANCE MANAGEMENT (2 methods)
+ *   7. tryDeductFromChainFree(orderType, size, operation) - Atomically deduct from FREE portion
+ *   8. addToChainFree(orderType, size, operation) - Add amount back to optimistic chainFree balance
+ *
+ * BALANCE ADJUSTMENTS (2 methods)
+ *   9. adjustTotalBalance(orderType, delta, operation, totalOnly) - Adjust total and free balances
+ *   10. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
+ *
+ * FEE MANAGEMENT (2 methods - async)
+ *   11. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy
+ *   12. modifyCacheFunds(side, delta, operation) - Modify cache funds (rotation surplus + fill proceeds)
+ *
+ * FILL PROCESSING (1 method)
+ *   13. processFillAccounting(fillOp) - Process fund impact of order fill (atomically updates accountTotals)
+ *
+ * ===============================================================================
+ * FUND STRUCTURE (managed by Accountant)
+ * ===============================================================================
+ *
+ * manager.funds = {
+ *     available:   { buy, sell }          // Available funds for placement
+ *     total:       { chain, grid }        // Total across blockchain + grid
+ *     virtual:     { buy, sell }          // Virtual order capital
+ *     committed:   { chain, grid }        // Capital locked in active orders
+ *     cacheFunds:  { buy, sell }          // Surplus from rotation + fill proceeds
+ *     btsFeesOwed: number                 // Unpaid BTS fees (deducted from cache)
+ * }
+ *
+ * manager.accountTotals = {
+ *     buy:      number                   // Total BUY balance on blockchain
+ *     sell:     number                   // Total SELL balance on blockchain
+ *     buyFree:  number                   // FREE BUY (not in any order)
+ *     sellFree: number                   // FREE SELL (not in any order)
+ * }
+ *
+ * ===============================================================================
+ *
+ * FUND INVARIANTS (verified by _verifyFundInvariants):
+ * - blockchainTotal = chainFreeBalance + committedAmount
+ * - cacheFunds <= chainFreeBalance (surplus detection)
+ * - Virtual orders don't reduce FREE balance
+ *
+ * ===============================================================================
  */
 
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');

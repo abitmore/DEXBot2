@@ -4,9 +4,9 @@
  * Centralized formatting utilities for consistent decimal precision display across logs and output.
  * All functions return strings formatted to specified decimal places.
  *
- * ═══════════════════════════════════════════════════════════════════════════════
+ * ===============================================================================
  * DECIMAL PRECISION STANDARDS
- * ═══════════════════════════════════════════════════════════════════════════════
+ * ===============================================================================
  *
  * Asset Amounts:                8 decimals  - blockchain native precision
  * Prices:                       6-8 decimals - price precision varies by pair
@@ -14,39 +14,40 @@
  * Ratios/Metrics:               2-5 decimals - context dependent
  * Time/Performance (ms, %):     1-2 decimals - readable metrics
  *
- * ═══════════════════════════════════════════════════════════════════════════════
- * TABLE OF CONTENTS
- * ═══════════════════════════════════════════════════════════════════════════════
+ * ===============================================================================
+ * TABLE OF CONTENTS (14 exported functions)
+ * ===============================================================================
  *
- * ASSET FORMATTING (lines 37-50)
- *   - formatAmount8 (Asset amounts)
- *   - formatAmount (with custom decimal places)
+ * SECTION 1: ASSET FORMATTING (2 functions)
+ *   1. formatAmount8(value) - Format to 8 decimals (blockchain standard)
+ *   2. formatAmount(value, decimals) - Format with custom decimal places
  *
- * PRICE FORMATTING (lines 52-65)
- *   - formatPrice (default 8 decimals)
- *   - formatPrice6 (6 decimals)
- *   - formatPrice4 (4 decimals)
+ * SECTION 2: PRICE FORMATTING (3 functions)
+ *   3. formatPrice(value) - Format to 8 decimals (maximum precision)
+ *   4. formatPrice6(value) - Format to 6 decimals
+ *   5. formatPrice4(value) - Format to 4 decimals (simplified display)
  *
- * PERCENTAGE FORMATTING (lines 67-80)
- *   - formatPercent2 (2 decimal places)
- *   - formatPercent4 (4 decimal places)
- *   - formatPercent (custom decimal places)
+ * SECTION 3: PERCENTAGE FORMATTING (3 functions)
+ *   6. formatPercent2(value) - Format to 2 decimals (spread %, ratios)
+ *   7. formatPercent4(value) - Format to 4 decimals (precise measurements)
+ *   8. formatPercent(value, decimals) - Format with custom decimal places
  *
- * RATIO/METRIC FORMATTING (lines 82-95)
- *   - formatRatio (with custom decimal places)
- *   - formatMetric2 (2 decimals for metrics)
- *   - formatMetric5 (5 decimals for metrics)
+ * SECTION 4: RATIO/METRIC FORMATTING (3 functions)
+ *   9. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
+ *   10. formatMetric2(value) - Format to 2 decimals (timing, performance)
+ *   11. formatMetric5(value) - Format to 5 decimals (detailed metrics)
  *
- * HELPER UTILITIES (lines 97-110)
- *   - isValidNumber (check if value is finite number)
- *   - safeFormat (safe formatting with fallback)
+ * SECTION 5: HELPER UTILITIES (3 functions)
+ *   12. isValidNumber(value) - Check if value is defined and finite
+ *   13. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
+ *   14. safeFormat(value, decimals, fallback) - Safely format with fallback
  *
- * ═══════════════════════════════════════════════════════════════════════════════
+ * ===============================================================================
  */
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 // SECTION 1: ASSET FORMATTING
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 
 /**
  * Format asset amounts to 8 decimal places (blockchain standard)
@@ -70,9 +71,9 @@ function formatAmount(value, decimals = 8) {
 	return safeFormat(value, decimals);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 // SECTION 2: PRICE FORMATTING
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 
 /**
  * Format prices to 8 decimal places (maximum precision)
@@ -107,9 +108,9 @@ function formatPrice4(value) {
 	return safeFormat(value, 4);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 // SECTION 3: PERCENTAGE FORMATTING
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 
 /**
  * Format percentages to 2 decimal places
@@ -144,9 +145,9 @@ function formatPercent(value, decimals = 2) {
 	return safeFormat(value, decimals);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 // SECTION 4: RATIO/METRIC FORMATTING
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 
 /**
  * Format ratios with custom decimal places
@@ -181,9 +182,9 @@ function formatMetric5(value) {
 	return safeFormat(value, 5);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 // SECTION 5: HELPER UTILITIES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 
 /**
  * Check if a value is defined and represents a finite number.
@@ -224,9 +225,9 @@ function safeFormat(value, decimals, fallback = 'N/A') {
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 // EXPORTS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ===============================================================================
 
 module.exports = {
 	// Asset formatting

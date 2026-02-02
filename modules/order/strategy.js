@@ -1,8 +1,75 @@
 /**
- * modules/order/strategy.js
+ * modules/order/strategy.js - StrategyEngine
  *
- * Simple & Robust Pivot Strategy (Boundary-Crawl Version)
- * Maintains contiguous physical rails using a master boundary anchor.
+ * Grid rebalancing and order placement strategy.
+ * Exports a single StrategyEngine class implementing boundary-crawl pivot strategy.
+ *
+ * Strategy Approach:
+ * - Simple & Robust Pivot Strategy (Boundary-Crawl Version)
+ * - Maintains contiguous physical rails using a master boundary anchor
+ * - Boundary fixed at market start price determines BUY/SELL/SPREAD zones
+ * - Dynamically rebalances orders as grid prices change
+ * - Handles partial fills and order consolidation
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - StrategyEngine Class (7 methods)
+ * ===============================================================================
+ *
+ * INITIALIZATION (1 method)
+ *   1. constructor(manager) - Create new StrategyEngine with manager reference
+ *
+ * CONFIGURATION (1 method)
+ *   2. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
+ *      Computes number of empty slots needed between BUY and SELL zones
+ *      Used during boundary initialization and role assignment
+ *
+ * REBALANCING (2 methods - async)
+ *   3. rebalance(fills, excludeIds) - Main rebalancing entry point
+ *      Unified entry for all grid rebalancing operations
+ *      Manages boundary crawl, role assignment, and order placement
+ *      Handles partial order consolidation and dust detection
+ *      Returns rebalance result or null
+ *
+ *   4. rebalanceSideRobust(type, allSlots, sideSlots, direction, budget, available, excludeIds, reactionCap, fills) - Rebalance one side (async)
+ *      Robust side-specific rebalancing with budget constraints
+ *      Places new orders up to target count
+ *      Returns { totalNewPlacementSize, ordersToPlace, result }
+ *
+ * ORDER PROCESSING (2 methods)
+ *   5. processFilledOrders(filledOrders, excludeOrderIds, options) - Process filled orders (async)
+ *      Handles order fill events, fee accounting, and grid updates
+ *      Consolidates partial fills, updates fund state
+ *      Returns result of processing
+ *
+ *   6. completeOrderRotation(oldInfo) - Complete order rotation operation
+ *      Finalizes rotation by virtualizing old order and activating new ones
+ *
+ * HEALTH CHECK (1 method)
+ *   7. hasAnyDust(partials, side) - Check for dust (unhealthy) partial orders
+ *      Detects partial orders below minimum size threshold
+ *      Returns true if dust detected on side
+ *
+ * ===============================================================================
+ *
+ * BOUNDARY-CRAWL ALGORITHM:
+ * 1. Find reference price (from fills or market)
+ * 2. Calculate gap slots for spread zone
+ * 3. Determine split index (boundary location in sorted price array)
+ * 4. Assign roles:
+ *    - BUY slots: below boundary (price < reference)
+ *    - SPREAD slots: within gap
+ *    - SELL slots: above boundary (price >= reference)
+ * 5. Calculate order sizes and place/update orders
+ * 6. Handle fills and consolidate partials
+ *
+ * REBALANCING TRIGGERS:
+ * - Market price movement (crawls boundary to follow)
+ * - Order fills (updates sizes and fund state)
+ * - Partial order consolidation
+ * - Fund reallocation
+ * - Dust detection (partials below minimum)
+ *
+ * ===============================================================================
  */
 
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS } = require("../constants");
@@ -85,9 +152,9 @@ class StrategyEngine {
         // Calculate gap slots once for use throughout the rebalance
         const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 1: BOUNDARY DETERMINATION (Initial or Recovery)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // If boundary is undefined (first run or after restart), calculate initial position
         // based on startPrice. This centers the spread zone around the market price.
 
@@ -126,9 +193,9 @@ class StrategyEngine {
             }
         }
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 2: BOUNDARY SHIFT (Based on Fills)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // The boundary shifts incrementally as orders fill:
         // - BUY fill: Market moved down → shift boundary LEFT (boundaryIdx--)
         // - SELL fill: Market moved up → shift boundary RIGHT (boundaryIdx++)
@@ -161,9 +228,9 @@ class StrategyEngine {
         mgr.boundaryIdx = Math.max(0, Math.min(allSlots.length - 1, mgr.boundaryIdx));
         const boundaryIdx = mgr.boundaryIdx;
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 3: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Assign each slot to a role based on its position relative to the boundary:
         // [0 ... boundaryIdx] = BUY zone
         // [boundaryIdx+1 ... boundaryIdx+gapSlots] = SPREAD zone (empty buffer)
@@ -206,9 +273,9 @@ class StrategyEngine {
         mgr.resumeFundRecalc();
         mgr.logger.log('[ROLE-ASSIGNMENT] Type updates applied. All slots assigned to correct zones.', 'debug');
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 4: BUDGET CALCULATION (Total Capital with BTS Fee Deduction)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Total Side Budget = (ChainFree + Committed) - BTS_Fees (if asset is BTS)
         // Available = funds.available (already includes fill proceeds via chainFree)
 
@@ -261,9 +328,9 @@ class StrategyEngine {
             reactionCapSell = 1;
         }
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
 
         const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availBuy, excludeIds, reactionCapBuy, fills);
         const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availSell, excludeIds, reactionCapSell, fills);
@@ -308,9 +375,9 @@ class StrategyEngine {
             hadRotation: (buyResult.ordersToRotate.length > 0 || sellResult.ordersToRotate.length > 0)
         };
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 6: POST-REBALANCE COMPLETION
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Spread condition check removed - runs in maintenance cycle instead.
         // This prevents premature logging on stale pre-broadcast state.
 
@@ -346,17 +413,17 @@ class StrategyEngine {
         const isDoubled = type === ORDER_TYPES.BUY ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
         const finalTargetCount = isDoubled ? Math.max(1, targetCount - 1) : targetCount;
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // BUILD SLOT INDEX MAP FOR O(1) LOOKUPS (FIX: O(n²) → O(n) complexity)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         const slotIndexMap = new Map();
         for (let idx = 0; idx < allSlots.length; idx++) {
             slotIndexMap.set(allSlots[idx].id, idx);
         }
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 1: CALCULATE IDEAL STATE
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         const sortedSideSlots = [...sideSlots].sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
         const targetIndices = [];
         for (let i = 0; i < Math.min(finalTargetCount, sortedSideSlots.length); i++) {
@@ -386,9 +453,9 @@ class StrategyEngine {
             if (slotIdx !== undefined) finalIdealSizes[slotIdx] = size;
         });
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 2: IDENTIFY SHORTAGES AND SURPLUSES
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         const activeOnChain = allSlots.filter(s => isOrderPlaced(s) && !(excludeIds.has(s.id) || (hasOnChainId(s) && excludeIds.has(s.orderId))));
         const activeThisSide = activeOnChain.filter(s => s.type === type);
 
@@ -437,9 +504,9 @@ class StrategyEngine {
 
         let budgetRemaining = reactionCap;
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 3: PARTIAL ORDER HANDLING (Update In-Place Before Rotations/Placements)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Handle PARTIAL orders in target window before rotations/placements to prevent grid gaps.
         // - Dust partial: Update to full target size
         // - Non-dust partial: Update to ideal size for proper grid alignment
@@ -552,9 +619,9 @@ class StrategyEngine {
         // Remove handled partial slots from shortages so they aren't targeted for rotation or placement
         const filteredShortages = shortages.filter(idx => !handledPartialIds.has(allSlots[idx].id));
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 4: ROTATIONS (Refill Inner Gaps)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Move furthest active orders to fill inner gaps (closest to market).
         // Note: shortages is derived from sortedSideSlots, so it is already sorted Closest First.
         // FIX: Use separate indices to prevent skipping shortages when surplus is invalid
@@ -636,9 +703,9 @@ class StrategyEngine {
             }
         }
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 5: PLACEMENTS (Activate Outer Edges)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Use remaining budget to place new orders at the edge of the grid window.
         // CRITICAL: Cap placement sizes to respect available funds.
         if (budgetRemaining > 0) {
@@ -673,9 +740,9 @@ class StrategyEngine {
             }
         }
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 6: CANCEL REMAINING SURPLUSES
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Cancel surpluses from the outside in (lowest buy/highest sell first)
         const rotatedOldIds = new Set(ordersToRotate.map(r => r.oldOrder.id));
         for (let i = filteredSurpluses.length - 1; i >= 0; i--) {
@@ -687,9 +754,9 @@ class StrategyEngine {
         }
         // Handled partials are NOT cancelled - they're updated in-place (STEP 2.5)
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 7: DEFER CACHEFUNDS DEDUCTION (Track Surplus Allocation)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // CacheFunds deduction is DEFERRED until after state updates are applied.
         // This ensures fund invariants are maintained atomically with state transitions.
         // Return totalNewPlacementSize so rebalance() can apply deduction after state updates.

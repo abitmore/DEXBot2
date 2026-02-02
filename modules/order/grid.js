@@ -1,10 +1,88 @@
 /**
- * Grid - Order grid creation, synchronization, and health management
+ * modules/order/grid.js - Grid Engine
  *
- * This module manages the complete lifecycle of the order grid:
- * - Creates geometric price grids with configurable spacing
+ * Order grid creation, synchronization, and health management.
+ * Exports a single Grid class with static methods for grid operations.
+ *
+ * Manages the complete lifecycle of the order grid:
+ * - Creates geometric price grids with configurable spacing (increments)
  * - Synchronizes grid state with blockchain and fund changes
  * - Monitors grid health and handles spread corrections
+ * - Calculates order sizes and allocations based on funds
+ * - Detects and flags out-of-spread conditions
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - Grid Class (20 static methods)
+ * ===============================================================================
+ *
+ * GRID SIZING & CONTEXT (2 methods)
+ *   1. _getSizingContext(manager, side) - Get budget and sizing parameters (internal, static)
+ *      Determines budget from allocated funds, deducts BTS fees if needed
+ *   2. _ensureCacheFundsInitialized(manager) - Ensure cache funds structure exists (internal, static)
+ *
+ * CACHE FUND MANAGEMENT (1 method)
+ *   3. _updateCacheFundsAtomic(manager, sideName, newValue) - Update cache funds atomically (async, internal, static)
+ *
+ * GRID CREATION (1 method)
+ *   4. createOrderGrid(config) - Create geometric price grid (static)
+ *      Returns price levels from minPrice to maxPrice with increment spacing
+ *
+ * ORDER CACHE MANAGEMENT (2 methods - async, internal)
+ *   5. _clearOrderCachesAtomic(manager) - Clear order caches (_ordersByType, _ordersByState)
+ *   6. _updateOrderAtomic(manager, order, context, skipAccounting, fee) - Update order atomically with caches
+ *
+ * GRID LOADING & INITIALIZATION (2 methods - async)
+ *   7. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
+ *   8. initializeGrid(manager) - Full grid initialization from config
+ *
+ * GRID RECALCULATION (1 method - async)
+ *   9. recalculateGrid(manager, opts) - Recalculate grid based on current state
+ *
+ * GRID STATE CHECKING (1 method)
+ *   10. checkAndUpdateGridIfNeeded(manager, cacheFunds) - Check if grid needs update
+ *
+ * BLOCKCHAIN SYNCHRONIZATION (2 methods - async)
+ *   11. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
+ *   12. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
+ *
+ * GRID COMPARISON (1 method - async)
+ *   13. compareGrids(calculatedGrid, persistedGrid, manager, cacheFunds) - Compare two grids
+ *       Validates grid structure and reports divergence metrics
+ *
+ * SPREAD MANAGEMENT (2 methods - async)
+ *   14. calculateCurrentSpread(manager) - Calculate current bid-ask spread
+ *   15. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
+ *
+ * GRID HEALTH MONITORING (3 methods)
+ *   16. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
+ *   17. _hasAnyDust(manager, partials, type) - Check for dust orders (internal, static)
+ *   18. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ *
+ * SPREAD CORRECTION (2 methods)
+ *   19. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
+ *   20. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ *
+ * ===============================================================================
+ *
+ * GRID STRUCTURE:
+ * Grid = Array of slots with:
+ * - id: Order ID (null for virtual)
+ * - price: Price level
+ * - size: Grid allocation
+ * - grid: In-grid size (ACTIVE + PARTIAL orders)
+ * - blockchain: On-blockchain size
+ * - type: BUY, SELL, or SPREAD
+ * - state: VIRTUAL, ACTIVE, PARTIAL
+ *
+ * GRID LIFECYCLE:
+ * 1. createOrderGrid(config) - Generate price levels
+ * 2. assignGridRoles() - Assign BUY/SELL/SPREAD roles based on boundary
+ * 3. calculateOrderSizes() - Allocate funds to slots
+ * 4. loadGrid() - Create grid Order objects in manager
+ * 5. syncFromOpenOrders() - Load blockchain state
+ * 6. recalculateGrid() - Keep in sync as market/funds change
+ *
+ * ===============================================================================
  */
 
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, TIMING, INCREMENT_BOUNDS, FEE_PARAMETERS } = require('../constants');
@@ -210,9 +288,9 @@ class Grid {
         const stepUp = 1 + (incrementPercent / 100);
         const stepDown = 1 - (incrementPercent / 100);
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 1: GENERATE PRICE LEVELS (Geometric progression)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Create a geometric series of prices from minPrice to maxPrice.
         // Each level is incrementPercent% away from its neighbors.
         //
@@ -240,16 +318,16 @@ class Grid {
         // Sort all levels from lowest to highest (Master Rail order)
         priceLevels.sort((a, b) => a - b);
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 2: FIND SPLIT INDEX (First slot at or above startPrice)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // The split index is used to center the spread gap around market price.
         // Pivot concept (slot closest to startPrice) was previously used but is now
         // calculated separately in strategy.js as part of role assignment logic.
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 3: CALCULATE SPREAD GAP SIZE
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Determine how many slots should be in the spread zone.
         // See formula documentation in JSDoc above.
 
@@ -266,9 +344,9 @@ class Grid {
         // At least MIN_SPREAD_ORDERS, or more if needed for target spread
         const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredGaps - 1);
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 4: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Assign each price level to a role based on its position relative to startPrice.
         //
         // STRATEGY: Center the spread gap around startPrice
@@ -299,9 +377,9 @@ class Grid {
         const buyEndIdx = splitIdx - buySpread - 1;
         const sellStartIdx = splitIdx + sellSpread;
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 5: CREATE ORDER OBJECTS
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Convert price levels to order objects with assigned roles.
 
         const orders = priceLevels.map((price, i) => {

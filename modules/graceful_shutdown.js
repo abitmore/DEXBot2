@@ -1,16 +1,57 @@
 /**
- * graceful_shutdown.js - Centralized graceful shutdown handler
- * 
- * Registers SIGTERM and SIGINT handlers to ensure clean process termination:
- * - Calls cleanup functions in reverse registration order
- * - Logs shutdown status
+ * modules/graceful_shutdown.js - Process Shutdown Manager
+ *
+ * Centralized graceful shutdown handler for clean process termination.
+ *
+ * Features:
+ * - Registers signal handlers (SIGTERM, SIGINT)
+ * - Executes cleanup functions in reverse registration order
  * - Prevents duplicate shutdown execution
- * - Exits after cleanup complete
- * 
- * Usage:
- *   const { registerCleanup } = require('./modules/graceful_shutdown');
- *   registerCleanup('Bot connection', () => bot.shutdown());
- *   registerCleanup('BitShares', () => BitShares.disconnect());
+ * - Graceful cleanup with timeout protection
+ * - Detailed shutdown logging
+ *
+ * ===============================================================================
+ * EXPORTS (1 function)
+ * ===============================================================================
+ *
+ * 1. registerCleanup(name, cleanupFn) - Register cleanup function
+ *    name: Description of cleanup operation (e.g., "Bot connection", "BitShares")
+ *    cleanupFn: Async function to execute during shutdown
+ *    Functions execute in reverse registration order (LIFO)
+ *
+ * ===============================================================================
+ *
+ * SHUTDOWN PROCESS:
+ * 1. Receive SIGTERM or SIGINT signal
+ * 2. Mark shutdown in progress (prevent duplicate execution)
+ * 3. Log shutdown initiation
+ * 4. Execute cleanup functions in reverse order (LIFO)
+ * 5. Wait for all cleanups to complete (with timeout)
+ * 6. Log shutdown status
+ * 7. Exit process
+ *
+ * USAGE:
+ * const { registerCleanup } = require('./modules/graceful_shutdown');
+ *
+ * // Register cleanups (executed in reverse order on shutdown)
+ * registerCleanup('Database', async () => db.close());
+ * registerCleanup('Bot', async () => bot.shutdown());
+ * registerCleanup('BitShares', async () => BitShares.disconnect());
+ *
+ * On SIGTERM/SIGINT:
+ * 1. BitShares disconnects
+ * 2. Bot shuts down
+ * 3. Database closes
+ *
+ * ===============================================================================
+ *
+ * BEST PRACTICES:
+ * - Register cleanups for each major component
+ * - Order matters: register in opposite order of initialization
+ * - Keep cleanup functions quick and non-blocking where possible
+ * - Handle cleanup errors gracefully (don't throw)
+ *
+ * ===============================================================================
  */
 
 let cleanupHandlers = [];

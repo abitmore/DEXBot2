@@ -1,13 +1,86 @@
 /**
- * DEXBot - Core trading bot class
- * Shared implementation used by both bot.js (single bot) and dexbot.js (multi-bot orchestration)
+ * modules/dexbot_class.js - DEXBot Core Engine
  *
- * This class handles:
+ * Core trading bot implementation shared by bot.js (single) and dexbot.js (multi-bot).
+ * Implements complete grid trading bot lifecycle.
+ *
+ * Responsibilities:
  * - Bot initialization and account setup
  * - Order placement and batch operations
  * - Fill processing and synchronization
- * - Grid rebalancing and rotation
+ * - Grid rebalancing and order rotation
  * - Divergence detection and correction
+ * - State persistence and recovery
+ * - Market monitoring and health checks
+ *
+ * ===============================================================================
+ * CORE CLASS: DEXBot
+ * ===============================================================================
+ *
+ * LIFECYCLE METHODS:
+ *   - constructor(config) - Initialize bot with configuration
+ *   - run() - Start bot operation loop
+ *   - shutdown() - Graceful shutdown
+ *   - pause() - Pause bot operations
+ *   - resume() - Resume bot operations
+ *
+ * CONFIGURATION:
+ *   - loadBotConfig() - Load bot configuration from files
+ *   - validateConfig() - Validate configuration values
+ *
+ * INITIALIZATION:
+ *   - initialize() - Set up blockchain connection and grid
+ *   - setupAccount() - Authenticate and load account
+ *   - initializeOrderManager() - Create and initialize OrderManager
+ *
+ * ORDER OPERATIONS:
+ *   - placeOrders() - Create and place new orders
+ *   - updateOrders() - Modify existing orders
+ *   - cancelOrders() - Cancel orders
+ *   - processBatch() - Execute batch operations
+ *
+ * FILL PROCESSING:
+ *   - processFills() - Handle order fill events
+ *   - updateFromFill() - Update internal state from fill
+ *   - processFilledOrders() - Comprehensive fill processing
+ *
+ * SYNCHRONIZATION:
+ *   - syncFromBlockchain() - Sync grid state with blockchain
+ *   - reconcileGrid() - Reconcile discrepancies
+ *   - checkGridHealth() - Verify grid integrity
+ *
+ * REBALANCING:
+ *   - rebalanceGrid() - Trigger grid rebalancing
+ *   - rotateOrders() - Perform order rotation
+ *   - checkSpreadCondition() - Verify spread limits
+ *
+ * MONITORING:
+ *   - getMetrics() - Retrieve performance metrics
+ *   - monitorHealth() - Check bot health status
+ *   - detectDivergence() - Detect grid-blockchain divergence
+ *
+ * ===============================================================================
+ *
+ * HELPER FUNCTIONS (module-level):
+ *   - normalizeBotEntry() - Normalize bot configuration object
+ *   - validateBotConfig() - Validate configuration values
+ *   - applyDefaults() - Apply default configuration values
+ *
+ * ===============================================================================
+ *
+ * STATE MANAGEMENT:
+ * - Internal OrderManager maintains all state
+ * - Persists grid snapshots to profiles/orders/{botKey}.json
+ * - Recovers from persisted state on startup
+ * - Real-time synchronization with blockchain
+ *
+ * ERROR HANDLING:
+ * - Graceful error recovery
+ * - Automatic reconnection on connection loss
+ * - Anomaly detection and correction
+ * - Detailed logging for debugging
+ *
+ * ===============================================================================
  */
 
 const fs = require('fs');
@@ -26,9 +99,9 @@ const Format = require('./order/format');
 const PROFILES_BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 // Shared utility functions used by bot.js and dexbot.js
-// ════════════════════════════════════════════════════════════════════════════════
+// ================================================================================
 
 /**
  * Normalize bot entry with metadata (active flag and botKey)
@@ -2032,9 +2105,9 @@ class DEXBot {
      * @private
      */
     async _executeMaintenanceLogic(context) {
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 1: SPREAD AND HEALTH CHECKS
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Run spread check FIRST to correct wide spreads before divergence detection.
         // This ensures divergence calculation sees corrected spread state.
 
@@ -2058,9 +2131,9 @@ class DEXBot {
             }
         }
 
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // STEP 2: THRESHOLD AND DIVERGENCE CHECKS
-        // ════════════════════════════════════════════════════════════════════════════════
+        // ================================================================================
         // Run divergence check AFTER spread correction to detect structural issues
         // on the corrected grid state.
 

@@ -438,9 +438,9 @@ async function testSpreadConditionWithPartials() {
         await testPartialInSpreadCalculation();
         await testSpreadConditionWithPartials();
 
-        console.log('═══════════════════════════════════════════');
+        console.log('===========================================');
         console.log('✓ All Partial Order Edge Case tests PASSED');
-        console.log('═══════════════════════════════════════════\n');
+        console.log('===========================================\n');
         process.exit(0);
     } catch (err) {
         console.error('\n✗ Test FAILED:', err.message);

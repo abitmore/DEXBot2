@@ -1,19 +1,60 @@
 #!/usr/bin/env node
 /**
- * dexbot-cred - Secure BitShares private key server
+ * credential-daemon.js - Secure Private Key Server
  *
- * This daemon:
+ * DEXBot credential daemon for multi-bot private key management.
+ * Enables bot processes to request pre-decrypted keys via Unix socket.
+ * Master password kept in RAM only, never exposed to bot processes.
+ *
+ * ===============================================================================
+ * DAEMON OPERATION
+ * ===============================================================================
+ *
+ * STARTUP:
  * 1. Prompts for master password ONCE at startup
- * 2. Keeps password in RAM only
- * 3. Listens on Unix socket for credential requests
- * 4. Decrypts and serves private keys to bot processes
- * 5. Never exposes password via environment variables
+ * 2. Authenticates with profiles/keys.json
+ * 3. Keeps password in RAM only during operation
+ * 4. Listens on Unix socket for credential requests
+ * 5. Services private key requests from bot processes
  *
- * Usage: node credential-daemon.js
- * Communication: Unix socket at /tmp/dexbot-cred-daemon.sock
+ * COMMUNICATION:
+ * - Socket: /tmp/dexbot-cred-daemon.sock
+ * - Ready file: /tmp/dexbot-cred-daemon.ready
+ * - Connection timeout: 30 seconds
+ * - Windows 10+: Supported; earlier Windows not supported
  *
- * Request format: {"type": "private-key", "accountName": "account-name"}
- * Response format: {"success": true, "privateKey": "5K..."} or {"success": false, "error": "..."}
+ * REQUEST FORMAT:
+ *   {"type": "private-key", "accountName": "account-name"}
+ *
+ * RESPONSE FORMAT:
+ *   Success:  {"success": true, "privateKey": "5K..."}
+ *   Failure:  {"success": false, "error": "Error message"}
+ *
+ * ===============================================================================
+ * SECURITY BENEFITS
+ * ===============================================================================
+ *
+ * - Master password prompt only once (at daemon startup)
+ * - Individual bot processes have no access to master password
+ * - No password in environment variables
+ * - Private keys never written to disk unencrypted
+ * - Centralized key management
+ * - Unix socket provides process-level isolation
+ *
+ * ===============================================================================
+ * USAGE
+ * ===============================================================================
+ *
+ * Direct:
+ *   node credential-daemon.js
+ *
+ * Via PM2 (recommended):
+ *   npm run pm2:unlock-start
+ *   or: node dexbot.js pm2
+ *
+ * Bot processes then access keys automatically via socket connection.
+ *
+ * ===============================================================================
  */
 
 const net = require('net');

@@ -433,9 +433,9 @@ function createChart(candles, amaData, config) {
  * Main function
  */
 function generate() {
-    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('===============================================================');
     console.log('TREND DETECTION - CHART GENERATOR');
-    console.log('═══════════════════════════════════════════════════════════════\n');
+    console.log('===============================================================\n');
 
     // Get best configuration
     console.log('📊 Loading best configuration from optimizer results...');
@@ -467,7 +467,7 @@ function generate() {
     console.log('📊 Generating chart...');
     const chartFile = createChart(candles, amaData, bestConfig);
 
-    console.log('\n═══════════════════════════════════════════════════════════════');
+    console.log('\n===============================================================');
     console.log('✅ CHART GENERATED\n');
     console.log(`   📄 ${path.basename(chartFile)}`);
     console.log(`\n   Configuration Details:`);
@@ -480,7 +480,7 @@ function generate() {
     console.log(`   ├─ ER=${bestConfig.config.fastErPeriod}, Fast=${bestConfig.config.fastFastPeriod}, Slow=${bestConfig.config.fastSlowPeriod}`);
     console.log(`\n   Slow AMA:`);
     console.log(`   ├─ ER=${bestConfig.config.slowErPeriod}, Fast=${bestConfig.config.slowFastPeriod}, Slow=${bestConfig.config.slowSlowPeriod}`);
-    console.log('\n═══════════════════════════════════════════════════════════════');
+    console.log('\n===============================================================');
 }
 
 generate();

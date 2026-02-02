@@ -15,9 +15,9 @@ const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 const Format = require('../modules/order/format');
 
 async function testCompleteLifecycle() {
-    console.log('\n╔════════════════════════════════════════════════════════╗');
+    console.log('\n╔========================================================╗');
         console.log('║  Integration Test: cacheFunds Complete Lifecycle  ║');
-    console.log('╚════════════════════════════════════════════════════════╝\n');
+    console.log('╚========================================================╝\n');
 
     const botKey = createBotKey({ name: 'integration-test' }, 0);
     const accountOrders = new AccountOrders();
@@ -152,9 +152,9 @@ async function testCompleteLifecycle() {
      }
 
     // Summary
-    console.log('\n╔════════════════════════════════════════════════════════╗');
+    console.log('\n╔========================================================╗');
     console.log(`║  Results: ${passed.length} Passed | ${failed.length} Failed`.padEnd(56) + '║');
-    console.log('╚════════════════════════════════════════════════════════╝\n');
+    console.log('╚========================================================╝\n');
 
     if (failed.length === 0) {
         console.log('✅ SUCCESS: PendingProceeds persistence working correctly!\n');

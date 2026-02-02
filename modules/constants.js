@@ -1,16 +1,99 @@
 /**
- * Constants and default configuration for OrderManager
- * 
- * ORDER_TYPES: Categories for grid entries
- * - SELL: Orders above market price, size in base asset (assetA)
- * - BUY: Orders below market price, size in quote asset (assetB)
- * - SPREAD: Placeholder orders in the spread zone around market price
- * 
- * ORDER_STATES: Lifecycle states for orders (affects fund tracking)
- * - VIRTUAL: Not yet on-chain, size contributes to funds.virtual (reserved)
- *            Also used for filled orders that are converted to SPREAD placeholders
- * - ACTIVE: Placed on-chain, size contributes to funds.committed
+ * modules/constants.js - Configuration and Constants
+ *
+ * Global configuration, constants, and defaults for DEXBot2.
+ * All constants are frozen to prevent accidental runtime modifications.
+ * Local overrides can be loaded from ~/.claude/dexbot_settings.json
+ *
+ * ===============================================================================
+ * EXPORTED CONSTANTS (13 configuration objects)
+ * ===============================================================================
+ *
+ * ENUM DEFINITIONS:
+ *   1. ORDER_TYPES - Grid entry categories
+ *      { SELL: 'sell', BUY: 'buy', SPREAD: 'spread' }
+ *      - SELL: Orders above market price, size in base asset (assetA)
+ *      - BUY: Orders below market price, size in quote asset (assetB)
+ *      - SPREAD: Placeholder orders in spread zone around market price
+ *
+ *   2. ORDER_STATES - Order lifecycle states (affects fund tracking)
+ *      { VIRTUAL: 'virtual', ACTIVE: 'active', PARTIAL: 'partial' }
+ *      - VIRTUAL: Not yet on-chain, size in funds.virtual (reserved)
+ *                 Also used for filled orders converted to SPREAD placeholders
+ *      - ACTIVE: Placed on-chain, size in funds.committed
+ *      - PARTIAL: Partially filled on-chain, mixed state
+ *
+ * DEFAULT CONFIGURATION (applied when not explicitly set):
+ *   3. DEFAULT_CONFIG - Bot configuration defaults
+ *      Price: startPrice, minPrice, maxPrice, incrementPercent, targetSpreadPercent
+ *      Control: active, dryRun
+ *      Trading pair: assetA, assetB
+ *      Allocation: weightDistribution, botFunds, activeOrders
+ *
+ * TIMING PARAMETERS:
+ *   4. TIMING - Operational timing constants
+ *      SYNC_DELAY_MS, ACCOUNT_TOTALS_TIMEOUT_MS
+ *      BLOCKCHAIN_FETCH_INTERVAL_MIN, FILL_DEDUPE_WINDOW_MS
+ *      FILL_CLEANUP_INTERVAL_MS, FILL_RECORD_RETENTION_MS
+ *      LOCK_TIMEOUT_MS
+ *
+ * GRID & ORDER LIMITS:
+ *   5. GRID_LIMITS - Grid sizing and scaling constraints
+ *      MIN_SPREAD_FACTOR, MIN_SPREAD_ORDERS, MIN_ORDER_COUNT
+ *      MAX_GRID_PRICES, MAX_ORDER_IDS_PER_BATCH, MAX_ROTATION_SIZE
+ *      FUND_INVARIANT_PERCENT_TOLERANCE
+ *      Includes GRID_COMPARISON sub-object for grid divergence metrics
+ *
+ *   6. INCREMENT_BOUNDS - Price increment percentage validation
+ *      MIN_INCREMENT_PERCENT, MAX_INCREMENT_PERCENT
+ *
+ * FEE CONFIGURATION:
+ *   7. FEE_PARAMETERS - Fee calculation and reservation parameters
+ *      BTS_RESERVATION_MULTIPLIER, MARKET_FEE_PERCENT, TAKER_FEE_PERCENT
+ *      TAKER_PERCENT_OVERRIDE, BTS_TAKER_OVERRIDE
+ *
+ * API & BLOCKCHAIN:
+ *   8. API_LIMITS - Blockchain API call constraints
+ *      MAX_ORDERS_PER_CALL, API_TIMEOUT_MS, API_RETRY_DELAY_MS
+ *      MAX_API_RETRIES, HISTORICAL_SYNC_BATCH_SIZE
+ *
+ * FILL PROCESSING:
+ *   9. FILL_PROCESSING - Fill event handling configuration
+ *      FILL_ACK_WAIT_MS, FILL_TIMEOUT_MS, FILL_RETRY_ATTEMPTS
+ *      Includes BATCH_LIMITS sub-object
+ *
+ * MAINTENANCE & MONITORING:
+ *   10. MAINTENANCE - Background maintenance task configuration
+ *       HEALTH_CHECK_INTERVAL_MS, PERSISTENCE_CHECK_INTERVAL_MS
+ *       LOCK_CLEANUP_INTERVAL_MS, FILL_CLEANUP_INTERVAL_MS
+ *
+ *   11. UPDATER - Version checking and update notification
+ *       CHECK_INTERVAL_MS, REPO_URL, NOTIFICATION_MIN_LEVEL
+ *
+ * LOGGING CONFIGURATION:
+ *   12. LOGGING_CONFIG - Structured logging configuration
+ *       changeTracking: Smart change detection
+ *       display.colors: TTY color support
+ *       display.fundStatus, display.statusSummary, display.gridDiagnostics
+ *       Categories for enabling/disabling log types
+ *
+ *   13. LOG_LEVEL - Current logging verbosity level
+ *       Affects which messages are displayed: 'debug', 'info', 'warn', 'error'
+ *
+ * ===============================================================================
+ *
+ * LOCAL SETTINGS OVERRIDE:
+ * Read from ~/.claude/dexbot_settings.json if it exists.
+ * Supports overriding any exported constant with custom values.
+ * Useful for development, testing, and performance tuning.
+ *
+ * FREEZING:
+ * All exported objects are frozen at module load to prevent accidental runtime modifications.
+ * This ensures constants remain truly constant throughout bot lifetime.
+ *
+ * ===============================================================================
  */
+
 const fs = require('fs');
 const path = require('path');
 

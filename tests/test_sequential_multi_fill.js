@@ -97,9 +97,9 @@ async function testSequentialMultiFillProcessing() {
     console.log(`    SELL: ${activeSells.map(o => `${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
     console.log(`    Boundary Index: ${mgr.boundaryIdx}`);
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
     // SIMULATE TWO BUY ORDERS FILLING SIMULTANEOUSLY
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
 
     // Select the two closest-to-market buys (highest prices)
     const fill1 = { ...activeBuys[0], isPartial: false };
@@ -111,9 +111,9 @@ async function testSequentialMultiFillProcessing() {
     console.log(`    Fill 2: ${fill2.id} @ ${fill2.price.toFixed(4)} (next closest)`);
     console.log('─'.repeat(80));
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
     // PROCESS FILL 1 (Sequential)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
 
     console.log('\n>>> Processing FILL 1 (Sequential - Single Fill)');
     const boundaryBefore1 = mgr.boundaryIdx;
@@ -144,9 +144,9 @@ async function testSequentialMultiFillProcessing() {
     });
     mgr.recalculateFunds();
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
     // PROCESS FILL 2 (Sequential)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
 
     console.log('\n>>> Processing FILL 2 (Sequential - Single Fill)');
     const boundaryBefore2 = mgr.boundaryIdx;
@@ -164,9 +164,9 @@ async function testSequentialMultiFillProcessing() {
          console.log(`    Rotating: ${result2.ordersToRotate.map(r => `${r.oldOrder.id}->${r.newGridId}@${Format.formatPrice4(r.newPrice)}`).join(', ')}`);
      }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
     // ASSERTIONS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ===========================================================================
 
     console.log('\n>>> Verification');
 

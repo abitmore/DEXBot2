@@ -1,8 +1,68 @@
 /**
- * LoggerState - Tracks previous state and detects changes
+ * modules/order/logger_state.js - Logger State Manager
  *
- * Used by Logger to determine if logging is needed (change detection).
- * Enables smart logging that only outputs when values actually change.
+ * State tracking engine for change detection and audit logging.
+ * Exports a single LoggerState class that enables smart logging by detecting state changes.
+ *
+ * Purpose:
+ * - Track previous state across multiple categories (funds, orders, fills, boundary, errors)
+ * - Detect and report what changed between state transitions
+ * - Determine if logging is needed (only log when values change)
+ * - Maintain audit history of state changes
+ * - Calculate significance of numeric changes against thresholds
+ *
+ * Used by Logger to:
+ * - Skip redundant logging when nothing changed
+ * - Only output on significant state transitions
+ * - Maintain audit trail for debugging
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - LoggerState Class (7 methods)
+ * ===============================================================================
+ *
+ * INITIALIZATION (1 method)
+ *   1. constructor() - Create new LoggerState with empty previousState and changeHistory
+ *      Initializes tracking for: funds, orders, fills, boundary, errors
+ *
+ * CHANGE DETECTION (2 methods)
+ *   2. detectChanges(category, current) - Detect changes between previous and current state
+ *      Returns { isNew: boolean, changes: Object } with detailed change information
+ *   3. isSignificantChange(oldVal, newVal, threshold) - Check if numeric change exceeds threshold
+ *      Returns true if change is significant or values are non-finite
+ *
+ * HISTORY MANAGEMENT (3 methods)
+ *   4. recordChange(timestamp, category, type, data) - Record change for audit trail
+ *      Maintains circular buffer (max 100 entries) of all state changes
+ *   5. getRecentChanges(category, count) - Get recent changes for a category
+ *      Returns last N changes for specified category (default: 10)
+ *   6. reset(category) - Clear state for category (reset previous state)
+ *
+ * INTERNAL UTILITIES (1 method)
+ *   7. _deepDiff(prev, current) - Deep diff between two objects
+ *      Recursively compares objects, detects all changes and deletions
+ *      Returns Object with format: { key: { from: oldVal, to: newVal } }
+ *
+ * ===============================================================================
+ *
+ * STATE CATEGORIES:
+ * - funds: Available, committed, total, cache, and fee tracking
+ * - orders: Order counts, states, and type distributions
+ * - fills: Fill operations and trade history
+ * - boundary: Grid boundary positions and movements
+ * - errors: Error conditions and recovery attempts
+ *
+ * CHANGE DETECTION ALGORITHM:
+ * 1. First call: Returns { isNew: true, changes: current } and stores state
+ * 2. Subsequent calls: Compares with stored state using _deepDiff
+ * 3. _deepDiff: Recursively compares all keys, detects additions/deletions
+ * 4. Returns: { isNew: false, changes: { key: { from, to } } }
+ *
+ * CHANGE HISTORY:
+ * - Stores up to 100 recent changes (FIFO circular buffer)
+ * - Each entry: { timestamp, category, type, data }
+ * - Enables audit trails and debugging of state transitions
+ *
+ * ===============================================================================
  *
  * @class
  */

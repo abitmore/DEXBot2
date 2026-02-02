@@ -1,30 +1,64 @@
 /**
- * Account Orders Module - Local persistence for order grid snapshots
+ * modules/account_orders.js - Order Grid Persistence Layer
+ *
+ * Local persistence for order grid snapshots and state.
+ * Enables bot recovery after crashes or restarts.
  *
  * Per-Bot Architecture:
  * Each bot has its own dedicated file: profiles/orders/{botKey}.json
- * This eliminates race conditions when multiple bots write simultaneously.
+ * Eliminates race conditions when multiple bots write simultaneously.
  *
- * File structure (per-bot):
+ * ===============================================================================
+ * EXPORTS (4 functions)
+ * ===============================================================================
+ *
+ * PERSISTENCE OPERATIONS:
+ *   1. readOrders(botKey) - Read persisted grid for bot (async)
+ *      Returns { grid, cacheFunds, buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
+ *
+ *   2. writeOrders(botKey, meta, grid, state) - Write grid snapshot (async)
+ *      Writes atomic file update with metadata
+ *      state: { cacheFunds, buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
+ *
+ *   3. deleteOrders(botKey) - Delete persisted grid for bot (async)
+ *
+ *   4. listBotOrders() - List all persisted bot orders (async)
+ *      Returns array of botKeys with persisted grids
+ *
+ * ===============================================================================
+ *
+ * FILE STRUCTURE (profiles/orders/{botKey}.json):
  * {
- *   "bots": {
- *     "botkey": {
- *       "meta": { name, assetA, assetB, active, index },
- *       "grid": [ { id, type, state, price, size, orderId }, ... ],
-  *       "cacheFunds": { buy: number, sell: number },  // All unallocated funds (fill proceeds + surplus)
-  *       "buySideIsDoubled": boolean,
-  *       "sellSideIsDoubled": boolean,
-  *       "btsFeesOwed": number,
- *       "createdAt": "ISO timestamp",
- *       "lastUpdated": "ISO timestamp"
- *     }
+ *   "meta": {
+ *     "name": "Bot name",
+ *     "assetA": "BTS",
+ *     "assetB": "USD",
+ *     "active": true,
+ *     "index": 0
  *   },
+ *   "grid": [
+ *     { "id": "slot-0", "type": "buy", "state": "virtual", "price": 100, "size": 1, "orderId": null },
+ *     ...
+ *   ],
+ *   "cacheFunds": { "buy": 0.5, "sell": 0.3 },
+ *   "buySideIsDoubled": false,
+ *   "sellSideIsDoubled": false,
+ *   "btsFeesOwed": 0.1,
+ *   "createdAt": "ISO timestamp",
  *   "lastUpdated": "ISO timestamp"
  * }
  *
- * The grid snapshot allows the bot to resume from where it left off
- * without regenerating orders, maintaining consistency with on-chain state.
+ * GRID ENTRY FIELDS:
+ * - id: Unique identifier (format: slot-N or custom)
+ * - type: 'buy', 'sell', or 'spread'
+ * - state: 'virtual', 'active', or 'partial'
+ * - price: Price level
+ * - size: Order size in base asset
+ * - orderId: Blockchain order ID (null for VIRTUAL)
+ *
+ * ===============================================================================
  */
+
 const fs = require('fs');
 const path = require('path');
 const { ORDER_TYPES, ORDER_STATES } = require('./constants');

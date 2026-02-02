@@ -1,55 +1,64 @@
 #!/usr/bin/env node
 /**
- * pm2.js - Unified PM2 launcher for DEXBot2
+ * pm2.js - PM2 Orchestration Launcher
  *
- * One-command startup for DEXBot2 with PM2 process management.
- * Handles all setup required before starting bot processes:
+ * Unified PM2 launcher for DEXBot2 multi-bot system.
+ * One-command startup with all setup required before starting bots.
+ * Handles process management, configuration generation, and daemon startup.
  *
- * 1. BitShares Connection
- *    - Waits for BitShares network connection
+ * ===============================================================================
+ * COMMANDS
+ * ===============================================================================
+ *
+ * node pm2.js                    - Default: unlock keystore and start all bots
+ * node pm2.js unlock-start       - Explicit: unlock keystore and start all bots
+ * node pm2.js unlock-start <bot> - Unlock keystore and start specific bot
+ * node pm2.js update             - Run the update script immediately
+ * node pm2.js stop all           - Stop all dexbot PM2 processes
+ * node pm2.js stop <bot-name>    - Stop specific bot process
+ * node pm2.js delete all         - Delete all dexbot processes from PM2
+ * node pm2.js delete <bot-name>  - Delete specific bot from PM2
+ * node pm2.js help               - Show help message
+ *
+ * ===============================================================================
+ * SETUP SEQUENCE
+ * ===============================================================================
+ *
+ * 1. BITSHARES CONNECTION VERIFICATION
+ *    - Waits for BitShares blockchain network connection
  *    - Suppresses debug output to keep terminal clean
+ *    - Validates node availability before proceeding
  *
- * 2. PM2 Installation Check
+ * 2. PM2 INSTALLATION CHECK
  *    - Detects local and global PM2 installations
  *    - Prompts to install PM2 if missing
+ *    - Validates PM2 is available before proceeding
  *
- * 3. Ecosystem Configuration Generation
+ * 3. ECOSYSTEM CONFIGURATION GENERATION
  *    - Reads bot definitions from profiles/bots.json
  *    - Generates profiles/ecosystem.config.js with absolute paths
  *    - Filters only active bots (active !== false)
  *    - If bot-name provided, filters to only that bot
+ *    - Each bot configured with:
+ *      * Unique app name
+ *      * Node runtime arguments
+ *      * Environment variables
+ *      * Log file paths
  *
- * 4. dexbot-cred Startup
+ * 4. CREDENTIAL DAEMON STARTUP
  *    - Starts dexbot-cred daemon if not already running
- *    - Prompts user interactively for master password (once)
- *    - Daemon authenticates and keeps password in RAM
- *    - Bot processes request keys via Unix socket
- *    - Master password never exposed to bot processes
+ *    - Prompts interactively for master password (once at startup)
+ *    - Daemon authenticates with profiles/keys.json
+ *    - Keeps password in RAM for bot process requests
+ *    - Creates Unix socket for inter-process communication
+ *    - Bot processes request keys via socket (no password exposed)
  *
- * 5. PM2 Startup
- *    - Starts configured bots via PM2
- *    - Bots request private keys from dexbot-cred daemon
- *    - No MASTER_PASSWORD environment variable passed
- *
- * Usage:
- *   node pm2.js              - Full setup and start all active bots
- *   node pm2.js <bot-name>   - Start only the specified bot via PM2
- *   node dexbot.js pm2       - Same as 'node pm2.js' via CLI
- *   npm run pm2:unlock-start - Same as 'node pm2.js' via npm script
- *
- * Security:
- *   - Master password never in environment variables
- *   - Master password kept only in daemon process
- *   - Unix socket communication (not exposed in process env)
- *   - Each bot authenticates via socket request
- *   - Password never written to disk
- *
- * Output:
- *   - Clean startup messages (BitShares connection status)
- *   - Ecosystem generation confirmation
- *   - Active bot count
- *   - Daemon startup confirmation
- *   - PM2 management commands reference
+ * 5. PM2 DAEMON STARTUP
+ *    - Starts PM2 daemon if not already running
+ *    - Waits for PM2 to be ready
+ *    - Starts each configured bot as PM2 app
+ *    - Bots request private keys from credential daemon
+ *    - No MASTER_PASSWORD environment variables passed to bots
  */
 
 const fs = require('fs');
