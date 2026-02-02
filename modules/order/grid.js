@@ -1006,10 +1006,9 @@ class Grid {
         // FIX: Use optional chaining for lock - if no lock exists, execute synchronously
         const executeSpreadCheck = () => {
             const currentSpread = Grid.calculateCurrentSpread(manager);
-            const step = 1 + (manager.config.incrementPercent / 100);
 
-            // Nominal spread is what the grid was built for (targetSpreadCount + 1 gaps)
-            const nominalSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + 1) - 1) * 100;
+            // Nominal spread is the configured target spread percentage
+            const nominalSpread = manager.config.targetSpread || 2.0;
 
             // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
             const toleranceSteps = 1 + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
@@ -1020,7 +1019,8 @@ class Grid {
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
             if (manager.outOfSpread === 0) return false;
 
-            const limitSpread = (Math.pow(step, (manager.targetSpreadCount || 0) + 1 + toleranceSteps) - 1) * 100;
+            // Limit spread = nominal + increment per tolerance step (1, 2, or 3 increments based on doubled state)
+            const limitSpread = nominalSpread + (manager.config.incrementPercent * toleranceSteps);
             manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
             const decision = Grid.determineOrderSideByFunds(manager, startPrice);
