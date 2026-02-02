@@ -1517,25 +1517,39 @@ class DEXBot {
         if (!ordersToPlace || ordersToPlace.length === 0) return;
 
         // Pre-check: Verify available funds before attempting to build operations
-        const totalSize = ordersToPlace.reduce((sum, o) => sum + o.size, 0);
-        const sideOfOrders = ordersToPlace[0]?.type || 'unknown';
-        const sideName = sideOfOrders === 'buy' ? 'buy' : 'sell';
+        // IMPORTANT: Separate BUY and SELL orders - they use different asset budgets!
+        const buyOrders = ordersToPlace.filter(o => o.type === 'buy');
+        const sellOrders = ordersToPlace.filter(o => o.type === 'sell');
 
-        // BUY orders require sell asset (paying with what you're selling)
-        // SELL orders require buy asset (selling what you're buying)
-        const availableFund = sideName === 'buy'
-            ? (this.manager.accountTotals?.sellFree ?? 0)
-            : (this.manager.accountTotals?.buyFree ?? 0);
+        // Check BUY orders against buyFree (assetB funds)
+        if (buyOrders.length > 0) {
+            const buyTotalSize = buyOrders.reduce((sum, o) => sum + o.size, 0);
+            const buyFund = this.manager.accountTotals?.buyFree ?? 0;
+            if (buyTotalSize > buyFund) {
+                this.manager.logger.log(
+                    `Warning: total order size (${buyTotalSize.toFixed(8)}) exceeds available funds (${buyFund.toFixed(8)}) for buy. ` +
+                    `Some orders may be skipped or placed at reduced size.`,
+                    'warn'
+                );
+            }
+        }
 
-        if (totalSize > availableFund) {
-            this.manager.logger.log(
-                `Warning: total order size (${totalSize.toFixed(8)}) exceeds available funds (${availableFund.toFixed(8)}) for ${sideName}. ` +
-                `Some orders may be skipped or placed at reduced size.`,
-                'warn'
-            );
+        // Check SELL orders against sellFree (assetA funds)
+        if (sellOrders.length > 0) {
+            const sellTotalSize = sellOrders.reduce((sum, o) => sum + o.size, 0);
+            const sellFund = this.manager.accountTotals?.sellFree ?? 0;
+            if (sellTotalSize > sellFund) {
+                this.manager.logger.log(
+                    `Warning: total order size (${sellTotalSize.toFixed(8)}) exceeds available funds (${sellFund.toFixed(8)}) for sell. ` +
+                    `Some orders may be skipped or placed at reduced size.`,
+                    'warn'
+                );
+            }
         }
 
         for (const order of ordersToPlace) {
+            // Determine order type for validation (not just first order)
+            const sideOfOrders = order.type || 'unknown';
             try {
                 // Comprehensive order size validation (absolute minimum + double-dust threshold)
                 const sizeValidation = validateOrderSize(

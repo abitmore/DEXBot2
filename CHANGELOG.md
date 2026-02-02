@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [0.6.0-patch.12] - 2026-02-02 - Pipeline Safety Enhancement & Code Quality Improvements
+## [0.6.0-patch.12] - 2026-02-02 - Pipeline Safety Enhancement, Fund Availability Fix & Code Quality Improvements
 
 ### Added
 - **Pipeline Timeout Safeguard** in manager.js (commit 6737d35)
@@ -21,9 +21,20 @@ All notable changes to this project will be documented in this file.
 
 - **Pipeline Timing Configuration** in constants.js (commit 6737d35)
   - `PIPELINE_TIMING.TIMEOUT_MS` (300000 ms / 5 minutes) - Conservative timeout preventing false positives
-  - `PIPELINE_TIMING.TIMEOUT_WARNING_INTERVAL` (60000 ms / 1 minute) - For future warning escalation
+
+- **Stale Pipeline Operations Clearing** in manager.js (commit dd94044)
+  - `clearStalePipelineOperations()` method explicitly handles timeout recovery
+  - Separates timeout logic from `isPipelineEmpty()` query
+  - Called from `_executeMaintenanceLogic()` for scheduled cleanup
 
 ### Refactored
+- **Pipeline Timeout Logic Separation** in manager.js (commit dd94044)
+  - Extracted timeout and clearing logic from `isPipelineEmpty()` into `clearStalePipelineOperations()`
+  - `isPipelineEmpty()` now a pure query (except timestamp tracking)
+  - `getPipelineHealth()` no longer calls `isPipelineEmpty()` internally
+  - Improves separation of concerns and testability
+  - Removes hidden side effects in query method
+
 - **Fill Cleanup Counter Logic** in dexbot_class.js (commit 83b4dc6)
   - Removed redundant lazy initialization (counter already initialized in constructor)
   - Removed misleading "locally track" comment that incorrectly described synchronization
@@ -31,6 +42,17 @@ All notable changes to this project will be documented in this file.
   - Clarified lock-based synchronization mechanism in comments
 
 ### Fixed
+- **Mixed BUY/SELL Order Fund Availability Checks** in dexbot_class.js (commit 701352b)
+  - **Problem 1 - Asset Mapping Regression**: After commit ee76bcd, BUY orders checked `sellFree` and SELL orders checked `buyFree` (inverted)
+  - **Problem 2 - Mixed Order Handling**: `_buildCreateOps()` received both BUY and SELL orders but summed them together and only checked first order's type, causing false fund warnings
+  - **Problem 3 - Per-Order Validation**: Used first order's type for validating all orders instead of each order's individual type
+  - **Solution**:
+    - Separate BUY and SELL orders into independent checks
+    - BUY orders now correctly check `buyFree` (assetB capital)
+    - SELL orders now correctly check `sellFree` (assetA inventory)
+    - Each order validated against its own type, not first order's type
+  - **Impact**: Accurate fund warnings, eliminates false positives for mixed placements
+
 - **Critical Pipeline Vulnerability** (commit 6737d35)
   - **Problem**: Pipeline checks could block indefinitely if operations hung (network issues, stuck corrections)
   - **Solution**: 5-minute timeout with automatic recovery
@@ -72,6 +94,8 @@ All notable changes to this project will be documented in this file.
 ### Related Commits
 - Builds on commit a946c33 (grid maintenance race-to-resize fix)
 - Complements pipeline consensus enforcement from Patch 11
+- Includes refactoring in dd94044 (pipeline timeout separation)
+- Fixes regression from ee76bcd (asset mapping in fund checks)
 
 ---
 
