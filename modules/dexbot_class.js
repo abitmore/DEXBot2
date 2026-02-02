@@ -840,12 +840,22 @@ class DEXBot {
                                     await this.manager.persistGrid();
                                 }
                             } else {
-                                this.manager.logger.log(`Deferring grid health check: ${pipelineStatus.reasons.join(', ')}`, 'debug');
+                                // Pipeline not empty - defer grid health check to prevent premature modifications
+                                // This is NORMAL and EXPECTED during high-activity periods
+                                const health = this.manager.getPipelineHealth();
+                                this.manager.logger.log(
+                                    `Deferring grid health check: ${pipelineStatus.reasons.join(', ')}. ` +
+                                    `Blocked for: ${health.blockedDurationHuman}`,
+                                    'debug'
+                                );
                             }
                         }
 
                         // Only run grid maintenance if rotation was completed.
-                        // _runGridMaintenance handles pipeline status checks and lock ordering.
+                        // CRITICAL FIX (commit a946c33): Replaced inline divergence checks with centralized
+                        // _runGridMaintenance call to ensure pipeline protection applies consistently.
+                        // Before: Divergence checks ran immediately after fills, causing race-to-resize
+                        // After: Grid maintenance waits for isPipelineEmpty() before structural changes
                         if (anyRotations) {
                             await this._runGridMaintenance('post-fill', true);
                         }
@@ -2081,7 +2091,34 @@ class DEXBot {
     }
 
     /**
-     * Internal grid maintenance logic. Must be called with appropriate locks held.
+     * Execute grid maintenance checks in strict order with pipeline consensus.
+     *
+     * CRITICAL DESIGN: All structural grid modifications are deferred until the pipeline
+     * is empty to prevent "race-to-resize" conditions where the bot attempts to reallocate
+     * temporary fund surpluses from filled orders before their counter-orders/rotations
+     * are placed.
+     *
+     * MAINTENANCE SEQUENCE:
+     * 1. Fund Recalculation (ALWAYS) - Updates internal fund metrics
+     * 2. Pipeline Check (GATE) - Verifies no pending operations
+     * 3. Spread Correction (IF IDLE) - Corrects wide spreads before divergence
+     * 4. Health Check (IF IDLE) - Detects and cleans dust orders
+     * 5. Divergence Detection (IF IDLE) - Identifies structural mismatches
+     * 6. Grid Resizing (IF IDLE) - Applies size corrections on-chain
+     *
+     * WHY PIPELINE CONSENSUS MATTERS:
+     * - After a fill, funds temporarily show a "surplus" from the filled order
+     * - If grid maintenance runs immediately, it sees the surplus and triggers a resize
+     * - The resize attempts to allocate funds that will be consumed by pending counter-orders
+     * - This causes cascading trades, fund accounting errors, and grid instability
+     * - Solution: Wait for pipeline to empty (all rotations placed) before resizing
+     *
+     * TIMEOUT SAFETY:
+     * - isPipelineEmpty() includes 5-minute timeout for stuck operations
+     * - If pipeline is blocked beyond timeout, maintenance proceeds with warning
+     * - See manager.isPipelineEmpty() implementation for details
+     *
+     * @param {string} context - Maintenance context for logging ('startup', 'periodic', 'post-fill')
      * @private
      */
     async _executeMaintenanceLogic(context) {
@@ -2171,13 +2208,27 @@ class DEXBot {
     }
 
     /**
-     * Perform grid maintenance: fund thresholds, spread condition, grid health.
-     * Consolidates checks used during startup and periodic runtime updates.
+     * Perform grid maintenance: fund thresholds, spread condition, grid health, divergence.
+     * Consolidates maintenance checks used during startup, periodic updates, and post-fill.
      *
-     * LOCK ORDERING: _fillProcessingLock → _divergenceLock (canonical order)
-     * This matches the order used in _consumeFillQueue to prevent deadlocks.
+     * ENTRY POINTS:
+     * 1. Startup (line ~530): After grid initialization, ensures grid is healthy
+     * 2. Periodic (line ~1982): Every BLOCKCHAIN_SYNC_INTERVAL_MS (default 30s)
+     * 3. Post-Fill (line ~850): After order fills are rotated (NEW in commit a946c33)
      *
-     * @param {string} context - Maintenance context for logging (e.g. 'startup', 'periodic')
+     * PIPELINE PROTECTION:
+     * All maintenance operations inside _executeMaintenanceLogic respect isPipelineEmpty().
+     * This prevents grid modifications while fills/rotations/corrections are pending.
+     * See _executeMaintenanceLogic documentation for detailed rationale.
+     *
+     * LOCK ORDERING:
+     * - Canonical order: _fillProcessingLock → _divergenceLock
+     * - This function handles lock acquisition based on fillLockAlreadyHeld parameter
+     * - When called from post-fill context, fill lock is already held
+     * - When called from periodic context, both locks must be acquired
+     * - Matches the order used in _consumeFillQueue to prevent deadlocks
+     *
+     * @param {string} context - Maintenance context for logging (e.g. 'startup', 'periodic', 'post-fill')
      * @param {boolean} fillLockAlreadyHeld - If true, caller already holds _fillProcessingLock
      * @private
      */
