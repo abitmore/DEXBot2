@@ -10,14 +10,20 @@ const {
     getPrecisionForSide,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
-    getDoubleDustThreshold,
     getAssetFees,
     allocateFundsByWeights,
     floatToBlockchainInt,
     blockchainToFloat,
     calculateSpreadFromOrders,
     countOrdersByType,
-    shouldFlagOutOfSpread
+    shouldFlagOutOfSpread,
+    virtualizeOrder,
+    isOrderHealthy,
+    convertToSpreadPlaceholder,
+    isOrderOnChain,
+    hasOnChainId,
+    isOrderVirtual,
+    isOrderPlaced
 } = require("./utils");
 const Format = require('./format');
 
@@ -191,14 +197,8 @@ class StrategyEngine {
             // Only convert to SPREAD if it doesn't have an active on-chain order!
             // FIX: Check state (ACTIVE/PARTIAL means on-chain order exists) rather than just orderId
             // This prevents converting slots that have real orders to SPREAD prematurely
-            const hasOnChainOrder = s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL);
-            if (s.type !== ORDER_TYPES.SPREAD && !hasOnChainOrder) {
-                mgr._updateOrder(
-                    { ...s, type: ORDER_TYPES.SPREAD, size: 0, orderId: null },
-                    'role-assignment',
-                    false,
-                    0
-                );
+            if (s.type !== ORDER_TYPES.SPREAD && !isOrderPlaced(s)) {
+                mgr._updateOrder(convertToSpreadPlaceholder(s), 'role-assignment', false, 0);
             }
         });
 
@@ -388,17 +388,17 @@ class StrategyEngine {
         // ════════════════════════════════════════════════════════════════════════════════
         // STEP 2: IDENTIFY SHORTAGES AND SURPLUSES
         // ════════════════════════════════════════════════════════════════════════════════
-        const activeOnChain = allSlots.filter(s => s.orderId && (s.state === ORDER_STATES.ACTIVE || s.state === ORDER_STATES.PARTIAL) && !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId))));
+        const activeOnChain = allSlots.filter(s => isOrderPlaced(s) && !(excludeIds.has(s.id) || (hasOnChainId(s) && excludeIds.has(s.orderId))));
         const activeThisSide = activeOnChain.filter(s => s.type === type);
 
         const shortages = targetIndices.filter(idx => {
             const slot = allSlots[idx];
-            if (excludeIds.has(slot.id) || (slot.orderId && excludeIds.has(slot.orderId))) return false;
-            if (!slot.orderId && finalIdealSizes[idx] > 0) return true;
+            if (excludeIds.has(slot.id) || (hasOnChainId(slot) && excludeIds.has(slot.orderId))) return false;
+            if (!hasOnChainId(slot) && finalIdealSizes[idx] > 0) return true;
 
             // Dust detection: Treat slot as shortage if it has a dust order
             // This allows the strategy to "refill" it (either by rotation or update)
-            if (slot.orderId && finalIdealSizes[idx] > 0) {
+            if (hasOnChainId(slot) && finalIdealSizes[idx] > 0) {
                 const threshold = getSingleDustThreshold(finalIdealSizes[idx]);
                 if (slot.size < threshold) return true;
             }
@@ -448,7 +448,7 @@ class StrategyEngine {
             s.type === type &&
             s.state === ORDER_STATES.PARTIAL &&
             targetSet.has(slotIndexMap.get(s.id)) &&
-            !(excludeIds.has(s.id) || (s.orderId && excludeIds.has(s.orderId)))
+            !(excludeIds.has(s.id) || (hasOnChainId(s) && excludeIds.has(s.orderId)))
         );
 
         let remainingAvail = availSide;
@@ -491,7 +491,7 @@ class StrategyEngine {
 
                     ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
                     // CRITICAL: Only upgrade to ACTIVE if order has valid orderId to prevent phantom orders
-                    const newState = partial.orderId ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+                    const newState = hasOnChainId(partial) ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
                     stateUpdates.push({ ...partial, size: finalSize, state: newState });
 
                     totalNewPlacementSize += cappedIncrease;
@@ -514,7 +514,7 @@ class StrategyEngine {
 
                 const nextSlot = allSlots[nextSlotIdx];
                 const currentNextSlot = mgr.orders.get(nextSlot.id);
-                if (!currentNextSlot || currentNextSlot.orderId || currentNextSlot.state !== ORDER_STATES.VIRTUAL) {
+                if (!currentNextSlot || hasOnChainId(currentNextSlot) || currentNextSlot.state !== ORDER_STATES.VIRTUAL) {
                     mgr.logger.log(`[PARTIAL] Skipping non-dust partial at ${partial.id}: target slot ${nextSlot.id} not available (state=${currentNextSlot?.state}, orderId=${currentNextSlot?.orderId})`, "warn");
                     continue;
                 }
@@ -530,7 +530,7 @@ class StrategyEngine {
                     mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
                     ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
                     // CRITICAL: Only upgrade to ACTIVE if order has valid orderId to prevent phantom orders
-                    const newState = partial.orderId ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+                    const newState = hasOnChainId(partial) ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
                     stateUpdates.push({ ...partial, size: finalSize, state: newState });
 
                     // NEW: Set new split order to VIRTUAL until confirmed on-chain
@@ -584,7 +584,7 @@ class StrategyEngine {
             const currentSurplus = mgr.orders.get(surplus.id);
             if (!currentSurplus ||
                 currentSurplus.state === ORDER_STATES.VIRTUAL ||
-                (surplus.orderId && currentSurplus.orderId !== surplus.orderId)) {
+                (hasOnChainId(surplus) && currentSurplus.orderId !== surplus.orderId)) {
                 mgr.logger.log(`[ROTATION] Skipping surplus ${surplus.id}: no longer valid`, "warn");
                 surplusIdx++;
                 continue;
@@ -600,16 +600,10 @@ class StrategyEngine {
             const cappedIncrease = Math.min(gridDifference, remainingAvail);
             const finalSize = destinationSize + cappedIncrease;
 
-            // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
-            // NOTE: idealSize is quantized from blockchain integers, so multiplying by float threshold
-            // (0.1) is safe - both values are in the same float domain. Size comparisons remain consistent.
-            const minHealthySize = getDoubleDustThreshold(idealSize);
-            const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
-
             // Logic:
             // 1. If the ideal target is too small (dust), skip it.
             // 2. If available funds cap the order below the healthy threshold, skip it.
-            if (idealSize >= minAbsoluteSize && finalSize >= minHealthySize) {
+            if (isOrderHealthy(finalSize, type, mgr.assets, idealSize)) {
                 ordersToRotate.push({
                     oldOrder: { ...currentSurplus },
                     newPrice: shortageSlot.price,
@@ -621,7 +615,7 @@ class StrategyEngine {
                 });
 
                 // Transition old order to VIRTUAL with size 0 (it's being replaced by the new order)
-                stateUpdates.push({ ...currentSurplus, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null });
+                stateUpdates.push({ ...virtualizeOrder(currentSurplus), size: 0 });
 
                 // New rotated order must stay VIRTUAL until blockchain confirms
                 stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });
@@ -665,13 +659,7 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
                 const finalSize = currentSize + cappedIncrease;
 
-                // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
-                // NOTE: idealSize is quantized from blockchain integers, so multiplying by float threshold
-                // (0.1) is safe - both values are in the same float domain. Size comparisons remain consistent.
-                const minHealthySize = getDoubleDustThreshold(idealSize);
-                const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
-
-                if (idealSize >= minAbsoluteSize && finalSize >= minHealthySize) {
+                if (isOrderHealthy(finalSize, type, mgr.assets, idealSize)) {
                     // NEW: Set new placement to VIRTUAL until confirmed on-chain
                     ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
                     stateUpdates.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });
@@ -693,7 +681,7 @@ class StrategyEngine {
             const surplus = filteredSurpluses[i];
             if (!rotatedOldIds.has(surplus.id)) {
                 ordersToCancel.push({ ...surplus });
-                stateUpdates.push({ ...surplus, state: ORDER_STATES.VIRTUAL, orderId: null });
+                stateUpdates.push(virtualizeOrder(surplus));
             }
         }
         // Handled partials are NOT cancelled - they're updated in-place (STEP 2.5)
@@ -794,10 +782,10 @@ class StrategyEngine {
                     // In sequential processing, a previous fill's rebalance might have rotated
                     // a new order into this slot (treated as empty because it was about to fill).
                     const currentSlot = mgr.orders.get(filledOrder.id);
-                    const slotReused = currentSlot && currentSlot.orderId && currentSlot.orderId !== filledOrder.orderId;
+                    const slotReused = currentSlot && hasOnChainId(currentSlot) && currentSlot.orderId !== filledOrder.orderId;
 
                     if (!slotReused) {
-                        mgr._updateOrder({ ...filledOrder, state: ORDER_STATES.VIRTUAL, size: 0, orderId: null }, 'fill', false, 0);
+                        mgr._updateOrder({ ...virtualizeOrder(filledOrder), size: 0 }, 'fill', false, 0);
                     } else {
                         mgr.logger.log(`[RACE] Slot ${filledOrder.id} reused (curr=${currentSlot.orderId} != fill=${filledOrder.orderId}). Skipping VIRTUAL update.`, 'info');
                     }

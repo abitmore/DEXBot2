@@ -13,7 +13,10 @@ const {
     findMatchingGridOrderByOpenOrder,
     applyChainSizeToGridOrder,
     convertToSpreadPlaceholder,
-    hasValidAccountTotals
+    virtualizeOrder,
+    hasValidAccountTotals,
+    isOrderVirtual,
+    hasOnChainId
 } = require('./utils');
 
 class SyncEngine {
@@ -621,13 +624,13 @@ class SyncEngine {
 
                         // For rotation: transition the old order to VIRTUAL, freeing its capital
                         if (isRotation && existingOrder) {
-                            if (existingOrder.state !== ORDER_STATES.VIRTUAL) {
-                                const oldVirtualOrder = { ...existingOrder, state: ORDER_STATES.VIRTUAL, orderId: null, size: 0 };
+                            if (!isOrderVirtual(existingOrder)) {
+                                const oldVirtualOrder = { ...virtualizeOrder(existingOrder), size: 0 };
                                 mgr._updateOrder(oldVirtualOrder, 'rotation-cleanup', chainData.skipAccounting || false, 0);
-                            } else if (existingOrder.orderId) {
+                            } else if (hasOnChainId(existingOrder)) {
                                 // Already VIRTUAL but still has orderId (from rebalance)
                                 // Just clear the orderId to reflect blockchain state
-                                const clearedOrder = { ...existingOrder, orderId: null, size: 0 };
+                                const clearedOrder = { ...virtualizeOrder(existingOrder), size: 0 };
                                 mgr._updateOrder(clearedOrder, 'fill-cleanup', chainData.skipAccounting || false, 0);
                             }
                         }
@@ -654,8 +657,7 @@ class SyncEngine {
                         // Re-fetch to ensure we have latest state after acquiring lock
                         const currentGridOrder = mgr.orders.get(gridOrder.id);
                         if (currentGridOrder && currentGridOrder.orderId === orderId) {
-                            const updatedOrder = { ...currentGridOrder, state: ORDER_STATES.VIRTUAL, orderId: null };
-                            mgr._updateOrder(updatedOrder, 'cancel-order', false, 0);
+                            mgr._updateOrder(virtualizeOrder(currentGridOrder), 'cancel-order', false, 0);
                         }
                     } finally {
                         mgr.unlockOrders(orderIds);

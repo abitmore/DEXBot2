@@ -79,8 +79,8 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
     const outerEdgeCount = Math.min(updateCount, sorted.length);
     const edgeOrders = sorted.slice(-outerEdgeCount);
 
-    // Check if ALL edge orders are ACTIVE (have orderId set)
-    const allEdgeActive = edgeOrders.every(o => o.orderId && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL));
+    // Check if ALL edge orders are ACTIVE (placed on blockchain)
+    const allEdgeActive = edgeOrders.every(o => OrderUtils.isOrderPlaced(o));
 
     return allEdgeActive;
 }
@@ -329,7 +329,7 @@ async function attemptResumePersistedGridByPriceMatch({
 
         const matchedOrderIds = new Set(
             Array.from(manager.orders.values())
-                .filter(o => o && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
+                .filter(o => o && OrderUtils.isOrderOnChain(o))
                 .map(o => o.orderId)
                 .filter(Boolean)
         );
@@ -443,7 +443,7 @@ async function reconcileStartupOrders({
     // new orders or cause balance invariants.
     const chainIds = new Set(chainOpenOrders.map(o => o.id));
     for (const order of manager.orders.values()) {
-        if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && order.orderId) {
+        if (OrderUtils.isOrderPlaced(order)) {
             if (!chainIds.has(order.orderId)) {
                 logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
 

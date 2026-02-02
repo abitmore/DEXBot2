@@ -19,7 +19,9 @@ const {
     computeChainFundTotals,
     hasValidAccountTotals,
     resolveConfigValue,
-    floatToBlockchainInt
+    floatToBlockchainInt,
+    isOrderOnChain,
+    isPhantomOrder
 } = require('./utils');
 const Logger = require('./logger');
 const AsyncLock = require('./async_lock');
@@ -582,7 +584,7 @@ class OrderManager {
         const oldOrder = this.orders.get(id);
 
         // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
-        if (order.type === ORDER_TYPES.SPREAD && (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL)) {
+        if (order.type === ORDER_TYPES.SPREAD && isOrderOnChain(order)) {
             this.logger.log(`ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${order.state}. SPREAD orders must remain VIRTUAL.`, 'error');
             return;
         }
@@ -590,7 +592,7 @@ class OrderManager {
         // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
         // This is a defense-in-depth check to catch bugs in any module that might try to
         // create an ACTIVE or PARTIAL order without a corresponding blockchain order ID.
-        if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !order.orderId) {
+        if (isPhantomOrder(order)) {
             this.logger.log(
                 `ILLEGAL STATE: Refusing to set order ${id} to ${order.state} without orderId. ` +
                 `Context: ${context}. This would create a phantom order that doubles fund tracking. ` +
@@ -904,9 +906,8 @@ class OrderManager {
         // Get grid allocation and free balance from blockchain
         let gridBuy = 0, gridSell = 0;
         for (const order of Array.from(this.orders.values())) {
-            const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
             const size = Number(order.size) || 0;
-            if (size <= 0 || !isActive) continue;
+            if (size <= 0 || !isOrderOnChain(order)) continue;
 
             if (order.type === 'buy') gridBuy += size;
             else if (order.type === 'sell') gridSell += size;
@@ -977,8 +978,7 @@ class OrderManager {
 
         // Check 2: Phantom order detection
         for (const order of mgr.orders.values()) {
-            if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL)
-                && !order.orderId) {
+            if (isPhantomOrder(order)) {
                 return {
                     isValid: false,
                     reason: `Phantom order detected: order ${order.id} is ${order.state} but has no orderId`

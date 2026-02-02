@@ -77,6 +77,7 @@ class Accountant {
             const size = Number(order.size) || 0;
             if (size <= 0) continue;
 
+            // For explicit BUY/SELL orders, use their type; for SPREAD, determine by price
             const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.startPrice);
             const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.startPrice);
 

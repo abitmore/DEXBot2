@@ -44,7 +44,10 @@ const {
     countOrdersByType,
     shouldFlagOutOfSpread,
     derivePrice,
-    isNumeric
+    isNumeric,
+    isOrderHealthy,
+    isPhantomOrder,
+    isSlotAvailable
 } = require('./utils');
 
 class Grid {
@@ -405,9 +408,9 @@ class Grid {
         try {
             // RC-2: Use atomic order updates to prevent concurrent state corruption
             for (const order of grid) {
-                // SANITY CHECK: If order is ACTIVE/PARTIAL but has no orderId, downgrade to VIRTUAL
+                // SANITY CHECK: If order is phantom (ACTIVE/PARTIAL without orderId), downgrade to VIRTUAL
                 // This fixes "Wrong active order" bugs where state gets corrupted
-                if ((order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !order.orderId) {
+                if (isPhantomOrder(order)) {
                     manager.logger?.log?.(`Sanitizing corrupted order ${order.id}: ACTIVE/PARTIAL without orderId -> VIRTUAL`, 'warn');
                     order.state = ORDER_STATES.VIRTUAL;
                     // Keep size as-is for debug context, _updateOrder handles state transitions correctly
@@ -1149,7 +1152,7 @@ class Grid {
         // - SELL orders must be ABOVE mid-price (we're selling at higher prices)
         const candidateSlots = Array.from(manager.orders.values())
             .filter(o => {
-                if (o.state !== ORDER_STATES.VIRTUAL || o.orderId) return false;
+                if (!isSlotAvailable(o)) return false;
                 // Only allow slots in the correct zone
                 if (railType === ORDER_TYPES.BUY && o.price >= midPrice) return false;
                 if (railType === ORDER_TYPES.SELL && o.price <= midPrice) return false;
@@ -1166,19 +1169,11 @@ class Grid {
             const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
             const availableFund = (manager.funds?.available?.[sideName] || 0);
 
-            const minAbsoluteSize = getMinAbsoluteOrderSize(railType, manager.assets);
-
-            if (idealSize && idealSize >= minAbsoluteSize) {
+            if (idealSize) {
                 // Scale down to available funds if necessary
                 const size = Math.min(idealSize, availableFund);
 
-                // Calculate minimum healthy size (double the standard dust threshold) AND absolute minimum
-                // NOTE: idealSize is already quantized from blockchainToFloat(), so multiplying by float
-                // threshold (0.1) is safe. Both values are floats in the same "domain" and the comparison
-                // is consistent. When orders are placed, sizes are quantized again via blockchainToFloat().
-                const minHealthySize = getDoubleDustThreshold(idealSize);
-
-                if (size >= minHealthySize && size >= minAbsoluteSize) {
+                if (isOrderHealthy(size, railType, manager.assets, idealSize)) {
                     const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
 
                     // Log if we are scaling down
@@ -1191,9 +1186,10 @@ class Grid {
                     // availableFund will be updated on next iteration via recalculateFunds inside _updateOrder
                 } else {
                     const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
+                    const minHealthy = getDoubleDustThreshold(idealSize);
                     manager.logger?.log?.(
                         `Spread correction skipped at slot ${candidate.id}: ` +
-                        `size=${Format.formatAmount8(size)} < threshold=${Format.formatAmount8(minHealthySize)} ` +
+                        `size=${Format.formatAmount8(size)} < threshold=${Format.formatAmount8(minHealthy)} ` +
                         `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatAmount8(idealSize)}). ` +
                         `Available funds: ${Format.formatAmount8(availableFund)}`,
                         'debug'

@@ -927,6 +927,7 @@ class DEXBot {
         // 2. Process fills with simple rotation (use pre-calculated sizes)
         try {
             this._log(`[BOOTSTRAP] Processing ${validFills.length} fill(s) with simple rotation`, 'info');
+            const { virtualizeOrder } = require('./order/utils');
 
             const ordersToPlace = [];
 
@@ -936,12 +937,7 @@ class DEXBot {
                 const oppositeType = filledType === ORDER_TYPES.BUY ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
 
                 // Mark filled slot as VIRTUAL (released)
-                this.manager._updateOrder({
-                    ...filledOrder,
-                    state: ORDER_STATES.VIRTUAL,
-                    size: 0,
-                    orderId: null
-                }, 'bootstrap-fill', false, 0);
+                this.manager._updateOrder({ ...virtualizeOrder(filledOrder), size: 0 }, 'bootstrap-fill', false, 0);
 
                 // Find highest active order on opposite side (closest to market)
                 const allOrders = Array.from(this.manager.orders.values());
@@ -988,12 +984,7 @@ class DEXBot {
                 this._log(`[BOOTSTRAP] Rotating ${surplusOrder.id} → ${targetSlot.id} (${oppositeType} ${Format.formatAmount8(rotationSize)})`, 'info');
 
                 // Mark surplus as released
-                this.manager._updateOrder({
-                    ...surplusOrder,
-                    state: ORDER_STATES.VIRTUAL,
-                    size: 0,
-                    orderId: null
-                }, 'bootstrap-rotate', false, 0);
+                this.manager._updateOrder({ ...virtualizeOrder(surplusOrder), size: 0 }, 'bootstrap-rotate', false, 0);
 
                 // Create rotation order with pre-calculated size
                 ordersToPlace.push({
