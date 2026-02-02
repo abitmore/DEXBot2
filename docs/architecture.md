@@ -100,6 +100,225 @@ The `OrderManager` is the central hub that coordinates all order operations. It 
 
 ---
 
+## Fund-Driven Boundary Sync (Patch 8)
+
+The grid boundary (which separates BUY, SPREAD, and SELL zones) automatically aligns with the bot's actual inventory distribution.
+
+### Why This Matters
+
+By default, the grid is centered around `startPrice`. However, if the bot has asymmetric capital (e.g., more assetB than assetA), the boundary should shift to favor the "heavier" side.
+
+**Example**: If 70% of capital is in assetB (buying power), the BUY zone should be expanded.
+
+### Boundary Calculation
+
+**Location**: `modules/dexbot_class.js::_performGridChecks()` → Boundary Sync step
+
+**Algorithm**:
+```javascript
+// 1. Scan all grid slots and their current assignments
+const buyTotal = sum(orders with type === BUY);
+const sellTotal = sum(orders with type === SELL);
+const totalAllocated = buyTotal + sellTotal;
+
+// 2. Calculate target allocation based on available funds
+const buyAvailable = manager.funds.available.buy;
+const sellAvailable = manager.funds.available.sell;
+const totalAvailable = buyAvailable + sellAvailable;
+
+// 3. Determine ideal boundary position
+const buyTargetRatio = buyAvailable / totalAvailable;  // e.g., 0.7
+const slots = grid.length;
+const targetBuySlots = Math.round(slots * buyTargetRatio * 0.5);  // Apply centering factor
+
+// 4. Adjust boundary to new position
+newBoundaryIdx = calculateNewBoundary(targetBuySlots);
+
+// 5. Re-assign slot roles (BUY/SPREAD/SELL) based on new boundary
+reassignSlotRoles(newBoundaryIdx);
+```
+
+### Three Rotation Cases
+
+Once the new boundary is determined, existing on-chain orders are matched to desired slots:
+
+| Case | Condition | Action |
+|------|-----------|--------|
+| **MATCH** | Existing order price matches desired slot | Update size if needed |
+| **ACTIVATE** | Desired slot is empty | Place new order at this price |
+| **DEACTIVATE** | Existing order exceeds target count | Cancel excess orders |
+
+**Adaptive Target Count**:
+- Normal: `activeOrders` from config
+- Doubled sides: `activeOrders - 1` (prevents structural drift)
+
+### Impact
+
+- **Automatic Capital Repositioning**: Grid follows capital distribution without manual intervention
+- **Fund Respect**: Never exceeds available funds when activating slots
+- **Smooth Transitions**: Rotations happen gradually, not all at once
+
+---
+
+## Scaled Spread Correction (Patch 8)
+
+Dynamic spread correction that scales the number of replacement slots based on how much the spread has widened.
+
+### The Problem
+
+Legacy approach: Fixed number of spread-zone orders regardless of how far out of sync they are. New approach: Scale corrections to severity.
+
+### Algorithm
+
+**Location**: `modules/order/strategy.js::rebalance()`
+
+```javascript
+// 1. Measure current spread (in number of steps)
+const currentSpreadSteps = calculateSpreadWidth();
+const targetSpreadSteps = calculateTargetSpread();
+const spreadWidening = currentSpreadSteps - targetSpreadSteps;
+
+// 2. Calculate replacement slots based on severity
+const baseReplacementSlots = Math.min(spreadWidening, maxReplacementSlots);
+
+// 3. Prevent "double-dust" - ensure each replacement is healthy
+const minHealthySize = getMinOrderSize(type, assets, DOUBLE_DUST_FACTOR);
+const correctionCap = Math.floor(availableFunds / minHealthySize);
+
+// 4. Final correction count is conservative
+const replacementCount = Math.min(baseReplacementSlots, correctionCap);
+```
+
+### Double-Dust Safety Floor
+
+Before placing correction orders, validate that each order meets minimum healthy size:
+
+```javascript
+// Check: size >= DUST_RATIO * idealSize (typically 5%)
+const isDust = order.size < 0.05 * idealSize;
+
+if (isDust) {
+    // Log warning, skip this correction slot
+    logger.warn(`Correction would create dust order, skipping`);
+    continue;
+}
+```
+
+**Benefit**: Prevents fragmentation from aggressive spread corrections.
+
+### Configuration
+
+```javascript
+// In modules/constants.js
+SPREAD_LIMITS: {
+    MAX_REPLACEMENT_SLOTS: 5,        // Max slots corrected per fill
+    DOUBLE_DUST_FACTOR: 1.0,         // Health threshold for corrections
+}
+```
+
+---
+
+## Periodic Market Price Refresh (Patch 8)
+
+Background market price updates every 4 hours to ensure grid anchoring remains accurate during long-running sessions without fills.
+
+### Purpose
+
+If the bot hasn't seen fills for 4 hours, the `startPrice` might become stale if:
+- Market has drifted significantly
+- Liquidity pool price has shifted
+- User wants grid recalculation
+
+### Configuration
+
+**Location**: `modules/constants.js`
+
+```javascript
+BLOCKCHAIN_FETCH_INTERVAL_MIN: 240,  // 4 hours = 240 minutes
+```
+
+### Implementation Flow
+
+```javascript
+// 1. Timer started during bot initialization
+this.periodicRefreshTimer = setInterval(
+    () => this._performPeriodicRefresh(),
+    BLOCKCHAIN_FETCH_INTERVAL_MIN * 60 * 1000
+);
+
+// 2. When timer fires:
+async _performPeriodicRefresh() {
+    // Fetch latest market price
+    const latestPrice = await derivePrice('market');  // Or 'pool'
+
+    // Update internal anchor if using dynamic pricing
+    if (config.startPrice === 'market' || config.startPrice === 'pool') {
+        this.manager.startPrice = latestPrice;
+    }
+
+    // Grid remains un-affected (fund-driven during normal ops)
+    // Only used for valuation calculations and divergence checks
+}
+```
+
+### When `startPrice` is Numeric
+
+If user set `startPrice: 105.5` in bots.json:
+- **No auto-refresh**: Numeric value is treated as fixed anchor
+- **Valuation uses fixed value**: All calculations use 105.5
+- **Grid doesn't move**: Orders stay where they are (fund-driven rebalancing only)
+
+### Non-Disruptive Updates
+
+Price refresh is passive:
+- ✅ Updates internal valuation
+- ✅ Affects future grid resets if triggered
+- ❌ Does NOT move orders on blockchain (no funds wasted on unnecessary rotations)
+
+---
+
+## Out-of-Spread Metric Refinement (Patch 8)
+
+Refactored `outOfSpread` from a simple boolean flag to a numeric distance metric for more precise structural updates.
+
+### Before (Boolean)
+
+```javascript
+// Old approach
+mgr.outOfSpread = true;  // Binary: either in or out
+if (mgr.outOfSpread) {
+    // Perform spread correction
+}
+```
+
+**Problem**: Doesn't distinguish between "slightly out" vs "severely out"
+
+### After (Numeric Distance)
+
+```javascript
+// New approach: distance in steps
+mgr.outOfSpread = 3;  // 3 steps beyond target spread
+
+// Use distance in correction logic
+const spreadDistance = mgr.outOfSpread;
+const replacementSlots = Math.min(spreadDistance, MAX_CORRECTION_SLOTS);
+```
+
+**Benefit**: Enables scaled corrections based on actual severity.
+
+### Calculation
+
+```javascript
+// Calculate how many steps beyond target
+const currentSpreadSteps = calculateCurrentSpreadGap();
+const targetSpreadSteps = calculateTargetSpread();
+const outOfSpreadDistance = Math.max(0, currentSpreadSteps - targetSpreadSteps);
+
+mgr.outOfSpread = outOfSpreadDistance;  // 0 = in spread, 3+ = out
+```
+
+---
+
 ## Pipeline Safety & Diagnostics
 
 The bot includes a comprehensive pipeline monitoring system to prevent indefinite blocking and enable operational visibility.

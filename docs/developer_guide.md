@@ -819,12 +819,32 @@ The `startPrice` is the anchor for valuation (calculating the relative value of 
     *   The bot derives the price from the current orderbook.
     *   Updated periodically every 4 hours.
 
+### Numeric `startPrice` - Fixed Anchor (Patch 8)
+
+When you set a **numeric value** like `"startPrice": 105.5` in `bots.json`:
+
+**Behavior**:
+- ✅ Auto-refresh is **DISABLED** - numeric value is treated as absolute anchor
+- ✅ Grid valuation uses this fixed price for all calculations
+- ✅ Grid remains stable during market moves (fund-driven rebalancing only)
+- ❌ Auto-derivation never happens - market/pool price is ignored
+
+**Use Case**: You want absolute control over grid positioning regardless of current market conditions.
+
 ### Runtime Updates (The 4h Refresh)
 
 The bot performs a **Periodic Configuration Refresh** (every 4 hours by default).
 
-*   **Valuation Update**: If you change the `startPrice` in `bots.json` while the bot is running, it will pick up the new value at the next refresh.
-*   **Operational Stability**: Updating the `startPrice` in memory **does not** move your orders on the blockchain. The bot remains "fund-driven" during normal operation.
+**For Dynamic Pricing** (`startPrice: "market"` or `startPrice: "pool"`):
+*   **Valuation Update**: Fetches latest market/pool price and updates grid anchor
+*   **Grid Reposition**: Subsequent grid resets use updated valuation
+*   **Operational Stability**: During normal operation, the bot remains "fund-driven" and doesn't move orders on-chain
+
+**For Numeric Pricing** (`startPrice: 105.5`):
+*   **No Changes**: Fixed value is never updated
+*   **Valuation locked**: All calculations use the configured numeric value
+*   **Manual Override Required**: To change numeric anchor, edit `bots.json` and use **File Trigger**
+
 *   **Applying Changes**: To force the bot to move orders to a new `startPrice` immediately, you must use the **File Trigger** (`recalculate.{botKey}.trigger`) to perform a full grid reset.
 
 ---
@@ -1053,6 +1073,34 @@ const netProceeds = getAssetFees('IOB.XRP', 100);
 // ❌ BAD - Fetches every time
 const fees = await BitShares.db.get_global_properties();
 ```
+
+### 4. **Leverage Pool ID Caching (Patch 8)**
+
+When deriving pool prices, the bot caches Liquidity Pool IDs to avoid repeated blockchain scans.
+
+```javascript
+// ✅ GOOD - Uses cached pool IDs
+const price = await derivePoolPrice(assetA.symbol, assetB.symbol);
+// First call: scans blockchain for pool
+// Subsequent calls: uses cached ID if assets match
+
+// Smart fallback: Cache miss triggers fresh scan
+if (cachedPoolId.assets !== requestedAssets) {
+    // Cache invalidated - rescan blockchain
+    const newPoolId = await scanBlockchainForPool(assetA, assetB);
+}
+
+// ✅ Transparent: No manual cache management needed
+```
+
+**How It Works**:
+- Cache validated against requested assets before use
+- Stale pool IDs automatically detected and refreshed
+- Concurrent access safe via lock protection
+
+**Performance Impact**:
+- Eliminates redundant blockchain scans during startup and config refresh
+- Particularly effective during periodic 4-hour price refresh cycles
 
 ---
 

@@ -226,6 +226,123 @@ These are deducted from the *proceeds* of a fill.
 
 ---
 
+## 5.3 BTS Fee Object Structure (Patch 8)
+
+For BTS fees, the system returns a structured object (not a simple number) with multiple fields for accounting precision.
+
+**Location**: `modules/order/utils.js::getAssetFees()`
+
+### BTS Fee Object (Always Object)
+
+```javascript
+getAssetFees('BTS', amount)
+// Returns:
+{
+    total: 500,              // Old field: total fee (preserved for compatibility)
+    createFee: 500,          // Old field: single create fee (preserved)
+    netFee: 450,             // Old field: net fee after processing
+    netProceeds: 45500,      // NEW FIELD (Patch 8): proceeds after fee
+    isMaker: true            // Flag: is this a maker fee?
+}
+```
+
+### netProceeds Calculation (Patch 8)
+
+**For Makers** (isMaker = true, gets 90% rebate):
+```
+netProceeds = assetAmount + (creationFee * 0.9)
+// Example: 45,000 asset + (500 fee * 0.9 refund) = 45,450
+```
+
+**For Takers** (isMaker = false, no rebate):
+```
+netProceeds = assetAmount
+// Example: 45,000 asset (no refund) = 45,000
+```
+
+### Non-BTS Fees (Unchanged)
+
+Non-BTS assets continue to return simple numbers:
+
+```javascript
+getAssetFees('IOB.XRP', 1000)
+// Returns: 990  (number, not object)
+
+getAssetFees('USD')
+// Returns: 995  (number, not object)
+```
+
+### Backwards Compatibility
+
+Code can safely detect the fee type:
+
+```javascript
+// Check if BTS (object) or asset (number)
+if (typeof feeInfo === 'object') {
+    // BTS: Use netProceeds field
+    const proceeds = feeInfo.netProceeds;
+} else {
+    // Asset: Use direct number
+    const proceeds = assetAmount - feeInfo;
+}
+
+// OR use older fields (still present)
+const legacyFee = feeInfo.createFee;  // Works for both old and new code
+```
+
+---
+
+## 5.4 BUY Side Sizing & Fee Accounting (Patch 8)
+
+**Problem Fixed**: BUY side fee calculations incorrectly applied fees to base asset instead of quote asset.
+
+**Solution**: Corrected fee accounting with proper asset assignment.
+
+### Fee Application by Side
+
+| Side | Asset | Calculation | Notes |
+|------|-------|-------------|-------|
+| **BUY** | Quote (assetB) | Fee deducted from `buyFree` | Buyers pay in quote currency |
+| **SELL** | Base (assetA) | Fee deducted from `sellFree` | Sellers pay in base currency |
+
+### Example Scenario
+
+```
+Trading pair: XRP (base) / USD (quote)
+
+BUY Order Fills:
+- Receives: 1000 XRP
+- Pays: 45,000 USD
+- Fee: 500 USD (0.1% of 45,500 total)
+- Net proceeds: 45,000 USD (quoted asset reduced by fee)
+
+SELL Order Fills:
+- Receives: 45,000 USD
+- Pays: 1000 XRP
+- Fee: 1 XRP (0.1% of 1000 total)
+- Net proceeds: 999 XRP (base asset reduced by fee)
+```
+
+### Maker Refund Impact on BUY Orders
+
+For BUY orders that are makers:
+
+```javascript
+// Market fill amount: 45,500 USD worth
+// Maker fee: 500 USD (0.1%)
+// Maker refund: 90% of 500 = 450 USD back
+
+// Net proceeds to chainFree:
+// - Deposit: 45,500 USD (market received)
+// - Fee paid: -500 USD
+// - Refund received: +450 USD
+// - Final: 45,450 USD credited to buyFree
+```
+
+**Impact**: Ensures internal ledgers match blockchain totals exactly, preventing accounting drift from fee variances.
+
+---
+
 ## 6. Safety & Invariants
 
 The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference.

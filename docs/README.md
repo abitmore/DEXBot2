@@ -10,6 +10,10 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *The blueprint of the system.*
 - **System Design**: High-level overview of how the bot components interact.
 - **Module Responsibilities**: Detailed breakdown of the **Manager**, **Accountant**, **Strategy**, and **Grid** modules.
+- **Fund-Driven Boundary Sync**: Automatic grid alignment with inventory distribution (Patch 8)
+- **Scaled Spread Correction**: Dynamic spread correction with double-dust safety (Patch 8)
+- **Periodic Market Price Refresh**: Background 4-hour price updates (Patch 8)
+- **Out-of-Spread Metric**: Numeric distance refinement for precise corrections (Patch 8)
 - **Pipeline Safety & Diagnostics**: 5-minute timeout safeguard and health monitoring (Patch 12)
 - **Data Flow**: Visualization of how market data becomes trading operations and then blockchain transactions.
 
@@ -17,9 +21,13 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *Your daily companion for coding.*
 - **Quick Start**: How to get the development environment running.
 - **Module Deep-Dive**: In-depth analysis of the internal logic of each primary module.
+- **Startup Sequence & Lock Ordering**: Consolidated startup with deadlock prevention (Patch 9)
+- **Zero-Amount Order Prevention**: Validation gates for healthy order sizes (Patch 9)
+- **Configurable Pricing Priority**: Fixed vs dynamic startPrice behavior (Patch 8)
+- **Pool ID Caching**: Optimization for price derivation (Patch 8)
 - **Order State Helper Functions**: Centralized predicate functions for state checking (Patch 11)
 - **Common Tasks**: Practical "how-to" guides for adding features or fixing bugs.
-- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety").
+- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety", "Fund-Driven Boundary").
 
 ### 🔄 [Workflow](WORKFLOW.md)
 *How we build and release.*
@@ -34,6 +42,8 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *The most critical part of the bot: safe capital management.*
 - **Single Source of Truth**: How the bot avoids double-spending and out-of-sync balances.
 - **Optimistic ChainFree**: The mechanism that allows the bot to trade with fill proceeds before they are finalized on-chain.
+- **BTS Fee Object Structure**: `netProceeds` field for accounting precision (Patch 8)
+- **BUY Side Sizing & Fee Accounting**: Correct fee application by order side (Patch 8)
 - **Mixed Order Fund Validation**: Separate validation for BUY vs SELL order fund checks (Patch 12)
 - **Fee Management**: Detailed logic for BTS fee reservations and market fee deductions.
 
