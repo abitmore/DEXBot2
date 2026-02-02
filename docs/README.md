@@ -10,14 +10,16 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *The blueprint of the system.*
 - **System Design**: High-level overview of how the bot components interact.
 - **Module Responsibilities**: Detailed breakdown of the **Manager**, **Accountant**, **Strategy**, and **Grid** modules.
+- **Pipeline Safety & Diagnostics**: 5-minute timeout safeguard and health monitoring (Patch 12)
 - **Data Flow**: Visualization of how market data becomes trading operations and then blockchain transactions.
 
 ### 📖 [Developer Guide](developer_guide.md)
 *Your daily companion for coding.*
 - **Quick Start**: How to get the development environment running.
 - **Module Deep-Dive**: In-depth analysis of the internal logic of each primary module.
+- **Order State Helper Functions**: Centralized predicate functions for state checking (Patch 11)
 - **Common Tasks**: Practical "how-to" guides for adding features or fixing bugs.
-- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation").
+- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety").
 
 ### 🔄 [Workflow](WORKFLOW.md)
 *How we build and release.*
@@ -32,6 +34,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *The most critical part of the bot: safe capital management.*
 - **Single Source of Truth**: How the bot avoids double-spending and out-of-sync balances.
 - **Optimistic ChainFree**: The mechanism that allows the bot to trade with fill proceeds before they are finalized on-chain.
+- **Mixed Order Fund Validation**: Separate validation for BUY vs SELL order fund checks (Patch 12)
 - **Fee Management**: Detailed logic for BTS fee reservations and market fee deductions.
 
 ### 📝 [Logging System](LOGGING.md)

@@ -98,6 +98,56 @@ The `OrderManager` is the central hub that coordinates all order operations. It 
 | **SyncEngine** | `sync_engine.js` | Blockchain synchronization, fill detection |
 | **Grid** | `grid.js` | Grid creation, sizing, divergence detection |
 
+---
+
+## Pipeline Safety & Diagnostics
+
+The bot includes a comprehensive pipeline monitoring system to prevent indefinite blocking and enable operational visibility.
+
+### Pipeline Timeout Safeguard
+
+**Problem**: Pipeline checks could block indefinitely if operations hung due to network issues or stuck corrections.
+
+**Solution**: 5-minute timeout with automatic, non-destructive recovery.
+
+**Configuration** (modules/constants.js):
+```javascript
+PIPELINE_TIMING: {
+    TIMEOUT_MS: 300000,  // 5 minutes
+}
+```
+
+**How It Works**:
+- `isPipelineEmpty()` tracks when pipeline operations started blocking via `_pipelineBlockedSince` timestamp
+- If blockage exceeds 5 minutes, `clearStalePipelineOperations()` is called (Patch 12, commit dd94044)
+- Non-destructive recovery: clears operation flags only, does NOT delete orders or modify grid state
+- Recovery called from `_executeMaintenanceLogic()` during periodic maintenance checks
+
+**Location**: `modules/order/manager.js` lines 570-650
+
+### Pipeline Health Diagnostics
+
+**Purpose**: Enable production monitoring dashboards and alerting systems.
+
+**Method**: `getPipelineHealth()`
+
+**Returns** (8 diagnostic fields):
+```javascript
+{
+    isEmpty: boolean,              // Pipeline is empty/clear?
+    reasons: string[],             // Why pipeline is blocked (if blocked)
+    blockedSince: number,          // Timestamp when blockage started (ms since epoch)
+    blockedDurationMs: number,     // How long blocked (milliseconds)
+    blockedDurationHuman: string,  // How long blocked (human-readable: "5m 30s")
+    correctionsPending: number,    // Count of pending spread corrections
+    gridSidesUpdated: string[],    // Which sides have queued updates ("BUY", "SELL", "BOTH")
+}
+```
+
+**Integration**: Post-fill logging shows health status for operational visibility.
+
+**Location**: `modules/order/manager.js` lines 650-700
+
 ### Data Flow
 
 ```mermaid

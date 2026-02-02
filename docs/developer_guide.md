@@ -49,6 +49,14 @@ Follow this path through the codebase:
 
 A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId`. This is an illegal state that corrupts fund tracking. The system implements a three-layer defense to prevent phantoms (see **Phantom Orders Prevention** section). If encountered, the order is automatically downgraded to VIRTUAL with error logging.
 
+### Pipeline Safety Features (Patch 12)
+
+| Term | Meaning |
+|------|---------|
+| **Pipeline Timeout Safeguard** | 5-minute timeout preventing indefinite blocking on pipeline checks |
+| **Pipeline Health Diagnostics** | `getPipelineHealth()` method returning 8 diagnostic fields for monitoring |
+| **Stale Operation Clearing** | Non-destructive recovery clearing operation flags without touching orders |
+
 ### Fund Components
 
 | Term | Meaning | Formula |
@@ -255,6 +263,192 @@ See `tests/repro_phantom_orders.js` for comprehensive test coverage:
 - Grid resize phantom prevention (verified)
 - Sync cleanup of orphaned ACTIVE orders (verified)
 - Valid ACTIVE order preservation (verified)
+
+---
+
+## Order State Helper Functions (Patch 11)
+
+**Location**: `modules/order/utils.js`
+
+**Purpose**: Single source of truth for order state logic, replacing 34+ inline checks scattered across the codebase.
+
+**Benefit**: Semantic function names, centralized phantom detection, consistent patterns across all modules.
+
+### Core State Checkers
+
+#### `isOrderOnChain(order)`
+```javascript
+// Check if order exists on blockchain
+// Returns true for ACTIVE or PARTIAL orders
+if (isOrderOnChain(order)) {
+    // Order has presence on blockchain
+}
+```
+
+#### `isOrderVirtual(order)`
+```javascript
+// Check if order is planned but not yet placed
+// Returns true for VIRTUAL orders
+if (isOrderVirtual(order)) {
+    // Order is reserved capital but not on-chain yet
+}
+```
+
+#### `hasOnChainId(order)`
+```javascript
+// Check if order has a valid blockchain orderId
+// Returns true if orderId is non-null and non-empty
+if (hasOnChainId(order)) {
+    // Order has been successfully placed and confirmed
+}
+```
+
+#### `isOrderPlaced(order)`
+```javascript
+// Check if order is safely placed (on-chain with ID)
+// Combines: state === ACTIVE/PARTIAL AND orderId exists
+if (isOrderPlaced(order)) {
+    // Safe to use in calculations requiring blockchain confirmation
+}
+```
+
+#### `isPhantomOrder(order)`
+```javascript
+// Detect phantom orders (on-chain state without ID - error state)
+// Returns true for ACTIVE/PARTIAL orders WITHOUT orderId
+if (isPhantomOrder(order)) {
+    // ERROR: This order shouldn't exist - fund tracking is corrupt
+    logger.error(`Phantom order detected: ${order.id}`);
+}
+```
+
+#### `isSlotAvailable(order)`
+```javascript
+// Check if slot can be reused (VIRTUAL + no ID)
+// Returns true for VIRTUAL orders without orderId
+if (isSlotAvailable(order)) {
+    // Can overwrite this slot with a new order
+}
+```
+
+### State Transition Helper
+
+#### `virtualizeOrder(order)`
+```javascript
+// Transition order to VIRTUAL state and clear blockchain metadata
+// Safely clears orderId, filledSize, and other blockchain-specific fields
+const virtualizedOrder = virtualizeOrder(order);
+// Result: {
+//     ...order,
+//     state: ORDER_STATES.VIRTUAL,
+//     orderId: null,
+//     filledSize: 0
+// }
+```
+
+### Order Health Validation
+
+#### `isOrderHealthy(order, minSize)`
+```javascript
+// Comprehensive validation: size > 0 AND not dust-threshold
+// Prevents undersized orders that cause blockchain failures
+const minHealthySize = getMinOrderSize(ORDER_TYPES.BUY, assets, 1.0);
+if (isOrderHealthy(order, minHealthySize)) {
+    // Order is valid for placement/rotation
+} else {
+    // Order is dust - consolidate or skip
+}
+```
+
+### Pattern Matching Helpers
+
+#### `getPartialsByType(orders)`
+```javascript
+// Segregate partial orders by type efficiently
+// Returns: { buy: [partial1, partial2], sell: [partial3] }
+const { buy: buyPartials, sell: sellPartials } = getPartialsByType(orders);
+
+// Use case: Consolidate dust partials per side
+for (const partial of buyPartials) {
+    if (isDust(partial)) {
+        scheduleConsolidation(partial);
+    }
+}
+```
+
+**Eliminates duplications in**:
+- `strategy.js::_getPartialOrdersByType()`
+- `grid.js::compareGrids()`
+- `startup_reconcile.js::selectPartialSlots()`
+
+#### `validateAssetPrecisions(assets)`
+```javascript
+// Validate both asset precisions simultaneously
+// Checks: precision >= 0 AND precision <= MAX_PRECISION
+const { buy, sell } = validateAssetPrecisions({
+    buy: assetB.precision,
+    sell: assetA.precision
+});
+
+if (!buy.valid || !sell.valid) {
+    throw new Error(`Invalid precisions: ${buy} / ${sell}`);
+}
+```
+
+#### `getPrecisionSlack(precision, factor)`
+```javascript
+// Calculate float comparison tolerance for given precision
+// Returns: 10^(-precision) * factor (typically factor = 0.001 = 0.1%)
+const slack = getPrecisionSlack(5, 0.001);  // Returns 0.00001 * 0.001 = 0.00000001
+
+// Use case: Floating-point safe comparisons
+if (Math.abs(order.size - expected) <= slack) {
+    // Sizes match within precision tolerance
+}
+```
+
+**Eliminates duplications in**:
+- `accounting.js::recalculateFunds()`
+- `manager.js::_updateOrder()`
+
+### Common Usage Patterns
+
+**Pattern 1: Type-safe Order Placement**
+```javascript
+// Only place orders that are truly safe
+const ordersToPlace = orders.filter(o =>
+    isOrderHealthy(o, minSize) && !isOrderPlaced(o)
+);
+```
+
+**Pattern 2: Phantom Detection During Sync**
+```javascript
+// Detect and cleanup phantoms during blockchain sync
+for (const order of allOrders) {
+    if (isPhantomOrder(order)) {
+        const placeholder = convertToSpreadPlaceholder(order);
+        mgr._updateOrder(placeholder, 'sync-cleanup-phantom', false, 0);
+    }
+}
+```
+
+**Pattern 3: Reusable Slot Identification**
+```javascript
+// Find slots available for overwriting
+const reusableSlots = grid.filter(isSlotAvailable);
+for (const slot of reusableSlots) {
+    slot = createNewOrder(slot.index, newPrice);
+}
+```
+
+**Pattern 4: Side-Segregated Rebalancing**
+```javascript
+// Rebalance each side separately based on fill type
+const { buy: buyPartials, sell: sellPartials } = getPartialsByType(orders);
+
+rebalanceBuySide(buyPartials);
+rebalanceSellSide(sellPartials);
+```
 
 ---
 

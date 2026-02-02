@@ -71,12 +71,50 @@ node scripts/validate_bots.js
 node scripts/divergence-calc.js
 ```
 
+### Grid Trading Analysis
+**File:** `analyze-orders.js`
+**Purpose:** Analyze grid trading metrics and order distribution patterns.
+```bash
+# Analyzes spread accuracy, geometric consistency, and fund distribution
+node scripts/analyze-orders.js
+```
+
 ### Codebase Health
 **File:** `analyze-repo-stats.js`
 **Purpose:** Generate a visual complexity and size report.
 ```bash
 # Outputs repo-stats.html
 node scripts/analyze-repo-stats.js
+```
+
+---
+
+## 🔍 GIT & DEVELOPMENT WORKFLOW
+
+### Interactive Git Changes Monitor
+**File:** `git-viewer.sh`
+**Purpose:** Interactive monitor for uncommitted, committed, and pushed changes.
+```bash
+# Launch interactive git changes viewer with fzf search
+bash scripts/git-viewer.sh
+```
+
+**Features**:
+- View uncommitted (working tree) changes
+- View committed (staged) changes
+- View pushed vs. remote-tracking changes
+- Smart auto-refresh (1s for local, 15s for remote)
+- Fuzzy search with `fzf` for finding files
+- Toggle between full file view and diff-only view
+
+**Usage**:
+```bash
+# Press 'u' to toggle uncommitted changes
+# Press 'c' to toggle committed changes
+# Press 'p' to toggle pushed status
+# Press 's' to search with fzf
+# Press 'f' to toggle full file view
+# Press 'q' to quit
 ```
 
 ---
@@ -92,6 +130,40 @@ bash scripts/dev-install.sh
 
 ---
 
+## 🌳 BRANCH SYNCHRONIZATION
+
+### Synchronize test → dev → main
+**File:** `pmain.sh` (also: `npm run pmain`)
+**Purpose:** Sync local test branch through dev to main remote.
+```bash
+# Push test → dev → main
+bash scripts/pmain.sh
+# OR
+npm run pmain
+```
+
+### Synchronize test → dev
+**File:** `pdev.sh` (also: `npm run pdev`)
+**Purpose:** Sync local test branch to dev remote.
+```bash
+# Push test → dev
+bash scripts/pdev.sh
+# OR
+npm run pdev
+```
+
+### Synchronize local test → origin/test
+**File:** `ptest.sh` (also: `npm run ptest`)
+**Purpose:** Push local test branch to remote.
+```bash
+# Push test to origin/test
+bash scripts/ptest.sh
+# OR
+npm run ptest
+```
+
+---
+
 ## ⚡ CONVENIENCE WRAPPERS
 
 The following scripts allow you to call `dexbot` commands directly from the `scripts/` directory:
@@ -102,6 +174,18 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 | `scripts/keys` | `node dexbot keys` | `./scripts/keys` |
 | `scripts/dexbot` | `node dexbot` | `./scripts/dexbot <cmd>` |
 | `scripts/pm2` | `node pm2.js` | `./scripts/pm2` |
+
+---
+
+## 📦 NPM SCRIPTS
+
+| Command | Purpose |
+|:---|:---|
+| `npm run bootstrap:profiles` | Initialize directory structure for new installations |
+| `npm run ptest` | Sync local test → origin/test |
+| `npm run pdev` | Sync local test → dev |
+| `npm run pmain` | Sync local test → dev → main |
+| `npm test` | Run full test suite (35+ test cases) |
 
 ---
 

@@ -28,6 +28,68 @@ $$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{FeesOwed} - \tex
 
 ---
 
+## 1.3 Mixed Order Fund Validation (Patch 12)
+
+**Problem Fixed**: When `_buildCreateOps()` received both BUY and SELL orders in a batch, it used a single fund check on the first order's type, causing false fund warnings.
+
+**Solution**: Separate validation per order type (Patch 12, commit 701352b).
+
+### Fund Availability Checks by Order Type
+
+**BUY Orders** validate against `buyFree` (assetB capital):
+```
+buyFree represents unallocated assetB available for limit orders
+```
+
+**SELL Orders** validate against `sellFree` (assetA inventory):
+```
+sellFree represents unallocated assetA available for limit orders
+```
+
+### Implementation Location
+
+File: `modules/dexbot_class.js::_buildCreateOps()` (lines 1516-1548, Patch 12)
+
+```javascript
+// Separate BUY and SELL orders
+const buyOrders = orders.filter(o => o.type === ORDER_TYPES.BUY);
+const sellOrders = orders.filter(o => o.type === ORDER_TYPES.SELL);
+
+// BUY orders: check assetB capital (buyFree)
+if (buyOrders.length > 0) {
+    const buyTotal = buyOrders.reduce((sum, o) => sum + o.size, 0);
+    if (buyTotal > this.accountTotals.buyFree) {
+        // Log fund warning specific to BUY side
+    }
+}
+
+// SELL orders: check assetA inventory (sellFree)
+if (sellOrders.length > 0) {
+    const sellTotal = sellOrders.reduce((sum, o) => sum + o.size, 0);
+    if (sellTotal > this.accountTotals.sellFree) {
+        // Log fund warning specific to SELL side
+    }
+}
+```
+
+### Key Points
+
+1. **Each order validated independently** against its own type's available funds
+2. **No double-counting** when both BUY and SELL orders are placed simultaneously
+3. **Accurate warnings** showing which side lacks funds (BUY vs SELL)
+4. **Prevents false positives** where mixed placements incorrectly appear to exceed available capital
+
+### Helper Reference
+
+For checking order types and states, use centralized helpers from `modules/order/utils.js`:
+- `isOrderOnChain()` - Check if ACTIVE or PARTIAL
+- `isOrderPlaced()` - Check if safely placed (on-chain with ID)
+- `isOrderVirtual()` - Check if VIRTUAL state
+
+See [developer_guide.md#order-state-helper-functions-patch-11](developer_guide.md#order-state-helper-functions-patch-11) for complete helper function reference.
+
+---
+
 ## 2. Grid Topology & Geometric Sizing
 
 The grid is a unified array ("Master Rail") of price levels, not separate Buy/Sell arrays.
