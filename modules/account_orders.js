@@ -210,19 +210,21 @@ class AccountOrders {
       const validKeys = new Set();
       let changed = false;
 
-      // Filter to only the matching bot entry
-      const entriesToProcess = botEntries.filter(bot => {
-        const key = bot.botKey || createBotKey(bot, botEntries.indexOf(bot));
-        return key === this.botKey;
-      });
+      // Filter to only the matching bot entry, preserving original indices
+      const entriesToProcess = botEntries
+        .map((bot, origIdx) => ({ bot, origIdx }))
+        .filter(item => {
+          const key = item.bot.botKey || createBotKey(item.bot, item.origIdx);
+          return key === this.botKey;
+        });
 
       // 1. Update/Create the matching bot entry
-      for (const [index, bot] of entriesToProcess.entries()) {
-        const key = bot.botKey || createBotKey(bot, index);
+      for (const { bot, origIdx } of entriesToProcess) {
+        const key = bot.botKey || createBotKey(bot, origIdx);
         validKeys.add(key);
 
         let entry = this.data.bots[key];
-        const meta = this._buildMeta(bot, key, index, entry && entry.meta);
+        const meta = this._buildMeta(bot, key, origIdx, entry && entry.meta);
 
         if (!entry) {
           entry = {

@@ -119,12 +119,24 @@ function getOrderFiles() {
  *
  * @param {Object} botData - Order data with grid array and metadata
  * @param {Object} config - Bot configuration (optional) for comparison
+ * @param {string} filename - Filename to extract pair from if metadata is null
  * @returns {Object} Analysis result with spread, increment, funds, distribution
  */
-function analyzeOrder(botData, config) {
+function analyzeOrder(botData, config, filename) {
   const meta = botData.meta;
   const grid = botData.grid;
   const boundaryIdx = botData.boundaryIdx;
+
+  // Fallback: Extract pair from filename if metadata is null
+  let assetA = meta.assetA;
+  let assetB = meta.assetB;
+  if (!assetA || !assetB) {
+    const match = filename.match(/^([a-z]+)-([a-z]+)/i);
+    if (match) {
+      assetA = assetA || match[1].toUpperCase();
+      assetB = assetB || match[2].toUpperCase();
+    }
+  }
 
   /**
    * Grid Slot Separation
@@ -191,7 +203,7 @@ function analyzeOrder(botData, config) {
    * Includes all metrics needed for health check output
    */
   return {
-    pair: `${meta.assetA}/${meta.assetB}`,
+    pair: `${assetA}/${assetB}`,
     lastUpdated: new Date(meta.updatedAt || botData.lastUpdated),
     gridMinPrice: gridMinPrice,
     marketPrice: marketPrice,
@@ -584,6 +596,10 @@ function formatAnalysis(analysis) {
   const sellXRP = analysis.funds.sell.xrp.toFixed(4);
   const sellBTS = formatCurrency(analysis.funds.sell.bts);
 
+  // Fallback for null symbols (shouldn't happen after fix, but added for safety)
+  const aSymbol = assetASymbol || 'BASE';
+  const bSymbol = assetBSymbol || 'QUOTE';
+
   // Grid Composition: Count of slots on each side
   lines.push(`   Slots:  ${colors.buy}${analysis.slots.buy} buy${colors.reset} + ${analysis.slots.spread} spread + ${colors.sell}${analysis.slots.sell} sell${colors.reset}`);
 
@@ -619,8 +635,8 @@ function formatAnalysis(analysis) {
     `   Funds:  ${fundDistBar}  Δ ${buyMatch}%`
   );
 
-  lines.push(`   Funds:  ${colors.buy}${buyBTS} ${assetBSymbol}${colors.reset} ≈ ${buyXRP} ${assetASymbol}`);
-  lines.push(`           ${colors.sell}${sellXRP} ${assetASymbol}${colors.reset} ≈ ${sellBTS} ${assetBSymbol}`);
+  lines.push(`   Funds:  ${colors.buy}${buyBTS} ${bSymbol}${colors.reset} ≈ ${buyXRP} ${aSymbol}`);
+  lines.push(`           ${colors.sell}${sellXRP} ${aSymbol}${colors.reset} ≈ ${sellBTS} ${bSymbol}`);
 
   return lines.join('\n');
 }
@@ -681,7 +697,7 @@ function main() {
       const config = getBotConfig(botData.meta.name, botData.meta.assetA, botData.meta.assetB);
 
       // Analyze the order grid
-      const analysis = analyzeOrder(botData, config);
+      const analysis = analyzeOrder(botData, config, file.name);
       // Display formatted results
       let output = formatAnalysis(analysis);
       // Remove leading newline from first pair to avoid blank line after header

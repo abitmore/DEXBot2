@@ -218,8 +218,8 @@ class DEXBot {
         // Ensure bot metadata is properly initialized in storage BEFORE any Grid operations
         const allBotsConfig = parseJsonWithComments(fs.readFileSync(PROFILES_BOTS_FILE, 'utf8')).bots || [];
         const allActiveBots = allBotsConfig
-            .filter(b => b.active !== false)
-            .map((b, idx) => normalizeBotEntry(b, idx));
+            .map((b, originalIdx) => b.active !== false ? normalizeBotEntry(b, originalIdx) : null)
+            .filter(b => b !== null);
 
         await this.accountOrders.ensureBotEntries(allActiveBots);
 
