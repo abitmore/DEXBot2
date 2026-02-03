@@ -119,23 +119,23 @@ function getOrderFiles() {
  *
  * @param {Object} botData - Order data with grid array and metadata
  * @param {Object} config - Bot configuration (optional) for comparison
- * @param {string} filename - Filename to extract pair from if metadata is null
  * @returns {Object} Analysis result with spread, increment, funds, distribution
  */
-function analyzeOrder(botData, config, filename) {
+function analyzeOrder(botData, config) {
   const meta = botData.meta;
   const grid = botData.grid;
   const boundaryIdx = botData.boundaryIdx;
 
-  // Fallback: Extract pair from filename if metadata is null
+  // Extract asset pair: prioritize assets object from order data, fall back to meta
   let assetA = meta.assetA;
   let assetB = meta.assetB;
-  if (!assetA || !assetB) {
-    const match = filename.match(/^([a-z]+)-([a-z]+)/i);
-    if (match) {
-      assetA = assetA || match[1].toUpperCase();
-      assetB = assetB || match[2].toUpperCase();
-    }
+
+  // If metadata is null/missing, get from assets object in order file
+  if (!assetA && botData.assets && botData.assets.assetA) {
+    assetA = botData.assets.assetA.symbol;
+  }
+  if (!assetB && botData.assets && botData.assets.assetB) {
+    assetB = botData.assets.assetB.symbol;
   }
 
   /**
@@ -208,7 +208,8 @@ function analyzeOrder(botData, config, filename) {
     gridMinPrice: gridMinPrice,
     marketPrice: marketPrice,
     gridMaxPrice: gridMaxPrice,
-    doubleSided: botData.buySideIsDoubled || botData.sellSideIsDoubled,
+    buySideIsDoubled: botData.buySideIsDoubled,
+    sellSideIsDoubled: botData.sellSideIsDoubled,
     hasConfig: !!config,
     // Spread metrics
     spread: {
@@ -558,8 +559,13 @@ function formatAnalysis(analysis) {
   }
 
   // Warning: Double-sided mode (intentional buy/sell imbalance)
-  if (analysis.doubleSided) {
-    lines.push(`   ⚠️  Double-sided mode`);
+  if (analysis.buySideIsDoubled || analysis.sellSideIsDoubled) {
+    let doubleSideInfo = '   ⚠️  Doubled: ';
+    const sides = [];
+    if (analysis.buySideIsDoubled) sides.push('BUY');
+    if (analysis.sellSideIsDoubled) sides.push('SELL');
+    doubleSideInfo += sides.join(' + ');
+    lines.push(doubleSideInfo);
   }
 
   /**
@@ -692,12 +698,23 @@ function main() {
       const botKey = Object.keys(orderData.bots)[0];
       const botData = orderData.bots[botKey];
 
+      // Extract assets from order data (fallback if metadata is null)
+      let assetA = botData.meta.assetA;
+      let assetB = botData.meta.assetB;
+
+      if (!assetA && botData.assets && botData.assets.assetA) {
+        assetA = botData.assets.assetA.symbol;
+      }
+      if (!assetB && botData.assets && botData.assets.assetB) {
+        assetB = botData.assets.assetB.symbol;
+      }
+
       // Find matching configuration for this bot
       // Uses bot name or asset pair to find config
-      const config = getBotConfig(botData.meta.name, botData.meta.assetA, botData.meta.assetB);
+      const config = getBotConfig(botData.meta.name, assetA, assetB);
 
       // Analyze the order grid
-      const analysis = analyzeOrder(botData, config, file.name);
+      const analysis = analyzeOrder(botData, config);
       // Display formatted results
       let output = formatAnalysis(analysis);
       // Remove leading newline from first pair to avoid blank line after header
