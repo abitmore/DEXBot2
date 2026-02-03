@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { formatPrice6, formatPrice4 } = require('../modules/order/format');
 
 const ORDERS_DIR = path.join(__dirname, '../profiles/orders');
 const BOTS_CONFIG = path.join(__dirname, '../profiles/bots.json');
@@ -28,6 +29,9 @@ const colors = {
   cyan: '\x1b[36m',   // cyan
   gray: '\x1b[90m'    // gray
 };
+
+// Partial block characters for weight visualization (0-8 eighths height)
+const partialBlocks = ['', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /**
  * Utility Functions
@@ -70,15 +74,25 @@ function formatPercent(value) {
  * @param {number} value - Numeric value to format
  * @returns {string} Formatted currency/quantity string
  */
+/**
+ * formatCurrency: Format currency values with K/M abbreviation for large numbers
+ * Uses format.js for small value precision, custom for K/M abbreviations
+ * @param {number} value - The value to format
+ * @returns {string} Formatted currency string
+ */
 function formatCurrency(value) {
   if (Math.abs(value) >= 1000000) {
+    // Millions: use 2 decimal precision
     return (value / 1000000).toFixed(2) + 'M';
   } else if (Math.abs(value) >= 1000) {
+    // Thousands: use 2 decimal precision
     return (value / 1000).toFixed(2) + 'K';
   } else if (Math.abs(value) < 0.01) {
-    return value.toFixed(6);  // High precision for small values
+    // Very small values: use 6 decimal precision from format.js
+    return formatPrice6(value);
   }
-  return value.toFixed(4);     // Standard 4 decimal places
+  // Standard values: use 2 decimal precision
+  return Number(value).toFixed(2);
 }
 
 // Load bot configurations
@@ -241,6 +255,11 @@ function analyzeOrder(botData, config) {
       buy: buySlots.length,
       sell: sellSlots.length,
       spread: spreadSlots.length
+    },
+    // Slot data for weight visualization
+    slotData: {
+      buy: buySlots,
+      sell: sellSlots
     }
   };
 }
@@ -427,6 +446,92 @@ function createDistributionBar(buySlots, spreadSlots, sellSlots) {
 }
 
 /**
+ * createWeightFactorBar: Visualize capital distribution using actual order sizes
+ *
+ * Shows how capital is distributed across BUY and SELL orders using arithmetic averages.
+ * Each side scales independently: highest order on each side = 100% (█)
+ * Compresses orders into fixed width (50 chars total: ~25 buy, ~25 sell).
+ * Full block (█) = maximum average capital on that side
+ * Partial blocks (▁-▇) = progressively lower average capital
+ *
+ * @param {Array} buyOrders - Buy orders with size property
+ * @param {Array} sellOrders - Sell orders with size property
+ * @param {number} barWidth - Target width in characters (default: 50)
+ * @returns {string} Colored weight visualization with independent scaling
+ */
+function createWeightFactorBar(buyOrders, sellOrders, barWidth = 50) {
+  if ((!buyOrders || buyOrders.length === 0) && (!sellOrders || sellOrders.length === 0)) {
+    return '(no orders)';
+  }
+
+  // Calculate proportional widths for buy/sell (50/50 split)
+  const buyWidth = Math.floor(barWidth / 2);
+  const sellWidth = barWidth - buyWidth;
+
+  // Create buy side with independent scaling
+  const buyBar = createWeightSide(buyOrders, colors.buy, buyWidth);
+
+  // Create sell side with independent scaling
+  const sellBar = createWeightSide(sellOrders, colors.sell, sellWidth);
+
+  return `${buyBar}${sellBar}`;
+}
+
+/**
+ * Helper: Create weight visualization for one side with independent scaling
+ * Distributes orders evenly across bar width, ensuring all bars are filled
+ * @param {Array} orders - Orders on this side
+ * @param {string} sideColor - Color for this side
+ * @param {number} sideWidth - Width allocated to this side
+ */
+function createWeightSide(orders, sideColor, sideWidth) {
+  if (!orders || orders.length === 0 || sideWidth === 0) {
+    return sideColor + ' '.repeat(sideWidth) + colors.reset;
+  }
+
+  // Get sizes and find max for THIS SIDE only (independent scaling)
+  const sizes = orders.map(o => o.size || 0);
+  const maxSize = Math.max(...sizes);
+
+  if (maxSize === 0) {
+    return sideColor + '░'.repeat(sideWidth) + colors.reset;
+  }
+
+  const compressedWeights = [];
+
+  // Distribute orders evenly across all bar positions
+  // Each bar maps to a position in the orders array
+  for (let barIdx = 0; barIdx < sideWidth; barIdx++) {
+    // Map bar position to order range
+    // This ensures even distribution even if orders < sideWidth
+    const startPos = (barIdx * orders.length) / sideWidth;
+    const endPos = ((barIdx + 1) * orders.length) / sideWidth;
+
+    // Get all orders that fall within this bar's range
+    const startIdx = Math.floor(startPos);
+    const endIdx = Math.ceil(endPos);
+    const groupSizes = sizes.slice(startIdx, endIdx);
+
+    if (groupSizes.length === 0) {
+      // Fallback: if no orders in range, find nearest order
+      const nearestIdx = Math.round(startPos);
+      groupSizes.push(sizes[Math.min(nearestIdx, sizes.length - 1)]);
+    }
+
+    // Calculate arithmetic average of sizes in this group
+    const avgSize = groupSizes.reduce((a, b) => a + b, 0) / groupSizes.length;
+
+    // Normalize to max on THIS SIDE (1-8, minimum 1 for visibility)
+    const ratio = avgSize / maxSize;
+    const blockHeight = Math.max(1, Math.round(ratio * 8));
+
+    compressedWeights.push(sideColor + partialBlocks[blockHeight] + colors.reset);
+  }
+
+  return compressedWeights.join('');
+}
+
+/**
  * analyzeDistribution: Compare slot distribution vs fund distribution
  *
  * Identifies imbalances between:
@@ -589,11 +694,52 @@ function formatAnalysis(analysis) {
     lines.push(`   Incr.: ${formatPercent(analysis.increment.avg).padStart(6)}`);
   }
 
-  // Price Range
-  const priceRange = analysis.gridMinPrice && analysis.marketPrice && analysis.gridMaxPrice
-    ? `${colors.buy}${formatCurrency(analysis.gridMinPrice)}${colors.reset} - ${formatCurrency(analysis.marketPrice)} - ${colors.sell}${formatCurrency(analysis.gridMaxPrice)}${colors.reset}`
-    : 'N/A';
-  lines.push(`   Price:  ${priceRange}`);
+  // Calculate bar positioning based on slot distribution
+  const totalSlots = analysis.slots.buy + analysis.slots.sell + analysis.slots.spread;
+  const buyBarWidth = totalSlots > 0 ? Math.floor((analysis.slots.buy / totalSlots) * 50) : 0;
+  const spreadBarWidth = analysis.slots.spread > 0 ? Math.max(1, Math.floor((analysis.slots.spread / totalSlots) * 50)) : 0;
+  const sellBarWidth = 50 - buyBarWidth - spreadBarWidth;
+
+  // Create formatted labels for three-column layout
+  const buyLabel = `${analysis.slots.buy} buy`;
+  const spreadLabel = `${analysis.slots.spread} spread`;
+  const sellLabel = `${analysis.slots.sell} sell`;
+
+  // Price Range - formatted with three-column alignment
+  const buyPrice = analysis.gridMinPrice ? `${colors.buy}${formatCurrency(analysis.gridMinPrice)}${colors.reset}` : 'N/A';
+  const midPrice = analysis.marketPrice ? formatCurrency(analysis.marketPrice) : 'N/A';
+  const sellPrice = analysis.gridMaxPrice ? `${colors.sell}${formatCurrency(analysis.gridMaxPrice)}${colors.reset}` : 'N/A';
+
+  // Calculate spacing to align with bar layout (50 char total)
+  const pricePrefix = `   Price:  `;
+  const prefixLen = pricePrefix.length;
+  // Use floating-point division to get true center of spread zone
+  const spreadCenter = prefixLen + buyBarWidth + spreadBarWidth / 2;
+  const slotsEndPos = prefixLen + 50;
+
+  // Center spread text around spreadCenter point
+  const buyPriceLen = buyPrice.replace(/\x1b\[[0-9;]*m/g, '').length;
+  const sellPriceLen = sellPrice.replace(/\x1b\[[0-9;]*m/g, '').length;
+  // Round to nearest integer for proper centering
+  const midPriceStart = Math.round(spreadCenter - midPrice.length / 2);
+
+  // Spacing: from end of buy price to spread start, and from end of spread to sell price
+  const priceSpacing1 = Math.max(1, Math.round(midPriceStart - prefixLen - buyPriceLen));
+  const priceSpacing2 = Math.max(1, Math.round(slotsEndPos - (midPriceStart + midPrice.length) - sellPriceLen));
+
+  lines.push(`${pricePrefix}${buyPrice}${' '.repeat(priceSpacing1)}${midPrice}${' '.repeat(priceSpacing2)}${sellPrice}`);
+
+  // Slots line - formatted with three-column alignment
+  const slotsPrefix = `   Slots:  `;
+  const slotsPrefixLen = slotsPrefix.length;
+  // Round to nearest integer for proper centering
+  const spreadLabelStart = Math.round(spreadCenter - spreadLabel.length / 2);
+
+  // Spacing: from end of buy label to spread start, and from end of spread to sell label
+  const slotsSpreading1 = Math.max(1, Math.round(spreadLabelStart - slotsPrefixLen - buyLabel.length));
+  const slotsSpreading2 = Math.max(1, Math.round(slotsEndPos - (spreadLabelStart + spreadLabel.length) - sellLabel.length));
+
+  lines.push(`${slotsPrefix}${colors.buy}${buyLabel}${colors.reset}${' '.repeat(slotsSpreading1)}${spreadLabel}${' '.repeat(slotsSpreading2)}${colors.sell}${sellLabel}${colors.reset}`);
 
   /**
    * Fund Allocation Breakdown
@@ -611,9 +757,6 @@ function formatAnalysis(analysis) {
   const aSymbol = assetASymbol || 'BASE';
   const bSymbol = assetBSymbol || 'QUOTE';
 
-  // Grid Composition: Count of slots on each side
-  lines.push(`   Slots:  ${colors.buy}${analysis.slots.buy} buy${colors.reset} + ${analysis.slots.spread} spread + ${colors.sell}${analysis.slots.sell} sell${colors.reset}`);
-
   /**
    * Distribution Analysis
    * Compares slot count % with fund allocation %
@@ -629,8 +772,7 @@ function formatAnalysis(analysis) {
   const buyMatch = analysis.distribution.match.buyDiff.toFixed(1);
   const sellMatch = analysis.distribution.match.sellDiff.toFixed(1);
 
-  // Calculate spread slot percentage
-  const totalSlots = analysis.slots.buy + analysis.slots.sell + analysis.slots.spread;
+  // Calculate spread slot percentage (totalSlots already calculated above)
   const spreadSlotPct = totalSlots > 0 ? ((analysis.slots.spread / totalSlots) * 100).toFixed(1) : '0.0';
   // Recalculate buy/sell percentages to include spread in total
   const buySlotPctWithSpread = totalSlots > 0 ? ((analysis.slots.buy / totalSlots) * 100).toFixed(1) : '0.0';
@@ -639,15 +781,51 @@ function formatAnalysis(analysis) {
   const slotDistBar = createDistributionBar(parseFloat(buySlotPctWithSpread), parseFloat(spreadSlotPct), parseFloat(sellSlotPctWithSpread));
   const fundDistBar = createDistributionBar(parseFloat(buyFundPct), 0, parseFloat(sellFundPct));
 
+  // Weight factor visualization (funds distribution across all orders)
+  const barWidth = 50; // Match the width of other bars
+  const weightBar = createWeightFactorBar(
+    analysis.slotData?.buy,
+    analysis.slotData?.sell,
+    barWidth
+  );
+
   lines.push(
     `   Slots:  ${slotDistBar}`
   );
   lines.push(
-    `   Funds:  ${fundDistBar}  Δ ${buyMatch}%`
+    `   Funds:  ${weightBar}  Δ ${buyMatch}%`
   );
 
-  lines.push(`   Funds:  ${colors.buy}${buyBTS} ${bSymbol}${colors.reset} ≈ ${buyXRP} ${aSymbol}`);
-  lines.push(`           ${colors.sell}${sellXRP} ${aSymbol}${colors.reset} ≈ ${sellBTS} ${bSymbol}`);
+  // Funds breakdown: BUY on left, SELL on right (right-aligned within its column)
+  const buyValueStr = `${buyBTS} ${bSymbol}`;
+  const sellValueStr = `${sellXRP} ${aSymbol}`;
+  const buyEquivStr = `≈ ${buyXRP} ${aSymbol}`;
+  const sellEquivStr = `≈ ${sellBTS} ${bSymbol}`;
+
+  // Right column width is the maximum of sell value or sell equivalent
+  const rightColWidth = Math.max(sellValueStr.length, sellEquivStr.length);
+
+  // Right-align both sell strings within the right column width
+  const sellValueRight = ' '.repeat(Math.max(0, rightColWidth - sellValueStr.length)) + sellValueStr;
+  const sellEquivRight = ' '.repeat(Math.max(0, rightColWidth - sellEquivStr.length)) + sellEquivStr;
+
+  // Build prefix strings and calculate their lengths
+  const prefix1 = `   Funds:  `;
+  const prefix2 = `           `;
+  const prefix1Len = prefix1.length;
+  const prefix2Len = prefix2.length;
+
+  // Calculate spacing to match the Slots line width (prefix + bar width)
+  // This ensures funds breakdown lines align with the visual bar width
+  const barLinePrefix = `   Funds:  `;
+  const targetWidth = barLinePrefix.length + barWidth;
+
+  // Spacing for each line: targetWidth - line prefix - buyValue - sellColumn
+  const spacing1 = Math.max(2, targetWidth - prefix1Len - buyValueStr.length - rightColWidth);
+  const spacing2 = Math.max(2, targetWidth - prefix2Len - buyEquivStr.length - rightColWidth);
+
+  lines.push(`${prefix1}${colors.buy}${buyValueStr}${colors.reset}${' '.repeat(spacing1)}${colors.sell}${sellValueRight}${colors.reset}`);
+  lines.push(`${prefix2}${buyEquivStr}${' '.repeat(spacing2)}${sellEquivRight}`);
 
   return lines.join('\n');
 }
