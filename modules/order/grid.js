@@ -1008,7 +1008,11 @@ class Grid {
             const currentSpread = Grid.calculateCurrentSpread(manager);
 
             // Nominal spread is the configured target spread percentage
-            const nominalSpread = manager.config.targetSpread || 2.0;
+            // When a side is doubled, increase target spread by one increment to naturally widen the gap
+            let nominalSpread = manager.config.targetSpread || 2.0;
+            if (manager.buySideIsDoubled || manager.sellSideIsDoubled) {
+                nominalSpread += manager.config.incrementPercent;
+            }
 
             // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
             const toleranceSteps = 1 + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);

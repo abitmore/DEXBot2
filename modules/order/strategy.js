@@ -150,7 +150,12 @@ class StrategyEngine {
         if (allSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
 
         // Calculate gap slots once for use throughout the rebalance
-        const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, mgr.config.targetSpreadPercent);
+        // When a side is doubled, increase target spread to naturally widen the boundary and compensate for fewer orders
+        let effectiveTargetSpread = mgr.config.targetSpreadPercent;
+        if (mgr.buySideIsDoubled || mgr.sellSideIsDoubled) {
+            effectiveTargetSpread += mgr.config.incrementPercent;
+        }
+        const gapSlots = this.calculateGapSlots(mgr.config.incrementPercent, effectiveTargetSpread);
 
         // ================================================================================
         // STEP 1: BOUNDARY DETERMINATION (Initial or Recovery)
