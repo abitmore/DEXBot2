@@ -4,6 +4,80 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.13] - 2026-02-03 - Spread Correction Redesign, Index Bug Fixes & Config Extraction Improvements
+
+### Added
+- **Edge-Based Spread Correction Strategy** in correctionManager.js (commit fe66916)
+  - Replaces vulnerable mid-price based approach with conservative edge-based correction
+  - **Priority 1**: Update existing PARTIAL orders at the gap edge (closest to market)
+    - Calculates delta: min(idealSize - currentSize, availableFund)
+    - Sets state to ACTIVE (already on-chain, no re-placement needed)
+  - **Priority 2**: Activate SPREAD slots at the edge (fallback if no partials available)
+    - BUY: Picks lowest price spread slot (extends wall upward gradually)
+    - SELL: Picks highest price spread slot (extends wall downward gradually)
+    - Sets state to VIRTUAL (goes through normal placement pipeline)
+  - **Safety guarantee**: Processes ONE candidate per call (prevents cascade placements)
+  - Enables incremental gap closure with manual verification between steps
+
+### Enhanced
+- **Spread Adjustment for Doubled Sides** in grid.js and strategy.js (commit e04f371)
+  - When a side is flagged as doubled, adjust effective target spread by +1 increment
+  - Widens spread goal, increases gapSlots boundary, maintains wider separation
+  - Example: BUY side doubled at 1.60% → aims for 2.00% spread (+ 0.40% increment)
+  - Compensates for having fewer orders on the doubled side
+
+- **Bot Config Extraction Logic** in analyze-orders.js (commit 52f4d58)
+  - Now matches order files to bot configs even when metadata is null
+  - Extracts asset symbols directly from order file's assets object
+  - Fallback pattern matching: "t-bts-2.json" → "T/BTS"
+  - Safety fallback for currency symbols: uses "BASE"/"QUOTE" if null
+  - Improved double-sided mode display: shows which specific sides (BUY/SELL) are doubled
+
+### Fixed
+- **Critical Index Mismatch Bugs** (commit 27b3f4a)
+  - **Bug #1 in dexbot_class.js (lines 220-222)**:
+    - Issue: Filtered active bots first, then mapped with new indices
+    - Result: T-BTS (originally index 2) reassigned to index 1
+    - Caused botKey mismatch: looking for t-bts-1.json instead of t-bts-2.json
+    - Fix: Map with original indices first, then filter by active status
+
+  - **Bug #2 in account_orders.js (lines 213-227)**:
+    - Issue: Used filtered array indices in ensureBotEntries processing
+    - Same root cause created wrong bot keys and metadata storage
+    - Fix: Preserve original indices through map-filter-destructure chain
+
+  - **Impact**:
+    - Correct botKey generation ensures proper file matching
+    - Metadata will be loaded from correct bot file
+    - Metadata properly updates from null to actual values (e.g., TWENTIX/BTS)
+
+- **Spread Threshold Calculation Simplification** in constants.js and strategy.js (commit 326cef5)
+  - Replaced complex geometric formula for nominalSpread with direct config.targetSpread value
+  - Simplified limitSpread from geometric formula to linear: limitSpread = nominalSpread + (incrementPercent × toleranceSteps)
+  - Tolerance scales with doubled state: base 1 increment, +1 per doubled side (max 3 total)
+  - **Result**: Respects MIN_SPREAD_FACTOR constraint, resolves false "out of spread" corrections
+  - Verified: 100% test pass rate for 0.5% increment across 2.1x to 4.0x multipliers
+
+### Key Improvements
+- **Safety**: Edge-based correction eliminates geometric mean calculation vulnerabilities
+- **Predictability**: Single-order-per-call approach enables verification and control
+- **Correctness**: Fixed critical botKey generation bugs that caused config mismatches
+- **Robustness**: Spread logic now respects constraints and properly handles doubled states
+- **Observability**: Improved config extraction and metadata handling for diagnostics
+
+### Testing
+- All 107+ existing tests pass
+- No regressions detected
+- Verified spread threshold calculation across multiple multiplier ranges
+- Config extraction tested with null metadata scenarios
+
+### Related Commits
+- Builds on Patch 12 pipeline safety (non-destructive recovery principles)
+- Complements Patch 11 order state predicates
+- Fixes edge cases in order metadata handling from Patch 10
+
+---
+
 ## [0.6.0-patch.12] - 2026-02-02 - Pipeline Safety Enhancement, Fund Availability Fix & Code Quality Improvements
 
 ### Added
