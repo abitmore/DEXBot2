@@ -1195,7 +1195,7 @@ class Grid {
      * Prepares one or more orders to correct a wide spread.
      * @param {Object} manager - The OrderManager instance.
      * @param {string} preferredSide - The side to place the correction on (ORDER_TYPES.BUY/SELL).
-     * @returns {Object} Correction result { ordersToPlace, partialMoves }.
+     * @returns {Object} Correction result { ordersToPlace }.
      * @throws {Error} If preferredSide is invalid.
      */
     static prepareSpreadCorrectionOrders(manager, preferredSide) {
@@ -1206,81 +1206,103 @@ class Grid {
 
         const ordersToPlace = [];
         const railType = preferredSide;
-
-        // Calculate mid-price from current spread boundaries to determine valid zone
-        // Use the geometric mean of best buy and best sell prices
-        const activeBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
-        const activeSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE);
-        const partialBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL);
-        const partialSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL);
-        const onChainBuys = [...activeBuys, ...partialBuys];
-        const onChainSells = [...activeSells, ...partialSells];
-
-        const bestBuy = onChainBuys.length > 0 ? Math.max(...onChainBuys.map(o => o.price)) : null;
-        const bestSell = onChainSells.length > 0 ? Math.min(...onChainSells.map(o => o.price)) : null;
-
-        // Calculate mid-price: geometric mean of spread boundaries, or fall back to startPrice
-        const midPrice = (bestBuy && bestSell) ? Math.sqrt(bestBuy * bestSell) : (manager.config.startPrice || 0);
-
-        if (!midPrice || midPrice <= 0) {
-            manager.logger?.log?.(`Cannot determine mid-price for spread correction. Skipping.`, 'warn');
-            return { ordersToPlace: [], partialMoves: [] };
-        }
-
-        // Find all virtual slots that could potentially take this role
-        // CRITICAL FIX: Only pick slots in the correct price zone for the order type
-        // - BUY orders must be BELOW mid-price (we're buying at lower prices)
-        // - SELL orders must be ABOVE mid-price (we're selling at higher prices)
-        const candidateSlots = Array.from(manager.orders.values())
-            .filter(o => {
-                if (!isSlotAvailable(o)) return false;
-                // Only allow slots in the correct zone
-                if (railType === ORDER_TYPES.BUY && o.price >= midPrice) return false;
-                if (railType === ORDER_TYPES.SELL && o.price <= midPrice) return false;
-                return true;
-            })
-            .sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-
-        // Process up to manager.outOfSpread slots (at least 1 if we're here)
-        const maxSlots = Math.max(1, manager.outOfSpread || 1);
         const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
 
-        for (let i = 0; i < Math.min(maxSlots, candidateSlots.length); i++) {
-            const candidate = candidateSlots[i];
-            const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
-            const availableFund = (manager.funds?.available?.[sideName] || 0);
+        // STRATEGY: Edge-Based Correction (Safe Bridging)
+        // Instead of calculating a "mid-price" (which can be dangerous in wide gaps),
+        // we strictly target the orders closest to the spread gap.
+        // 1. Priority: Update existing PARTIAL orders at the edge (Highest Buy / Lowest Sell).
+        // 2. Fallback: Activate SPREAD slots at the edge (Lowest Spread for Buy / Highest Spread for Sell).
 
-            if (idealSize) {
-                // Scale down to available funds if necessary
-                const size = Math.min(idealSize, availableFund);
+        const allOrders = Array.from(manager.orders.values());
+        let candidate = null;
 
-                if (isOrderHealthy(size, railType, manager.assets, idealSize)) {
-                    const activated = { ...candidate, type: railType, size, state: ORDER_STATES.VIRTUAL };
+        // 1. Look for PARTIAL orders on the preferred side
+        const partials = allOrders.filter(o => o.type === railType && o.state === ORDER_STATES.PARTIAL);
 
-                    // Log if we are scaling down
-                    if (size < idealSize) {
-                        manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatAmount8(idealSize)} -> available ${Format.formatAmount8(size)} (ratio: ${Format.formatPercent2((size/idealSize)*100)})`, 'info');
-                    }
+        if (partials.length > 0) {
+            // Sort to find the one closest to the gap
+            // BUY: Highest price (descending)
+            // SELL: Lowest price (ascending)
+            partials.sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+            candidate = partials[0];
+            manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${candidate.price} for update`, 'debug');
+        }
 
-                    ordersToPlace.push(activated);
-                    manager._updateOrder(activated, 'spread-correct', false, 0);
-                    // availableFund will be updated on next iteration via recalculateFunds inside _updateOrder
-                } else {
-                    const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
-                    const minHealthy = getDoubleDustThreshold(idealSize);
-                    manager.logger?.log?.(
-                        `Spread correction skipped at slot ${candidate.id}: ` +
-                        `size=${Format.formatAmount8(size)} < threshold=${Format.formatAmount8(minHealthy)} ` +
-                        `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatAmount8(idealSize)}). ` +
-                        `Available funds: ${Format.formatAmount8(availableFund)}`,
-                        'debug'
-                    );
-                    break; // Stop if we run out of usable funds
-                }
+        // 2. If no partials, look for SPREAD slots to activate
+        if (!candidate) {
+            const spreads = allOrders.filter(o => o.type === ORDER_TYPES.SPREAD && isSlotAvailable(o));
+
+            if (spreads.length > 0) {
+                // Sort to find the one closest to our existing wall
+                // BUY: We want to extend UPWARDS, so pick the LOWEST price spread slot (closest to Buys)
+                // SELL: We want to extend DOWNWARDS, so pick the HIGHEST price spread slot (closest to Sells)
+                spreads.sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
+                candidate = spreads[0];
+                manager.logger?.log?.(`[SPREAD-CORRECTION] Identified spread slot at ${candidate.price} for activation`, 'debug');
             }
         }
 
-        return { ordersToPlace, partialMoves: [] };
+        if (!candidate) {
+            manager.logger?.log?.(`[SPREAD-CORRECTION] No suitable partials or spread slots found. Skipping.`, 'warn');
+            return { ordersToPlace: [] };
+        }
+
+        // Process the selected candidate
+        const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
+        const availableFund = (manager.funds?.available?.[sideName] || 0);
+
+        if (idealSize) {
+            // For partials, we only need to fund the difference, but the system treats "size" as the target total size.
+            // The scaling logic below handles the "Total Target Size" vs "Available Funds" check.
+            // Note: recalculateFunds will handle the delta logic for partials.
+
+            // Scale down to available funds if necessary
+            // For a new order (SPREAD), full size comes from funds.
+            // For a PARTIAL, the "cost" is (idealSize - currentSize), but here we perform a simplified check
+            // assuming we might need to fund the whole amount if it was very small.
+            // More accurately: size = currentSize + min(idealSize - currentSize, available)
+            
+            let targetSize = idealSize;
+            const currentSize = candidate.size || 0;
+
+            if (candidate.state === ORDER_STATES.PARTIAL) {
+                 const needed = Math.max(0, idealSize - currentSize);
+                 const affordable = Math.min(needed, availableFund);
+                 targetSize = currentSize + affordable;
+            } else {
+                 targetSize = Math.min(idealSize, availableFund);
+            }
+
+            if (isOrderHealthy(targetSize, railType, manager.assets, idealSize)) {
+                // Use ACTIVE for partials (they are already on chain), VIRTUAL for new spreads
+                const newState = candidate.state === ORDER_STATES.PARTIAL ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
+                
+                const activated = { ...candidate, type: railType, size: targetSize, state: newState };
+
+                // Log if we are scaling down
+                if (targetSize < idealSize) {
+                    manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatAmount8(idealSize)} -> target ${Format.formatAmount8(targetSize)} (ratio: ${Format.formatPercent2((targetSize/idealSize)*100)})`, 'info');
+                }
+
+                ordersToPlace.push(activated);
+                
+                // For partials, this is an update. For spreads, this is a role change + placement.
+                manager._updateOrder(activated, 'spread-correct', false, 0);
+            } else {
+                const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
+                const minHealthy = getDoubleDustThreshold(idealSize);
+                manager.logger?.log?.(
+                    `Spread correction skipped at slot ${candidate.id}: ` +
+                    `size=${Format.formatAmount8(targetSize)} < threshold=${Format.formatAmount8(minHealthy)} ` +
+                    `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatAmount8(idealSize)}). ` +
+                    `Available funds: ${Format.formatAmount8(availableFund)}`,
+                    'debug'
+                );
+            }
+        }
+
+        return { ordersToPlace };
     }
 
 
