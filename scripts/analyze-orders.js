@@ -176,6 +176,17 @@ function analyzeOrder(botData, config) {
   if (config) {
     // Config exists - calculate variance from target
     targetSpread = config.targetSpreadPercent / 100;
+
+    // Adjust target spread when sides are doubled
+    // Each doubled side adds one increment to compensate for fewer orders on that side
+    // If both sides are doubled, add increment twice
+    if (botData.buySideIsDoubled) {
+      targetSpread += config.incrementPercent / 100;
+    }
+    if (botData.sellSideIsDoubled) {
+      targetSpread += config.incrementPercent / 100;
+    }
+
     spreadDiff = realSpread - targetSpread;
     incrementCheck = checkGeometricIncrement(grid, config.incrementPercent / 100);
   } else {
@@ -315,8 +326,9 @@ function checkGeometricIncrement(grid, targetIncrement) {
  *   Each sell slot holds base currency ready to sell
  *
  * Conversion logic:
- * - BTS fund in buy side represents potential XRP purchase: totalBTS / avgBuyPrice
- * - XRP fund in sell side converts to BTS equivalent: totalXRP * avgSellPrice
+ * - BTS fund in buy side represents potential XRP purchase: totalBTS / marketPrice
+ * - XRP fund in sell side converts to BTS equivalent: totalXRP * marketPrice
+ * - Uses market price (midpoint between best buy and best sell) for accurate valuation
  *
  * @param {Array} buySlots - Buy order slots
  * @param {Array} sellSlots - Sell order slots
@@ -335,21 +347,18 @@ function calculateGridFunds(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
   const totalXRP = sellSlots.reduce((sum, s) => sum + s.size, 0);
 
   /**
-   * Cross-Asset Fund Representation
-   * Calculate how much of each asset each side could represent
-   * Using average prices as conversion rate
+   * Market Price Calculation
+   * Use the midpoint between best buy and best sell prices
+   * This represents the fair market price for fund valuation
    */
-  const avgBuyPrice = buySlots.length > 0
-    ? buySlots.reduce((sum, s) => sum + s.price, 0) / buySlots.length
-    : 0;
-  const avgSellPrice = sellSlots.length > 0
-    ? sellSlots.reduce((sum, s) => sum + s.price, 0) / sellSlots.length
-    : 0;
+  const marketPrice = bestBuySlot && bestSellSlot
+    ? (bestBuySlot.price + bestSellSlot.price) / 2
+    : 1;
 
-  // How much XRP the buy-side BTS could purchase (at avg buy price)
-  const totalXRPFromBuy = totalBTS / (avgBuyPrice || 1);
-  // How much BTS the sell-side XRP could generate (at avg sell price)
-  const totalBTSFromSell = totalXRP * (avgSellPrice || 1);
+  // How much XRP the buy-side BTS could purchase (at market price)
+  const totalXRPFromBuy = totalBTS / marketPrice;
+  // How much BTS the sell-side XRP could generate (at market price)
+  const totalBTSFromSell = totalXRP * marketPrice;
 
   return {
     // Buy side: funds dedicated to purchasing base currency
@@ -435,8 +444,8 @@ function createDistributionBar(buySlots, spreadSlots, sellSlots) {
  *
  * @param {Array} buySlots - Buy order slots
  * @param {Array} sellSlots - Sell order slots
- * @param {Object} bestBuySlot - Best buy price (unused but kept for compatibility)
- * @param {Object} bestSellSlot - Best sell price (unused but kept for compatibility)
+ * @param {Object} bestBuySlot - Best buy price (used for market price calculation)
+ * @param {Object} bestSellSlot - Best sell price (used for market price calculation)
  * @returns {Object} Distribution analysis with slot%, fund%, and deltas
  */
 function analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
@@ -460,18 +469,15 @@ function analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot) {
    * Currency Conversion for Comparison
    * Buy side funds: Measured in AssetB (quote)
    * Sell side funds: Measured in AssetA (base)
-   * Convert both to common basis using average prices
+   * Convert both to common basis using market price (midpoint between best buy/sell)
    */
-  const avgBuyPrice = buySlots.length > 0
-    ? buySlots.reduce((sum, s) => sum + s.price, 0) / buySlots.length
-    : 1;
-  const avgSellPrice = sellSlots.length > 0
-    ? sellSlots.reduce((sum, s) => sum + s.price, 0) / sellSlots.length
+  const marketPrice = bestBuySlot && bestSellSlot
+    ? (bestBuySlot.price + bestSellSlot.price) / 2
     : 1;
 
   // Convert sell-side funds (XRP) to quote currency equivalent (BTS)
-  // This allows apples-to-apples fund comparison
-  const sellFundsInBTS = totalSellFunds * avgSellPrice;
+  // This allows apples-to-apples fund comparison using market price
+  const sellFundsInBTS = totalSellFunds * marketPrice;
   const totalFunds = totalBuyFunds + sellFundsInBTS;
 
   /**
@@ -550,22 +556,21 @@ function formatAnalysis(analysis) {
    * Status: ✓ if within 0.1% of target, ✗ if not
    * Direction: ↑ if above target, ↓ if below target
    */
-  if (analysis.hasConfig) {
-    lines.push(
-      `   Spread:${formatPercent(analysis.spread.real).padStart(6)} (target: ${formatPercent(analysis.spread.target)})`
-    );
-  } else {
-    lines.push(`   Spread:${formatPercent(analysis.spread.real).padStart(6)}`);
-  }
-
-  // Warning: Double-sided mode (intentional buy/sell imbalance)
+  // Add notation for doubled sides
+  let doubledNotation = '';
   if (analysis.buySideIsDoubled || analysis.sellSideIsDoubled) {
-    let doubleSideInfo = '   ⚠️  Doubled: ';
     const sides = [];
     if (analysis.buySideIsDoubled) sides.push('BUY');
     if (analysis.sellSideIsDoubled) sides.push('SELL');
-    doubleSideInfo += sides.join(' + ');
-    lines.push(doubleSideInfo);
+    doubledNotation = ` [${sides.join('+')}]`;
+  }
+
+  if (analysis.hasConfig) {
+    lines.push(
+      `   Spread:${formatPercent(analysis.spread.real).padStart(6)} (target: ${formatPercent(analysis.spread.target)})${doubledNotation}`
+    );
+  } else {
+    lines.push(`   Spread:${formatPercent(analysis.spread.real).padStart(6)}${doubledNotation}`);
   }
 
   /**
