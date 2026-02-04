@@ -33,6 +33,11 @@ const colors = {
 // Partial block characters for weight visualization (0-8 eighths height)
 const partialBlocks = ['', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
+// Bar width configuration (single source of truth)
+const BAR_WIDTH = 51;
+// Header width: prefix width (11 chars for "   Slots:  ") + bar width
+const HEADER_WIDTH = 11 + BAR_WIDTH;
+
 /**
  * Utility Functions
  * Helper functions for file I/O, formatting, and data retrieval
@@ -93,6 +98,30 @@ function formatCurrency(value) {
   }
   // Standard values: use 2 decimal precision
   return Number(value).toFixed(2);
+}
+
+/**
+ * stripColorCodes: Remove ANSI color codes from a string
+ * @param {string} str - String that may contain color codes
+ * @returns {string} String without color codes
+ */
+function stripColorCodes(str) {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * padStringCentered: Pad a string to a target visual width, accounting for color codes
+ * Centers the string within the specified width with padding
+ * @param {string} str - String that may contain color codes
+ * @param {number} width - Target visual width
+ * @returns {string} Padded string with original colors preserved
+ */
+function padStringCentered(str, width) {
+  const visualLen = stripColorCodes(str).length;
+  const totalPad = Math.max(0, width - visualLen);
+  const padLeft = Math.ceil(totalPad / 2);
+  const padRight = Math.floor(totalPad / 2);
+  return ' '.repeat(padLeft) + str + ' '.repeat(padRight);
 }
 
 // Load bot configurations
@@ -413,7 +442,7 @@ function getDeltaColor(deltaValue) {
  * @returns {string} Colored bar visualization
  */
 function createDistributionBar(buySlots, spreadSlots, sellSlots) {
-  const barWidth = 50; // total width in characters
+  const barWidth = BAR_WIDTH; // total width in characters
   const total = buySlots + spreadSlots + sellSlots;
 
   // Calculate widths proportionally
@@ -449,29 +478,49 @@ function createDistributionBar(buySlots, spreadSlots, sellSlots) {
  * createWeightFactorBar: Visualize capital distribution using actual order sizes
  *
  * Shows how capital is distributed across BUY and SELL orders using arithmetic averages.
+ * Buy funds measured in quote currency, sell funds in base currency - converts to common basis.
  * Each side scales independently: highest order on each side = 100% (█)
- * Compresses orders into fixed width (50 chars total: ~25 buy, ~25 sell).
+ * Character width is proportional to fund amount on each side (not 50/50 split).
  * Full block (█) = maximum average capital on that side
  * Partial blocks (▁-▇) = progressively lower average capital
  *
- * @param {Array} buyOrders - Buy orders with size property
- * @param {Array} sellOrders - Sell orders with size property
+ * @param {Array} buyOrders - Buy orders with size property (in quote currency)
+ * @param {Array} sellOrders - Sell orders with size property (in base currency)
  * @param {number} barWidth - Target width in characters (default: 50)
+ * @param {number} marketPrice - Market price for currency conversion (sell to quote basis)
  * @returns {string} Colored weight visualization with independent scaling
  */
-function createWeightFactorBar(buyOrders, sellOrders, barWidth = 50) {
+function createWeightFactorBar(buyOrders, sellOrders, barWidth = BAR_WIDTH, marketPrice = 1) {
   if ((!buyOrders || buyOrders.length === 0) && (!sellOrders || sellOrders.length === 0)) {
     return '(no orders)';
   }
 
-  // Calculate proportional widths for buy/sell (50/50 split)
-  const buyWidth = Math.floor(barWidth / 2);
-  const sellWidth = barWidth - buyWidth;
+  // Calculate total fund weight on each side using arithmetic sum
+  const buyTotalSize = (buyOrders || []).reduce((sum, o) => sum + (o.size || 0), 0);
+  const sellTotalSize = (sellOrders || []).reduce((sum, o) => sum + (o.size || 0), 0);
 
-  // Create buy side with independent scaling
+  // Convert sell side to quote currency equivalent for accurate ratio calculation
+  // Buy side is in quote currency, sell side is in base currency
+  // Using market price to convert: sell_base * market_price = sell_quote_equivalent
+  const sellTotalInQuote = sellTotalSize * marketPrice;
+  const totalFunds = buyTotalSize + sellTotalInQuote;
+
+  // Allocate widths proportionally based on fund ratios (in common currency basis)
+  // This ensures character length reflects the actual fund distribution
+  let buyWidth, sellWidth;
+  if (totalFunds > 0) {
+    buyWidth = Math.round((buyTotalSize / totalFunds) * barWidth);
+    sellWidth = barWidth - buyWidth;
+  } else {
+    // Fallback to 50/50 if no funds
+    buyWidth = Math.floor(barWidth / 2);
+    sellWidth = barWidth - buyWidth;
+  }
+
+  // Create buy side with independent scaling (max on buy side = 100%)
   const buyBar = createWeightSide(buyOrders, colors.buy, buyWidth);
 
-  // Create sell side with independent scaling
+  // Create sell side with independent scaling (max on sell side = 100%)
   const sellBar = createWeightSide(sellOrders, colors.sell, sellWidth);
 
   return `${buyBar}${sellBar}`;
@@ -696,9 +745,9 @@ function formatAnalysis(analysis) {
 
   // Calculate bar positioning based on slot distribution
   const totalSlots = analysis.slots.buy + analysis.slots.sell + analysis.slots.spread;
-  const buyBarWidth = totalSlots > 0 ? Math.floor((analysis.slots.buy / totalSlots) * 50) : 0;
-  const spreadBarWidth = analysis.slots.spread > 0 ? Math.max(1, Math.floor((analysis.slots.spread / totalSlots) * 50)) : 0;
-  const sellBarWidth = 50 - buyBarWidth - spreadBarWidth;
+  const buyBarWidth = totalSlots > 0 ? Math.floor((analysis.slots.buy / totalSlots) * BAR_WIDTH) : 0;
+  const spreadBarWidth = analysis.slots.spread > 0 ? Math.max(1, Math.floor((analysis.slots.spread / totalSlots) * BAR_WIDTH)) : 0;
+  const sellBarWidth = BAR_WIDTH - buyBarWidth - spreadBarWidth;
 
   // Create formatted labels for three-column layout
   const buyLabel = `${analysis.slots.buy} buy`;
@@ -710,36 +759,45 @@ function formatAnalysis(analysis) {
   const midPrice = analysis.marketPrice ? formatCurrency(analysis.marketPrice) : 'N/A';
   const sellPrice = analysis.gridMaxPrice ? `${colors.sell}${formatCurrency(analysis.gridMaxPrice)}${colors.reset}` : 'N/A';
 
-  // Calculate spacing to align with bar layout (50 char total)
   const pricePrefix = `   Price:  `;
-  const prefixLen = pricePrefix.length;
-  // Use floating-point division to get true center of spread zone
-  const spreadCenter = prefixLen + buyBarWidth + spreadBarWidth / 2;
-  const slotsEndPos = prefixLen + 50;
-
-  // Center spread text around spreadCenter point
-  const buyPriceLen = buyPrice.replace(/\x1b\[[0-9;]*m/g, '').length;
-  const sellPriceLen = sellPrice.replace(/\x1b\[[0-9;]*m/g, '').length;
-  // Round to nearest integer for proper centering
-  const midPriceStart = Math.round(spreadCenter - midPrice.length / 2);
-
-  // Spacing: from end of buy price to spread start, and from end of spread to sell price
-  const priceSpacing1 = Math.max(1, Math.round(midPriceStart - prefixLen - buyPriceLen));
-  const priceSpacing2 = Math.max(1, Math.round(slotsEndPos - (midPriceStart + midPrice.length) - sellPriceLen));
-
-  lines.push(`${pricePrefix}${buyPrice}${' '.repeat(priceSpacing1)}${midPrice}${' '.repeat(priceSpacing2)}${sellPrice}`);
-
-  // Slots line - formatted with three-column alignment
   const slotsPrefix = `   Slots:  `;
-  const slotsPrefixLen = slotsPrefix.length;
-  // Round to nearest integer for proper centering
-  const spreadLabelStart = Math.round(spreadCenter - spreadLabel.length / 2);
 
-  // Spacing: from end of buy label to spread start, and from end of spread to sell label
-  const slotsSpreading1 = Math.max(1, Math.round(spreadLabelStart - slotsPrefixLen - buyLabel.length));
-  const slotsSpreading2 = Math.max(1, Math.round(slotsEndPos - (spreadLabelStart + spreadLabel.length) - sellLabel.length));
+  // Get visual lengths (without color codes)
+  const buyPriceVisualLen = stripColorCodes(buyPrice).length;
+  const midPriceVisualLen = stripColorCodes(midPrice).length;
+  const sellPriceVisualLen = stripColorCodes(sellPrice).length;
+  const buyLabelVisualLen = buyLabel.length;
+  const spreadLabelVisualLen = spreadLabel.length;
+  const sellLabelVisualLen = sellLabel.length;
 
-  lines.push(`${slotsPrefix}${colors.buy}${buyLabel}${colors.reset}${' '.repeat(slotsSpreading1)}${spreadLabel}${' '.repeat(slotsSpreading2)}${colors.sell}${sellLabel}${colors.reset}`);
+  // Calculate positions where items should end to align with bar sections
+  const barStart = 0;
+  const buySection = barStart + buyBarWidth;
+  const spreadSection = buySection + spreadBarWidth;
+  const barEnd = spreadSection + sellBarWidth;
+
+  // Position items right-aligned at section boundaries, with minimum 1 space gap
+  // Buy item: right-align to buySection
+  const buyPriceSpacing1 = Math.max(1, buySection - buyPriceVisualLen);
+  // Spread item: positioned to center in spread zone
+  const spreadMid = buySection + spreadBarWidth / 2;
+  const midPriceSpacing1 = Math.max(1, Math.round(spreadMid - midPriceVisualLen / 2) - buyPriceVisualLen);
+  // Sell item: right-align to barEnd
+  const sellPriceSpacing2 = Math.max(1, barEnd - sellPriceVisualLen - buyPriceVisualLen - midPriceVisualLen - midPriceSpacing1);
+
+  lines.push(
+    `${pricePrefix}${buyPrice}${' '.repeat(midPriceSpacing1)}${midPrice}${' '.repeat(Math.max(1, sellPriceSpacing2))}${sellPrice}`
+  );
+
+  // Same logic for slots line
+  const buyLabelSpacing1 = Math.max(1, buySection - buyLabelVisualLen);
+  const spreadMidLabel = buySection + spreadBarWidth / 2;
+  const spreadLabelSpacing1 = Math.max(1, Math.round(spreadMidLabel - spreadLabelVisualLen / 2) - buyLabelVisualLen);
+  const sellLabelSpacing2 = Math.max(1, barEnd - sellLabelVisualLen - buyLabelVisualLen - spreadLabelVisualLen - spreadLabelSpacing1);
+
+  lines.push(
+    `${slotsPrefix}${colors.buy}${buyLabel}${colors.reset}${' '.repeat(spreadLabelSpacing1)}${spreadLabel}${' '.repeat(Math.max(1, sellLabelSpacing2))}${colors.sell}${sellLabel}${colors.reset}`
+  );
 
   /**
    * Fund Allocation Breakdown
@@ -782,18 +840,30 @@ function formatAnalysis(analysis) {
   const fundDistBar = createDistributionBar(parseFloat(buyFundPct), 0, parseFloat(sellFundPct));
 
   // Weight factor visualization (funds distribution across all orders)
-  const barWidth = 50; // Match the width of other bars
+  const barWidth = BAR_WIDTH; // Match the width of other bars
   const weightBar = createWeightFactorBar(
     analysis.slotData?.buy,
     analysis.slotData?.sell,
-    barWidth
+    barWidth,
+    analysis.marketPrice || 1
   );
 
   lines.push(
-    `   Slots:  ${slotDistBar}`
+    `           ${slotDistBar}`
   );
+
+  // Position delta indicator directly under the spread slot character
+  // Use Math.round to match createDistributionBar calculation (which is what's actually displayed)
+  const deltaStr = `Δ ${buyMatch}%`;
+  const slotDistBuyWidth = Math.round((analysis.slots.buy / totalSlots) * BAR_WIDTH);
+  const spreadStart = 11 + slotDistBuyWidth; // Position where spread character starts (11 = prefix length)
+  const deltaPadding = spreadStart;
   lines.push(
-    `   Funds:  ${weightBar}  Δ ${buyMatch}%`
+    `${' '.repeat(deltaPadding)}${deltaStr}`
+  );
+
+  lines.push(
+    `   Funds:  ${weightBar}`
   );
 
   // Funds breakdown: BUY on left, SELL on right (right-aligned within its column)
@@ -810,7 +880,7 @@ function formatAnalysis(analysis) {
   const sellEquivRight = ' '.repeat(Math.max(0, rightColWidth - sellEquivStr.length)) + sellEquivStr;
 
   // Build prefix strings and calculate their lengths
-  const prefix1 = `   Funds:  `;
+  const prefix1 = `           `;
   const prefix2 = `           `;
   const prefix1Len = prefix1.length;
   const prefix2Len = prefix2.length;
@@ -854,7 +924,7 @@ function formatAnalysis(analysis) {
 function main() {
   // Header
   console.log(`\n${colors.cyan}🔍 Order Analysis${colors.reset}`);
-  console.log(`${colors.cyan}${'='.repeat(70)}${colors.reset}`);
+  console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
 
   // Get all order files sorted by modification time (newest first)
   const files = getOrderFiles();
@@ -918,7 +988,7 @@ function main() {
   });
 
   // Summary line
-  console.log(`${colors.cyan}${'='.repeat(70)}${colors.reset}`);
+  console.log(`${colors.cyan}${'='.repeat(HEADER_WIDTH)}${colors.reset}`);
   console.log(`${colors.cyan}Summary: ${analyzed} analyzed, ${skipped} skipped${colors.reset}\n`);
 }
 
