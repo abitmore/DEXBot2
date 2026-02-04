@@ -173,7 +173,7 @@ if (cliArgs.includes(CLI_EXAMPLES_FLAG)) {
 function loadSettingsFile({ silent = false } = {}) {
      if (!fs.existsSync(PROFILES_BOTS_FILE)) {
          if (!silent) {
-             console.error('profiles/bots.json not found. Run `npm run bootstrap:profiles` to create it from the tracked examples.');
+             console.error('profiles/bots.json not found. Run: dexbot bots');
          }
          return { config: {}, filePath: PROFILES_BOTS_FILE };
      }

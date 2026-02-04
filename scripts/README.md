@@ -15,14 +15,6 @@ node dexbot update
 ```
 *Note: Protects your `profiles/` directory and logs all changes to `profiles/logs/update.log`.*
 
-### Bootstrap Environment
-**File:** `bootstrap-profiles.js`
-**Purpose:** Initialize directory structure for new installations.
-```bash
-# Create profiles/, logs/, and orders/ from examples
-node scripts/bootstrap-profiles.js
-```
-
 ### Fix Environment Paths
 **File:** `create-bot-symlinks.sh`
 **Purpose:** Create convenience root-level symlinks to profile data.
@@ -181,7 +173,6 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 
 | Command | Purpose |
 |:---|:---|
-| `npm run bootstrap:profiles` | Initialize directory structure for new installations |
 | `npm run ptest` | Sync local test → origin/test |
 | `npm run pdev` | Sync local test → dev |
 | `npm run pmain` | Sync local test → dev → main |

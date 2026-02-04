@@ -86,7 +86,7 @@ console.log(`[bot.js] Starting bot: ${botName}`);
  */
 function loadBotConfig(name) {
     if (!fs.existsSync(PROFILES_BOTS_FILE)) {
-        console.error('[bot.js] profiles/bots.json not found. Run: npm run bootstrap:profiles');
+        console.error('[bot.js] profiles/bots.json not found. Run: dexbot bots');
         process.exit(1);
     }
 

@@ -89,7 +89,7 @@ const LOGS_DIR = path.join(PROFILES_DIR, 'logs');
  */
 function generateEcosystemConfig(botNameFilter = null) {
     if (!fs.existsSync(BOTS_JSON)) {
-        console.error('profiles/bots.json not found. Run: npm run bootstrap:profiles');
+        console.error('profiles/bots.json not found. Run: dexbot bots');
         process.exit(1);
     }
 
