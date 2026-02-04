@@ -89,15 +89,18 @@ const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');
 const {
     blockchainToFloat,
     floatToBlockchainInt,
-    calculatePriceTolerance,
+    hasValidAccountTotals,
+    calculatePriceTolerance
+} = require('./utils/math');
+const {
     findMatchingGridOrderByOpenOrder,
     applyChainSizeToGridOrder,
     convertToSpreadPlaceholder,
     virtualizeOrder,
-    hasValidAccountTotals,
     isOrderVirtual,
     hasOnChainId
-} = require('./utils');
+} = require('./utils/order');
+const { lookupAsset } = require('./utils/system');
 
 class SyncEngine {
     /**
@@ -872,13 +875,11 @@ class SyncEngine {
      * is propagated (not caught). This is intentional - a missing asset is a
      * configuration error that must be fixed before the bot can operate.
      */
-    async initializeAssets() {
-        const mgr = this.manager;
-        if (mgr.assets) return;
-
-        const { lookupAsset } = require('./utils');
-        const { BitShares } = require('../bitshares_client');
-
+        async initializeAssets() {
+            const mgr = this.manager;
+            if (mgr.assets) return;
+     
+            const { BitShares } = require('../bitshares_client');
         const fetchAssetWithFallback = async (symbol, side) => {
             try {
                 return await lookupAsset(BitShares, symbol);

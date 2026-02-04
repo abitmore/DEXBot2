@@ -88,8 +88,10 @@ const path = require('path');
 const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
-const { OrderManager, grid: Grid, utils: OrderUtils } = require('./order');
-const { retryPersistenceIfNeeded, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, blockchainToFloat, isSignificantSizeChange, validateOrderSize, virtualizeOrder } = OrderUtils;
+const { OrderManager, grid: Grid } = require('./order');
+const { retryPersistenceIfNeeded } = require('./order/utils/system');
+const { buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, virtualizeOrder } = require('./order/utils/order');
+const { blockchainToFloat, isSignificantSizeChange, validateOrderSize } = require('./order/utils/math');
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
@@ -1226,7 +1228,7 @@ class DEXBot {
             return { isValid: true, summary: 'No operations to validate' };
         }
 
-        const { blockchainToFloat, floatToBlockchainInt } = require('./order/utils');
+        const { blockchainToFloat, floatToBlockchainInt } = require('./order/utils/math');
         const snap = this.manager.getChainFundsSnapshot();
         const maxOrderSize = this._getMaxOrderSize();
         const requiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
@@ -1698,7 +1700,7 @@ class DEXBot {
      */
     async _processBatchResults(result, opContexts, ordersToPlace, ordersToRotate) {
         const results = (result && result[0] && result[0].trx && result[0].trx.operation_results) || [];
-        const { getAssetFees } = require('./order/utils');
+        const { getAssetFees } = require('./order/utils/math');
         const btsFeeData = getAssetFees('BTS', 1);
         let hadRotation = false;
         let updateOperationCount = 0;

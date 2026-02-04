@@ -6,7 +6,7 @@
  */
 
 // MOCK UTILS BEFORE ANYTHING ELSE
-const utils = require('../modules/order/utils');
+const utils = require('../modules/order/utils/math');
 utils.getAssetFees = (asset, amount, isMaker = true) => {
     if (asset === 'BTS') {
         const createFee = 0.01;

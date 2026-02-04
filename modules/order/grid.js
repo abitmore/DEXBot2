@@ -99,35 +99,37 @@ const GRID_CONSTANTS = {
 const {
     floatToBlockchainInt,
     blockchainToFloat,
-    filterOrdersByType,
-    filterOrdersByTypeAndState,
-    sumOrderSizes,
     getPrecisionByOrderType,
     getPrecisionForSide,
     getPrecisionsForManager,
-    checkSizesBeforeMinimum,
-    checkSizeThreshold,
     calculateOrderCreationFees,
     deductOrderFeesFromFunds,
     calculateOrderSizes,
     calculateRotationOrderSizes,
     calculateGridSideDivergenceMetric,
-    resolveConfiguredPriceBound,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
     getDoubleDustThreshold,
     calculateAvailableFundsValue,
     calculateSpreadFromOrders,
-    allocateFundsByWeights,
+    allocateFundsByWeights
+} = require('./utils/math');
+const {
+    filterOrdersByType,
+    filterOrdersByTypeAndState,
+    sumOrderSizes,
+    checkSizesBeforeMinimum,
+    checkSizeThreshold,
+    resolveConfiguredPriceBound,
     countOrdersByType,
     shouldFlagOutOfSpread,
-    derivePrice,
-    isNumeric,
     isOrderHealthy,
     isPhantomOrder,
     isSlotAvailable,
     getPartialsByType
-} = require('./utils');
+} = require('./utils/order');
+const { derivePrice } = require('./utils/system');
+const { isNumeric } = require('./utils/math');
 
 class Grid {
     /**

@@ -2,7 +2,7 @@ const assert = require('assert');
 console.log('Running order_grid tests');
 
 const Grid = require('../modules/order/index.js').grid;
-const { calculateOrderSizes } = require('../modules/order/utils');
+const { calculateOrderSizes } = require('../modules/order/utils/math');
 
 const cfg = {
     startPrice: 100,
@@ -25,7 +25,7 @@ const PRECISION = 8;
 const sized = calculateOrderSizes(orders, cfg, sellFunds, buyFunds, 0, 0, PRECISION, PRECISION);
 assert(Array.isArray(sized), 'calculateOrderSizes should return an array');
 
-const { floatToBlockchainInt } = require('../modules/order/utils');
+const { floatToBlockchainInt } = require('../modules/order/utils/math');
 const sellSizesInt = sized.filter(o => o.type === 'sell').reduce((s, o) => s + (o.size ? floatToBlockchainInt(o.size, PRECISION) : 0), 0);
 const buySizesInt = sized.filter(o => o.type === 'buy').reduce((s, o) => s + (o.size ? floatToBlockchainInt(o.size, PRECISION) : 0), 0);
 

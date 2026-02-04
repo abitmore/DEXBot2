@@ -118,8 +118,6 @@
 
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, PIPELINE_TIMING } = require('../constants');
 const {
-    calculatePriceTolerance,
-    findMatchingGridOrderByOpenOrder,
     calculateAvailableFundsValue,
     getMinAbsoluteOrderSize,
     getAssetFees,
@@ -127,10 +125,15 @@ const {
     hasValidAccountTotals,
     resolveConfigValue,
     floatToBlockchainInt,
-    isOrderOnChain,
-    isPhantomOrder,
     getPrecisionSlack
-} = require('./utils');
+} = require('./utils/math');
+const {
+    calculatePriceTolerance,
+    findMatchingGridOrderByOpenOrder,
+    isOrderOnChain,
+    isPhantomOrder
+} = require('./utils/order');
+const { persistGridSnapshot } = require('./utils/system');
 const Logger = require('./logger');
 const AsyncLock = require('./async_lock');
 const Accountant = require('./accounting');
@@ -1226,13 +1229,11 @@ class OrderManager {
         return false;
     }
 
-    /**
-     * Unified persistence for grid state and fund metadata.
-     * Delegates to OrderUtils.persistGridSnapshot for centralized handling.
-     */
-    async persistGrid() {
-        const { persistGridSnapshot } = require('./utils');
-
+        /**
+         * Unified persistence for grid state and fund metadata.
+         * Delegates to OrderUtils.persistGridSnapshot for centralized handling.
+         */
+        async persistGrid() {
         // CRITICAL: Validate grid state before persistence
         const validation = this.validateGridStateForPersistence();
         if (!validation.isValid) {

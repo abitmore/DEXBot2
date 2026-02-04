@@ -11,7 +11,7 @@ const { OrderManager } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
 
 // Mock getAssetFees
-const OrderUtils = require('../modules/order/utils');
+const OrderUtils = require('../modules/order/utils/math');
 const originalGetAssetFees = OrderUtils.getAssetFees;
 OrderUtils.getAssetFees = (asset) => {
     if (asset === 'BTS') {

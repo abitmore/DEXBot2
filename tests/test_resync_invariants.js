@@ -35,7 +35,7 @@ async function runTests() {
         manager.finishBootstrap(); // Set isBootstrapping = false
 
         let invariantChecked = false;
-        manager.accountant._verifyFundInvariants = () => {
+        manager.accountant._verifyFundInvariants = async () => {
             invariantChecked = true;
         };
 
@@ -58,7 +58,7 @@ async function runTests() {
         manager.startBootstrap(); // Set isBootstrapping = true
 
         let invariantChecked = false;
-        manager.accountant._verifyFundInvariants = () => {
+        manager.accountant._verifyFundInvariants = async () => {
             invariantChecked = true;
         };
 

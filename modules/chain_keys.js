@@ -72,7 +72,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { readInput, readPassword } = require('./order/utils');
+const { readInput, readPassword } = require('./order/utils/system');
 
 // Profiles key file (ignored) only
 const PROFILES_KEYS_FILE = path.join(__dirname, '..', 'profiles', 'keys.json');

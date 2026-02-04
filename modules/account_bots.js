@@ -55,7 +55,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
-const { ensureProfilesDirectory, readInput } = require('./order/utils');
+const { ensureProfilesDirectory, readInput } = require('./order/utils/system');
 const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER } = require('./constants');
 
 /**

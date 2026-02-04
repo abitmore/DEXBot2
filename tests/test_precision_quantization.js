@@ -1,5 +1,5 @@
 const assert = require('assert');
-const utils = require('../modules/order/utils');
+const utils = require('../modules/order/utils/math');
 
 // Mock getAssetFees to ensure test can run without blockchain connection
 utils.getAssetFees = (asset, amount, isMaker = true) => {
@@ -25,7 +25,8 @@ utils.getAssetFees = (asset, amount, isMaker = true) => {
 
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const { buildCreateOrderArgs, floatToBlockchainInt, blockchainToFloat } = require('../modules/order/utils');
+const { floatToBlockchainInt, blockchainToFloat } = require('../modules/order/utils/math');
+const { buildCreateOrderArgs } = require('../modules/order/utils/order');
 
 console.log('='.repeat(70));
 console.log('Testing Precision Quantization Fix');

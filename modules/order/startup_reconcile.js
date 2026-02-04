@@ -49,7 +49,8 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
-const OrderUtils = require('./utils');
+const { getMinAbsoluteOrderSize, getAssetFees, hasValidAccountTotals } = require('./utils/math');
+const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, isOrderOnChain, getPartialsByType } = require('./utils/order');
 const Format = require('./format');
 
 /**
@@ -84,7 +85,7 @@ function _pickVirtualSlotsToActivate(manager, type, count) {
 
     let effectiveMin = 0;
     try {
-        effectiveMin = OrderUtils.getMinAbsoluteOrderSize(type, manager.assets);
+        effectiveMin = getMinAbsoluteOrderSize(type, manager.assets);
     } catch (e) { effectiveMin = 0; }
 
     const valid = [];
@@ -130,7 +131,7 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
     const edgeOrders = sorted.slice(-outerEdgeCount);
 
     // Check if ALL edge orders are ACTIVE (placed on blockchain)
-    const allEdgeActive = edgeOrders.every(o => OrderUtils.isOrderPlaced(o));
+    const allEdgeActive = edgeOrders.every(o => isOrderPlaced(o));
 
     return allEdgeActive;
 }
@@ -164,13 +165,13 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
     // 2. synchronizeWithChain will then deduct the NEW grid size from Free
     // Result: Free balance is adjusted by the delta (Released funds or extra Commitment)
     if (chainOrderObj && manager.accountant) {
-        const parsed = OrderUtils.parseChainOrder(chainOrderObj, manager.assets);
+        const parsed = parseChainOrder(chainOrderObj, manager.assets);
         if (parsed && parsed.size > 0) {
             manager.accountant.addToChainFree(gridOrder.type, parsed.size, 'startup-align');
         }
     }
 
-    const { amountToSell, minToReceive } = OrderUtils.buildCreateOrderArgs(gridOrder, manager.assets.assetA, manager.assets.assetB);
+    const { amountToSell, minToReceive } = buildCreateOrderArgs(gridOrder, manager.assets.assetA, manager.assets.assetB);
 
     const logger = manager && manager.logger;
     logger?.log?.(
@@ -185,7 +186,7 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
         orderType: gridOrder.type,
     });
 
-    const btsFeeData = OrderUtils.getAssetFees('BTS');
+    const btsFeeData = getAssetFees('BTS');
 
     // skipAccounting: false ensures the NEW size is deducted from our (now increased) Free balance
     await manager.synchronizeWithChain({
@@ -284,7 +285,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         return;
     }
 
-    const { amountToSell, sellAssetId, minToReceive, receiveAssetId } = OrderUtils.buildCreateOrderArgs(
+    const { amountToSell, sellAssetId, minToReceive, receiveAssetId } = buildCreateOrderArgs(
         gridOrder,
         manager.assets.assetA,
         manager.assets.assetB
@@ -310,7 +311,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         result[0].trx.operation_results[0][1];
 
     if (chainOrderId) {
-        const btsFeeData = OrderUtils.getAssetFees('BTS');
+        const btsFeeData = getAssetFees('BTS');
 
         // Centralized Fund Tracking: Use manager's sync core to handle state transition and fund deduction
         // This keeps accountBalances accurate during startup by using the same logic as synchronizeWithChain
@@ -379,7 +380,7 @@ async function attemptResumePersistedGridByPriceMatch({
 
         const matchedOrderIds = new Set(
             Array.from(manager.orders.values())
-                .filter(o => o && OrderUtils.isOrderOnChain(o))
+                .filter(o => o && isOrderOnChain(o))
                 .map(o => o.orderId)
                 .filter(Boolean)
         );
@@ -475,7 +476,7 @@ async function reconcileStartupOrders({
     const dryRun = !!(config && config.dryRun);
 
     const parsedChain = (chainOpenOrders || [])
-        .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
+        .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
         .filter(x => x.parsed);
 
     const activeCfg = (config && config.activeOrders) ? config.activeOrders : {};
@@ -493,7 +494,7 @@ async function reconcileStartupOrders({
     // new orders or cause balance invariants.
     const chainIds = new Set(chainOpenOrders.map(o => o.id));
     for (const order of manager.orders.values()) {
-        if (OrderUtils.isOrderPlaced(order)) {
+        if (isOrderPlaced(order)) {
             if (!chainIds.has(order.orderId)) {
                 logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
 
@@ -530,7 +531,7 @@ async function reconcileStartupOrders({
 
     const unmatchedChain = chainOpenOrders.filter(co => !matchedChainOrderIds.has(co.id));
     const unmatchedParsed = unmatchedChain
-        .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
+        .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
         .filter(x => x.parsed);
 
     let unmatchedBuys = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
@@ -551,8 +552,8 @@ async function reconcileStartupOrders({
     const sortedUnmatchedSells = unmatchedSells
         .slice(0)  // Create copy to avoid mutating original
         .sort((a, b) => {
-            const priceA = OrderUtils.parseChainOrder(a, manager.assets)?.price || 0;
-            const priceB = OrderUtils.parseChainOrder(b, manager.assets)?.price || 0;
+            const priceA = parseChainOrder(a, manager.assets)?.price || 0;
+            const priceB = parseChainOrder(b, manager.assets)?.price || 0;
             return priceA - priceB;  // Low to high (market to edge)
         });
 
@@ -592,7 +593,7 @@ async function reconcileStartupOrders({
         // Check if update is feasible: SELL orders need to sell assetA
         // If account doesn't have enough free assetA, skip this update (keep old order as-is)
         const gridSize = Number(gridOrder.size) || 0;
-        const parsedChain = OrderUtils.parseChainOrder(chainOrder, manager.assets);
+        const parsedChain = parseChainOrder(chainOrder, manager.assets);
         const currentSize = parsedChain ? parsedChain.size : 0;
         const sizeIncrease = Math.max(0, gridSize - currentSize);
         const currentSellAssetBalance = (manager.accountTotals?.sellFree) || 0;
@@ -673,7 +674,7 @@ async function reconcileStartupOrders({
     let sellCancelCount = Math.max(0, chainSellCount - targetSell);
     if (sellCancelCount > 0) {
         const parsedUnmatchedSells = unmatchedSells
-            .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
+            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
             .filter(x => x.parsed)
             .sort((a, b) => (b.parsed.price || 0) - (a.parsed.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
 
@@ -718,8 +719,8 @@ async function reconcileStartupOrders({
     const sortedUnmatchedBuys = unmatchedBuys
         .slice(0)  // Create copy to avoid mutating original
         .sort((a, b) => {
-            const priceA = OrderUtils.parseChainOrder(a, manager.assets)?.price || 0;
-            const priceB = OrderUtils.parseChainOrder(b, manager.assets)?.price || 0;
+            const priceA = parseChainOrder(a, manager.assets)?.price || 0;
+            const priceB = parseChainOrder(b, manager.assets)?.price || 0;
             return priceB - priceA;  // High to low (market to edge)
         });
 
@@ -760,7 +761,7 @@ async function reconcileStartupOrders({
         // If account doesn't have enough free assetB, skip this update (keep old order as-is)
         // NOTE: gridOrder.size for BUY orders is already in assetB units
         const gridSize = Number(gridOrder.size) || 0;
-        const parsedChain = OrderUtils.parseChainOrder(chainOrder, manager.assets);
+        const parsedChain = parseChainOrder(chainOrder, manager.assets);
         const currentSize = parsedChain ? parsedChain.size : 0;
         const sizeIncrease = Math.max(0, gridSize - currentSize);
         const currentBuyAssetBalance = (manager.accountTotals?.buyFree) || 0;
@@ -845,7 +846,7 @@ async function reconcileStartupOrders({
     let buyCancelCount = Math.max(0, chainBuyCount - targetBuy);
     if (buyCancelCount > 0) {
         const parsedUnmatchedBuys = unmatchedBuys
-            .map(co => ({ chain: co, parsed: OrderUtils.parseChainOrder(co, manager.assets) }))
+            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
             .filter(x => x.parsed)
             .sort((a, b) => (a.parsed.price || 0) - (b.parsed.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
 
@@ -889,7 +890,7 @@ async function reconcileStartupOrders({
     // DUST CHECK: If startup reconcile resulted in partials on either side,
     // trigger a full rebalance to consolidate them.
     const allOrders = Array.from(manager.orders.values());
-    const { buy: buyPartials, sell: sellPartials } = OrderUtils.getPartialsByType(allOrders);
+    const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
 
     if (buyPartials.length > 0 && sellPartials.length > 0) {
         const buyHasDust = manager.strategy.hasAnyDust(buyPartials, "buy");

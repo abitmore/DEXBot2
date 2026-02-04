@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
-const { floatToBlockchainInt } = require('../modules/order/utils');
+const { floatToBlockchainInt } = require('../modules/order/utils/math');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
 console.log('Running offline partial-fill unit test (syncing startup orders)...');

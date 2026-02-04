@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const { countOrdersByType } = require('../modules/order/utils');
+const { countOrdersByType } = require('../modules/order/utils/order');
 
 console.log('Running Integration Tests: Partial Orders in Complex Scenarios\n');
 

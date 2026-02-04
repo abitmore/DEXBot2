@@ -9,7 +9,7 @@
  */
 
 const BitShares = require('btsdex');
-const { initializeFeeCache, getAssetFees } = require('../modules/order/utils');
+const { initializeFeeCache, getAssetFees } = require('../modules/order/utils/system');
 
 async function main() {
     try {

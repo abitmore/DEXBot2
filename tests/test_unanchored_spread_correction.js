@@ -1,5 +1,5 @@
 const assert = require('assert');
-const utils = require('../modules/order/utils');
+const utils = require('../modules/order/utils/math');
 
 // Mock derivePrice to simulate market movement
 utils.derivePrice = async () => 150; 

@@ -12,7 +12,7 @@
 const BitShares = require('btsdex');
 const fs = require('fs');
 const path = require('path');
-const { initializeFeeCache, getAssetFees } = require('../modules/order/utils');
+const { initializeFeeCache, getAssetFees } = require('../modules/order/utils/system');
 const Format = require('../modules/order/format');
 
 async function main() {

@@ -38,7 +38,7 @@ async function main() {
     bsModule.BitShares = mock;
 
     try {
-        const { derivePoolPrice, deriveMarketPrice } = require('../modules/order/utils');
+        const { derivePoolPrice, deriveMarketPrice } = require('../modules/order/utils/system');
 
         const poolAB = await derivePoolPrice(mock, assetA, assetB);
         const poolBA = await derivePoolPrice(mock, assetB, assetA);

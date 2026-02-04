@@ -10,7 +10,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-const { initializeFeeCache } = require('../modules/order/utils');
+const { initializeFeeCache } = require('../modules/order/utils/system');
 const Format = require('../modules/order/format');
 
 // Mock BitShares for fee initialization

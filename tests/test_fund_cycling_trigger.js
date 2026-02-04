@@ -90,7 +90,7 @@ class MockManager {
                 // which uses updateGridFromBlockchainSnapshot(type).
 
                 // Let's match DEXBot class behavior:
-                const { getOrderTypeFromUpdatedFlags } = require('../modules/order/utils');
+                const { getOrderTypeFromUpdatedFlags } = require('../modules/order/utils/math');
                 const orderType = getOrderTypeFromUpdatedFlags(
                     this._gridSidesUpdated.has(ORDER_TYPES.BUY),
                     this._gridSidesUpdated.has(ORDER_TYPES.SELL)

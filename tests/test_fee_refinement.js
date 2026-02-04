@@ -4,10 +4,10 @@ async function testFees() {
     console.log('Running BTS Fee Refinement Test...');
 
     // Clear require cache for utils and manager to allow mocking before use
-    delete require.cache[require.resolve('../modules/order/utils')];
+    delete require.cache[require.resolve('../modules/order/utils/math')];
     delete require.cache[require.resolve('../modules/order/manager')];
 
-    const utils = require('../modules/order/utils');
+    const utils = require('../modules/order/utils/math');
     utils.getAssetFees = (asset, amount) => {
         if (asset === 'BTS') return { total: 0.5, updateFee: 0.1 };
         return amount; // Standard asset market fee: 0% -> return full amount

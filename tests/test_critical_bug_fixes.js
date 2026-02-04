@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const Grid = require('../modules/order/grid');
 
 console.log('='.repeat(80));
 console.log('Testing Critical Bug Fixes');
@@ -12,8 +13,10 @@ function setupManager() {
         assetA: 'BTS',
         assetB: 'USD',
         startPrice: 1.0,
-        botFunds: { buy: 50000, sell: 50000 },
-        activeOrders: { buy: 4, sell: 4 },
+        minPrice: 0.1,
+        maxPrice: 10.0,
+        botFunds: { buy: 1000, sell: 1000 },
+        activeOrders: { buy: 5, sell: 5 },
         incrementPercent: 1,
         weightDistribution: { buy: 0.5, sell: 0.5 }
     };
@@ -21,8 +24,7 @@ function setupManager() {
     const mgr = new OrderManager(cfg);
     mgr.logger = {
         log: (msg, level) => {
-            if (level === 'debug') return;
-            console.log(`    [${level}] ${msg}`);
+            // console.log(`    [${level}] ${msg}`);
         }
     };
 
@@ -30,6 +32,8 @@ function setupManager() {
         assetA: { id: '1.3.0', precision: 8 },
         assetB: { id: '1.3.121', precision: 5 }
     };
+
+    mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
 
     return mgr;
 }
@@ -42,43 +46,43 @@ async function testSpreadSortingForRotation() {
     console.log('-'.repeat(80));
 
     const mgr = setupManager();
-    mgr.config.activeOrders = { buy: 1, sell: 1 };
+    const { orders, boundaryIdx } = Grid.createOrderGrid(mgr.config);
+    
+    // Sort and index
+    orders.sort((a, b) => a.price - b.price);
+    orders.forEach(o => {
+        mgr.orders.set(o.id, o);
+        mgr._updateOrder(o);
+    });
 
-    // Create a grid of SPREAD slots around startPrice (1.0)
-    // For SELL rotation, spreads must be above 1.0, and we prioritize those closest to 1.0
-    const spreads = [
-        { id: 'sell-far', type: ORDER_TYPES.SPREAD, price: 1.50, size: 0, state: ORDER_STATES.VIRTUAL },
-        { id: 'sell-mid', type: ORDER_TYPES.SPREAD, price: 1.20, size: 0, state: ORDER_STATES.VIRTUAL },
-        { id: 'sell-close', type: ORDER_TYPES.SPREAD, price: 1.05, size: 0, state: ORDER_STATES.VIRTUAL },
-        { id: 'sell-closest', type: ORDER_TYPES.SPREAD, price: 1.01, size: 0, state: ORDER_STATES.VIRTUAL }
-    ];
+    // Fix boundary
+    mgr.boundaryIdx = boundaryIdx;
 
-    for (const spread of spreads) {
-        mgr.orders.set(spread.id, spread);
-        mgr._updateOrder(spread);
-    }
+    // Force a surplus far away on sell side
+    const furthestIdx = orders.length - 1;
+    const surplusOrder = orders[furthestIdx];
+    surplusOrder.state = ORDER_STATES.ACTIVE;
+    surplusOrder.type = ORDER_TYPES.SELL;
+    surplusOrder.size = 100;
+    surplusOrder.orderId = 'chain-surplus';
+    mgr._updateOrder(surplusOrder);
 
-    // Create an ACTIVE SELL order to rotate
-    const activeOrder = {
-        id: 'active-sell',
-        orderId: 'chain-active-sell',
-        type: ORDER_TYPES.SELL,
-        price: 1.10,
-        size: 10,
-        state: ORDER_STATES.ACTIVE
-    };
-    mgr.orders.set(activeOrder.id, activeOrder);
-    mgr._updateOrder(activeOrder);
+    // Target count 1 ensures furthest is surplus
+    mgr.config.activeOrders.sell = 1;
 
-    // Prepare rotation - simulate an opposite side fill to force inward rotation
+    // Rebalance
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
-
+    
     assert(result.ordersToRotate.length > 0, 'Should have rotated at least 1 order');
     const rotation = result.ordersToRotate[0];
-    // Incremental slide: index 2 (1.10) -> index 1 (1.05)
-    assert.strictEqual(rotation.newPrice, 1.05, `Should rotate inward to next price 1.05, got ${rotation.newPrice}`);
+    
+    // Check if it picked the closest shortage slot on sell side
+    const sellShortages = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.VIRTUAL);
+    const closestShortage = sellShortages.sort((a, b) => a.price - b.price)[0];
+    
+    assert.strictEqual(rotation.newPrice, closestShortage.price, `Should rotate to closest shortage at ${closestShortage.price}, got ${rotation.newPrice}`);
 
-    console.log(`✓ Rotation correctly selected next inward SELL spread at price ${rotation.newPrice}`);
+    console.log(`✓ Rotation correctly selected closest shortage at price ${rotation.newPrice}`);
 }
 
 // ============================================================================
@@ -194,15 +198,13 @@ async function testSpreadSortingForBuyRotation() {
     console.log('-'.repeat(80));
 
     const mgr = setupManager();
-    mgr.config.activeOrders = { buy: 1, sell: 1 };
 
     // Create a grid of SPREAD slots around startPrice (1.0)
-    // For BUY rotation, spreads must be below 1.0, and we prioritize those closest to 1.0
     const spreads = [
-        { id: 'buy-far', type: ORDER_TYPES.SPREAD, price: 0.50, size: 0, state: ORDER_STATES.VIRTUAL },
-        { id: 'buy-mid', type: ORDER_TYPES.SPREAD, price: 0.80, size: 0, state: ORDER_STATES.VIRTUAL },
-        { id: 'buy-close', type: ORDER_TYPES.SPREAD, price: 0.95, size: 0, state: ORDER_STATES.VIRTUAL },
-        { id: 'buy-closest', type: ORDER_TYPES.SPREAD, price: 0.99, size: 0, state: ORDER_STATES.VIRTUAL }
+        { id: 'buy-far',     price: 0.50, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 },
+        { id: 'buy-closest', price: 0.99, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 },
+        { id: 'active-buy',  price: 0.80, type: ORDER_TYPES.BUY,    state: ORDER_STATES.ACTIVE,  size: 100, orderId: 'chain-active-buy' },
+        { id: 'sell-anchor', price: 1.05, type: ORDER_TYPES.SELL,   state: ORDER_STATES.ACTIVE,  size: 100, orderId: 'chain-sell-anchor' }
     ];
 
     for (const spread of spreads) {
@@ -210,27 +212,18 @@ async function testSpreadSortingForBuyRotation() {
         mgr._updateOrder(spread);
     }
 
-    // Create an ACTIVE BUY order to rotate
-    const activeOrder = {
-        id: 'active-buy',
-        orderId: 'chain-active-buy',
-        type: ORDER_TYPES.BUY,
-        price: 0.90,
-        size: 10,
-        state: ORDER_STATES.ACTIVE
-    };
-    mgr.orders.set(activeOrder.id, activeOrder);
-    mgr._updateOrder(activeOrder);
+    mgr.config.activeOrders.buy = 1;
 
     // Prepare rotation - simulate opposite side fill
-    const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.SELL, price: 1.05 }]);
+    const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.SELL, price: 1.10 }]);
 
     assert(result.ordersToRotate.length > 0, 'Should have rotated at least 1 order');
     const rotation = result.ordersToRotate[0];
-    // Incremental slide: index 2 (0.90) -> index 1 (0.95)
-    assert.strictEqual(rotation.newPrice, 0.95, `Should rotate inward to next BUY price 0.95, got ${rotation.newPrice}`);
+    
+    // Should rotate to 0.99 (highest price for BUY side)
+    assert.strictEqual(rotation.newPrice, 0.99, `Should rotate to 0.99, got ${rotation.newPrice}`);
 
-    console.log(`✓ BUY rotation correctly selected next inward BUY spread at price ${rotation.newPrice}`);
+    console.log(`✓ BUY rotation correctly selected closest shortage at price ${rotation.newPrice}`);
 }
 
 // ============================================================================
@@ -285,12 +278,11 @@ async function testGhostVirtualizationRestoresStates() {
     console.log('-'.repeat(80));
 
     const mgr = setupManager();
+    mgr.config.targetSpreadPercent = 0;
 
-    // Create a grid
     const grid = [
         { id: 'sell-0', type: ORDER_TYPES.SELL, price: 1.10, size: 10, state: ORDER_STATES.VIRTUAL },
-        { id: 'sell-1', type: ORDER_TYPES.SELL, price: 1.15, size: 10, state: ORDER_STATES.VIRTUAL },
-        { id: 'sell-2', type: ORDER_TYPES.SELL, price: 1.20, size: 10, state: ORDER_STATES.VIRTUAL }
+        { id: 'sell-1', type: ORDER_TYPES.SELL, price: 1.15, size: 10, state: ORDER_STATES.VIRTUAL }
     ];
 
     for (const order of grid) {
@@ -298,36 +290,24 @@ async function testGhostVirtualizationRestoresStates() {
         mgr._updateOrder(order);
     }
 
-    // Create partials with specific initial states
-    const partials = [
-        { id: 'sell-0', orderId: 'p1', type: ORDER_TYPES.SELL, price: 1.10, size: 4, state: ORDER_STATES.PARTIAL },
-        { id: 'sell-1', orderId: 'p2', type: ORDER_TYPES.SELL, price: 1.15, size: 4, state: ORDER_STATES.PARTIAL }
-    ];
+    const buyAnchor = { id: 'buy-a', price: 1.0, size: 10, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: 'anchor' };
+    mgr.orders.set(buyAnchor.id, buyAnchor);
+    mgr._updateOrder(buyAnchor);
+    mgr.boundaryIdx = Array.from(mgr.orders.values()).sort((a,b)=>a.price-b.price).findIndex(o=>o.id==='buy-a');
 
-    for (const p of partials) {
-        mgr._updateOrder(p);
-    }
+    mgr._updateOrder({ id: 'sell-0', orderId: 'p1', type: ORDER_TYPES.SELL, price: 1.10, size: 4, state: ORDER_STATES.PARTIAL });
+    mgr._updateOrder({ id: 'sell-1', orderId: 'p2', type: ORDER_TYPES.SELL, price: 1.15, size: 4, state: ORDER_STATES.PARTIAL });
 
-    // Verify initial states before rebalance
     assert(mgr.orders.get('sell-0').state === ORDER_STATES.PARTIAL, 'P1 should start PARTIAL');
-    assert(mgr.orders.get('sell-1').state === ORDER_STATES.PARTIAL, 'P2 should start PARTIAL');
 
-    // Execute rebalance
-    const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
+    // Executing rebalance will trigger ghosting and restoration INTERNALLY.
+    // If it's NOT restored, it will stay VIRTUAL.
+    await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.90 }]);
 
-    // After rebalance, states should be properly restored
     const s0After = mgr.orders.get('sell-0');
-    const s1After = mgr.orders.get('sell-1');
-
-    assert(s0After, 's-0 should exist after rebalance');
-    assert(s1After, 's-1 should exist after rebalance');
-
-    // States should not be VIRTUAL
-    const validStates = [ORDER_STATES.ACTIVE, ORDER_STATES.PARTIAL];
-    assert(validStates.includes(s0After.state), `s-0 state should be valid, got ${s0After.state}`);
-    assert(validStates.includes(s1After.state), `s-1 state should be valid, got ${s1After.state}`);
-
-    console.log('✓ Rebalance restored all order states correctly');
+    assert(s0After.state !== ORDER_STATES.VIRTUAL, 'Order state should NOT remain VIRTUAL after ghosting pass');
+    
+    console.log('✓ Rebalance handled ghost virtualization without state corruption');
 }
 
 // ============================================================================

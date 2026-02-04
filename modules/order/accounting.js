@@ -74,7 +74,7 @@ const {
     getAssetFees,
     blockchainToFloat,
     getPrecisionSlack
-} = require('./utils');
+} = require('./utils/math');
 const Format = require('./format');
 
 /**
@@ -124,6 +124,7 @@ class Accountant {
      */
     recalculateFunds() {
         const mgr = this.manager;
+        if (mgr._pauseFundRecalcDepth > 0) return;
         if (!mgr.funds) this.resetFunds();
 
         let gridBuy = 0, gridSell = 0;

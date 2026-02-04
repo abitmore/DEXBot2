@@ -11,7 +11,7 @@ const { OrderManager } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
 
 // Mock getAssetFees to prevent crashes during recalculateFunds
-const OrderUtils = require('../modules/order/utils');
+const OrderUtils = require('../modules/order/utils/math');
 const originalGetAssetFees = OrderUtils.getAssetFees;
 
 OrderUtils.getAssetFees = (asset) => {
@@ -155,8 +155,41 @@ async function runTests() {
         const buyFreeBefore = manager.accountTotals.buyFree;
         manager.accountant.updateOptimisticFreeBalance(oldOrder, newOrder, 'test');
         const buyFreeAfter = manager.accountTotals.buyFree;
-        
+
         assert.strictEqual(buyFreeBefore - buyFreeAfter, 0, 'Should not deduct again if already PARTIAL');
+    }
+
+    // Test: Manual Fund Override Protection (pauseFundRecalcDepth flag)
+    console.log(' - Testing manual fund override protection via pauseFundRecalc...');
+    {
+        const manager = createManager();
+        manager.resetFunds();
+
+        // Manually override fund values
+        const manualAvailable = 5000;
+        manager.funds.available.buy = manualAvailable;
+
+        // While paused, add orders that would normally trigger recalculateFunds
+        manager.pauseFundRecalc();
+        manager._updateOrder({ id: 'override-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 100 });
+        manager._updateOrder({ id: 'override-2', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 200 });
+        manager._updateOrder({ id: 'override-3', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY, size: 150, orderId: 'c-override' });
+
+        // Verify manual value is NOT overwritten while paused
+        assert.strictEqual(
+            manager.funds.available.buy,
+            manualAvailable,
+            `Manual fund override should be preserved while paused (expected ${manualAvailable}, got ${manager.funds.available.buy})`
+        );
+
+        // Resume and verify recalculateFunds NOW applies
+        manager.resumeFundRecalc();
+        const expectedVirtual = 300; // 100 + 200
+        assert.strictEqual(
+            manager.funds.virtual.buy,
+            expectedVirtual,
+            `After resume, virtual funds should be recalculated (expected ${expectedVirtual}, got ${manager.funds.virtual.buy})`
+        );
     }
 
     // Restore original

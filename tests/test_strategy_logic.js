@@ -11,7 +11,7 @@ const { OrderManager } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
 
 // Mock getAssetFees
-const OrderUtils = require('../modules/order/utils');
+const OrderUtils = require('../modules/order/utils/math');
 const originalGetAssetFees = OrderUtils.getAssetFees;
 OrderUtils.getAssetFees = (asset) => {
     if (asset === 'BTS') {
@@ -109,6 +109,105 @@ async function runTests() {
         if (result.ordersToPlace.length > 0) {
             assert(cacheAfter <= cacheBefore, 'cacheFunds should be deducted or stay same');
         }
+    }
+
+    console.log(' - Testing Rotation Sizing Capping (63cdb02)...');
+    {
+        const manager = createManager();
+        // Setup: buy side target is 100 per slot
+        // 1. Surplus order: p-1 at 90 with size 50 (to be rotated)
+        // 2. Shortage slot: v-1 at 99 with size 0 (target)
+        // 3. Available funds: 20
+        // Result: Rotation should cap finalSize at sourceSize + available = 50 + 20 = 70
+        // (Wait, commit says: finalSize = destinationSize + cappedIncrease)
+        // destinationSize is 0 for v-1.
+        // cappedIncrease = min(ideal - destination, remainingAvail)
+        // ideal is ~100. destination is 0. remainingAvail is 20.
+        // cappedIncrease = 20.
+        // finalSize = 0 + 20 = 20.
+        // Actually, the commit 63cdb02 says: "finalSize = destinationSize + cappedIncrease"
+        // Let's re-read the commit diff I saw earlier.
+        /*
+            const destinationSize = shortageSlot.size || 0; // Usually 0 for a new slot
+            const gridDifference = Math.max(0, idealSize - destinationSize);
+            const cappedIncrease = Math.min(gridDifference, remainingAvail);
+            const finalSize = destinationSize + cappedIncrease;
+        */
+        // If it's a rotation of surplus p-1 -> shortage v-1:
+        // sourceSize (p-1) was 50.
+        // destinationSize (v-1) was 0.
+        // idealSize for v-1 is 100.
+        // remainingAvail is 20.
+        // finalSize = 0 + 20 = 20.
+        // This seems correct because surplus release is ALREADY in available funds.
+
+        manager.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 100, sellFree: 1000 });
+        manager.funds.available.buy = 20;
+
+        // Mock a surplus order (needs to be rotated)
+        // We'll place it far from market so it's a surplus
+        manager._updateOrder({ id: 'surplus-1', type: ORDER_TYPES.BUY, price: 50, size: 50, state: ORDER_STATES.PARTIAL, orderId: 'c-surplus' });
+
+        // Mock a target slot near market (shortage)
+        manager._updateOrder({ id: 'target-1', type: ORDER_TYPES.BUY, price: 99, size: 0, state: ORDER_STATES.VIRTUAL });
+
+        // We need enough slots to make surplus-1 actually a surplus
+        // target active orders is 5.
+        for (let i = 0; i < 5; i++) {
+             manager._updateOrder({ id: `near-${i}`, type: ORDER_TYPES.BUY, price: 98 - i, size: 100, state: ORDER_STATES.ACTIVE, orderId: `c-${i}` });
+        }
+
+        manager.funds.available.buy = 20;
+        manager.pauseFundRecalc(); // Prevent overwrite during rebalance
+        const result = await manager.strategy.rebalance();
+        manager.resumeFundRecalc();
+        const rotation = result.ordersToRotate.find(r => r.oldOrder.id === 'surplus-1');
+        assert(rotation !== undefined, 'Should identify surplus for rotation');
+
+        // ideal size would be ~100 (total buy funds 1000 / 5 orders)
+        // available is 20.
+        // finalSize should be 20.
+        assert.strictEqual(rotation.newSize, 20, `Rotation size should be capped by available funds (expected 20, got ${rotation.newSize})`);
+    }
+
+    console.log(' - Testing minHealthySize ReferenceError fix...');
+    {
+        const manager = createManager();
+        manager.setAccountTotals({ buy: 5000, sell: 500, buyFree: 5000, sellFree: 500 });
+        manager.resetFunds();
+
+        // Setup orders on both sides to trigger rebalanceSideRobust logic
+        manager.pauseFundRecalc();
+        for (let i = 0; i < 5; i++) {
+            const buyPrice = 100 - (i * 2);
+            const sellPrice = 100 + (i * 2);
+            manager._updateOrder({
+                id: `buy-${i}`,
+                type: ORDER_TYPES.BUY,
+                price: buyPrice,
+                size: 50,
+                state: ORDER_STATES.VIRTUAL
+            });
+            manager._updateOrder({
+                id: `sell-${i}`,
+                type: ORDER_TYPES.SELL,
+                price: sellPrice,
+                size: 5,
+                state: ORDER_STATES.VIRTUAL
+            });
+        }
+        manager.resumeFundRecalc();
+
+        // This should not throw a ReferenceError for minHealthySize
+        let rebalanceError = null;
+        try {
+            const result = await manager.strategy.rebalance();
+            assert(result, 'Rebalance should return a result object');
+        } catch (err) {
+            rebalanceError = err;
+        }
+
+        assert(rebalanceError === null, `Rebalance should not throw ReferenceError for minHealthySize: ${rebalanceError?.message}`);
     }
 
     OrderUtils.getAssetFees = originalGetAssetFees;

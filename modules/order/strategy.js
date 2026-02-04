@@ -74,13 +74,16 @@
 
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS } = require("../constants");
 const {
-    getPrecisionForSide,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
+    getDoubleDustThreshold,
     getAssetFees,
     allocateFundsByWeights,
     floatToBlockchainInt,
     blockchainToFloat,
+    getPrecisionForSide
+} = require("./utils/math");
+const {
     calculateSpreadFromOrders,
     countOrdersByType,
     shouldFlagOutOfSpread,
@@ -92,7 +95,7 @@ const {
     isOrderVirtual,
     isOrderPlaced,
     getPartialsByType
-} = require("./utils");
+} = require("./utils/order");
 const Format = require('./format');
 
 class StrategyEngine {
@@ -676,6 +679,7 @@ class StrategyEngine {
             // Logic:
             // 1. If the ideal target is too small (dust), skip it.
             // 2. If available funds cap the order below the healthy threshold, skip it.
+            const minHealthySize = getDoubleDustThreshold(idealSize);
             if (isOrderHealthy(finalSize, type, mgr.assets, idealSize)) {
                 ordersToRotate.push({
                     oldOrder: { ...currentSurplus },
@@ -732,6 +736,7 @@ class StrategyEngine {
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
                 const finalSize = currentSize + cappedIncrease;
 
+                const minHealthySize = getDoubleDustThreshold(idealSize);
                 if (isOrderHealthy(finalSize, type, mgr.assets, idealSize)) {
                     // NEW: Set new placement to VIRTUAL until confirmed on-chain
                     ordersToPlace.push({ ...slot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL });

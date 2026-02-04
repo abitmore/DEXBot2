@@ -2,7 +2,7 @@ const assert = require('assert');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
 const { Grid } = require('../modules/order/grid');
-const { countOrdersByType } = require('../modules/order/utils');
+const { countOrdersByType } = require('../modules/order/utils/order');
 const Format = require('../modules/order/format');
 
 console.log('Running Partial Order Edge Cases test suite...\n');

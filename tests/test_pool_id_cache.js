@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { derivePoolPrice } = require('../modules/order/utils');
+const { derivePoolPrice } = require('../modules/order/utils/system');
 
 async function testPoolIdCache() {
     console.log('Running test: Pool ID Cache');

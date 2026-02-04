@@ -12,7 +12,7 @@
  */
 
 const { BitShares, waitForConnected } = require('../modules/bitshares_client');
-const { derivePrice } = require('../modules/order/utils');
+const { derivePrice } = require('../modules/order/utils/system');
 const Format = require('../modules/order/format');
 
 // Color codes for console output

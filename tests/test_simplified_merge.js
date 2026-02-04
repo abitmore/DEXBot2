@@ -1,5 +1,5 @@
 const assert = require('assert');
-const utils = require('../modules/order/utils');
+const utils = require('../modules/order/utils/math');
 
 // Mock getAssetFees to ensure test can run without blockchain connection
 utils.getAssetFees = (asset, amount, isMaker = true) => {

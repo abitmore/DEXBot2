@@ -91,7 +91,7 @@
  */
 
 const { BitShares, createAccountClient, waitForConnected } = require('./bitshares_client');
-const { floatToBlockchainInt, blockchainToFloat, validateOrderAmountsWithinLimits } = require('./order/utils');
+const { floatToBlockchainInt, blockchainToFloat, validateOrderAmountsWithinLimits } = require('./order/utils/math');
 const { FILL_PROCESSING } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 const crypto = require('crypto');
