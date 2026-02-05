@@ -42,13 +42,35 @@
 
 const BitSharesLib = require('btsdex');
 require('./btsdex_event_patch');
-const { TIMING } = require('./constants');
+const { TIMING, NODE_MANAGEMENT } = require('./constants');
+const NodeManager = require('./node_manager');
+const fs = require('fs');
+const path = require('path');
 
 // Shared connection state for the process. Modules should use waitForConnected()
 // to ensure the shared BitShares client is connected before making DB calls.
 let connected = false;
 let suppressConnectionLog = false;
 const connectedCallbacks = new Set();
+
+// Node Manager for multi-node support
+let nodeManager = null;
+let nodeConfig = null;
+
+// Load node configuration from settings file
+try {
+    const settingsPath = path.join(__dirname, '..', 'profiles', 'general.settings.json');
+    if (fs.existsSync(settingsPath)) {
+        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        if (settings.NODES?.enabled && settings.NODES?.list?.length > 0) {
+            nodeConfig = settings.NODES;
+            nodeManager = new NodeManager(nodeConfig);
+            console.log(`[NodeManager] Loaded config for ${nodeConfig.list.length} nodes`);
+        }
+    }
+} catch (err) {
+    console.warn('[NodeManager] Config load failed, continuing with defaults:', err.message);
+}
 
 /**
  * Allow suppressing the connection log message.
@@ -66,6 +88,29 @@ try {
         }
         for (const cb of Array.from(connectedCallbacks)) {
             try { cb(); } catch (e) { console.error('connected callback error', e.message); }
+        }
+    });
+
+    // Handle disconnections for failover
+    BitSharesLib.subscribe('disconnected', async () => {
+        if (nodeManager && nodeConfig?.healthCheck?.enabled) {
+            console.warn('[NodeManager] Disconnected, triggering failover assessment');
+            try {
+                // Run immediate health check
+                await nodeManager.checkAllNodes();
+
+                // Get healthy nodes
+                const healthyNodes = nodeManager.getHealthyNodes();
+                if (healthyNodes.length > 0) {
+                    const btsdexApi = BitSharesLib._api;
+                    if (btsdexApi?.connection?.setServers) {
+                        btsdexApi.connection.setServers(healthyNodes);
+                        console.log(`[NodeManager] Updated server list for failover: ${healthyNodes.length} healthy nodes`);
+                    }
+                }
+            } catch (err) {
+                console.warn('[NodeManager] Failover assessment error:', err.message);
+            }
         }
     });
 } catch (e) {
@@ -105,6 +150,9 @@ module.exports = {
     createAccountClient,
     waitForConnected,
     setSuppressConnectionLog,
+    getNodeManager: () => nodeManager,
+    getNodeStats: () => nodeManager?.getStats(),
+    getNodeSummary: () => nodeManager?.getSummary(),
     _internal: { get connected() { return connected; } }
 };
 

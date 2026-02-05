@@ -746,14 +746,32 @@ async function bootstrap() {
 
         // Generate default general.settings.json for new installations
         const SETTINGS_FILE = path.join(PROFILES_DIR, 'general.settings.json');
-        const { LOG_LEVEL, GRID_LIMITS, TIMING, UPDATER } = require('./modules/constants');
+        const { LOG_LEVEL, GRID_LIMITS, TIMING, UPDATER, NODE_MANAGEMENT } = require('./modules/constants');
 
         // Create a copy of GRID_LIMITS and remove any legacy fields if necessary
         // (Though constants.js was already updated, this ensures a clean object)
         const gridLimits = { ...GRID_LIMITS };
 
+        // Create NODES config from NODE_MANAGEMENT constants
+        const nodesConfig = {
+            enabled: false,
+            list: NODE_MANAGEMENT.DEFAULT_NODES,
+            healthCheck: {
+                enabled: true,
+                intervalMs: NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS,
+                timeoutMs: NODE_MANAGEMENT.HEALTH_CHECK_TIMEOUT_MS,
+                maxPingMs: NODE_MANAGEMENT.MAX_PING_MS,
+                blacklistThreshold: NODE_MANAGEMENT.BLACKLIST_THRESHOLD
+            },
+            selection: {
+                strategy: NODE_MANAGEMENT.SELECTION_STRATEGY,
+                preferredNode: null
+            }
+        };
+
         const defaultSettings = {
             LOG_LEVEL,
+            NODES: nodesConfig,
             GRID_LIMITS: gridLimits,
             TIMING: { ...TIMING },
             UPDATER: { ...UPDATER }

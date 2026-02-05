@@ -6,7 +6,7 @@
  * Local overrides can be loaded from ~/.claude/dexbot_settings.json
  *
  * ===============================================================================
- * EXPORTED CONSTANTS (13 configuration objects)
+ * EXPORTED CONSTANTS (14 configuration objects)
  * ===============================================================================
  *
  * ENUM DEFINITIONS:
@@ -69,17 +69,24 @@
  *       HEALTH_CHECK_INTERVAL_MS, PERSISTENCE_CHECK_INTERVAL_MS
  *       LOCK_CLEANUP_INTERVAL_MS, FILL_CLEANUP_INTERVAL_MS
  *
- *   11. UPDATER - Version checking and update notification
+ *   11. NODE_MANAGEMENT - Multi-node health checking and failover configuration
+ *       DEFAULT_NODES: List of BitShares nodes for redundancy
+ *       HEALTH_CHECK_INTERVAL_MS, HEALTH_CHECK_TIMEOUT_MS, MAX_PING_MS
+ *       BLACKLIST_THRESHOLD: Failures before node is blacklisted
+ *       EXPECTED_CHAIN_ID: BitShares mainnet chain ID validation
+ *       SELECTION_STRATEGY: Node selection algorithm (latency-based)
+ *
+ *   12. UPDATER - Version checking and update notification
  *       CHECK_INTERVAL_MS, REPO_URL, NOTIFICATION_MIN_LEVEL
  *
  * LOGGING CONFIGURATION:
- *   12. LOGGING_CONFIG - Structured logging configuration
+ *   13. LOGGING_CONFIG - Structured logging configuration
  *       changeTracking: Smart change detection
  *       display.colors: TTY color support
  *       display.fundStatus, display.statusSummary, display.gridDiagnostics
  *       Categories for enabling/disabling log types
  *
- *   13. LOG_LEVEL - Current logging verbosity level
+ *   14. LOG_LEVEL - Current logging verbosity level
  *       Affects which messages are displayed: 'debug', 'info', 'warn', 'error'
  *
  * ===============================================================================
@@ -296,6 +303,33 @@ let MAINTENANCE = {
     CLEANUP_PROBABILITY: 0.1
 };
 
+// Node management and health checking configuration
+let NODE_MANAGEMENT = {
+    // Default node list (used if no config file)
+    DEFAULT_NODES: [
+        'wss://dex.iobanker.com/ws',
+        'wss://api.bts.mobi/ws',
+        'wss://eu.nodes.bitshares.ws/ws',
+        'wss://cloud.xbts.io/ws',
+        'wss://node.xbts.io/ws',
+        'wss://public.xbts.io/ws',
+        'wss://btsws.roelandp.nl/ws',
+        'wss://singapore.bitshares.im/ws'
+    ],
+
+    // Health check defaults
+    HEALTH_CHECK_INTERVAL_MS: 60000,    // 1 minute
+    HEALTH_CHECK_TIMEOUT_MS: 5000,      // 5 seconds per check
+    MAX_PING_MS: 3000,                  // Max acceptable latency
+    BLACKLIST_THRESHOLD: 3,             // Failures before blacklist
+
+    // Expected chain ID (BitShares mainnet)
+    EXPECTED_CHAIN_ID: '4018d7844c78f6a6c41c6a552b898022310fc5dec06da467ee7905a8dad512c8',
+
+    // Selection strategy
+    SELECTION_STRATEGY: 'latency'       // latency-based selection
+};
+
 // Pipeline timeout configuration
 let PIPELINE_TIMING = {
     // Force maintenance if pipeline stuck for this long (5 minutes)
@@ -495,7 +529,8 @@ Object.freeze(FEE_PARAMETERS);
 Object.freeze(API_LIMITS);
 Object.freeze(FILL_PROCESSING);
 Object.freeze(MAINTENANCE);
+Object.freeze(NODE_MANAGEMENT);
 Object.freeze(UPDATER);
 Object.freeze(LOGGING_CONFIG);
 
-module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, UPDATER };
+module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, UPDATER };
