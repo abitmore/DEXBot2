@@ -246,8 +246,6 @@ let FEE_PARAMETERS = {
     BTS_RESERVATION_MULTIPLIER: 5,
     // Fallback BTS fee when fee data calculation fails
     BTS_FALLBACK_FEE: 100,
-    // Ratio of creation fee refunded for maker orders (10% = 0.1)
-    MAKER_REFUND_RATIO: 0.1,
     // Maker fee percentage of full order creation fee (10% of fee)
     MAKER_FEE_PERCENT: 0.1,
     // Maker refund percentage (90% refund on fee)

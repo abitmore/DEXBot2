@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [0.6.0-patch.14] - 2026-02-05 - Price Orientation Correction & Ghost Order Prevention
+## [0.6.0-patch.14] - 2026-02-05 - Critical Bug Fixes, Price Orientation, Fund Validation & Quantization Consolidation
 
 ### Added
 - **Robust Ghost Order / Full-Fill Detection** in sync_engine.js (commit a8594f0)
@@ -16,32 +16,76 @@ All notable changes to this project will be documented in this file.
   - Integrated `tests/test_unanchored_spread_correction.js` into the main test suite in package.json.
   - Fixed stale imports and ReferenceErrors in the test caused by utility refactoring.
 
+- **Centralized Quantization Utilities** in math.js (commit 9f50184)
+  - Extracted `quantizeFloat(value, precision)` - Float → int → float conversion eliminates floating-point accumulation errors
+  - Extracted `normalizeInt(value, precision)` - Int → float → int conversion ensures integer alignment with precision boundaries
+  - Consolidated from 5 separate implementations across dexbot_class.js, order.js, strategy.js, and chain_orders.js
+  - **Result**: Single source of truth for precision logic, improved maintainability, all 34 test suites pass with no regressions
+
+- **Startup Configuration Validation** in dexbot_class.js (commit 56dd4bd)
+  - New method `_validateStartupConfig()` validates critical parameters at construction time:
+    - Validates `startPrice` is numeric or valid mode (pool/market/orderbook)
+    - Validates `assetA` and `assetB` are present and non-empty
+    - Validates `incrementPercent` is in valid range (0-100)
+  - Consolidated error reporting shows all validation failures at once instead of cascading errors
+  - Improves early error detection and clarifies business rules
+
 ### Fixed
-- **Price Orientation Unified to B/A Standard** in system.js (commit c8f4dc5)
-  - **deriveMarketPrice**: Corrected logic to return the direct mid-price from BitShares order book (which is already in quote/base format). Removed incorrect inversion that resulted in A/B orientation.
-  - **derivePoolPrice**: Reverted to standard B/A orientation (`floatB / floatA`) to match core engine expectations.
-  - **Documentation**: Updated comments to accurately reflect the B/A orientation standard (How many units of Asset B per 1 unit of Asset A).
-  - **Test Alignment**: Updated `tests/test_price_derive.js` to enforce the corrected B/A standard.
+- **Correct Fund Validation Logic** in dexbot_class.js (commit ac1db74)
+  - **Root Cause**: Fund validation computed available as `(chainFree + requiredFunds)`, then checked `if (required > available)`. This became checking `if (required > chainFree + required)` which is always false.
+  - **Impact**: Validation never caught batches exceeding available balance, causing "Insufficient Balance" errors on execution despite passing validation.
+  - **Fix**: Available funds now correctly equals current free balance (chainFree). Validation checks: `required <= available` where available = chainFree.
+  - **Result**: Batches that exceed free balance are rejected BEFORE broadcasting, allowing both sides of order pairs to be created successfully.
+
+- **Correct Price Orientation - B/A Standard** in system.js (commit 3ad6c4e)
+  - **Root Cause**: Commit ae6e169 incorrectly removed price inversion and reversed pool calculation, causing inverted prices.
+  - **Fix**: Restored correct inversion logic: `1 / mid` for market prices (BitShares returns B/A format, need A/B)
+  - **Example**: XRP/BTS market should be ~1350 (1 XRP = 1350 BTS), not 0.000752 which is BTS/XRP inverted.
+  - **Pool Asset Mapping**: Correctly maps BitShares' `balance_a`/`balance_b` (ordered by internal ID) to bot's `assetA`/`assetB`
+
+- **Critical Edge Case & Data Integrity Fixes** in multiple files (commit 16d1651)
+  - **Empty Grid Edge Case**: Added check in startup_reconcile.js to prevent `.every([])` returning true for empty edge order list - fixes false "grid edge fully active" reports
+  - **Suspicious Order Size**: Changed silent return to throw error in order.js - order exceeding 1e15 satoshis indicates data corruption; forces recovery instead of continuing with phantom orders
+  - **BTS Fee Handling**: Centralized fee calculation in accounting.js - **CRITICAL**: For BTS, refund is a SEPARATE transaction, not in fill amount. Don't add refund to fill proceeds (prevents double counting).
+  - **Deadlock Prevention**: Added timeout to sync lock acquisition in sync_engine.js - wraps with `Promise.race() + 20s timeout` prevents indefinite lock hangs
+
+- **Boundary and Precision Issues** in multiple files (commit 58a46d2)
+  - **Negative Boundary Index**: Added immediate `Math.max(0, ...)` clamp to boundaryIdx calculation in strategy.js - prevents negative array indices during boundary initialization
+  - **Precision Underflow**: Fixed precision calculation in order.js - when `assetA.precision < assetB.precision`, divide instead of multiply to prevent precision loss for asset pairs with different scales
+  - **Overly Permissive Logging**: Enforced strict equality check `=== 0` in accounting.js instead of `=== 0 || === undefined` - prevents spurious debug logging with uninitialized depth counter
+
+- **Removed Unused MAKER_REFUND_RATIO Constant** in constants.js
+  - Removed unused and semantically confusing `MAKER_REFUND_RATIO: 0.1` constant
+  - The correct refund logic uses `MAKER_REFUND_PERCENT: 0.9` which is the only one actually used in calculations
+  - Cleanup reduces configuration confusion around fee parameters
 
 - **Liquidity Pool Asset Mapping** in system.js (commit c8f4dc5)
-  - Enhanced `derivePoolPrice` with explicit asset ID numerical ordering.
-  - Correctly maps BitShares' `balance_a`/`balance_b` (ordered by internal ID) to the bot's `assetA`/`assetB` regardless of which asset was created first on the network.
+  - Enhanced `derivePoolPrice` with explicit asset ID numerical ordering
+  - Correctly maps BitShares' `balance_a`/`balance_b` (ordered by internal ID) to the bot's `assetA`/`assetB` regardless of which asset was created first on the network
 
 - **Divergence Correction Race Protection** in system.js (commit a8594f0)
-  - Implemented `_correctionsLock` acquisition in `applyGridDivergenceCorrections`.
-  - Prevents "Time-of-Check to Time-of-Use" (TOCTOU) race conditions where concurrent fill processing could interleave with structural grid updates.
+  - Implemented `_correctionsLock` acquisition in `applyGridDivergenceCorrections`
+  - Prevents "Time-of-Check to Time-of-Use" (TOCTOU) race conditions where concurrent fill processing could interleave with structural grid updates
 
 - **Rotation Size Overrun Prevention** in strategy.js (commit 02f61a2)
-  - Fixed a bug where order sizes during rotations could exceed available capital.
-  - Rotation sizes are now strictly capped by the sum of available funds and released surplus from canceled orders.
+  - Fixed a bug where order sizes during rotations could exceed available capital
+  - Rotation sizes are now strictly capped by the sum of available funds and released surplus from canceled orders
 
 - **Rebalance Scoping Fix** in strategy.js (commit a8594f0)
-  - Resolved a `ReferenceError` for `minHealthySize` variable that caused crashes during certain rebalance cycles.
+  - Resolved a `ReferenceError` for `minHealthySize` variable that caused crashes during certain rebalance cycles
+
+- **Extract Magic Numbers to Constants** in constants.js and affected modules (commit 56dd4bd)
+  - Added FEE_PARAMETERS: `MAKER_FEE_PERCENT` (0.1), `MAKER_REFUND_PERCENT` (0.9), `TAKER_FEE_PERCENT` (1.0)
+  - Added TIMING: `MILLISECONDS_PER_SECOND` (1000) for timestamp conversions
+  - Added GRID_LIMITS: `MAX_ORDER_FACTOR` (1.1) for max order sizing
+  - Updated math.js, export.js, dexbot_class.js to use constants instead of magic numbers
+  - Added fallback for MAX_ORDER_FACTOR in _getMaxOrderSize() with || 1.1 fallback
 
 ### Key Improvements
-- **Accuracy**: Price derivation now consistently reflects the standard B/A orientation used by the strategy engine.
-- **Robustness**: Ghost order detection ensures continuous grid flow by closing orders that the blockchain considers filled.
-- **Stability**: Locking and capping mechanisms prevent common race conditions and fund overdrafts during complex rotations.
+- **Accuracy**: Price derivation consistently reflects B/A standard; fund calculations prevent over-commitment
+- **Robustness**: Ghost order detection ensures grid flow; quantization consolidation eliminates precision errors; validation catches configuration issues early
+- **Stability**: Locking prevents race conditions; boundary clamping prevents array corruption; timeout prevents deadlocks; startup validation prevents cascading failures
+- **Maintainability**: Centralized quantization logic, consolidated fee calculations, documented magic numbers reduce technical debt
 
 ---
 
