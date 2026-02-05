@@ -96,6 +96,53 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Divergence Detection** | Comparing ideal grid vs. persisted grid |
 | **Invariant Verification** | Checking fund accounting consistency |
 
+### Price Orientation and Derivation
+
+**Critical Concept**: All prices in DEXBot2 use **B/A orientation** (how much of asset B per 1 unit of asset A).
+
+| Term | Meaning | Example |
+|------|---------|---------|
+| **B/A Orientation** | Price format representing "how much B per 1 A" | XRP/BTS: 1350 means 1 XRP = 1350 BTS |
+| **A/B Orientation** | Price format representing "how much A per 1 B" (NOT used in bot) | XRP/BTS: 0.00074 means 0.00074 XRP per 1 BTS |
+
+#### Price Sources and Conversions
+
+| Source | Raw Format | Conversion | Final Format |
+|--------|-----------|-----------|-------------|
+| **BitShares `get_order_book(A, B)`** | A/B (base/quote) | `1 / mid` | B/A ✓ |
+| **BitShares `get_ticker(A, B)`** | A/B (base/quote) | `1 / value` | B/A ✓ |
+| **Liquidity Pool Reserves** | `reserve_A / reserve_B` | `floatB / floatA` | B/A ✓ |
+
+#### Implementation (`modules/order/utils/system.js`)
+
+**`deriveMarketPrice(BitShares, symA, symB)`**:
+```javascript
+// BitShares get_order_book(A, B) returns prices in A/B format
+const mid = (bestBid + bestAsk) / 2;  // e.g., 0.00074 (XRP per BTS)
+return 1 / mid;  // Convert to B/A: 1/0.00074 ≈ 1350 (BTS per XRP)
+```
+
+**`derivePoolPrice(BitShares, symA, symB)`**:
+```javascript
+// Pool reserves come from blockchain in order [reserve_A, reserve_B]
+const floatA = safeBlockchainToFloat(amtA, aMeta.precision);
+const floatB = safeBlockchainToFloat(amtB, bMeta.precision);
+return floatB / floatA;  // Already B/A: 3000000 BTS / 20000 XRP = 150 (BTS/XRP)
+```
+
+#### Why This Matters
+
+- **Grid Placement**: `startPrice` determines where BUY orders (below) and SELL orders (above) are placed
+- **Consistency**: Both market and pool prices use B/A so they're directly comparable
+- **Debugging**: Inverted prices cause bot to place orders on the wrong side of the market (e.g., massive sells when market rises)
+
+#### Common Debugging Pattern
+
+If you see prices like `0.000795` when expecting `1350`:
+1. This is likely A/B format (raw from API)
+2. Check if inversion (`1 / price`) is being applied
+3. Verify which function is missing the conversion
+
 ---
 
 ## Module Deep Dive

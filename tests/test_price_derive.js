@@ -51,9 +51,10 @@ async function main() {
         assert(Number.isFinite(poolP), 'pool price must be numeric');
         assert(Math.abs(poolP - (3000000 / 20000)) < 1e-9, `unexpected pool price value ${poolP}`);
 
-        // Expected marketP = mid = 0.0015 (B/A orientation).
+        // Expected marketP = 1/mid = 1/0.0015 ≈ 666.67 (B/A orientation after inverting A/B from API).
+        const expectedMarketP = 1 / 0.0015;
         assert(Number.isFinite(marketP), 'market price must be numeric');
-        assert(Math.abs(marketP - 0.0015) < 1e-9, `unexpected market price value ${marketP}`);
+        assert(Math.abs(marketP - expectedMarketP) < 1e-6, `unexpected market price value ${marketP}, expected ${expectedMarketP}`);
 
         // derivePrice should prefer pool (since we provide pool reserves)
         assert(Number.isFinite(derivedP), 'derived price must be numeric');

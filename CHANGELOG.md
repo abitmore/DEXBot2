@@ -37,11 +37,11 @@ All notable changes to this project will be documented in this file.
   - **Fix**: Available funds now correctly equals current free balance (chainFree). Validation checks: `required <= available` where available = chainFree.
   - **Result**: Batches that exceed free balance are rejected BEFORE broadcasting, allowing both sides of order pairs to be created successfully.
 
-- **Correct Price Orientation - B/A Standard** in system.js (commit 3ad6c4e)
-  - **Root Cause**: Commit ae6e169 incorrectly removed price inversion and reversed pool calculation, causing inverted prices.
-  - **Fix**: Restored correct inversion logic: `1 / mid` for market prices (BitShares returns B/A format, need A/B)
-  - **Example**: XRP/BTS market should be ~1350 (1 XRP = 1350 BTS), not 0.000752 which is BTS/XRP inverted.
-  - **Pool Asset Mapping**: Correctly maps BitShares' `balance_a`/`balance_b` (ordered by internal ID) to bot's `assetA`/`assetB`
+- **Correct Price Orientation - B/A Standard** in system.js (commit cd0a249)
+  - **Root Cause**: Commit ae6e169 incorrectly removed price inversion and reversed pool calculation, causing inverted prices in production.
+  - **Fix**: Restored correct inversion logic: `1 / mid` for market prices (BitShares `get_order_book(A,B)` returns A/B format, need B/A)
+  - **Example**: XRP/BTS market should be ~1350 (1 XRP = 1350 BTS), not 0.000752 (which is A/B inverted)
+  - **Verification**: Pool price = `floatB / floatA` (3000000 BTS / 20000 XRP = 150 BTS/XRP); Market price = `1 / mid` (inverts API's A/B to B/A)
 
 - **Critical Edge Case & Data Integrity Fixes** in multiple files (commit 16d1651)
   - **Empty Grid Edge Case**: Added check in startup_reconcile.js to prevent `.every([])` returning true for empty edge order list - fixes false "grid edge fully active" reports

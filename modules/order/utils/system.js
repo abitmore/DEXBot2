@@ -81,9 +81,8 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
             } catch (err) {}
         }
 
-        // Standard DEXBot logic expects A/B (how many A per 1 B).
-        // BitShares get_order_book(A, B) returns prices in B/A (quote/base).
-        // To get A/B, we invert: 1 / (B/A) = A/B.
+        // BitShares get_order_book(A, B) returns prices in A/B format (base/quote).
+        // We want B/A orientation (how much B per 1 A), so invert.
         return (mid !== null && mid !== 0) ? 1 / mid : null;
     } catch (err) {
         return null;
@@ -175,8 +174,8 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
         const floatA = safeBlockchainToFloat(amtA, aMeta.precision);
         const floatB = safeBlockchainToFloat(amtB, bMeta.precision);
 
-        // Return A/B orientation to match market price format (how many A per 1 B)
-        return floatB > 0 ? floatA / floatB : null;
+        // Return B/A orientation to match market price format
+        return floatB > 0 ? floatB / floatA : null;
     } catch (err) {
         return null;
     }
