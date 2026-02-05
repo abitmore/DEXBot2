@@ -70,6 +70,37 @@ function computeChainFundTotals(accountTotals, committedChain) {
     };
 }
 
+// ================================================================================
+// SECTION 2A: PRECISION QUANTIZATION
+// ================================================================================
+
+/**
+ * Quantize a float value by round-tripping through blockchain integer representation.
+ * Converts float → blockchain int (satoshi-level precision) → float.
+ * Eliminates floating-point accumulation errors.
+ *
+ * @param {number} value - Float value to quantize
+ * @param {number} precision - Asset precision (satoshis)
+ * @returns {number} Quantized float value
+ */
+function quantizeFloat(value, precision) {
+    return blockchainToFloat(floatToBlockchainInt(value, precision), precision);
+}
+
+/**
+ * Normalize an integer value by round-tripping through float representation.
+ * Converts int → float (readable format) → blockchain int.
+ * Ensures the integer aligns with precision boundaries.
+ * Used for precision-aware comparisons.
+ *
+ * @param {number} value - Integer value to normalize
+ * @param {number} precision - Asset precision (satoshis)
+ * @returns {number} Normalized integer value
+ */
+function normalizeInt(value, precision) {
+    return floatToBlockchainInt(blockchainToFloat(value, precision), precision);
+}
+
 /**
  * Fee cache local to math.js for getAssetFees.
  * Will be populated by system.js::initializeFeeCache.
@@ -98,7 +129,7 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
             const netProceeds = amount + refund;
             return {
                 netProceeds: netProceeds,
-                total: netProceeds, // For backwards compatibility
+                total: netProceeds,
                 refund: refund,
                 isMaker: isMaker
             };
@@ -125,7 +156,7 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
         const netProceeds = amount - feeAmount;
         return {
             netProceeds: netProceeds,
-            total: netProceeds, // For backwards compatibility
+            total: netProceeds,
             feeAmount: feeAmount,
             feePercent: feePercent,
             isMaker: isMaker
@@ -586,6 +617,8 @@ module.exports = {
     hasValidAccountTotals,
     blockchainToFloat,
     floatToBlockchainInt,
+    quantizeFloat,
+    normalizeInt,
     getPrecisionByOrderType,
     getPrecisionForSide,
     getPrecisionsForManager,

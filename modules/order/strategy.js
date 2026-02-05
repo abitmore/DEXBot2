@@ -81,6 +81,7 @@ const {
     allocateFundsByWeights,
     floatToBlockchainInt,
     blockchainToFloat,
+    quantizeFloat,
     getPrecisionForSide,
     calculateSpreadFromOrders
 } = require("./utils/math");
@@ -456,7 +457,7 @@ class StrategyEngine {
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
         sideSlots.forEach((slot, i) => {
-            const size = blockchainToFloat(floatToBlockchainInt(sideIdealSizes[i] || 0, precision), precision);
+            const size = quantizeFloat(sideIdealSizes[i] || 0, precision);
             const slotIdx = slotIndexMap.get(slot.id);
             if (slotIdx !== undefined) finalIdealSizes[slotIdx] = size;
         });

@@ -1242,14 +1242,11 @@ class DEXBot {
             return { isValid: true, summary: 'No operations to validate' };
         }
 
-        const { blockchainToFloat, floatToBlockchainInt } = require('./order/utils/math');
+        const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = require('./order/utils/math');
         const snap = this.manager.getChainFundsSnapshot();
         const maxOrderSize = this._getMaxOrderSize();
         const requiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
         const orderSizeViolations = [];
-
-        // Helper to quantize a float value based on asset precision
-        const quantize = (val, prec) => blockchainToFloat(floatToBlockchainInt(val, prec), prec);
 
         // Sum amounts and check individual order sizes
         for (const op of operations) {
@@ -1302,18 +1299,18 @@ class DEXBot {
                     const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
                     if (deltaAssetId === sellAssetId && deltaSellInt > 0) {
                         const floatDelta = blockchainToFloat(deltaSellInt, precision);
-                        requiredFunds[sellAssetId] = quantize((requiredFunds[sellAssetId] || 0) + floatDelta, precision);
+                        requiredFunds[sellAssetId] = quantizeFloat((requiredFunds[sellAssetId] || 0) + floatDelta, precision);
                     }
                 } else {
                     // For creates, we deduct the full amount
-                    requiredFunds[sellAssetId] = quantize((requiredFunds[sellAssetId] || 0) + floatAmount, precision);
+                    requiredFunds[sellAssetId] = quantizeFloat((requiredFunds[sellAssetId] || 0) + floatAmount, precision);
                 }
             }
         }
 
         // Calculate available funds using quantized reconstruction
-        const availA = quantize((snap.chainFreeSell || 0) + (requiredFunds[assetA.id] || 0), assetA.precision);
-        const availB = quantize((snap.chainFreeBuy || 0) + (requiredFunds[assetB.id] || 0), assetB.precision);
+        const availA = quantizeFloat((snap.chainFreeSell || 0) + (requiredFunds[assetA.id] || 0), assetA.precision);
+        const availB = quantizeFloat((snap.chainFreeBuy || 0) + (requiredFunds[assetB.id] || 0), assetB.precision);
 
         const availableFunds = {
             [assetA.id]: availA,
@@ -1340,7 +1337,7 @@ class DEXBot {
             if (floatToBlockchainInt(required, prec) > floatToBlockchainInt(available, prec)) {
                 fundViolations.push({
                     asset: assetId === assetA.id ? assetA.symbol : assetB.symbol,
-                    required, available, deficit: quantize(required - available, prec)
+                    required, available, deficit: quantizeFloat(required - available, prec)
                 });
             }
         }

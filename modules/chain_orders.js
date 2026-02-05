@@ -91,7 +91,7 @@
  */
 
 const { BitShares, createAccountClient, waitForConnected } = require('./bitshares_client');
-const { floatToBlockchainInt, blockchainToFloat, validateOrderAmountsWithinLimits } = require('./order/utils/math');
+const { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } = require('./order/utils/math');
 const { FILL_PROCESSING } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 const crypto = require('crypto');
@@ -550,8 +550,8 @@ async function buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder =
     // This happens when newAmountToSell was rounded, causing floatToBlockchainInt
     // to produce a different value than what's currently on-chain.
     if (Math.abs(deltaSellInt) === 1 && newParams.amountToSell !== undefined && newParams.amountToSell !== null) {
-        const roundedNewSellInt = floatToBlockchainInt(blockchainToFloat(newSellInt, sellPrecision), sellPrecision);
-        const roundedCurrentSellInt = floatToBlockchainInt(blockchainToFloat(currentSellInt, sellPrecision), sellPrecision);
+        const roundedNewSellInt = normalizeInt(newSellInt, sellPrecision);
+        const roundedCurrentSellInt = normalizeInt(currentSellInt, sellPrecision);
 
         // If they match after rounding to precision, use the current amount (delta = 0)
         if (roundedNewSellInt === roundedCurrentSellInt || Math.abs(roundedNewSellInt - roundedCurrentSellInt) <= 1) {

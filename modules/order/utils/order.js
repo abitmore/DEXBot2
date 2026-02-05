@@ -8,7 +8,7 @@ const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../../constants');
 const Format = require('../format');
 const { isValidNumber, toFiniteNumber } = Format;
 const MathUtils = require('./math');
-const { blockchainToFloat, floatToBlockchainInt } = MathUtils;
+const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = MathUtils;
 
 // ================================================================================
 // SECTION 5: CHAIN ORDER MATCHING & RECONCILIATION
@@ -176,7 +176,7 @@ function buildCreateOrderArgs(order, assetA, assetB) {
     if (order.rawOnChain?.for_sale) {
         quantizedSize = blockchainToFloat(order.rawOnChain.for_sale, precision);
     } else {
-        quantizedSize = blockchainToFloat(floatToBlockchainInt(order.size, precision), precision);
+        quantizedSize = quantizeFloat(order.size, precision);
     }
 
     if (order.type === 'sell') {
