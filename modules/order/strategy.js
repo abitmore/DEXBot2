@@ -81,10 +81,10 @@ const {
     allocateFundsByWeights,
     floatToBlockchainInt,
     blockchainToFloat,
-    getPrecisionForSide
+    getPrecisionForSide,
+    calculateSpreadFromOrders
 } = require("./utils/math");
 const {
-    calculateSpreadFromOrders,
     countOrdersByType,
     shouldFlagOutOfSpread,
     virtualizeOrder,

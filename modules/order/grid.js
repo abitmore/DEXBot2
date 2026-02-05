@@ -534,15 +534,20 @@ class Grid {
 
         const mpRaw = manager.config.startPrice;
 
-        // Auto-derive price ONLY if not a fixed numeric value (e.g. "pool", "market", or undefined)
-        if (!isNumeric(mpRaw)) {
+        // Auto-derive price if not a fixed numeric value (e.g. "pool", "market", or undefined)
+        if (typeof mpRaw !== 'number' || isNaN(mpRaw)) {
             try {
                 const { BitShares } = require('../bitshares_client');
                 const derived = await derivePrice(BitShares, manager.config.assetA, manager.config.assetB, manager.config.priceMode || 'auto');
-                if (derived) manager.config.startPrice = Number(derived);
+                if (derived) {
+                    manager.config.startPrice = Number(derived);
+                } else {
+                    throw new Error(`Price derivation returned no result for ${manager.config.assetA}/${manager.config.assetB}`);
+                }
             } catch (err) {
                 // FIX: Use logger instead of console.warn (Issue #5)
                 manager.logger?.log?.(`Failed to derive market price: ${err.message}`, 'warn');
+                throw err; // Re-throw to prevent "pool" string reaching numeric math
             }
         }
 

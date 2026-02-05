@@ -125,10 +125,10 @@ const {
     hasValidAccountTotals,
     resolveConfigValue,
     floatToBlockchainInt,
-    getPrecisionSlack
+    getPrecisionSlack,
+    calculatePriceTolerance
 } = require('./utils/math');
 const {
-    calculatePriceTolerance,
     findMatchingGridOrderByOpenOrder,
     isOrderOnChain,
     isPhantomOrder
@@ -1229,11 +1229,11 @@ class OrderManager {
         return false;
     }
 
-        /**
-         * Unified persistence for grid state and fund metadata.
-         * Delegates to OrderUtils.persistGridSnapshot for centralized handling.
-         */
-        async persistGrid() {
+    /**
+     * Unified persistence for grid state and fund metadata.
+     * Delegates to OrderUtils.persistGridSnapshot for centralized handling.
+     */
+    async persistGrid() {
         // CRITICAL: Validate grid state before persistence
         const validation = this.validateGridStateForPersistence();
         if (!validation.isValid) {

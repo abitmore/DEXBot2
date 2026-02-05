@@ -89,9 +89,23 @@ const { BitShares, waitForConnected } = require('./bitshares_client');
 const chainKeys = require('./chain_keys');
 const chainOrders = require('./chain_orders');
 const { OrderManager, grid: Grid } = require('./order');
-const { retryPersistenceIfNeeded } = require('./order/utils/system');
-const { buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, virtualizeOrder } = require('./order/utils/order');
-const { blockchainToFloat, isSignificantSizeChange, validateOrderSize } = require('./order/utils/math');
+const {
+    retryPersistenceIfNeeded,
+    initializeFeeCache,
+    applyGridDivergenceCorrections
+} = require('./order/utils/system');
+const {
+    buildCreateOrderArgs,
+    getOrderTypeFromUpdatedFlags,
+    virtualizeOrder,
+    correctAllPriceMismatches
+} = require('./order/utils/order');
+const {
+    blockchainToFloat,
+    isSignificantSizeChange,
+    validateOrderSize,
+    getDustThresholdFactor
+} = require('./order/utils/math');
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
@@ -246,7 +260,7 @@ class DEXBot {
 
         // Ensure fee cache is initialized before any fill processing that calls getAssetFees().
         try {
-            await OrderUtils.initializeFeeCache([this.config || {}], BitShares);
+            await initializeFeeCache([this.config || {}], BitShares);
         } catch (err) {
             this._warn(`Fee cache initialization failed: ${err.message}`);
         }
@@ -752,7 +766,7 @@ class DEXBot {
 
                         // 4. Handle Price Corrections
                         if (ordersNeedingCorrection.length > 0) {
-                            const correctionResult = await OrderUtils.correctAllPriceMismatches(
+                            const correctionResult = await correctAllPriceMismatches(
                                 this.manager, this.account, this.privateKey, chainOrders
                             );
                             if (correctionResult.failed > 0) this.manager.logger.log(`${correctionResult.failed} corrections failed`, 'error');
@@ -1198,7 +1212,7 @@ class DEXBot {
      */
     _getMaxOrderSize() {
         const { GRID_LIMITS } = require('./constants');
-        const dustThresholdFactor = OrderUtils.getDustThresholdFactor(GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE);
+        const dustThresholdFactor = getDustThresholdFactor(GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE);
         const maxMultiplier = 1 + (2 * dustThresholdFactor); // 1 + 2*5% = 1.1
 
         // Get all orders and find the biggest by size
@@ -2183,7 +2197,7 @@ class DEXBot {
                 await this._persistAndRecoverIfNeeded();
 
                 try {
-                    await OrderUtils.applyGridDivergenceCorrections(
+                    await applyGridDivergenceCorrections(
                         this.manager,
                         this.accountOrders,
                         this.config.botKey,
@@ -2207,7 +2221,7 @@ class DEXBot {
                         await this._persistAndRecoverIfNeeded();
 
                         try {
-                            await OrderUtils.applyGridDivergenceCorrections(
+                            await applyGridDivergenceCorrections(
                                 this.manager,
                                 this.accountOrders,
                                 this.config.botKey,

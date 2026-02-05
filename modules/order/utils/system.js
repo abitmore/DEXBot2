@@ -68,8 +68,8 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
         if (typeof BitShares.db?.get_order_book === 'function') {
             try {
                 const ob = await BitShares.db.get_order_book(baseId, quoteId, API_LIMITS.ORDERBOOK_DEPTH);
-                const bestBid = isValidNumber(ob.bids?.[0]?.price) ? ob.bids[0].price : null;
-                const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? ob.asks[0].price : null;
+                const bestBid = isValidNumber(ob.bids?.[0]?.price) ? Number(ob.bids[0].price) : null;
+                const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? Number(ob.asks[0].price) : null;
                 if (bestBid !== null && bestAsk !== null) mid = (bestBid + bestAsk) / 2;
             } catch (e) {}
         }
@@ -81,6 +81,9 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
             } catch (err) {}
         }
 
+        // Standard DEXBot logic expects A/B (how many A per 1 B).
+        // BitShares get_order_book(A, B) returns prices in B/A.
+        // To get A/B, we return 1 / mid.
         return (mid !== null && mid !== 0) ? 1 / mid : null;
     } catch (err) {
         return null;
@@ -99,7 +102,14 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
         const cacheKey = [aMeta.id, bMeta.id].sort().join(':');
         const cachedPoolId = poolIdCache.get(cacheKey);
 
-        if (cachedPoolId && typeof BitShares.db?.get_objects === 'function') {
+        if (typeof BitShares.db?.get_liquidity_pool_by_asset_ids === 'function') {
+            try {
+                chosen = await BitShares.db.get_liquidity_pool_by_asset_ids(aMeta.id, bMeta.id);
+                if (chosen) poolIdCache.set(cacheKey, chosen.id);
+            } catch (e) {}
+        }
+
+        if (!chosen && cachedPoolId && typeof BitShares.db?.get_objects === 'function') {
             try {
                 const [pool] = await BitShares.db.get_objects([cachedPoolId]);
                 if (pool) chosen = pool;
@@ -112,7 +122,7 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
             const listFn = BitShares.db?.list_liquidity_pools || BitShares.db?.get_liquidity_pools;
             if (typeof listFn === 'function') {
                 try {
-                    const pools = await listFn(API_LIMITS.POOL_BATCH_SIZE, '1.19.0');
+                    const pools = await listFn(100, '1.19.0');
                     chosen = pools.find(p => {
                         const ids = (p.asset_ids || [p.asset_a, p.asset_b]).map(String);
                         return ids.includes(String(aMeta.id)) && ids.includes(String(bMeta.id));
@@ -124,7 +134,6 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
         if (!chosen) return null;
 
-        // CRITICAL: Many list methods return only metadata. Fetch full object if reserves are missing.
         if (!chosen.reserves && !isValidNumber(chosen.balance_a) && typeof BitShares.db?.get_objects === 'function') {
             try {
                 const [full] = await BitShares.db.get_objects([chosen.id]);
@@ -146,11 +155,13 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
             }
         }
 
-        if (!isValidNumber(amtA) || !isValidNumber(amtB) || Number(amtA) === 0) return null;
+        if (!isValidNumber(amtA) || !isValidNumber(amtB) || Number(amtB) === 0) return null;
 
         const floatA = safeBlockchainToFloat(amtA, aMeta.precision);
         const floatB = safeBlockchainToFloat(amtB, bMeta.precision);
-        return floatA > 0 ? floatB / floatA : null;
+        
+        // Return A/B orientation
+        return floatB > 0 ? floatA / floatB : null;
     } catch (err) {
         return null;
     }
@@ -158,15 +169,18 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
 const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
     mode = String(mode).toLowerCase();
+    
+    let poolP = null;
     if (mode === 'pool' || mode === 'auto') {
-        const p = await derivePoolPrice(BitShares, symA, symB).catch(() => null);
-        if (p > 0) return p;
+        poolP = await derivePoolPrice(BitShares, symA, symB).catch(() => null);
+        if (poolP > 0) return poolP;
     }
-    // Fallback to market price if pool mode failed or auto mode is active
+    
     if (mode === 'market' || mode === 'auto' || mode === 'pool') {
         const m = await deriveMarketPrice(BitShares, symA, symB).catch(() => null);
         if (m > 0) return m;
     }
+    
     return null;
 };
 

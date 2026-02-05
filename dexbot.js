@@ -81,8 +81,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline-sync');
 const chainKeys = require('./modules/chain_keys');
-const { utils: OrderUtils } = require('./modules/order');
-const { ensureProfilesDirectory } = OrderUtils;
+const { initializeFeeCache, ensureProfilesDirectory } = require('./modules/order/utils/system');
 const accountBots = require('./modules/account_bots');
 const { parseJsonWithComments } = accountBots;
 const { createBotKey } = require('./modules/account_orders');
@@ -440,7 +439,7 @@ async function runBotInstances(botEntries, { forceDryRun = false, sourceName = '
      // Initialize it once per process for the assets used by active bots.
      try {
          await waitForConnected();
-         await OrderUtils.initializeFeeCache(prepared.filter(b => b.active), BitShares);
+         await initializeFeeCache(prepared.filter(b => b.active), BitShares);
      } catch (err) {
          console.error(`Fee cache initialization failed: ${err.message}`);
          console.error('Cannot proceed without fee cache for fill processing. Aborting.');

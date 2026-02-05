@@ -47,11 +47,13 @@ async function main() {
         const { derivePrice } = require('../modules/order/utils/system');
         const derivedP = await derivePrice(mock, assetA, assetB);
 
-        // Expected poolP = reserveB/reserveA = 3000000 / 20000 = 150
+        // Expected poolP = reserveA/reserveB = 20000 / 3000000 = 0.006666... (A/B orientation)
         assert(Number.isFinite(poolP), 'pool price must be numeric');
-        assert(Math.abs(poolP - (3000000 / 20000)) < 1e-9, `unexpected pool price value ${poolP}`);
+        assert(Math.abs(poolP - (20000 / 3000000)) < 1e-9, `unexpected pool price value ${poolP}`);
 
-        // Expected marketP = 1 / ((0.0014 + 0.0016) / 2) = 666.666...
+        // Expected marketP = mid (if mid is A/B) or 1/mid (if mid is B/A).
+        // BitShares get_order_book(A, B) returns B/A. mid = 0.0015 B/A.
+        // deriveMarketPrice returns 1/mid = 1/0.0015 = 666.666... A/B.
         assert(Number.isFinite(marketP), 'market price must be numeric');
         assert(Math.abs(marketP - (1 / 0.0015)) < 1e-9, `unexpected market price value ${marketP}`);
 
@@ -101,7 +103,8 @@ async function main() {
 
         const poolPIncomplete = await derivePoolPrice(mock, assetA, assetB);
         assert(Number.isFinite(poolPIncomplete), 'Pool price with incomplete metadata should be numeric');
-        assert(Math.abs(poolPIncomplete - (2250000 / 15000)) < 1e-9, `Pool price should be calculated from fetched reserves (expected ${2250000 / 15000}, got ${poolPIncomplete})`);
+        // A/B orientation: 15000 / 2250000 = 0.00666...
+        assert(Math.abs(poolPIncomplete - (15000 / 2250000)) < 1e-9, `Pool price should be calculated from fetched reserves (expected ${15000 / 2250000}, got ${poolPIncomplete})`);
         console.log('✓ Incomplete metadata handling: poolPIncomplete=', poolPIncomplete);
 
         // TEST: 0-precision asset handling
@@ -145,10 +148,11 @@ async function main() {
 
         const poolPZeroPrecision = await derivePoolPrice(mock, zeroPrecAssetA, zeroPrecAssetB);
         assert(Number.isFinite(poolPZeroPrecision), '0-precision asset pool price should be numeric');
-        // With 0-precision: floatA = 1000 / 10^0 = 1000
-        // With 5-precision: floatB = 5000000 / 10^5 = 50
-        // price = floatB / floatA = 50 / 1000 = 0.05
-        const expectedZeroPrecPrice = (5000000 / Math.pow(10, 5)) / (1000 / Math.pow(10, 0));
+        // A/B orientation:
+        // floatA = 1000 / 10^0 = 1000
+        // floatB = 5000000 / 10^5 = 50
+        // price = floatA / floatB = 1000 / 50 = 20
+        const expectedZeroPrecPrice = (1000 / Math.pow(10, 0)) / (5000000 / Math.pow(10, 5));
         assert(Math.abs(poolPZeroPrecision - expectedZeroPrecPrice) < 1e-9, `Pool price with 0-precision asset should be calculated correctly (expected ${expectedZeroPrecPrice}, got ${poolPZeroPrecision})`);
         console.log('✓ 0-precision asset handling: poolPZeroPrecision=', poolPZeroPrecision);
 

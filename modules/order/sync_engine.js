@@ -875,11 +875,11 @@ class SyncEngine {
      * is propagated (not caught). This is intentional - a missing asset is a
      * configuration error that must be fixed before the bot can operate.
      */
-        async initializeAssets() {
-            const mgr = this.manager;
-            if (mgr.assets) return;
-     
-            const { BitShares } = require('../bitshares_client');
+    async initializeAssets() {
+        const mgr = this.manager;
+        if (mgr.assets) return;
+
+        const { BitShares } = require('../bitshares_client');
         const fetchAssetWithFallback = async (symbol, side) => {
             try {
                 return await lookupAsset(BitShares, symbol);
