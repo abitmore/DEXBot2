@@ -1308,13 +1308,13 @@ class DEXBot {
             }
         }
 
-        // Calculate available funds using quantized reconstruction
-        const availA = quantizeFloat((snap.chainFreeSell || 0) + (requiredFunds[assetA.id] || 0), assetA.precision);
-        const availB = quantizeFloat((snap.chainFreeBuy || 0) + (requiredFunds[assetB.id] || 0), assetB.precision);
-
+        // Calculate available funds - CRITICAL FIX: Check against FREE balance, not free+required
+        // Bug: Previous logic added requiredFunds to available, making validation meaningless
+        // Correct logic: available = chainFree (current free balance)
+        // If required > available, batch will fail on execution
         const availableFunds = {
-            [assetA.id]: availA,
-            [assetB.id]: availB
+            [assetA.id]: quantizeFloat(snap.chainFreeSell || 0, assetA.precision),
+            [assetB.id]: quantizeFloat(snap.chainFreeBuy || 0, assetB.precision)
         };
 
         // Check for order size violations
