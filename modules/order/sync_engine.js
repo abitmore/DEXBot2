@@ -559,22 +559,43 @@ class SyncEngine {
 
                 const orderType = matchedGridOrder.type;
                 const currentSize = Number(matchedGridOrder.size || 0);
+                
+                // CRITICAL: Sells are sized in AssetA, Buys are sized in AssetB
+                const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                
                 let filledAmount = 0;
                 if (orderType === ORDER_TYPES.SELL) {
-                    if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, assetAPrecision, true); // tag=true
+                    if (paysAssetId === mgr.assets.assetA.id) filledAmount = blockchainToFloat(paysAmount, precision, true);
                 } else {
-                    if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, assetBPrecision, true); // tag=true
+                    if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, precision, true);
                 }
 
-                const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const currentSizeInt = floatToBlockchainInt(currentSize, precision);
                 const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
                 const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
-                const newSize = blockchainToFloat(newSizeInt, precision, true); // tag=true for type safety
+                const newSize = blockchainToFloat(newSizeInt, precision, true); // needed for partial fills
+
+                // CRITICAL (v0.5.1 Robustness): We must detect if an order is "effectively" full.
+                // An order is full if its size asset reaches 0 OR if the OTHER side reaches 0.
+                // If it's closed on chain but we see a tiny remainder here, it's a Ghost Order.
+                let isEffectivelyFull = (newSizeInt <= 0);
+
+                if (!isEffectivelyFull) {
+                    // Check the "other" side's precision. If the remaining amount to receive/pay 
+                    // rounds to 0 on the blockchain, the order will be closed regardless of newSizeInt.
+                    const otherPrecision = (orderType === ORDER_TYPES.SELL) ? assetBPrecision : assetAPrecision;
+                    const price = matchedGridOrder.price;
+                    const otherSize = (orderType === ORDER_TYPES.SELL) ? (currentSize - filledAmount) * price : (currentSize - filledAmount) / price;
+                    
+                    if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
+                        mgr.logger.log(`[SYNC] Order ${orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');
+                        isEffectivelyFull = true;
+                    }
+                }
 
                 const filledOrders = [];
                 const updatedOrders = [];
-                if (newSizeInt <= 0) {
+                if (isEffectivelyFull) {
                     const filledOrder = {
                         ...matchedGridOrder,
                         blockNum: blockNum,

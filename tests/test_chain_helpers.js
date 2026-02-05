@@ -2,7 +2,8 @@ const assert = require('assert');
 
 console.log('Running chain_helpers tests');
 
-const utils = require('../modules/order/utils.js');
+const orderUtils = require('../modules/order/utils/order.js');
+const mathUtils = require('../modules/order/utils/math.js');
 
 // parseChainOrder test (sell case)
 const assets = { assetA: { id: '1.3.1', precision: 4 }, assetB: { id: '1.3.2', precision: 5 } };
@@ -15,7 +16,7 @@ const chainOrderSell = {
     for_sale: 500
 };
 
-const parsed = utils.parseChainOrder(chainOrderSell, assets);
+const parsed = orderUtils.parseChainOrder(chainOrderSell, assets);
 assert.ok(parsed, 'parsed should not be null');
 assert.strictEqual(parsed.orderId, '1.7.100', 'orderId matches');
 // price = (200000/1000) * 10^(4-5) = 200 * 0.1 = 20
@@ -34,7 +35,7 @@ const chainOrderBuy = {
     for_sale: 12345
 };
 
-const parsedBuy = utils.parseChainOrder(chainOrderBuy, assets);
+const parsedBuy = orderUtils.parseChainOrder(chainOrderBuy, assets);
 assert.ok(parsedBuy, 'parsedBuy should not be null');
 assert.strictEqual(parsedBuy.orderId, '1.7.101', 'buy orderId matches');
 assert.strictEqual(parsedBuy.type, 'buy');
@@ -42,7 +43,7 @@ assert.strictEqual(parsedBuy.type, 'buy');
 assert.ok(Math.abs(parsedBuy.size - 0.12345) < 1e-12, `buy size should be 0.12345, got ${parsedBuy.size}`);
 
 // getMinOrderSize test
-const minSell = utils.getMinOrderSize('sell', assets, 50);
+const minSell = mathUtils.getMinOrderSize('sell', assets, 50);
 assert.ok(Math.abs(minSell - 0.005) < 1e-12, `expected minSell 0.005 got ${minSell}`);
 
 console.log('chain_helpers tests passed');

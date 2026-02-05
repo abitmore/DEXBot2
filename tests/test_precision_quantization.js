@@ -176,15 +176,22 @@ function testFillWithQuantizedOrder() {
     console.log(`\n  Expected remaining: ${expectedRemaining}`);
     console.log(`  Expected remaining (int): ${expectedRemainingInt}`);
 
-    if (expectedRemainingInt > 0) {
-        console.log(`\n  ✅ Valid remaining amount - order should be PARTIAL`);
+    // Check if counter-asset also rounds to 0 (ghost order)
+    const orderPrice = gridOrder.price;
+    const otherSideRemaining = expectedRemaining / orderPrice;  // for BUY: assetA to pay
+    const otherSideRemainingInt = floatToBlockchainInt(otherSideRemaining, 4);  // assetA precision
+    console.log(`\n  Counter-asset remaining: ${otherSideRemaining}`);
+    console.log(`  Counter-asset remaining (int): ${otherSideRemainingInt}`);
+
+    if (expectedRemainingInt > 0 && otherSideRemainingInt > 0) {
+        console.log(`\n  ✅ Both sides valid - order should be PARTIAL`);
         assert(result.updatedOrders.length === 1, 'Should have 1 updated order');
         const partial = result.updatedOrders[0];
         console.log(`  Partial state: ${partial.state}`);
         console.log(`  Remaining size: ${partial.size}`);
-    } else {
-        console.log(`\n  ✅ Zero remaining amount - order should be FULLY_FILLED`);
-        assert(result.filledOrders.length === 1, 'Should have 1 filled order');
+    } else if (expectedRemainingInt <= 0 || otherSideRemainingInt <= 0) {
+        console.log(`\n  ✅ Counter-asset rounds to 0 - Ghost Order detected, should be FULLY_FILLED`);
+        assert(result.filledOrders.length === 1, 'Should have 1 filled order (ghost order closure)');
     }
 }
 
