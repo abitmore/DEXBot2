@@ -32,10 +32,12 @@
  *
  * TIMING PARAMETERS:
  *   4. TIMING - Operational timing constants
- *      SYNC_DELAY_MS, ACCOUNT_TOTALS_TIMEOUT_MS
+ *      SYNC_DELAY_MS, ACCOUNT_TOTALS_TIMEOUT_MS, MILLISECONDS_PER_SECOND
  *      BLOCKCHAIN_FETCH_INTERVAL_MIN, FILL_DEDUPE_WINDOW_MS
  *      FILL_CLEANUP_INTERVAL_MS, FILL_RECORD_RETENTION_MS
- *      LOCK_TIMEOUT_MS
+ *      LOCK_TIMEOUT_MS, SYNC_LOCK_TIMEOUT_MS
+ *      CONNECTION_TIMEOUT_MS, DAEMON_STARTUP_TIMEOUT_MS
+ *      RUN_LOOP_DEFAULT_MS, CHECK_INTERVAL_MS
  *
  * GRID & ORDER LIMITS:
  *   5. GRID_LIMITS - Grid sizing and scaling constraints
@@ -156,7 +158,19 @@ let TIMING = {
     // Locks that exceed this timeout are auto-expired by _cleanExpiredLocks() to ensure
     // orders are never permanently blocked if a process crashes while holding the lock.
     // This self-healing mechanism prevents deadlocks while still protecting against races.
-    LOCK_TIMEOUT_MS: 10000  // 10 seconds - balances transaction latency with lock starvation prevention
+    LOCK_TIMEOUT_MS: 10000,  // 10 seconds - balances transaction latency with lock starvation prevention
+
+    // Sync lock acquisition timeout - prevents indefinite lock hangs
+    // Uses Promise.race() to enforce timeout on lock acquisition attempts
+    SYNC_LOCK_TIMEOUT_MS: 20000,  // 20 seconds - prevents deadlocks while allowing slow operations
+
+    // Connection and initialization timeouts
+    CONNECTION_TIMEOUT_MS: 30000,  // 30 seconds - BitShares client connection establishment timeout
+    DAEMON_STARTUP_TIMEOUT_MS: 60000,  // 60 seconds - Private key daemon startup timeout
+
+    // Main loop and polling defaults
+    RUN_LOOP_DEFAULT_MS: 5000,  // 5 seconds - default main loop cycle delay (can be overridden by RUN_LOOP_MS env var)
+    CHECK_INTERVAL_MS: 100  // 100 milliseconds - polling interval for connection/daemon readiness checks
 };
 
 // Grid limits and scaling constants

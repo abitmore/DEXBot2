@@ -68,7 +68,7 @@ const { promisify } = require('util');
 const { parseJsonWithComments } = require('./modules/account_bots');
 const { readBotsFileSync, readBotsFileWithLock } = require('./modules/bots_file_lock');
 const { setupGracefulShutdown } = require('./modules/graceful_shutdown');
-const { UPDATER } = require('./modules/constants');
+const { UPDATER, TIMING } = require('./modules/constants');
 
 // Setup graceful shutdown handlers
 setupGracefulShutdown();
@@ -226,7 +226,7 @@ async function main(botNameFilter = null) {
              }
          };
 
-         await waitForConnected(30000);
+         await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
      } finally {
          // Always restore console output, even if waitForConnected throws
          console.log = originalLog;

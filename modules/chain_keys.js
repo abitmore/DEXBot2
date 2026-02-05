@@ -73,6 +73,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { readInput, readPassword } = require('./order/utils/system');
+const { TIMING } = require('./constants');
 
 // Profiles key file (ignored) only
 const PROFILES_KEYS_FILE = path.join(__dirname, '..', 'profiles', 'keys.json');
@@ -544,9 +545,9 @@ function isDaemonReady() {
  * @returns {Promise<void>} Resolves when daemon is ready
  * @throws {Error} If daemon doesn't start within timeout
  */
-async function waitForDaemon(maxWaitMs = 60000) {
+async function waitForDaemon(maxWaitMs = TIMING.DAEMON_STARTUP_TIMEOUT_MS) {
     const startTime = Date.now();
-    const checkInterval = 100; // Check every 100ms
+    const checkInterval = TIMING.CHECK_INTERVAL_MS; // Check every 100ms
 
     while (Date.now() - startTime < maxWaitMs) {
         if (isDaemonReady()) {

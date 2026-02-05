@@ -191,7 +191,7 @@ class SyncEngine {
 
         // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
         // Add timeout to prevent indefinite lock acquisition hangs
-        const timeoutMs = TIMING.LOCK_TIMEOUT_MS * 2; // Double timeout for sync operations
+        const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS; // Deadlock prevention timeout
         try {
             return await Promise.race([
                 mgr._syncLock.acquire(async () => {

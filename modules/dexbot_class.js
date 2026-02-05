@@ -438,7 +438,7 @@ class DEXBot {
                 this._setupBlockchainFetchInterval();
 
                 // Main loop
-                const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
+                const loopDelayMs = Number(process.env.RUN_LOOP_MS || TIMING.RUN_LOOP_DEFAULT_MS);
                 this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
 
                 (async () => {
@@ -1159,7 +1159,7 @@ class DEXBot {
      * @throws {Error} If initialization fails or preferredAccount is missing.
      */
     async initialize(masterPassword = null) {
-        await waitForConnected(30000);
+        await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
         if (this.config && this.config.preferredAccount) {
             try {
                 const pwd = masterPassword || await chainKeys.authenticate();
@@ -2017,7 +2017,7 @@ class DEXBot {
      */
     async startWithPrivateKey(privateKey) {
         // Initialize account data with provided private key
-        await waitForConnected(30000);
+        await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
 
         if (this.config && this.config.preferredAccount) {
             try {

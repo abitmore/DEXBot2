@@ -92,7 +92,7 @@
 
 const { BitShares, createAccountClient, waitForConnected } = require('./bitshares_client');
 const { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } = require('./order/utils/math');
-const { FILL_PROCESSING } = require('./constants');
+const { FILL_PROCESSING, TIMING } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -351,7 +351,7 @@ async function selectAccount() {
  * @param {number} timeoutMs - Connection timeout in milliseconds
  * @returns {Promise<Array>} Array of raw order objects from chain
  */
-async function readOpenOrders(accountId = null, timeoutMs = 30000, suppress_log = true) {
+async function readOpenOrders(accountId = null, timeoutMs = TIMING.CONNECTION_TIMEOUT_MS, suppress_log = true) {
     await waitForConnected(timeoutMs);
     try {
         let accId = accountId;
