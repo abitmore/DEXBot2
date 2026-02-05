@@ -198,7 +198,7 @@ class StrategyEngine {
 
                 // Position boundary so spread gap is centered around startPrice
                 const buySpread = Math.floor(gapSlots / 2);
-                mgr.boundaryIdx = splitIdx - buySpread - 1;
+                mgr.boundaryIdx = Math.max(0, splitIdx - buySpread - 1);
             }
         }
 

@@ -20,11 +20,20 @@ function parseChainOrder(chainOrder, assets) {
     if (!base || !quote || !base.asset_id || !quote.asset_id || base.amount === 0) return null;
     
     let price; let type;
+    const precisionDelta = assets.assetA.precision - assets.assetB.precision;
+    const scaleFactor = precisionDelta >= 0
+        ? Math.pow(10, precisionDelta)
+        : Math.pow(10, Math.abs(precisionDelta));
+
     if (base.asset_id === assets.assetA.id && quote.asset_id === assets.assetB.id) {
-        price = (quote.amount / base.amount) * Math.pow(10, assets.assetA.precision - assets.assetB.precision);
+        price = precisionDelta >= 0
+            ? (quote.amount / base.amount) * scaleFactor
+            : (quote.amount / base.amount) / scaleFactor;
         type = ORDER_TYPES.SELL;
     } else if (base.asset_id === assets.assetB.id && quote.asset_id === assets.assetA.id) {
-        price = (base.amount / quote.amount) * Math.pow(10, assets.assetA.precision - assets.assetB.precision);
+        price = precisionDelta >= 0
+            ? (base.amount / quote.amount) * scaleFactor
+            : (base.amount / quote.amount) / scaleFactor;
         type = ORDER_TYPES.BUY;
     } else return null;
 
