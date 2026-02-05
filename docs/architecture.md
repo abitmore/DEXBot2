@@ -716,7 +716,7 @@ sequenceDiagram
 | **StrategyEngine** | Rebalancing, rotation, partial handling | `rebalance()`, `processFilledOrders()`, `preparePartialOrderMove()` |
 | **SyncEngine** | Blockchain sync, fill detection | `syncFromOpenOrders()`, `synchronizeWithChain()` |
 | **Grid** | Grid creation, sizing, divergence | `createOrderGrid()`, `compareGrids()`, `checkAndUpdateGridIfNeeded()` |
-| **Utils** | Shared utilities, conversions | `calculateAvailableFundsValue()`, `floatToBlockchainInt()`, `parseChainOrder()` |
+| **Utils** | Shared utilities, conversions | `calculateAvailableFundsValue()`, `floatToBlockchainInt()`, `quantizeFloat()`, `normalizeInt()`, `parseChainOrder()` |
 | **Logger** | Formatted logging, diagnostics | `logOrderGrid()`, `logFundsStatus()`, `logGridDiagnostics()` |
 
 ---
@@ -809,6 +809,7 @@ The system has been optimized to use a "memory-driven" model for order updates, 
 - **Faster reaction time**: No waiting for blockchain queries during order updates
 - **Reduced API load**: Fewer fetches, less network congestion
 - **Mathematical precision**: Integer-based tracking prevents float precision errors
+  - *See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization-patch-14) for quantization utilities and best practices*
 - **Fallback safety**: Automatic recovery if memory state becomes inconsistent
 
 ### Performance Impact

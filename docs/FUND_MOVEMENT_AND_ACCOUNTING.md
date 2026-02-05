@@ -343,6 +343,122 @@ For BUY orders that are makers:
 
 ---
 
+## 5.5 Precision & Quantization (Patch 14)
+
+**Problem**: Floating-point arithmetic accumulates rounding errors over many calculations. After dozens of order size calculations, price derivations, and fund allocations, float values drift from their true blockchain integer representations, causing mismatches between internal state and on-chain reality.
+
+**Solution**: Centralized quantization utilities that eliminate float accumulation by round-tripping through blockchain integer representation.
+
+### 5.5.1 Core Quantization Functions
+
+**Location**: `modules/order/utils/math.js` (lines 77-102)
+
+#### `quantizeFloat(value, precision)` - Eliminate Accumulation Errors
+
+Converts float → blockchain int → float to "snap" values to precision boundaries.
+
+```javascript
+/**
+ * Quantize a float value by round-tripping through blockchain integer representation.
+ * Converts float → blockchain int (satoshi-level precision) → float.
+ * Eliminates floating-point accumulation errors.
+ *
+ * @param {number} value - Float value to quantize (e.g., 45.123456789)
+ * @param {number} precision - Asset precision (e.g., 8 for satoshis)
+ * @returns {number} Quantized float value (e.g., 45.12345679)
+ */
+function quantizeFloat(value, precision) {
+    return blockchainToFloat(floatToBlockchainInt(value, precision), precision);
+}
+
+// Example:
+// Input: 45.123456789 (accumulated float error)
+// Step 1: Float → Int: 45.123456789 * 10^8 = 4512345678.9 → rounds to 4512345679
+// Step 2: Int → Float: 4512345679 / 10^8 = 45.12345679 (corrected!)
+```
+
+**Use Cases:**
+- After fund allocation calculations (prevent 0.000000001 drift)
+- When rounding order sizes to blockchain precision
+- Before storing prices for comparison operations
+- After grid divergence calculations
+
+#### `normalizeInt(value, precision)` - Ensure Integer Alignment
+
+Converts int → float → int to ensure the integer aligns with precision boundaries.
+
+```javascript
+/**
+ * Normalize an integer value by round-tripping through float representation.
+ * Converts int → float (readable format) → blockchain int.
+ * Ensures the integer aligns with precision boundaries.
+ * Used for precision-aware comparisons.
+ *
+ * @param {number} value - Integer value (e.g., 4512345679)
+ * @param {number} precision - Asset precision
+ * @returns {number} Normalized integer value
+ */
+function normalizeInt(value, precision) {
+    return floatToBlockchainInt(blockchainToFloat(value, precision), precision);
+}
+
+// Example: Ensure consistency in size comparisons
+const currentSizeInt = 4512345679;
+const idealSizeInt = 4512345679;
+const normalized = normalizeInt(currentSizeInt, 8);
+// Returns normalized value for consistent == comparisons
+```
+
+**Use Cases:**
+- Ensuring order sizes align to blockchain satoshi boundaries
+- Normalizing fund totals before invariant checks
+- Preparing sizes for blockchain transaction encoding
+
+### 5.5.2 Consolidation Impact (Patch 14)
+
+Before Patch 14, five separate quantization implementations existed:
+- `dexbot_class.js` - Manual rounding logic
+- `order.js` - Custom precision handling
+- `strategy.js` - Divergent rounding approach
+- `chain_orders.js` - Different quantization pattern
+- `export.js` - Isolated float conversions
+
+**After Consolidation:**
+✅ Single source of truth (`math.js`)
+✅ Consistent precision handling across all modules
+✅ Reduced regression risk (tested once, used everywhere)
+✅ Eliminated subtle float accumulation bugs
+✅ All 34+ test suites pass with zero regressions
+
+### 5.5.3 Precision Best Practices
+
+| Scenario | Function | Example |
+|----------|----------|---------|
+| **Calculate order size** | `quantizeFloat()` | `quantizeFloat(45.123456789, 8)` → Snap to satoshi |
+| **Compare sizes** | `normalizeInt()` | Ensure both sides use same integer representation |
+| **Fund allocation** | `quantizeFloat()` | After geometric distribution, eliminate drift |
+| **Price derivation** | `quantizeFloat()` | Pool/market price calculations prone to float errors |
+| **Validate blockchain match** | `normalizeInt()` | Check: `normalizeInt(internal) === normalizeInt(chain)` |
+
+### 5.5.4 Relationship to Fund Validation (Patch 14 Fix)
+
+The corrected fund validation in `_validateOperationFunds()` uses quantized values:
+
+```javascript
+// Check: Does required amount fit in available balance?
+const availableBalance = snap.chainFreeSell;  // Quantized by accounting
+const requiredAmount = quantizeFloat(totalRequired, precision);  // Quantize for comparison
+
+if (requiredAmount > availableBalance) {
+    // Reject batch before broadcasting
+    return { valid: false, reason: 'Insufficient funds' };
+}
+```
+
+This prevents the pre-Patch 14 bug where `available = chainFree + required` created a tautology (`required > chainFree + required` always false). Quantized comparisons now accurately reflect blockchain constraints.
+
+---
+
 ## 6. Safety & Invariants
 
 The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference.

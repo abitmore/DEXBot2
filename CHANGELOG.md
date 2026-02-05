@@ -30,6 +30,14 @@ All notable changes to this project will be documented in this file.
   - Consolidated error reporting shows all validation failures at once instead of cascading errors
   - Improves early error detection and clarifies business rules
 
+- **Precision & Quantization Documentation** (commit d168fb2)
+  - Added comprehensive Section 5.5 to FUND_MOVEMENT_AND_ACCOUNTING.md explaining precision issues and quantization utilities
+  - Documented `quantizeFloat()` and `normalizeInt()` with detailed examples and use cases
+  - Highlighted Patch 14 consolidation: 5 separate implementations → 1 centralized module
+  - Added best practices table with 5 real-world scenarios for when to quantize
+  - Added cross-references in architecture.md and new "Precision & Quantization Best Practices" section in developer_guide.md
+  - Includes code examples showing correct vs incorrect float handling patterns
+
 ### Fixed
 - **Correct Fund Validation Logic** in dexbot_class.js (commit ac1db74)
   - **Root Cause**: Fund validation computed available as `(chainFree + requiredFunds)`, then checked `if (required > available)`. This became checking `if (required > chainFree + required)` which is always false.
@@ -37,17 +45,22 @@ All notable changes to this project will be documented in this file.
   - **Fix**: Available funds now correctly equals current free balance (chainFree). Validation checks: `required <= available` where available = chainFree.
   - **Result**: Batches that exceed free balance are rejected BEFORE broadcasting, allowing both sides of order pairs to be created successfully.
 
-- **Correct Price Orientation - B/A Standard** in system.js (commit cd0a249)
+- **Correct Price Orientation - B/A Standard** in system.js (commit cd0a249, documentation updated in commit 45eedac)
   - **Root Cause**: Commit ae6e169 incorrectly removed price inversion and reversed pool calculation, causing inverted prices in production.
   - **Fix**: Restored correct inversion logic: `1 / mid` for market prices (BitShares `get_order_book(A,B)` returns A/B format, need B/A)
   - **Example**: XRP/BTS market should be ~1350 (1 XRP = 1350 BTS), not 0.000752 (which is A/B inverted)
   - **Verification**: Pool price = `floatB / floatA` (3000000 BTS / 20000 XRP = 150 BTS/XRP); Market price = `1 / mid` (inverts API's A/B to B/A)
+  - **Documentation Added**: Comprehensive developer guide section explaining price orientation standards, conversion tables, and debugging patterns (commit 45eedac)
 
 - **Critical Edge Case & Data Integrity Fixes** in multiple files (commit 16d1651)
   - **Empty Grid Edge Case**: Added check in startup_reconcile.js to prevent `.every([])` returning true for empty edge order list - fixes false "grid edge fully active" reports
   - **Suspicious Order Size**: Changed silent return to throw error in order.js - order exceeding 1e15 satoshis indicates data corruption; forces recovery instead of continuing with phantom orders
   - **BTS Fee Handling**: Centralized fee calculation in accounting.js - **CRITICAL**: For BTS, refund is a SEPARATE transaction, not in fill amount. Don't add refund to fill proceeds (prevents double counting).
-  - **Deadlock Prevention**: Added timeout to sync lock acquisition in sync_engine.js - wraps with `Promise.race() + 20s timeout` prevents indefinite lock hangs
+  - **Deadlock Prevention & AsyncLock Hardening**: Added timeout to sync lock acquisition in sync_engine.js (commit 16d1651, hardened in commit 276b07d)
+    - Wraps lock acquisition with `Promise.race() + 20s timeout` to prevent indefinite hangs
+    - Implemented `cancelToken` support in AsyncLock to enable safe operation cancellation
+    - Added abortion check after lock acquisition to prevent "Zombie Sync" race conditions
+    - Added `clearQueue()` method for emergency operation cleanup
 
 - **Boundary and Precision Issues** in multiple files (commit 58a46d2)
   - **Negative Boundary Index**: Added immediate `Math.max(0, ...)` clamp to boundaryIdx calculation in strategy.js - prevents negative array indices during boundary initialization
@@ -74,11 +87,17 @@ All notable changes to this project will be documented in this file.
 - **Rebalance Scoping Fix** in strategy.js (commit a8594f0)
   - Resolved a `ReferenceError` for `minHealthySize` variable that caused crashes during certain rebalance cycles
 
-- **Extract Magic Numbers to Constants** in constants.js and affected modules (commit 56dd4bd)
-  - Added FEE_PARAMETERS: `MAKER_FEE_PERCENT` (0.1), `MAKER_REFUND_PERCENT` (0.9), `TAKER_FEE_PERCENT` (1.0)
-  - Added TIMING: `MILLISECONDS_PER_SECOND` (1000) for timestamp conversions
-  - Added GRID_LIMITS: `MAX_ORDER_FACTOR` (1.1) for max order sizing
-  - Updated math.js, export.js, dexbot_class.js to use constants instead of magic numbers
+- **Extract Magic Numbers to Constants** in constants.js and affected modules (commit 56dd4bd, expanded with timeout constants in commit 8b29396)
+  - **Fee Parameters**: `MAKER_FEE_PERCENT` (0.1), `MAKER_REFUND_PERCENT` (0.9), `TAKER_FEE_PERCENT` (1.0)
+  - **Timing Constants** (commit 8b29396):
+    - `SYNC_LOCK_TIMEOUT_MS` (20s): Deadlock prevention for sync lock acquisition
+    - `CONNECTION_TIMEOUT_MS` (30s): BitShares client connection establishment
+    - `DAEMON_STARTUP_TIMEOUT_MS` (60s): Private key daemon startup timeout
+    - `RUN_LOOP_DEFAULT_MS` (5s): Main loop cycle delay default value
+    - `CHECK_INTERVAL_MS` (100ms): Polling interval for connection/daemon readiness
+  - **Grid Parameters**: `MAX_ORDER_FACTOR` (1.1) for max order sizing
+  - **Impact**: Eliminated all hardcoded timeout values from 8 modules; centralized timing configuration in one location
+  - Updated math.js, export.js, dexbot_class.js, bitshares_client.js, chain_keys.js, chain_orders.js, dexbot_class.js, startup_reconcile.js, sync_engine.js, pm2.js to use constants
   - Added fallback for MAX_ORDER_FACTOR in _getMaxOrderSize() with || 1.1 fallback
 
 ### Key Improvements

@@ -145,6 +145,64 @@ If you see prices like `0.000795` when expecting `1350`:
 
 ---
 
+## Precision & Quantization Best Practices
+
+**Problem**: Floating-point arithmetic accumulates rounding errors over many calculations. After repeated price derivations, fund allocations, and order sizing, float values drift from their true blockchain precision.
+
+**Solution**: Use centralized quantization utilities from `modules/order/utils/math.js` to eliminate accumulation.
+
+### When to Quantize
+
+| Situation | Use Function | Why |
+|-----------|--------------|-----|
+| **Calculating order sizes** | `quantizeFloat()` | Geometric weighting produces float errors; snap to satoshi precision |
+| **Fund allocation** | `quantizeFloat()` | After dividing total by weights, accumulation errors occur |
+| **Price derivations** | `quantizeFloat()` | Pool/market calculations prone to float drift |
+| **Comparing sizes** | `normalizeInt()` | Ensure both values use same integer representation before == |
+| **Validating blockchain match** | `normalizeInt()` | Check internal ≈ chain by normalizing both sides |
+
+### Code Example: Correct vs Incorrect
+
+```javascript
+// ❌ WRONG - Float accumulation errors
+const sizes = [];
+const base = 0.995;
+const totalFunds = 100.12345678;
+for (let i = 0; i < 5; i++) {
+    const weight = Math.pow(base, i);
+    sizes.push((weight / sumWeights) * totalFunds);  // Drift accumulates!
+}
+
+// ✅ CORRECT - Quantized to precision
+const { quantizeFloat } = require('./modules/order/utils/math');
+const sizes = [];
+const precision = 8;
+const base = 0.995;
+const totalFunds = 100.12345678;
+for (let i = 0; i < 5; i++) {
+    const weight = Math.pow(base, i);
+    const size = (weight / sumWeights) * totalFunds;
+    sizes.push(quantizeFloat(size, precision));  // Snap to satoshi
+}
+// Result: All sizes align to 8 decimal places, no drift
+```
+
+### Import Pattern
+
+```javascript
+const { quantizeFloat, normalizeInt } = require('../order/utils/math');
+
+// Quantize a float value (e.g., 45.123456789 → 45.12345679)
+const correctedPrice = quantizeFloat(derivedPrice, 8);
+
+// Normalize an integer (e.g., ensure consistency in comparisons)
+const normalized = normalizeInt(currentSizeInt, assetPrecision);
+```
+
+**See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization-patch-14) for complete quantization guide and edge case handling.**
+
+---
+
 ## Module Deep Dive
 
 ### OrderManager (`modules/order/manager.js`)
