@@ -885,7 +885,7 @@ class StrategyEngine {
                         // Pass isMaker flag to apply correct fee (market fee for makers, taker fee for takers)
                         const isMaker = filledOrder.isMaker !== false;  // Default to maker if not specified
                         const feeInfo = getAssetFees(assetForFee, rawProceeds, isMaker);
-                        netProceeds = (typeof feeInfo === 'object') ? feeInfo.total : feeInfo; // Handle both object and number returns
+                        netProceeds = feeInfo.total;
                         const feeType = isMaker ? 'market' : 'taker';
                         mgr.logger.log(`[FILL-FEE] ${filledOrder.type} fill: applied ${feeType} fee for ${assetForFee}`, 'debug');
                     } catch (e) {

@@ -791,8 +791,13 @@ class Grid {
             // Apply new sizes to all slots on the side
             allSideSlots.forEach((slot, i) => {
                 const newSize = newSizes[i] || 0;
+                
+                // Use integer comparison to avoid redundant updates from float noise
+                const currentSizeInt = floatToBlockchainInt(slot.size || 0, ctx.precision);
+                const newSizeInt = floatToBlockchainInt(newSize, ctx.precision);
+
                 // Update size but preserve existing state and orderId
-                if (slot.size === undefined || Math.abs(slot.size - newSize) > 1e-8) {
+                if (slot.size === undefined || currentSizeInt !== newSizeInt) {
                     // CRITICAL: Set skipAccounting=false to ensure delta is consumed/released from ChainFree
                     manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', false, 0);
                 }

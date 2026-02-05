@@ -95,7 +95,13 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
         if (assetAmount !== null && assetAmount !== undefined) {
             const amount = Number(assetAmount);
             const refund = isMaker ? (orderCreationFee * 0.9) : 0;
-            return amount + refund;
+            const netProceeds = amount + refund;
+            return {
+                netProceeds: netProceeds,
+                total: netProceeds, // For backwards compatibility
+                refund: refund,
+                isMaker: isMaker
+            };
         }
 
         return {
@@ -116,7 +122,14 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
     if (assetAmount !== null && assetAmount !== undefined) {
         const amount = Number(assetAmount);
         const feeAmount = (amount * feePercent) / 100;
-        return amount - feeAmount;
+        const netProceeds = amount - feeAmount;
+        return {
+            netProceeds: netProceeds,
+            total: netProceeds, // For backwards compatibility
+            feeAmount: feeAmount,
+            feePercent: feePercent,
+            isMaker: isMaker
+        };
     }
 
     return {

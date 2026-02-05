@@ -1248,6 +1248,9 @@ class DEXBot {
         const requiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
         const orderSizeViolations = [];
 
+        // Helper to quantize a float value based on asset precision
+        const quantize = (val, prec) => blockchainToFloat(floatToBlockchainInt(val, prec), prec);
+
         // Sum amounts and check individual order sizes
         for (const op of operations) {
             if (!op?.op_data) continue;
@@ -1278,11 +1281,8 @@ class DEXBot {
                 }
 
                 // CRITICAL SAFETY CHECK: Use integer comparison for max size
-                // Converts float maxOrderSize to blockchain int to avoid float issues
                 if (Number.isFinite(maxOrderSize)) {
                     const maxOrderSizeInt = floatToBlockchainInt(maxOrderSize, precision);
-                    // Compare raw integer from operation vs computed max integer
-                    // This catches cases where input was 1000000 (int) treated as float -> 1000000 * 10^precision
                     if (Number(sellAmountInt) > maxOrderSizeInt) {
                         orderSizeViolations.push({
                             asset: assetSymbol,
@@ -1293,7 +1293,7 @@ class DEXBot {
                     }
                 }
 
-                // Accumulate required funds (using float for summation logic)
+                // Accumulate required funds using quantized sums to match blockchain math
                 const floatAmount = blockchainToFloat(sellAmountInt, precision);
 
                 // For updates, we only deduct the DELTA (increase in commitment)
@@ -1302,22 +1302,22 @@ class DEXBot {
                     const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
                     if (deltaAssetId === sellAssetId && deltaSellInt > 0) {
                         const floatDelta = blockchainToFloat(deltaSellInt, precision);
-                        requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatDelta;
+                        requiredFunds[sellAssetId] = quantize((requiredFunds[sellAssetId] || 0) + floatDelta, precision);
                     }
                 } else {
                     // For creates, we deduct the full amount
-                    requiredFunds[sellAssetId] = (requiredFunds[sellAssetId] || 0) + floatAmount;
+                    requiredFunds[sellAssetId] = quantize((requiredFunds[sellAssetId] || 0) + floatAmount, precision);
                 }
             }
         }
 
-        // Calculate available funds by adding back the required funds to the current free balance.
-        // The current free balance (snap.chainFree) has ALREADY been reduced by these operations
-        // via optimistic updates in _updateOrder. To validate if we *had* enough funds, we must
-        // reconstruct the pre-operation balance.
+        // Calculate available funds using quantized reconstruction
+        const availA = quantize((snap.chainFreeSell || 0) + (requiredFunds[assetA.id] || 0), assetA.precision);
+        const availB = quantize((snap.chainFreeBuy || 0) + (requiredFunds[assetB.id] || 0), assetB.precision);
+
         const availableFunds = {
-            [assetA.id]: (snap.chainFreeSell || 0) + (requiredFunds[assetA.id] || 0),
-            [assetB.id]: (snap.chainFreeBuy || 0) + (requiredFunds[assetB.id] || 0)
+            [assetA.id]: availA,
+            [assetB.id]: availB
         };
 
         // Check for order size violations
@@ -1329,16 +1329,18 @@ class DEXBot {
             return { isValid: false, summary: summary.trim(), violations: orderSizeViolations };
         }
 
-        // Check for fund violations
+        // Check for fund violations using quantized comparison
         const fundViolations = [];
         for (const assetId in requiredFunds) {
             const required = requiredFunds[assetId];
             const available = availableFunds[assetId] || 0;
 
-            if (required > available) {
+            // Use precision-aware comparison
+            const prec = (assetId === assetA.id) ? assetA.precision : assetB.precision;
+            if (floatToBlockchainInt(required, prec) > floatToBlockchainInt(available, prec)) {
                 fundViolations.push({
                     asset: assetId === assetA.id ? assetA.symbol : assetB.symbol,
-                    required, available, deficit: required - available
+                    required, available, deficit: quantize(required - available, prec)
                 });
             }
         }
