@@ -99,6 +99,8 @@ git checkout main && git pull && git merge --no-ff dev && git push
 - **Dynamic Configuration Refresh**: Implemented periodic (4h) refresh of `bots.json` in `dexbot_class.js` to pick up manual configuration changes (like `startPrice`) without process restart. Updates memory valuation anchors while maintaining "fund-driven" operational stability (no auto-rebalancing).
 - **Streamlined `startPrice` Logic**: Centralized `startPrice` handling across all bot states. If numeric, it acts as the **Single Source of Truth**, blocking auto-derivation. Used for valuation during runtime and as a fixed anchor during grid resets. Updated `architecture.md` and `developer_guide.md` with configuration management details.
 - **Refined Optimistic Accounting**: Centralized fund updates in `manager.js::_updateOrder` with `skipAccounting` support for full-sync scenarios.
+- **Price Orientation Fix**: Unified all price derivation utilities (`derivePoolPrice`, `deriveMarketPrice`) to use the standard **B/A orientation** (units of capital per 1 unit of inventory). Fixed `deriveMarketPrice` incorrectly inverting BitShares order book prices and enhanced `derivePoolPrice` with robust asset ID ordering to handle blockchain internal storage logic. Updated unit tests to enforce the unified B/A standard.
+- **Ghost Order Prevention**: Implemented robust full-fill detection in `SyncEngine` to handle cases where tiny remainders (below minimum order size or rounding to zero on either side) would previously cause orders to hang in `PARTIAL` state. Added `tests/test_ghost_order_fix.js` for verification.
 - **Documentation**: Updated fund model overview in `runner.js` to reflect refined handling of `virtual` fund commitments.
 
 ## Documentation

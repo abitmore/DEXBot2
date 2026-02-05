@@ -1,18 +1,19 @@
 const assert = require('assert');
-const utils = require('../modules/order/utils/math');
+const mathUtils = require('../modules/order/utils/math');
+const { applyGridDivergenceCorrections } = require('../modules/order/utils/system');
 
 // Mock derivePrice to simulate market movement
-utils.derivePrice = async () => 150; 
+mathUtils.derivePrice = async () => 150; 
 
 // Mock lookupAsset to avoid blockchain connection
-utils.lookupAsset = async (BitShares, sym) => {
+mathUtils.lookupAsset = async (BitShares, sym) => {
     if (sym === 'BASE') return { id: '1.3.1', symbol: 'BASE', precision: 5 };
     if (sym === 'QUOTE') return { id: '1.3.2', symbol: 'QUOTE', precision: 5 };
     return null;
 };
 
 // Also mock derivePoolPrice just in case, although derivePrice is the one called directly now
-utils.derivePoolPrice = async () => 150;
+mathUtils.derivePoolPrice = async () => 150; 
 
 const { OrderManager } = require('../modules/order/manager');
 const { grid: Grid } = require('../modules/order');
@@ -61,7 +62,7 @@ async function testUnanchoredSpreadCorrection() {
     // Mock accountOrders with storeMasterGrid to avoid errors during persistence
     const mockAccountOrders = { storeMasterGrid: async () => {} };
 
-    await utils.applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
+    await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
 
     // With 10000 BUY power vs ~100 SELL power, the buyValueRatio is ~0.5 (if price=100).
     // Wait, let's check the math:
@@ -73,7 +74,7 @@ async function testUnanchoredSpreadCorrection() {
     mgr.recalculateFunds();
     mgr.outOfSpread = 2;
     mgr._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
-    await utils.applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
+    await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
 
     console.log(`  Updated boundaryIdx (100% BUY): ${mgr.boundaryIdx}`);
     

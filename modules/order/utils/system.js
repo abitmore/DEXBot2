@@ -81,10 +81,10 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
             } catch (err) {}
         }
 
-        // Standard DEXBot logic expects A/B (how many A per 1 B).
-        // BitShares get_order_book(A, B) returns prices in B/A.
-        // To get A/B, we return 1 / mid.
-        return (mid !== null && mid !== 0) ? 1 / mid : null;
+        // Standard DEXBot logic expects B/A orientation.
+        // BitShares get_order_book(A, B) returns prices in B/A format (quote/base).
+        // To get B/A, we return mid directly.
+        return (mid !== null && mid !== 0) ? mid : null;
     } catch (err) {
         return null;
     }
@@ -127,7 +127,11 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
                         const ids = (p.asset_ids || [p.asset_a, p.asset_b]).map(String);
                         return ids.includes(String(aMeta.id)) && ids.includes(String(bMeta.id));
                     });
-                    if (chosen) poolIdCache.set(cacheKey, chosen.id);
+                    if (chosen) {
+                        poolIdCache.set(cacheKey, chosen.id);
+                    } else {
+                        // [DIAG] Pool not found in initial batch
+                    }
                 } catch (e) {}
             }
         }
@@ -143,9 +147,20 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
         let amtA = null, amtB = null;
         if (isValidNumber(chosen.balance_a) && isValidNumber(chosen.balance_b)) {
-            const isA = String(chosen.asset_a) === String(aMeta.id);
-            amtA = Number(isA ? chosen.balance_a : chosen.balance_b);
-            amtB = Number(isA ? chosen.balance_b : chosen.balance_a);
+            // Pools store assets ordered by ID: lower ID is always first (asset_a)
+            const aIdNum = Number(String(aMeta.id).split('.')[2]);
+            const bIdNum = Number(String(bMeta.id).split('.')[2]);
+            const aIsFirst = aIdNum < bIdNum;
+
+            // If config's assetA has lower ID, it's the pool's first asset (asset_a)
+            // Otherwise, our assetA corresponds to pool's second asset (asset_b)
+            if (aIsFirst) {
+                amtA = Number(chosen.balance_a);
+                amtB = Number(chosen.balance_b);
+            } else {
+                amtA = Number(chosen.balance_b);
+                amtB = Number(chosen.balance_a);
+            }
         } else if (Array.isArray(chosen.reserves)) {
             const resA = chosen.reserves.find(r => String(r.asset_id) === String(aMeta.id));
             const resB = chosen.reserves.find(r => String(r.asset_id) === String(bMeta.id));
@@ -159,9 +174,9 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
         const floatA = safeBlockchainToFloat(amtA, aMeta.precision);
         const floatB = safeBlockchainToFloat(amtB, bMeta.precision);
-        
-        // Return A/B orientation
-        return floatB > 0 ? floatA / floatB : null;
+
+        // Return B/A orientation to match market price format
+        return floatA > 0 ? floatB / floatA : null;
     } catch (err) {
         return null;
     }

@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.14] - 2026-02-05 - Price Orientation Correction & Ghost Order Prevention
+
+### Added
+- **Robust Ghost Order / Full-Fill Detection** in sync_engine.js (commit a8594f0)
+  - Implemented detection for "effectively full" orders where the counter-asset (the side not defining the order size) rounds to zero on the blockchain.
+  - Prevents untradable orders with tiny remainders from hanging in `PARTIAL` state and blocking rotations.
+  - **Verification**: Added `tests/test_ghost_order_fix.js` covering real-world scenarios from production logs.
+
+- **Unanchored Spread Correction Test Integration** (commit c8f4dc5)
+  - Integrated `tests/test_unanchored_spread_correction.js` into the main test suite in package.json.
+  - Fixed stale imports and ReferenceErrors in the test caused by utility refactoring.
+
+### Fixed
+- **Price Orientation Unified to B/A Standard** in system.js (commit c8f4dc5)
+  - **deriveMarketPrice**: Corrected logic to return the direct mid-price from BitShares order book (which is already in quote/base format). Removed incorrect inversion that resulted in A/B orientation.
+  - **derivePoolPrice**: Reverted to standard B/A orientation (`floatB / floatA`) to match core engine expectations.
+  - **Documentation**: Updated comments to accurately reflect the B/A orientation standard (How many units of Asset B per 1 unit of Asset A).
+  - **Test Alignment**: Updated `tests/test_price_derive.js` to enforce the corrected B/A standard.
+
+- **Liquidity Pool Asset Mapping** in system.js (commit c8f4dc5)
+  - Enhanced `derivePoolPrice` with explicit asset ID numerical ordering.
+  - Correctly maps BitShares' `balance_a`/`balance_b` (ordered by internal ID) to the bot's `assetA`/`assetB` regardless of which asset was created first on the network.
+
+- **Divergence Correction Race Protection** in system.js (commit a8594f0)
+  - Implemented `_correctionsLock` acquisition in `applyGridDivergenceCorrections`.
+  - Prevents "Time-of-Check to Time-of-Use" (TOCTOU) race conditions where concurrent fill processing could interleave with structural grid updates.
+
+- **Rotation Size Overrun Prevention** in strategy.js (commit 02f61a2)
+  - Fixed a bug where order sizes during rotations could exceed available capital.
+  - Rotation sizes are now strictly capped by the sum of available funds and released surplus from canceled orders.
+
+- **Rebalance Scoping Fix** in strategy.js (commit a8594f0)
+  - Resolved a `ReferenceError` for `minHealthySize` variable that caused crashes during certain rebalance cycles.
+
+### Key Improvements
+- **Accuracy**: Price derivation now consistently reflects the standard B/A orientation used by the strategy engine.
+- **Robustness**: Ghost order detection ensures continuous grid flow by closing orders that the blockchain considers filled.
+- **Stability**: Locking and capping mechanisms prevent common race conditions and fund overdrafts during complex rotations.
+
+---
+
 ## [0.6.0-patch.13] - 2026-02-03 - Spread Correction Redesign, Index Bug Fixes & Config Extraction Improvements
 
 ### Added
