@@ -76,12 +76,15 @@ class AsyncLock {
     /**
      * Acquire the lock and execute callback exclusively
      * @param {Function} callback - Async function to execute exclusively
+     * @param {Object} [options] - Optional settings
+     * @param {Object} [options.cancelToken] - Optional object with 'isCancelled' property
      * @returns {Promise} Result of callback execution
      */
-    async acquire(callback) {
+    async acquire(callback, options = {}) {
+        const cancelToken = options.cancelToken;
         return new Promise((resolve, reject) => {
             // Queue the callback with resolve/reject handlers
-            this._queue.push({ callback, resolve, reject });
+            this._queue.push({ callback, resolve, reject, cancelToken });
 
             // Try to process queue (will only run if not locked)
             this._processQueue();
@@ -101,7 +104,15 @@ class AsyncLock {
         // Mark as locked to prevent concurrent processing
         this._locked = true;
 
-        const { callback, resolve, reject } = this._queue.shift();
+        const { callback, resolve, reject, cancelToken } = this._queue.shift();
+
+        // If operation was cancelled while in queue, skip it
+        if (cancelToken && cancelToken.isCancelled) {
+            this._locked = false;
+            reject(new Error('Lock acquisition cancelled (timeout)'));
+            // Process next item immediately
+            return this._processQueue();
+        }
 
         try {
             // Execute the callback (guaranteed to be alone)
@@ -130,6 +141,19 @@ class AsyncLock {
      */
     getQueueLength() {
         return this._queue.length;
+    }
+
+    /**
+     * Clear all pending operations in the queue.
+     * Does NOT stop the currently executing operation if it is already locked.
+     */
+    clearQueue() {
+        const count = this._queue.length;
+        while (this._queue.length > 0) {
+            const { reject } = this._queue.shift();
+            reject(new Error('Lock queue cleared'));
+        }
+        return count;
     }
 }
 

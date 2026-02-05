@@ -192,13 +192,22 @@ class SyncEngine {
         // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
         // Add timeout to prevent indefinite lock acquisition hangs
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS; // Deadlock prevention timeout
+        const cancelToken = { isCancelled: false };
+
         try {
             return await Promise.race([
                 mgr._syncLock.acquire(async () => {
+                    // Check if cancelled immediately after acquiring lock
+                    if (cancelToken.isCancelled) {
+                        throw new Error('Sync operation cancelled due to lock acquisition timeout');
+                    }
                     return this._doSyncFromOpenOrders(chainOrders, options);
-                }),
+                }, { cancelToken }),
                 new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error(`Sync lock timeout after ${timeoutMs}ms`)), timeoutMs)
+                    setTimeout(() => {
+                        cancelToken.isCancelled = true;
+                        reject(new Error(`Sync lock timeout after ${timeoutMs}ms`));
+                    }, timeoutMs)
                 )
             ]);
         } catch (err) {
