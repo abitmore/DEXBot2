@@ -138,6 +138,9 @@ class DEXBot {
      * @param {string} options.logPrefix - Prefix for console logs (e.g., "[bot.js]")
      */
     constructor(config, options = {}) {
+        // Validate critical config values before initialization
+        this._validateStartupConfig(config);
+
         this.config = config;
         this.account = null;
         this.privateKey = null;
@@ -165,6 +168,45 @@ class DEXBot {
 
         // Shutdown state
         this._shuttingDown = false;
+    }
+
+    /**
+     * Validate startup configuration to catch errors early.
+     * Ensures critical values are valid before bot starts.
+     * @param {Object} config - Configuration object to validate
+     * @throws {Error} If critical validation fails
+     * @private
+     */
+    _validateStartupConfig(config) {
+        const errors = [];
+
+        // Validate startPrice is numeric or valid string mode
+        const startPrice = config.startPrice;
+        const validPriceModes = ['pool', 'market', 'orderbook'];
+        const isPriceNumeric = typeof startPrice === 'number' && Number.isFinite(startPrice) && startPrice > 0;
+        const isPriceMode = typeof startPrice === 'string' && validPriceModes.includes(startPrice.toLowerCase());
+        if (!isPriceNumeric && !isPriceMode) {
+            errors.push(`startPrice must be a positive number or valid mode (${validPriceModes.join('/')}), got: ${startPrice}`);
+        }
+
+        // Validate assetA and assetB are present
+        if (!config.assetA || typeof config.assetA !== 'string') {
+            errors.push(`assetA must be a non-empty string, got: ${config.assetA}`);
+        }
+        if (!config.assetB || typeof config.assetB !== 'string') {
+            errors.push(`assetB must be a non-empty string, got: ${config.assetB}`);
+        }
+
+        // Validate incrementPercent
+        const increment = config.incrementPercent;
+        if (!Number.isFinite(increment) || increment <= 0 || increment > 100) {
+            errors.push(`incrementPercent must be between 0 and 100, got: ${increment}`);
+        }
+
+        // Throw all validation errors at once
+        if (errors.length > 0) {
+            throw new Error(`Config validation failed:\n${errors.map(e => `  - ${e}`).join('\n')}`);
+        }
     }
 
     /**
@@ -1212,8 +1254,6 @@ class DEXBot {
      */
     _getMaxOrderSize() {
         const { GRID_LIMITS } = require('./constants');
-        const dustThresholdFactor = getDustThresholdFactor(GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE);
-        const maxMultiplier = 1 + (2 * dustThresholdFactor); // 1 + 2*5% = 1.1
 
         // Get all orders and find the biggest by size
         const allOrders = Array.from(this.manager.orders.values());
@@ -1225,7 +1265,11 @@ class DEXBot {
             (order.size > max.size) ? order : max
         );
 
-        return biggestOrder.size * maxMultiplier;
+        // Maximum order size = largest order × MAX_ORDER_FACTOR
+        // Prevents creating oversized orders during validation and grid expansion
+        // Ensures gradual grid expansion when funds increase
+        // Fallback to 1.1 if constant is not defined
+        return biggestOrder.size * (GRID_LIMITS.MAX_ORDER_FACTOR || 1.1);
     }
 
     /**

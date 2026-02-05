@@ -63,6 +63,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const readline = require('readline');
 const Format = require('./format');
+const { TIMING } = require('../constants');
 
 /**
  * Parse a fill line from PM2 log file
@@ -146,7 +147,7 @@ async function parseLogFile(logFilePath) {
             // Parse fee lines
             const fee = parseFeeLine(line);
             if (fee) {
-                fee.timestamp = Date.now() / 1000;  // Approximate timestamp
+                fee.timestamp = Date.now() / TIMING.MILLISECONDS_PER_SECOND;  // Approximate timestamp (seconds)
                 fees.push(fee);
                 linkFillWithFee(fills, fees);
                 continue;

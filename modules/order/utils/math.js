@@ -119,13 +119,13 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
     if (assetSymbol === 'BTS') {
         const orderCreationFee = cachedFees.limitOrderCreate.bts;
         const orderUpdateFee = cachedFees.limitOrderUpdate.bts;
-        const makerNetFee = orderCreationFee * 0.1;
-        const takerNetFee = orderCreationFee;
+        const makerNetFee = orderCreationFee * FEE_PARAMETERS.MAKER_FEE_PERCENT;
+        const takerNetFee = orderCreationFee * FEE_PARAMETERS.TAKER_FEE_PERCENT;
         const netFee = isMaker ? makerNetFee : takerNetFee;
 
         if (assetAmount !== null && assetAmount !== undefined) {
             const amount = Number(assetAmount);
-            const refund = isMaker ? (orderCreationFee * 0.9) : 0;
+            const refund = isMaker ? (orderCreationFee * FEE_PARAMETERS.MAKER_REFUND_PERCENT) : 0;
             const netProceeds = amount + refund;
             return {
                 netProceeds: netProceeds,

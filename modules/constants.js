@@ -140,6 +140,8 @@ let DEFAULT_CONFIG = {
 let TIMING = {
     SYNC_DELAY_MS: 500,
     ACCOUNT_TOTALS_TIMEOUT_MS: 10000,
+    // Conversion factor: milliseconds per second
+    MILLISECONDS_PER_SECOND: 1000,
     // Blockchain fetch interval: how often to refresh blockchain account values (in minutes)
     // Default: 240 minutes (4 hours). Set to 0 or non-number to disable periodic fetches.
     BLOCKCHAIN_FETCH_INTERVAL_MIN: 240,
@@ -193,6 +195,12 @@ let GRID_LIMITS = {
     // Default: 2 (minimum 2 slots in spread zone)
     MIN_SPREAD_ORDERS: 2,
 
+    // Maximum order size factor: limits new orders during validation and grid expansion
+    // Prevents creating orders larger than (largest_existing_order × MAX_ORDER_FACTOR)
+    // During grid regeneration: ensures gradual expansion when funds increase
+    // Default: 1.1 (new orders can't exceed largest order × 1.1)
+    MAX_ORDER_FACTOR: 1.1,
+
     // Grid comparison metrics
     // Detects significant divergence between calculated (in-memory) and persisted grid state
     // after order fills and rotations
@@ -239,7 +247,13 @@ let FEE_PARAMETERS = {
     // Fallback BTS fee when fee data calculation fails
     BTS_FALLBACK_FEE: 100,
     // Ratio of creation fee refunded for maker orders (10% = 0.1)
-    MAKER_REFUND_RATIO: 0.1
+    MAKER_REFUND_RATIO: 0.1,
+    // Maker fee percentage of full order creation fee (10% of fee)
+    MAKER_FEE_PERCENT: 0.1,
+    // Maker refund percentage (90% refund on fee)
+    MAKER_REFUND_PERCENT: 0.9,
+    // Taker fee percentage of full order creation fee (100% of fee)
+    TAKER_FEE_PERCENT: 1.0
 };
 
 // API request limits and batch sizes for blockchain operations
