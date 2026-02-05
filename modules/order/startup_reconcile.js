@@ -131,6 +131,8 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
     const edgeOrders = sorted.slice(-outerEdgeCount);
 
     // Check if ALL edge orders are ACTIVE (placed on blockchain)
+    // Empty array check prevents vacuous truth: every([]) returns true
+    if (edgeOrders.length === 0) return false;
     const allEdgeActive = edgeOrders.every(o => isOrderPlaced(o));
 
     return allEdgeActive;

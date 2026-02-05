@@ -507,6 +507,32 @@ class Accountant {
     }
 
     /**
+     * Centralized fee deduction helper - prevents duplicate logic across codebase.
+     * Returns net proceeds after market fees, or raw amount if asset is not recognized.
+     * @param {string} assetSymbol - Asset symbol (e.g., 'BTS', 'XRP')
+     * @param {number} rawAmount - Amount before fees
+     * @param {boolean} isMaker - Whether this was a maker order (0.1% fee) vs taker (0.1% fee)
+     * @returns {number} Net proceeds after fees, or rawAmount if symbol not found
+     * @private
+     */
+    _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) {
+        if (!assetSymbol) return rawAmount;
+
+        // CRITICAL: For BTS, the refund is a SEPARATE transaction, not included in fill amount
+        // Do NOT add refund to fill proceeds - that would be double counting
+        // The fill.receives already contains only the market proceeds
+        // The refund will arrive as a separate transaction that we'll account for separately
+        if (assetSymbol === 'BTS') {
+            // For BTS: just return raw amount (no refund addition)
+            // Fee settlement (net fee) will be deducted later via deductBtsFees()
+            return rawAmount;
+        }
+
+        // For other assets: apply normal fee calculation (market fee %)
+        return getAssetFees(assetSymbol, rawAmount, isMaker).netProceeds;
+    }
+
+    /**
      * Process the fund impact of an order fill.
      * Atomically updates accountTotals to keep internal state in sync with blockchain.
      * CRITICAL: Called within fill processing lock context to prevent race conditions.
@@ -517,7 +543,12 @@ class Accountant {
         const receives = fillOp?.receives;
         if (!pays || !receives) return;
 
-        const isMaker = fillOp.is_maker !== false; // Default to true if not specified
+        // Default to maker (not taker) because:
+        // 1. This bot primarily places orders (maker orders, not taker)
+        // 2. Maker fees are CHEAPER: 10% of fee vs 100% for taker
+        // 3. When is_maker is missing, it's safer to assume maker (the normal case)
+        // 4. Makers get 90% refund on BTS fees, so we account for that
+        const isMaker = fillOp.is_maker !== false;
 
         const assetAId = mgr.assets?.assetA?.id;
         const assetBId = mgr.assets?.assetB?.id;
@@ -546,13 +577,13 @@ class Accountant {
         // IMPORTANT: Deduct market fees from proceeds to match blockchain reality.
         if (receives.asset_id === assetAId) {
             const rawAmount = blockchainToFloat(receives.amount, assetAPrecision, true);
-            const netAmount = assetASymbol ? getAssetFees(assetASymbol, rawAmount, isMaker).netProceeds : rawAmount;
+            const netAmount = this._deductFeesFromProceeds(assetASymbol, rawAmount, isMaker);
 
             this.adjustTotalBalance(ORDER_TYPES.SELL, netAmount, 'fill-receives');
             this.modifyCacheFunds('sell', netAmount, 'fill-proceeds');
         } else if (receives.asset_id === assetBId) {
             const rawAmount = blockchainToFloat(receives.amount, assetBPrecision, true);
-            const netAmount = assetBSymbol ? getAssetFees(assetBSymbol, rawAmount, isMaker).netProceeds : rawAmount;
+            const netAmount = this._deductFeesFromProceeds(assetBSymbol, rawAmount, isMaker);
 
             this.adjustTotalBalance(ORDER_TYPES.BUY, netAmount, 'fill-receives');
             this.modifyCacheFunds('buy', netAmount, 'fill-proceeds');

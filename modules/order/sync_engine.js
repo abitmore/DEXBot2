@@ -190,9 +190,21 @@ class SyncEngine {
         }
 
         // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
-        return await mgr._syncLock.acquire(async () => {
-            return this._doSyncFromOpenOrders(chainOrders, options);
-        });
+        // Add timeout to prevent indefinite lock acquisition hangs
+        const timeoutMs = TIMING.LOCK_TIMEOUT_MS * 2; // Double timeout for sync operations
+        try {
+            return await Promise.race([
+                mgr._syncLock.acquire(async () => {
+                    return this._doSyncFromOpenOrders(chainOrders, options);
+                }),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error(`Sync lock timeout after ${timeoutMs}ms`)), timeoutMs)
+                )
+            ]);
+        } catch (err) {
+            mgr.logger?.log?.(`Sync lock error: ${err.message}`, 'error');
+            throw err;
+        }
     }
 
     /**

@@ -101,8 +101,9 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting
         const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
         const suspiciousThreshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, precision);
         if (Math.abs(Number(chainSize)) > suspiciousThreshold) {
-            manager.logger?.log?.(`CRITICAL: suspicious chainSize=${chainSize}`, 'error');
-            return;
+            const msg = `CRITICAL: suspicious chainSize=${chainSize} exceeds limit ${suspiciousThreshold}. Possible blockchain sync error or data corruption.`;
+            manager.logger?.log?.(msg, 'error');
+            throw new Error(msg);
         }
     }
 
