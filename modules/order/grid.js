@@ -1022,7 +1022,7 @@ class Grid {
 
             // Nominal spread is the configured target spread percentage
             // When a side is doubled, increase target spread by one increment to naturally widen the gap
-            let nominalSpread = manager.config.targetSpread || 2.0;
+            let nominalSpread = manager.config.targetSpreadPercent || 2.0;
             if (manager.buySideIsDoubled || manager.sellSideIsDoubled) {
                 nominalSpread += manager.config.incrementPercent;
             }
