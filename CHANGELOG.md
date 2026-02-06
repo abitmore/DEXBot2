@@ -7,6 +7,48 @@ All notable changes to this project will be documented in this file.
 ## [0.6.0-patch.15] - 2026-02-06 - Stale Order Recovery Hardening, Liquidity Pool Pagination & Type-Mismatch Correction Pipeline
 
 ### Fixed
+- **Grid Reset Race Condition - Bootstrap Flag Guard** in dexbot_class.js (commit 857c8f3)
+  - **Root Cause**: During grid reset, the `isBootstrapping` flag was checked before acquiring the fill processing lock. The flag could become false while waiting for lock acquisition, causing stale bootstrap code to execute for fills arriving during grid resync.
+  - **Impact**: Fills received during grid recovery were processed with bootstrap logic even after bootstrap completed, preventing proper boundary slot reassignment and leaving the grid in an inconsistent state.
+  - **Fix**: Moved `isBootstrapping` flag check inside the fill processing lock callback (line 691). If bootstrap finished while waiting, the code now skips the bootstrap handler and allows normal POST-RESET fill processing.
+  - **Result**: Grid boundary slots are now properly reassigned after fill events during recovery
+
+- **Fill Accounting in POST-RESET Path** in dexbot_class.js (commit 857c8f3)
+  - **Root Cause**: The POST-RESET fill handler processed known grid fills but skipped the `processFillAccounting()` call, which only ran for unknown orders. This broke `cacheFunds` tracking.
+  - **Impact**: Cache funds from grid fills during recovery were never credited, causing subsequent dust resize operations to fail due to insufficient cache funds.
+  - **Fix**: Added `accountant.processFillAccounting()` call before the `processFilledOrders` rebalance pipeline (line 404).
+  - **Result**: Fill proceeds are now correctly credited to cache funds during grid recovery
+
+- **Doubled Flags Reset During Grid Regeneration** in dexbot_class.js (commit 857c8f3)
+  - **Root Cause**: The `buySideIsDoubled` and `sellSideIsDoubled` flags persisted from the old grid through the regeneration process, reducing the effective target order count.
+  - **Impact**: Grid stayed at reduced capacity (5 orders instead of 6) even after successful recovery.
+  - **Fix**: Added doubled flag resets to the grid regeneration cleanup block (line 530).
+  - **Result**: Grid reaches full target capacity after regeneration
+
+- **FillType Logging Case Mismatch** in dexbot_class.js (commit 857c8f3)
+  - **Root Cause**: FillType comparison used hardcoded uppercase `'BUY'` but `ORDER_TYPES.BUY` equals lowercase `'buy'`, causing the comparison to always fail (line 1050).
+  - **Impact**: Fill logs always showed 'SELL' regardless of actual order type.
+  - **Fix**: Changed comparison from `'BUY'` to `ORDER_TYPES.BUY` enum constant for case-sensitive match.
+  - **Result**: Fill logs now correctly reflect the actual order type (buy vs sell)
+
+- **Grid Divergence Threshold Denominator** in modules/order/grid.js (commit 857c8f3)
+  - **Root Cause**: The threshold check used `(grid + pending)` as denominator for the divergence ratio, which could be much smaller than total allocated funds (line 741).
+  - **Impact**: False-positive triggers when grid size < allocated funds, causing unnecessary sell order updates/rebalancing post-fill.
+  - **Fix**: Changed denominator to use `allocated` funds with `chainTotal` fallback (free + locked balance).
+  - **Result**: Divergence threshold now uses appropriate baseline, reducing false positives
+
+- **Spread Correction Sizing Index Swap** in modules/order/grid.js (commit 857c8f3)
+  - **Root Cause**: Geometric sizing produces arrays where weight distribution depends on the `reverse` parameter. For SELL orders (reverse=false), largest allocation is at index [0]. For BUY orders (reverse=true), largest is at index [N-1]. Code was returning smallest for both sides (line 1205).
+  - **Impact**: Spread correction orders placed with dust-level sizes (~0.14) instead of ideal sizes (~0.30).
+  - **Fix**: Swapped return indices: sell uses `sized[0]` (largest), buy uses `sized[N-1]` (largest for reversed array).
+  - **Result**: Spread correction orders now place with appropriate sizing near market
+
+- **Dust Partial Resize Fallback Source** in modules/order/strategy.js (commit 857c8f3)
+  - **Root Cause**: Dust resize operations used `chainFree` (raw on-chain balance) as fallback, which was too aggressive. Available funds exhaustion should prevent resize unless fill proceeds become available (lines 534-541, 581).
+  - **Impact**: Dust orders were being enlarged using raw on-chain funds when they should only use dedicated cache funds from fills.
+  - **Fix**: Replaced `chainFree` fallback with `cacheFunds` (fill proceeds earmarked for grid operations). `cacheFunds` is safely available here since it's not consumed until after rebalance completes (lines 366-372).
+  - **Result**: Dust orders only enlarge using fill proceeds, preventing fund exhaustion
+
 - **Liquidity Pool Pagination for Price Discovery** in system.js (commit e9e09bc)
   - **Root Cause**: Pool lookup only fetched the first 100 pools using a single API call, missing pools with higher IDs on networks with >100 liquidity pools
   - **Impact**: Price derivation would fail for asset pairs in high-ID pools, silently falling back to market price and potentially using stale/incorrect pricing

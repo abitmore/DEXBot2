@@ -401,6 +401,12 @@ class DEXBot {
 
                             this._log(`[POST-RESET] Processing fill for ${gridOrder.type} order ${gridOrder.id} at price ${gridOrder.price}`);
 
+                            try {
+                                this.manager.accountant.processFillAccounting(fillOp);
+                            } catch (accErr) {
+                                this._log(`[POST-RESET] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                            }
+
                             // Process this fill through the full rebalance pipeline
                             // This will shift the boundary and place a new order on the filled slot
                             const rebalanceResult = await this.manager.processFilledOrders([gridOrder], new Set());
@@ -521,9 +527,11 @@ class DEXBot {
                     this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
                 }
             } else {
-                this._log(`ℹ Grid regenerating - resetting cacheFunds and BTS fees to clean state`);
+                this._log(`ℹ Grid regenerating - resetting cacheFunds, BTS fees and doubled flags to clean state`);
                 this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
                 this.manager.funds.btsFeesOwed = 0;
+                this.manager.buySideIsDoubled = false;
+                this.manager.sellSideIsDoubled = false;
             }
 
             // CRITICAL: Use fill lock during ENTIRE startup synchronization to prevent races.
@@ -681,6 +689,7 @@ class DEXBot {
             if (this.manager.isBootstrapping) {
                 // During bootstrap: skip lock contention checks, process fills directly
                 await this.manager._fillProcessingLock.acquire(async () => {
+                    if (!this.manager.isBootstrapping) return; // bootstrap finished while waiting for lock
                     await this._processFillsWithBootstrapMode(chainOrders);
                 });
                 return;
@@ -1038,7 +1047,7 @@ class DEXBot {
             processedFillKeys.add(fillKey);
             validFills.push({ ...fill, gridOrder });
 
-            const fillType = gridOrder.type === 'BUY' ? 'BUY' : 'SELL';
+            const fillType = gridOrder.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL';
             this._log(`[BOOTSTRAP] Fill detected: ${fillType} order (${fillOp.is_maker ? 'maker' : 'taker'})`);
 
             // Optimistically update account totals for bootstrap fills

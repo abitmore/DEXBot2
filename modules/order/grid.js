@@ -738,8 +738,13 @@ class Grid {
             if (s.grid <= 0) continue;
             const avail = calculateAvailableFundsValue(s.name, manager.accountTotals, manager.funds, manager.config.assetA, manager.config.assetB, manager.config.activeOrders);
             const totalPending = avail;
+            // Denominator: bot's total funds for this side (respects botFunds % allocation).
+            // Primary: allocated (botFunds-adjusted). Fallback: chainTotal (free + locked).
+            // Previous fallback (grid + pending) caused false-positive triggers when the
+            // grid allocation was small relative to total funds.
             const allocated = s.name === 'buy' ? chainSnap.allocatedBuy : chainSnap.allocatedSell;
-            const denominator = (allocated > 0) ? allocated : (s.grid + totalPending);
+            const chainTotal = s.name === 'buy' ? chainSnap.chainTotalBuy : chainSnap.chainTotalSell;
+            const denominator = (allocated > 0) ? allocated : chainTotal;
             const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
 
             if (ratio >= threshold) {
@@ -1197,7 +1202,7 @@ class Grid {
                 manager.logger?.log?.(`calculateOrderSizes returned invalid result for spread correction`, 'warn');
                 return null;
             }
-            return side === 'sell' ? sized[sized.length - 1].size : sized[0].size;
+            return side === 'sell' ? sized[0].size : sized[sized.length - 1].size;
         } catch (e) {
             manager.logger?.log?.(`Error calculating geometric size for spread correction: ${e.message}`, 'warn');
             return null;

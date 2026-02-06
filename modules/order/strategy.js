@@ -531,6 +531,15 @@ class StrategyEngine {
         let remainingAvail = availSide;
         let totalNewPlacementSize = 0;
 
+        // Dust resize fallback budget: use cacheFunds (fill proceeds earmarked for grid ops)
+        // when normal available funds (after virtual deductions) are insufficient.
+        // cacheFunds is not yet consumed during rebalance (deducted after at lines 366-372),
+        // so it's safely available here for correcting existing on-chain dust orders.
+        const cacheFundsFallback = type === ORDER_TYPES.BUY
+            ? (mgr.funds?.cacheFunds?.buy ?? 0)
+            : (mgr.funds?.cacheFunds?.sell ?? 0);
+        let dustResizeBudget = Math.max(0, cacheFundsFallback);
+
         for (const partial of partialOrdersInWindow) {
             // FIX: Check budget BEFORE processing to respect reactionCap (Issue #4 enhancement)
             if (budgetRemaining <= 0) {
@@ -555,10 +564,21 @@ class StrategyEngine {
                 // CRITICAL: Cap increase to respect available funds
                 const currentSize = partial.size || 0;
                 const sizeIncrease = Math.max(0, idealSize - currentSize);
-                const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
-                const finalSize = currentSize + cappedIncrease;
+                let cappedIncrease = Math.min(sizeIncrease, remainingAvail);
+                let finalSize = currentSize + cappedIncrease;
+                let usedDustFallback = false;
 
                 const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
+
+                // Dust resize fallback: when normal available funds (after virtual deductions)
+                // are insufficient, use chain free balance for on-chain orders.
+                // This corrects an existing order — not new capital deployment.
+                if (finalSize < minAbsoluteSize && hasOnChainId(partial) && dustResizeBudget > 0) {
+                    cappedIncrease = Math.min(sizeIncrease, dustResizeBudget);
+                    finalSize = currentSize + cappedIncrease;
+                    usedDustFallback = true;
+                    mgr.logger.log(`[PARTIAL] Dust resize using cache funds (${Format.formatAmount8(dustResizeBudget)}) for ${partial.id}`, 'debug');
+                }
 
                 if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
                     mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and flagging side as doubled.`, 'info');
@@ -572,7 +592,11 @@ class StrategyEngine {
                     stateUpdates.push({ ...partial, size: finalSize, state: newState });
 
                     totalNewPlacementSize += cappedIncrease;
-                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    if (usedDustFallback) {
+                        dustResizeBudget = Math.max(0, dustResizeBudget - cappedIncrease);
+                    } else {
+                        remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    }
                     handledPartialIds.add(partial.id);
                     budgetRemaining--;
                 }
