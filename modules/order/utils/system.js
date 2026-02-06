@@ -129,7 +129,12 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
                         const pools = await listFn(PAGE_SIZE, startId);
                         if (!pools || pools.length === 0) break;
 
-                        const matches = pools.filter(p => {
+                        // BitShares list_liquidity_pools is inclusive of startId.
+                        // Skip the first pool in subsequent pages to avoid duplicate processing.
+                        const effectivePools = (startId === '1.19.0') ? pools : pools.slice(1);
+                        if (effectivePools.length === 0) break;
+
+                        const matches = effectivePools.filter(p => {
                             const ids = (p.asset_ids || [p.asset_a, p.asset_b]).map(String);
                             return ids.includes(String(aMeta.id)) && ids.includes(String(bMeta.id));
                         });
