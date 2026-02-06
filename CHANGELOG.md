@@ -4,6 +4,63 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.15] - 2026-02-06 - Stale Order Recovery Hardening, Liquidity Pool Pagination & Type-Mismatch Correction Pipeline
+
+### Fixed
+- **Liquidity Pool Pagination for Price Discovery** in system.js (commit e9e09bc)
+  - **Root Cause**: Pool lookup only fetched the first 100 pools using a single API call, missing pools with higher IDs on networks with >100 liquidity pools
+  - **Impact**: Price derivation would fail for asset pairs in high-ID pools, silently falling back to market price and potentially using stale/incorrect pricing
+  - **Fix**:
+    - Implemented pagination loop with `startId` tracking through pool batches
+    - Continues fetching 100-pool pages until target pool is found or all pools exhausted
+    - Correctly handles `pools.length < PAGE_SIZE` condition to detect end of list
+  - **Result**: Price discovery now works reliably for all liquidity pools regardless of pool ID value
+
+- **Spread Threshold Configuration Key Correction** in grid.js (commit e9e09bc)
+  - **Root Cause**: Spread correction code used non-existent config key `targetSpread`, which defaulted to `undefined` and fell back to 2.0%
+  - **Impact**: Spread corrections used hardcoded 2.0% nominal spread instead of user-configured `targetSpreadPercent`, causing incorrect grid adjustments when users configured different spreads
+  - **Fix**: Changed `manager.config.targetSpread` to `manager.config.targetSpreadPercent` (the actual config key)
+  - **Result**: Spread corrections now use the user-configured target spread percentage
+
+- **Type-Mismatch Order Cancellation Pipeline** in sync_engine.js and order.js (commit d2f4068)
+  - **Root Cause**: When type mismatches were detected (e.g., grid slot reassigned from sell→buy but chain order retained original type), the code pushed a surplus entry to `manager.ordersNeedingPriceCorrection` but `correctOrderPriceOnChain()` treated it like a price update, attempting to call `updateOrder()` with undefined values (expectedPrice, size, type).
+  - **Impact**: Type-mismatched chain orders were never cancelled, leaving stale orders on-chain that continued trading against the current grid configuration, causing incorrect balances and failed rotations.
+  - **Fix**: Added explicit `isSurplus` handling in `correctOrderPriceOnChain()`:
+    - Detects surplus entries early via `isSurplus` flag
+    - Routes them to `accountOrders.cancelOrder()` instead of price update
+    - Cleans up grid slot by converting to SPREAD placeholder (prevents phantom order references)
+    - Returns `{ cancelled: true }` to distinguish from price corrections
+  - **Result**: Type-mismatched chain orders are now properly cancelled and grid slots cleared, preventing phantom order accumulation
+
+- **Multi-ID Stale Order Extraction from Batch Failures** in dexbot_class.js (commit d2f4068)
+  - **Root Cause**: Batch failure handler only extracted the first stale order ID from error messages using single regex match, but errors can reference multiple stale orders across different BitShares node versions
+  - **Issue**: Remaining stale order references in the batch weren't filtered out, causing retry with same failed operations and cascading failures
+  - **Fix**:
+    - Changed from single `match()` to `Set` with multiple regex patterns (`g` flag on fresh pattern objects)
+    - Covers BitShares error format variants: "Limit order X does not exist", "Unable to find Object X", "object X does not exist|not found"
+    - Cleans up ALL grid slots referencing any stale order ID (not just first)
+    - Filters operations by Set membership check instead of single ID comparison
+  - **Result**: Batch recovery now handles multi-ID stale order scenarios correctly, successfully retrying with all valid operations
+
+- **Spread-Out-of-Range False Positive** in order.js (commit d2f4068)
+  - **Root Cause**: `shouldFlagOutOfSpread()` returned `1` (flag) when either buy or sell side had zero active orders, even though spread is mathematically undefined with only one side
+  - **Impact**: Triggered unnecessary spread corrections when one grid side was exhausted (e.g., all sell orders filled), causing thrashing and grid churn
+  - **Fix**: Changed return value from `1` to `0` when `buyCount === 0 || sellCount === 0`, making it skip spread checks when an entire side is empty
+  - **Result**: No false spread-out-of-range flags during normal one-sided inventory accumulation
+
+- **Unused Parameter Removal** in dexbot_class.js (commit d2f4068)
+  - Removed unused `ordersToPlace` and `ordersToRotate` parameters from `_processBatchResults()` method signature
+  - These were passed from two call sites but never used in the method body
+  - Cleanup reduces parameter coupling and simplifies the function contract
+
+- **Recovery Cycle Documentation Clarification** in dexbot_class.js (commit d2f4068)
+  - Added comment clarifying dual reset points for `_recoveryAttempted` flag:
+    - Periodic reset: Every 10-minute cycle (`pauseFundRecalc` block at line 2164)
+    - Fill-triggered reset: Only on actual fill events (in `processFilledOrders`)
+  - Ensures accounting recovery can be re-attempted even when no fills occur for extended periods
+
+---
+
 ## [0.6.0-patch.14] - 2026-02-05 - Critical Bug Fixes, Price Orientation, Fund Validation & Quantization Consolidation
 
 ### Added

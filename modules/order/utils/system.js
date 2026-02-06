@@ -123,22 +123,39 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
                 try {
                     let startId = '1.19.0';
                     const PAGE_SIZE = 100;
-                    while (!chosen) {
+                    const allMatches = [];
+
+                    while (true) {
                         const pools = await listFn(PAGE_SIZE, startId);
                         if (!pools || pools.length === 0) break;
-                        chosen = pools.find(p => {
+
+                        const matches = pools.filter(p => {
                             const ids = (p.asset_ids || [p.asset_a, p.asset_b]).map(String);
                             return ids.includes(String(aMeta.id)) && ids.includes(String(bMeta.id));
                         });
-                        if (chosen) {
-                            poolIdCache.set(cacheKey, chosen.id);
-                        } else if (pools.length < PAGE_SIZE) {
+
+                        if (matches.length) {
+                            allMatches.push(...matches);
+                        }
+
+                        if (pools.length < PAGE_SIZE) {
                             break;
                         } else {
                             startId = pools[pools.length - 1].id;
                         }
                     }
-                } catch (e) {}
+
+                    if (allMatches.length) {
+                        // Select pool with highest balance for our assetA
+                        chosen = allMatches.sort((a, b) => {
+                            const getBal = p => Number(String(p.asset_a) === String(aMeta.id) ? p.balance_a : p.balance_b);
+                            return getBal(b) - getBal(a);
+                        })[0];
+                        poolIdCache.set(cacheKey, chosen.id);
+                    }
+                } catch (e) {
+                    console.warn('derivePoolPrice: pool pagination failed:', e.message || e);
+                }
             }
         }
 
