@@ -367,6 +367,25 @@ class SyncEngine {
                 // Store raw blockchain data in grid slot for later update calculation
                 updatedOrder.rawOnChain = rawChainOrders.get(gridOrder.orderId);
 
+                // Type mismatch: grid slot was reassigned (e.g., sell→buy) but on-chain order retains original type.
+                // Treat this as a stale order requiring cancellation by the divergence correction system.
+                if (gridOrder.type !== chainOrder.type) {
+                    mgr.logger?.log?.(
+                        `Type mismatch for ${gridOrder.id}: grid=${gridOrder.type}, chain=${chainOrder.type}. ` +
+                        `Treating as stale order requiring cancellation.`,
+                        'warn'
+                    );
+                    ordersNeedingCorrection.push({
+                        gridOrder: { ...gridOrder },
+                        chainOrderId: gridOrder.orderId,
+                        expectedPrice: gridOrder.price,
+                        actualPrice: chainOrder.price,
+                        size: chainOrder.size,
+                        type: chainOrder.type,  // Use CHAIN type, not grid type
+                        typeMismatch: true
+                    });
+                }
+
                 // Calculate price tolerance for comparison
                 // CRITICAL FIX: Skip orders where tolerance is null (e.g., size=0, which happens for SPREAD placeholders)
                 const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
@@ -376,7 +395,8 @@ class SyncEngine {
                     ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
                 }
 
-                const precision = (gridOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                // Use chain order type for precision: the chain order's type is ground truth for which asset for_sale represents
+                const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const currentSizeInt = floatToBlockchainInt(gridOrder.size, precision);
                 const chainSizeInt = floatToBlockchainInt(chainOrder.size, precision);
 

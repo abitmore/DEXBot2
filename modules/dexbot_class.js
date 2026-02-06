@@ -98,7 +98,8 @@ const {
     buildCreateOrderArgs,
     getOrderTypeFromUpdatedFlags,
     virtualizeOrder,
-    correctAllPriceMismatches
+    correctAllPriceMismatches,
+    convertToSpreadPlaceholder
 } = require('./order/utils/order');
 const {
     blockchainToFloat,
@@ -909,12 +910,14 @@ class DEXBot {
                             }
                         }
 
-                        // Only run grid maintenance if rotation was completed.
+                        // Run grid maintenance after fills to rebuild degraded grid.
                         // CRITICAL FIX (commit a946c33): Replaced inline divergence checks with centralized
                         // _runGridMaintenance call to ensure pipeline protection applies consistently.
                         // Before: Divergence checks ran immediately after fills, causing race-to-resize
                         // After: Grid maintenance waits for isPipelineEmpty() before structural changes
-                        if (anyRotations) {
+                        // Also run when rotations failed (allFilledOrders > 0) so divergence/spread correction
+                        // can attempt grid recovery even when fill-triggered rotations didn't complete.
+                        if (anyRotations || allFilledOrders.length > 0) {
                             await this._runGridMaintenance('post-fill', true);
                         }
                     }
@@ -1525,6 +1528,57 @@ class DEXBot {
         } catch (err) {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
 
+            // Check if failure is due to a stale (non-existent) order reference
+            const nonExistMatch = err.message.match(/Limit order (1\.7\.\d+) does not exist/);
+
+            if (nonExistMatch && operations.length > 1) {
+                const staleOrderId = nonExistMatch[1];
+                this.manager.logger.log(`Stale order ${staleOrderId} detected in failed batch. Cleaning up and retrying remaining ${operations.length - 1} operation(s).`, 'warn');
+
+                // Clean up grid slot(s) referencing this stale orderId
+                for (const gridOrder of this.manager.orders.values()) {
+                    if (gridOrder.orderId === staleOrderId) {
+                        this.manager.logger.log(`Cleaning stale reference from grid slot ${gridOrder.id}`, 'warn');
+                        const spreadOrder = convertToSpreadPlaceholder(gridOrder);
+                        this.manager._updateOrder(spreadOrder, 'batch-stale-cleanup', false, 0);
+                    }
+                }
+
+                // Filter out operations referencing the stale orderId
+                const filteredOps = [];
+                const filteredCtxs = [];
+                for (let i = 0; i < operations.length; i++) {
+                    const opData = operations[i].op_data;
+                    const refersToStale =
+                        (opData.order === staleOrderId) ||               // limit_order_cancel
+                        (opData.order_id === staleOrderId);              // limit_order_update
+                    if (!refersToStale) {
+                        filteredOps.push(operations[i]);
+                        filteredCtxs.push(opContexts[i]);
+                    }
+                }
+
+                // Retry once with remaining operations
+                if (filteredOps.length > 0) {
+                    try {
+                        this.manager.logger.log(`Retrying batch with ${filteredOps.length} operations (excluded stale ${staleOrderId})...`, 'info');
+                        const retryResult = await chainOrders.executeBatch(this.account, this.privateKey, filteredOps);
+
+                        this.manager.pauseFundRecalc();
+                        try {
+                            const batchResult = await this._processBatchResults(retryResult, filteredCtxs, ordersToPlace, ordersToRotate);
+                            this._metrics.batchesExecuted++;
+                            return batchResult;
+                        } finally {
+                            this.manager.resumeFundRecalc();
+                        }
+                    } catch (retryErr) {
+                        this.manager.logger.log(`Retry batch also failed: ${retryErr.message}`, 'error');
+                        // Fall through to recovery sync below
+                    }
+                }
+            }
+
             // Trigger sync to revert optimistic state on execution failure
             try {
                 this.manager.logger.log('Triggering state recovery sync...', 'info');
@@ -2098,6 +2152,8 @@ class DEXBot {
         this._blockchainFetchInterval = setInterval(async () => {
             try {
                 await this.manager._fillProcessingLock.acquire(async () => {
+                    // Reset recovery flag each periodic cycle so accounting recovery can be re-attempted
+                    this.manager._recoveryAttempted = false;
                     this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     await this.manager.fetchAccountTotals(this.accountId);
 
