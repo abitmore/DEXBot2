@@ -945,8 +945,9 @@ class Grid {
         const sellMetric = calculateGridSideDivergenceMetric(getIdeals(calculatedSells, ORDER_TYPES.SELL), persistedSells, 'sell');
 
         // Check if metrics exceed threshold and flag sides for regeneration
+        // Set RMS_PERCENTAGE to 0 to disable RMS divergence checks
         let buyUpdated = false, sellUpdated = false;
-        if (manager) {
+        if (manager && GRID_COMPARISON.RMS_PERCENTAGE > 0) {
             const limit = GRID_COMPARISON.RMS_PERCENTAGE / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;  // Convert percentage threshold to decimal
 
             if (buyMetric > limit) {

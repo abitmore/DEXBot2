@@ -233,11 +233,13 @@ let GRID_LIMITS = {
 
         // Divergence threshold for automatic grid regeneration (RMS as percentage)
         // When compareGrids() metric exceeds this threshold, updateGridOrderSizes will be triggered
+        // Set to 0 to completely disable RMS divergence checks
         //
         // RMS Threshold Reference Table (for 5% distribution: 5% outliers, 95% perfect):
         // ┌────────────────────────────────────────────────────────┐
         // │ RMS %       │ Avg Error │ Description                 │
         // ├────────────────────────────────────────────────────────┤
+        // │ 0           │ N/A       │ Disabled (no checks)        │
         // │ 4.5%        │ ~1.0%     │ Very strict                 │
         // │ 9.8%        │ ~2.2%     │ Strict                      │
         // │ 14.3%       │ ~3.2%     │ Default (balanced)          │
