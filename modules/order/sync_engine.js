@@ -368,31 +368,38 @@ class SyncEngine {
                 updatedOrder.rawOnChain = rawChainOrders.get(gridOrder.orderId);
 
                 // Type mismatch: grid slot was reassigned (e.g., sell→buy) but on-chain order retains original type.
-                // Treat this as a stale order requiring cancellation by the divergence correction system.
+                // Treat as surplus requiring cancellation — push directly to manager correction queue
+                // so the divergence correction system will cancel this stale chain order.
                 if (gridOrder.type !== chainOrder.type) {
                     mgr.logger?.log?.(
                         `Type mismatch for ${gridOrder.id}: grid=${gridOrder.type}, chain=${chainOrder.type}. ` +
-                        `Treating as stale order requiring cancellation.`,
+                        `Queuing stale chain order for cancellation.`,
                         'warn'
                     );
+                    mgr.ordersNeedingPriceCorrection.push({
+                        gridOrder: { ...gridOrder },
+                        chainOrderId: gridOrder.orderId,
+                        isSurplus: true,
+                        sideUpdated: chainOrder.type
+                    });
                     ordersNeedingCorrection.push({
                         gridOrder: { ...gridOrder },
                         chainOrderId: gridOrder.orderId,
                         expectedPrice: gridOrder.price,
                         actualPrice: chainOrder.price,
                         size: chainOrder.size,
-                        type: chainOrder.type,  // Use CHAIN type, not grid type
+                        type: chainOrder.type,
                         typeMismatch: true
                     });
-                }
+                } else {
+                    // Calculate price tolerance for comparison (skip type-mismatched orders — handled above)
+                    // CRITICAL FIX: Skip orders where tolerance is null (e.g., size=0, which happens for SPREAD placeholders)
+                    const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
 
-                // Calculate price tolerance for comparison
-                // CRITICAL FIX: Skip orders where tolerance is null (e.g., size=0, which happens for SPREAD placeholders)
-                const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
-
-                // Skip price correction for orders with null tolerance (zero-sized slots, SPREADs, etc)
-                if (priceTolerance !== null && Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
-                    ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
+                    // Skip price correction for orders with null tolerance (zero-sized slots, SPREADs, etc)
+                    if (priceTolerance !== null && Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
+                        ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
+                    }
                 }
 
                 // Use chain order type for precision: the chain order's type is ground truth for which asset for_sale represents

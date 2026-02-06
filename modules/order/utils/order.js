@@ -127,9 +127,25 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting
 }
 
 async function correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders) {
-    const { gridOrder, chainOrderId, expectedPrice, size, type } = correctionInfo;
+    const { gridOrder, chainOrderId, expectedPrice, size, type, isSurplus } = correctionInfo;
     const stillNeeded = manager.ordersNeedingPriceCorrection?.some(c => c.chainOrderId === chainOrderId);
     if (!stillNeeded) return { success: true, skipped: true };
+
+    // Surplus/type-mismatch entries need cancellation, not a price update
+    if (isSurplus) {
+        try {
+            await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
+            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+            if (gridOrder && manager._updateOrder) {
+                const spreadOrder = convertToSpreadPlaceholder(gridOrder);
+                manager._updateOrder(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
+            }
+            return { success: true, cancelled: true };
+        } catch (error) {
+            manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
+            return { success: false, error: error.message, orderGone: error.message?.includes('not found') };
+        }
+    }
 
     let amountToSell, minToReceive;
     if (type === ORDER_TYPES.SELL) {
@@ -309,7 +325,7 @@ function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STA
 }
 
 function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, incrementPercent = 0.5) {
-    if (buyCount === 0 || sellCount === 0) return 1;
+    if (buyCount === 0 || sellCount === 0) return 0;
     const step = 1 + (incrementPercent / 100);
     const currentSteps = Math.log(1 + (currentSpread / 100)) / Math.log(step);
     const limitSteps = (Math.log(1 + (nominalSpread / 100)) / Math.log(step)) + toleranceSteps;

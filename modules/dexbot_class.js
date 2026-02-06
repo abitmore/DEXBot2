@@ -1517,7 +1517,7 @@ class DEXBot {
             // 4. Process Results
             this.manager.pauseFundRecalc();
             try {
-                const batchResult = await this._processBatchResults(result, opContexts, ordersToPlace, ordersToRotate);
+                const batchResult = await this._processBatchResults(result, opContexts);
                 this._metrics.batchesExecuted++;
                 return batchResult;
             } finally {
@@ -1528,30 +1528,41 @@ class DEXBot {
         } catch (err) {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
 
-            // Check if failure is due to a stale (non-existent) order reference
-            const nonExistMatch = err.message.match(/Limit order (1\.7\.\d+) does not exist/);
+            // Check if failure is due to stale (non-existent) order references.
+            // Match all stale order IDs — multiple formats possible across BitShares node versions.
+            const staleOrderIds = new Set();
+            const patterns = [
+                /Limit order (1\.7\.\d+) does not exist/g,
+                /Unable to find Object (1\.7\.\d+)/g,
+                /object (1\.7\.\d+) (?:does not exist|not found)/gi
+            ];
+            for (const pattern of patterns) {
+                let m;
+                while ((m = pattern.exec(err.message)) !== null) {
+                    staleOrderIds.add(m[1]);
+                }
+            }
 
-            if (nonExistMatch && operations.length > 1) {
-                const staleOrderId = nonExistMatch[1];
-                this.manager.logger.log(`Stale order ${staleOrderId} detected in failed batch. Cleaning up and retrying remaining ${operations.length - 1} operation(s).`, 'warn');
+            if (staleOrderIds.size > 0 && operations.length > 1) {
+                this.manager.logger.log(`Stale order(s) ${[...staleOrderIds].join(', ')} detected in failed batch. Cleaning up and retrying.`, 'warn');
 
-                // Clean up grid slot(s) referencing this stale orderId
+                // Clean up grid slot(s) referencing stale orderIds
                 for (const gridOrder of this.manager.orders.values()) {
-                    if (gridOrder.orderId === staleOrderId) {
+                    if (staleOrderIds.has(gridOrder.orderId)) {
                         this.manager.logger.log(`Cleaning stale reference from grid slot ${gridOrder.id}`, 'warn');
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         this.manager._updateOrder(spreadOrder, 'batch-stale-cleanup', false, 0);
                     }
                 }
 
-                // Filter out operations referencing the stale orderId
+                // Filter out operations referencing any stale orderId
                 const filteredOps = [];
                 const filteredCtxs = [];
                 for (let i = 0; i < operations.length; i++) {
                     const opData = operations[i].op_data;
                     const refersToStale =
-                        (opData.order === staleOrderId) ||               // limit_order_cancel
-                        (opData.order_id === staleOrderId);              // limit_order_update
+                        staleOrderIds.has(opData.order) ||               // limit_order_cancel
+                        staleOrderIds.has(opData.order_id);              // limit_order_update
                     if (!refersToStale) {
                         filteredOps.push(operations[i]);
                         filteredCtxs.push(opContexts[i]);
@@ -1561,12 +1572,12 @@ class DEXBot {
                 // Retry once with remaining operations
                 if (filteredOps.length > 0) {
                     try {
-                        this.manager.logger.log(`Retrying batch with ${filteredOps.length} operations (excluded stale ${staleOrderId})...`, 'info');
+                        this.manager.logger.log(`Retrying batch with ${filteredOps.length} operation(s) (excluded ${staleOrderIds.size} stale ref(s))...`, 'info');
                         const retryResult = await chainOrders.executeBatch(this.account, this.privateKey, filteredOps);
 
                         this.manager.pauseFundRecalc();
                         try {
-                            const batchResult = await this._processBatchResults(retryResult, filteredCtxs, ordersToPlace, ordersToRotate);
+                            const batchResult = await this._processBatchResults(retryResult, filteredCtxs);
                             this._metrics.batchesExecuted++;
                             return batchResult;
                         } finally {
@@ -1803,13 +1814,11 @@ class DEXBot {
      * Process results from batch transaction execution.
      * Updates order state, synchronizes with chain, and deducts BTS fees.
      * @param {Object} result - Transaction result from executeBatch
-     * @param {Array} opContexts - Operation context array with operation metadata
-     * @param {Array} ordersToPlace - Original placement orders (for context)
-     * @param {Array} ordersToRotate - Original rotation orders (for context)
+     * @param {Array} opContexts - Operation context array with operation metadata (must be 1:1 with result.operation_results)
      * @returns {Object} Result with { executed: boolean, hadRotation: boolean }
      * @private
      */
-    async _processBatchResults(result, opContexts, ordersToPlace, ordersToRotate) {
+    async _processBatchResults(result, opContexts) {
         const results = (result && result[0] && result[0].trx && result[0].trx.operation_results) || [];
         const { getAssetFees } = require('./order/utils/math');
         const btsFeeData = getAssetFees('BTS', 1);
@@ -2153,6 +2162,7 @@ class DEXBot {
             try {
                 await this.manager._fillProcessingLock.acquire(async () => {
                     // Reset recovery flag each periodic cycle so accounting recovery can be re-attempted
+                    // even when no fills occur (processFilledOrders also resets this, but only runs on fills)
                     this.manager._recoveryAttempted = false;
                     this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     await this.manager.fetchAccountTotals(this.accountId);
