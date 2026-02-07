@@ -100,10 +100,8 @@ const {
     floatToBlockchainInt,
     blockchainToFloat,
     getPrecisionByOrderType,
-    getPrecisionForSide,
     getPrecisionsForManager,
     calculateOrderCreationFees,
-    deductOrderFeesFromFunds,
     calculateOrderSizes,
     calculateRotationOrderSizes,
     calculateGridSideDivergenceMetric,
@@ -116,8 +114,6 @@ const {
 } = require('./utils/math');
 const {
     filterOrdersByType,
-    filterOrdersByTypeAndState,
-    sumOrderSizes,
     checkSizesBeforeMinimum,
     checkSizeThreshold,
     resolveConfiguredPriceBound,
@@ -129,9 +125,38 @@ const {
     getPartialsByType
 } = require('./utils/order');
 const { derivePrice } = require('./utils/system');
-const { isNumeric } = require('./utils/math');
 
 class Grid {
+    /**
+     * Calculate the spread gap size (number of empty slots between BUY and SELL rails).
+     * Shared by grid creation and strategy rebalancing to keep spread math consistent.
+     *
+     * @param {number} incrementPercent
+     * @param {number} targetSpreadPercent
+     * @returns {number}
+     */
+    static calculateGapSlots(incrementPercent, targetSpreadPercent) {
+        const fallbackIncrement = Number(DEFAULT_CONFIG.incrementPercent) || 0.5;
+        const safeIncrement = (Number.isFinite(incrementPercent) && incrementPercent > 0) ? incrementPercent : fallbackIncrement;
+        const step = 1 + (safeIncrement / 100);
+        const minSpreadPercent = safeIncrement * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1);
+        const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
+        const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
+        return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps - 1);
+    }
+
+    /**
+     * Public wrapper for side sizing context.
+     * Keeps StrategyEngine decoupled from Grid private internals.
+     *
+     * @param {Object} manager
+     * @param {'buy'|'sell'} side
+     * @returns {Object|null}
+     */
+    static getSizingContext(manager, side) {
+        return Grid._getSizingContext(manager, side);
+    }
+
     /**
      * Unifies budget calculation and fee deduction for all grid sizing scenarios.
      * Ensures consistent fund context (Allocated vs Total) across the bot.
@@ -333,18 +358,7 @@ class Grid {
         // Determine how many slots should be in the spread zone.
         // See formula documentation in JSDoc above.
 
-        // Enforce minimum spread (prevents spread from being too narrow)
-        const minSpreadPercent = incrementPercent * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1);
-        const targetSpreadPercent = Math.max(config.targetSpreadPercent || 0, minSpreadPercent);
-
-        // Calculate number of steps (gaps) needed to achieve target spread
-        // Formula: n = ceil(ln(1 + targetSpread/100) / ln(stepFactor))
-        // Reuse stepUp from line 99 instead of redundant 'step' variable
-        const requiredGaps = Math.ceil(Math.log(1 + (targetSpreadPercent / 100)) / Math.log(stepUp));
-
-        // Final gap size (number of spread orders): One less than required gaps because centering around market adds one extra gap
-        // At least MIN_SPREAD_ORDERS, or more if needed for target spread
-        const gapSlots = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredGaps - 1);
+        const gapSlots = Grid.calculateGapSlots(incrementPercent, config.targetSpreadPercent);
 
         // ================================================================================
         // STEP 4: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
@@ -1139,6 +1153,19 @@ class Grid {
             const threshold = getSingleDustThreshold(idealSizes[idx]);
             return p.size < threshold;
         });
+    }
+
+    /**
+     * Public dust helper shared by StrategyEngine and Grid health checks.
+     * @param {OrderManager} manager
+     * @param {Array<Object>} partials
+     * @param {'buy'|'sell'} side
+     * @returns {boolean}
+     */
+    static hasAnyDust(manager, partials, side) {
+        const type = side === 'buy' ? ORDER_TYPES.BUY : side === 'sell' ? ORDER_TYPES.SELL : null;
+        if (!type) return false;
+        return Grid._hasAnyDust(manager, partials, type);
     }
 
     /**

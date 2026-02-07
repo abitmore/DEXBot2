@@ -30,7 +30,7 @@
  *      Handles partial order consolidation and dust detection
  *      Returns rebalance result or null
  *
- *   4. rebalanceSideRobust(type, allSlots, sideSlots, direction, budget, available, excludeIds, reactionCap, fills) - Rebalance one side (async)
+ *   4. rebalanceSideRobust(type, allSlots, sideSlots, budget, available, excludeIds, reactionCap) - Rebalance one side (async)
  *      Robust side-specific rebalancing with budget constraints
  *      Places new orders up to target count
  *      Returns { totalNewPlacementSize, ordersToPlace, result }
@@ -72,28 +72,21 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, FEE_PARAMETERS } = require("../constants");
+const { ORDER_TYPES, ORDER_STATES } = require("../constants");
 const {
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
     getDoubleDustThreshold,
     getAssetFees,
     allocateFundsByWeights,
-    floatToBlockchainInt,
-    blockchainToFloat,
     quantizeFloat,
-    getPrecisionForSide,
-    calculateSpreadFromOrders
+    getPrecisionForSide
 } = require("./utils/math");
 const {
-    countOrdersByType,
-    shouldFlagOutOfSpread,
     virtualizeOrder,
     isOrderHealthy,
     convertToSpreadPlaceholder,
-    isOrderOnChain,
     hasOnChainId,
-    isOrderVirtual,
     isOrderPlaced,
     getPartialsByType
 } = require("./utils/order");
@@ -109,12 +102,8 @@ class StrategyEngine {
      * Used during boundary initialization and role assignment.
      */
     calculateGapSlots(incrementPercent, targetSpreadPercent) {
-        const safeIncrement = incrementPercent || 0.5;
-        const step = 1 + (safeIncrement / 100);
-        const minSpreadPercent = safeIncrement * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1);
-        const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
-        const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
-        return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps - 1);
+        const Grid = require('./grid');
+        return Grid.calculateGapSlots(incrementPercent, targetSpreadPercent);
     }
 
     /**
@@ -289,8 +278,8 @@ class StrategyEngine {
         // Available = funds.available (already includes fill proceeds via chainFree)
 
         const Grid = require('./grid');
-        const buyCtx = Grid._getSizingContext(mgr, 'buy');
-        const sellCtx = Grid._getSizingContext(mgr, 'sell');
+        const buyCtx = Grid.getSizingContext(mgr, 'buy');
+        const sellCtx = Grid.getSizingContext(mgr, 'sell');
 
         if (!buyCtx || !sellCtx) {
             mgr.logger.log("[BUDGET] Failed to retrieve unified sizing context. Aborting rebalance.", "error");
@@ -341,8 +330,8 @@ class StrategyEngine {
         // STEP 5: SIDE REBALANCING (Independent Buy and Sell)
         // ================================================================================
 
-        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, -1, budgetBuy, availBuy, excludeIds, reactionCapBuy, fills);
-        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 1, budgetSell, availSell, excludeIds, reactionCapSell, fills);
+        const buyResult = await this.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, budgetBuy, availBuy, excludeIds, reactionCapBuy);
+        const sellResult = await this.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, budgetSell, availSell, excludeIds, reactionCapSell);
 
         // Apply state updates to manager with batched fund recalculation
         // ATOMIC BLOCK: All fund changes happen before recalculation and resume
@@ -404,7 +393,7 @@ class StrategyEngine {
      * 2. Placements (Creations): Place new orders in the FURTHEST outer gaps (edges).
      * 3. Naturally results in 'Refill at Spread' and 'Activate at Edge' reactions.
      */
-    async rebalanceSideRobust(type, allSlots, sideSlots, direction, totalSideBudget, availSide, excludeIds, reactionCap, fills = []) {
+    async rebalanceSideRobust(type, allSlots, sideSlots, totalSideBudget, availSide, excludeIds, reactionCap) {
         if (sideSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
 
         const mgr = this.manager;
@@ -808,38 +797,7 @@ class StrategyEngine {
     hasAnyDust(partials, side) {
         const mgr = this.manager;
         const Grid = require('./grid');
-        const type = side === "buy" ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-
-        // 1. Get centralized sizing context (respects botFunds % allocation and fees)
-        const ctx = Grid._getSizingContext(mgr, side);
-        if (!ctx || ctx.budget <= 0) return false;
-
-        const allOrders = Array.from(mgr.orders.values());
-
-        // 2. Slots must be sorted Market-to-Edge to match geometric weight distribution
-        const slots = allOrders.filter(o => o.type === type)
-            .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-
-        if (slots.length === 0) return false;
-
-        // 3. Calculate geometric ideals for the ENTIRE side (all slots)
-        // This ensures the dust threshold matches the exact target size for each slot.
-        const idealSizes = allocateFundsByWeights(
-            ctx.budget,
-            slots.length,
-            mgr.config.weightDistribution[side],
-            mgr.config.incrementPercent / 100,
-            type === ORDER_TYPES.BUY,
-            0,
-            ctx.precision
-        );
-
-        return partials.some(p => {
-            const idx = slots.findIndex(s => s.id === p.id);
-            if (idx === -1) return false;
-            const dustThreshold = getSingleDustThreshold(idealSizes[idx]);
-            return p.size < dustThreshold;
-        });
+        return Grid.hasAnyDust(mgr, partials, side);
     }
 
     /**
@@ -847,18 +805,16 @@ class StrategyEngine {
      * @param {Array<Object>} filledOrders - Array of filled order objects.
      * @param {Set<string>} [excludeOrderIds=new Set()] - IDs to exclude from processing.
      * @param {Object} [options={}] - Processing options.
-     * @param {boolean} [options.skipAccountTotalsUpdate=false] - If true, do not update manager.accountTotals (used during startup sync).
      * @returns {Promise<Object|void>} Rebalance result or void if no rebalance triggered.
      */
-    async processFilledOrders(filledOrders, excludeOrderIds = new Set(), options = {}) {
+    async processFilledOrders(filledOrders, excludeOrderIds = new Set(), _options = {}) {
         const mgr = this.manager;
         if (!mgr || !Array.isArray(filledOrders)) return;
 
         // Reset recovery flag at start of each cycle to allow recovery attempts
         mgr._recoveryAttempted = false;
 
-        const skipAccountTotals = options.skipAccountTotalsUpdate === true;
-        mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders${skipAccountTotals ? ' (skipping accountTotals update)' : ''}`, "info");
+        mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders`, "info");
         mgr.pauseFundRecalc();
 
         try {

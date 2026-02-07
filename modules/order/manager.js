@@ -56,7 +56,6 @@
  *   26. processFilledOrders(orders, excl) - Process filled orders (delegate, async)
  *   27. completeOrderRotation(oldInfo) - Complete order rotation (delegate)
  *   28. isPipelineEmpty(incomingFillQueueLength) - Check if operation pipeline is empty
- *   29. _logAvailable(label) - Log available funds (internal)
  *
  * ORDER LOCKING (4 methods)
  *   30. lockOrders(orderIds) - Lock orders to prevent concurrent modification
@@ -88,7 +87,6 @@
  *
  * PERSISTENCE (2 methods - async)
  *   48. persistGrid() - Persist grid snapshot to storage
- *   49. _persistWithRetry(persistFn, dataType, dataValue, maxAttempts) - Retry persistence (internal)
  *
  * ===============================================================================
  *
@@ -118,18 +116,14 @@
 
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, PIPELINE_TIMING } = require('../constants');
 const {
-    calculateAvailableFundsValue,
     getMinAbsoluteOrderSize,
-    getAssetFees,
     computeChainFundTotals,
     hasValidAccountTotals,
     resolveConfigValue,
     floatToBlockchainInt,
-    getPrecisionSlack,
-    calculatePriceTolerance
+    getPrecisionSlack
 } = require('./utils/math');
 const {
-    findMatchingGridOrderByOpenOrder,
     isOrderOnChain,
     isPhantomOrder
 } = require('./utils/order');
@@ -195,7 +189,6 @@ class OrderManager {
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;
         this.ordersNeedingPriceCorrection = [];
-        this.ordersPendingCancellation = [];
         this.shadowOrderIds = new Map();
         this._correctionsLock = new AsyncLock();
         this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
@@ -210,7 +203,6 @@ class OrderManager {
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalcDepth = 0;
         this._recalcLoggingDepth = 0;
-        this._persistenceWarning = null;
         this._isBroadcasting = false;
         this._pipelineBlockedSince = null;  // Tracks when pipeline became blocked for timeout detection
 
@@ -366,15 +358,23 @@ class OrderManager {
      * Processes filled orders and calculates rebalancing actions.
      * @param {Array<Object>} orders - Array of filled order objects.
      * @param {Set<string>} excl - Set of order IDs to exclude from rebalancing.
+     * @param {Object} [options] - Optional processing flags passed to StrategyEngine.
      * @returns {Promise<Object>} Rebalance result.
      */
-    async processFilledOrders(orders, excl) { return await this.strategy.processFilledOrders(orders, excl); }
+    async processFilledOrders(orders, excl, options) { return await this.strategy.processFilledOrders(orders, excl, options); }
 
     /**
      * Completes an order rotation by updating internal state.
      * @param {Object} oldInfo - The old order information.
      */
     completeOrderRotation(oldInfo) { return this.strategy.completeOrderRotation(oldInfo); }
+
+    /**
+     * Shared spread-gap calculation helper exposed for utility modules.
+     */
+    calculateGapSlots(incrementPercent = this.config.incrementPercent, targetSpreadPercent = this.config.targetSpreadPercent) {
+        return this.strategy.calculateGapSlots(incrementPercent, targetSpreadPercent);
+    }
 
     // --- Sync Delegation ---
 
@@ -742,17 +742,6 @@ class OrderManager {
         if (this._pauseFundRecalcDepth === 0) {
             this.recalculateFunds();
         }
-    }
-
-    /**
-     * Log current available and cache funds.
- * @param {string} [label=''] - Label for the log message.
- * @private
- */
-    _logAvailable(label = '') {
-        const avail = this.funds?.available || { buy: 0, sell: 0 };
-        const cache = this.funds?.cacheFunds || { buy: 0, sell: 0 };
-        this.logger.log(`Available [${label}]: buy=${Format.formatAmount8(avail.buy || 0)}, sell=${Format.formatAmount8(avail.sell || 0)}, cacheFunds buy=${Format.formatAmount8(cache.buy || 0)}, sell=${Format.formatAmount8(cache.sell || 0)}`, 'info');
     }
 
     /**
@@ -1189,44 +1178,6 @@ class OrderManager {
         }
 
         return { isValid: true, reason: null };
-    }
-
-    /**
-     * Generic retry wrapper for persistence operations.
-     * Handles transient failures gracefully without crashing.
-     */
-    async _persistWithRetry(persistFn, dataType, dataValue, maxAttempts = 3) {
-        if (!this.config || !this.config.botKey || !this.accountOrders) {
-            return true;  // Can't persist, but that's ok (e.g., dry run)
-        }
-
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                await persistFn();  // Execute the persistence function
-                this.logger.log(`✓ Persisted ${dataType}`, 'debug');
-
-                // Clear any previous persistence warning flag
-                if (this._persistenceWarning) {
-                    delete this._persistenceWarning;
-                }
-                return true;  // Success
-            } catch (e) {
-                if (attempt === maxAttempts) {
-                    // All retries failed - don't throw, just flag the issue
-                    this.logger.log(`CRITICAL: Failed to persist ${dataType} after ${attempt} attempts: ${e.message}. Data held in memory. Will retry on next cycle.`, 'error');
-
-                    // Flag this issue so caller can know persistence is degraded
-                    this._persistenceWarning = { dataType, error: e.message, timestamp: Date.now() };
-                    return false;
-                } else {
-                    // Retry with exponential backoff (capped at TIMING.ACCOUNT_TOTALS_TIMEOUT_MS)
-                    const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), TIMING.ACCOUNT_TOTALS_TIMEOUT_MS);
-                    this.logger.log(`Attempt ${attempt}/${maxAttempts} to persist ${dataType} failed: ${e.message}. Retrying in ${delayMs}ms...`, 'warn');
-                    await new Promise(resolve => setTimeout(resolve, delayMs));
-                }
-            }
-        }
-        return false;
     }
 
     /**
