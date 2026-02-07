@@ -91,8 +91,6 @@ const Format = require('./format');
 
 // FIX: Extract magic numbers to named constants for maintainability
 const GRID_CONSTANTS = {
-    PERCENT_BOUNDS_MIN: 0,
-    PERCENT_BOUNDS_MAX: 100,
     RMS_PERCENTAGE_SCALE: 100,  // Convert RMS percentage threshold from percent to decimal
 };
 
@@ -308,8 +306,14 @@ class Grid {
             throw new Error(`maxPrice (${maxPrice}) must be positive.`);
         }
 
-        if (incrementPercent <= GRID_CONSTANTS.PERCENT_BOUNDS_MIN || incrementPercent >= GRID_CONSTANTS.PERCENT_BOUNDS_MAX) {
-            throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be between ${INCREMENT_BOUNDS.MIN_PERCENT} and ${INCREMENT_BOUNDS.MAX_PERCENT}.`);
+        if (!Number.isFinite(incrementPercent)) {
+            throw new Error(`Invalid incrementPercent: ${incrementPercent}. Must be a finite number.`);
+        }
+        if (incrementPercent < INCREMENT_BOUNDS.MIN_PERCENT || incrementPercent > INCREMENT_BOUNDS.MAX_PERCENT) {
+            throw new Error(
+                `Invalid incrementPercent: ${incrementPercent}. Must be between ` +
+                `${INCREMENT_BOUNDS.MIN_PERCENT} and ${INCREMENT_BOUNDS.MAX_PERCENT} (inclusive).`
+            );
         }
 
         const stepUp = 1 + (incrementPercent / 100);
@@ -1064,7 +1068,10 @@ class Grid {
 
             // Perform spread correction by placing orders on the side with more available funds
             correction = Grid.prepareSpreadCorrectionOrders(manager, decision.side);
-            return correction && correction.ordersToPlace.length > 0;
+            if (!correction) return false;
+            const placeCount = correction.ordersToPlace?.length || 0;
+            const updateCount = correction.ordersToUpdate?.length || 0;
+            return (placeCount + updateCount) > 0;
         };
 
         try {
@@ -1082,9 +1089,15 @@ class Grid {
         // The lock is only needed for fund verification; order placement doesn't need it
         if (shouldApplyCorrection && updateOrdersOnChainBatch && correction) {
             try {
-                await updateOrdersOnChainBatch(correction);
+                const batchResult = await updateOrdersOnChainBatch(correction);
+                if (!batchResult || batchResult.executed !== true) {
+                    manager.logger?.log?.(`Spread correction batch was prepared but not executed. Keeping local state unchanged.`, 'warn');
+                    return { ordersPlaced: 0, partialsMoved: 0 };
+                }
                 manager.recalculateFunds();
-                return { ordersPlaced: correction.ordersToPlace.length, partialsMoved: 0 };
+                const placed = correction.ordersToPlace?.length || 0;
+                const updated = correction.ordersToUpdate?.length || 0;
+                return { ordersPlaced: placed + updated, partialsMoved: updated };
             } catch (err) {
                 manager.logger?.log?.(`Error applying spread correction on-chain: ${err.message}`, 'warn');
                 return { ordersPlaced: 0, partialsMoved: 0 };
@@ -1250,6 +1263,7 @@ class Grid {
         }
 
         const ordersToPlace = [];
+        const ordersToUpdate = [];
         const railType = preferredSide;
         const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
 
@@ -1290,7 +1304,7 @@ class Grid {
 
         if (!candidate) {
             manager.logger?.log?.(`[SPREAD-CORRECTION] No suitable partials or spread slots found. Skipping.`, 'warn');
-            return { ordersToPlace: [] };
+            return { ordersToPlace: [], ordersToUpdate: [] };
         }
 
         // Process the selected candidate
@@ -1330,10 +1344,14 @@ class Grid {
                     manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatAmount8(idealSize)} -> target ${Format.formatAmount8(targetSize)} (ratio: ${Format.formatPercent2((targetSize/idealSize)*100)})`, 'info');
                 }
 
-                ordersToPlace.push(activated);
-                
-                // For partials, this is an update. For spreads, this is a role change + placement.
-                manager._updateOrder(activated, 'spread-correct', false, 0);
+                if (candidate.state === ORDER_STATES.PARTIAL && candidate.orderId) {
+                    ordersToUpdate.push({
+                        partialOrder: { ...candidate },
+                        newSize: targetSize
+                    });
+                } else {
+                    ordersToPlace.push(activated);
+                }
             } else {
                 const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
                 const minHealthy = getDoubleDustThreshold(idealSize);
@@ -1347,7 +1365,7 @@ class Grid {
             }
         }
 
-        return { ordersToPlace };
+        return { ordersToPlace, ordersToUpdate };
     }
 
 
