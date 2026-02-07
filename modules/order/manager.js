@@ -136,6 +136,25 @@ const SyncEngine = require('./sync_engine');
 const Grid = require('./grid');
 const Format = require('./format');
 
+const VALID_ORDER_STATES = new Set(Object.values(ORDER_STATES));
+const VALID_ORDER_TYPES = new Set(Object.values(ORDER_TYPES));
+
+function isExplicitZeroAllocation(value) {
+    if (typeof value === 'number') return value === 0;
+    if (typeof value !== 'string') return false;
+
+    const trimmed = value.trim();
+    if (trimmed === '') return false;
+
+    if (trimmed.endsWith('%')) {
+        const percent = parseFloat(trimmed.slice(0, -1));
+        return Number.isFinite(percent) && percent === 0;
+    }
+
+    const numeric = parseFloat(trimmed);
+    return Number.isFinite(numeric) && numeric === 0;
+}
+
 class OrderManager {
     /**
      * Create a new OrderManager instance
@@ -584,8 +603,13 @@ class OrderManager {
         const allocatedBuy = this._resolveConfigValue(this.config.botFunds.buy, chainTotalBuy);
         const allocatedSell = this._resolveConfigValue(this.config.botFunds.sell, chainTotalSell);
         this.funds.allocated = { buy: allocatedBuy, sell: allocatedSell };
-        if (allocatedBuy > 0) this.funds.available.buy = Math.min(this.funds.available.buy, allocatedBuy);
-        if (allocatedSell > 0) this.funds.available.sell = Math.min(this.funds.available.sell, allocatedSell);
+
+        // Keep legacy behavior for non-positive dynamic resolutions, while allowing explicit 0 to disable a side.
+        const shouldCapBuy = allocatedBuy > 0 || isExplicitZeroAllocation(this.config.botFunds.buy);
+        const shouldCapSell = allocatedSell > 0 || isExplicitZeroAllocation(this.config.botFunds.sell);
+
+        if (shouldCapBuy) this.funds.available.buy = Math.min(this.funds.available.buy, Math.max(0, allocatedBuy));
+        if (shouldCapSell) this.funds.available.sell = Math.min(this.funds.available.sell, Math.max(0, allocatedSell));
     }
 
     /**
@@ -608,23 +632,28 @@ class OrderManager {
     }
 
     /**
-     * Wait for account totals to be fetched from the blockchain.
+     * Wait for account free balances to be fetched from the blockchain.
+     * Requires buyFree/sellFree readiness because allocation and available-funds
+     * calculations depend on free balances, not just total balances.
      * @param {number} [timeoutMs=TIMING.ACCOUNT_TOTALS_TIMEOUT_MS] - Timeout in milliseconds.
      * @returns {Promise<void>}
      */
     async waitForAccountTotals(timeoutMs = TIMING.ACCOUNT_TOTALS_TIMEOUT_MS) {
-        if (hasValidAccountTotals(this.accountTotals, false)) return;
-        // CRITICAL: Await inside lock to prevent race where promise is created inside lock
-        // but awaited outside (allowing overwrites between check and wait)
+        if (hasValidAccountTotals(this.accountTotals, true)) return;
+
+        let waitPromise = null;
+
+        // Protect waiter creation, but do not hold lock while waiting.
         await this._accountTotalsLock.acquire(async () => {
-            // Double-check after acquiring lock
-            if (hasValidAccountTotals(this.accountTotals, false)) return;
+            if (hasValidAccountTotals(this.accountTotals, true)) return;
             if (!this._accountTotalsPromise) {
                 this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
             }
-            // Await inside lock to ensure atomic creation and wait (prevents promise overwrite race)
-            await Promise.race([this._accountTotalsPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
+            waitPromise = this._accountTotalsPromise;
         });
+
+        if (!waitPromise) return;
+        await Promise.race([waitPromise, new Promise(resolve => setTimeout(resolve, timeoutMs))]);
     }
 
     /**
@@ -694,19 +723,38 @@ class OrderManager {
 
         const id = order.id;
         const oldOrder = this.orders.get(id);
+        const nextOrder = { ...(oldOrder || {}), ...order };
+
+        // Backward-compat: allow initializing empty virtual placeholders without an explicit type.
+        if (!nextOrder.type && nextOrder.state === ORDER_STATES.VIRTUAL) {
+            const placeholderSize = Number(nextOrder.size || 0);
+            if (placeholderSize === 0) {
+                nextOrder.type = ORDER_TYPES.SPREAD;
+            }
+        }
+
+        if (!VALID_ORDER_STATES.has(nextOrder.state)) {
+            this.logger.log(`Refusing to update order ${id}: invalid state '${nextOrder.state}' (context: ${context})`, 'error');
+            return;
+        }
+
+        if (!VALID_ORDER_TYPES.has(nextOrder.type)) {
+            this.logger.log(`Refusing to update order ${id}: invalid type '${nextOrder.type}' (context: ${context})`, 'error');
+            return;
+        }
 
         // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
-        if (order.type === ORDER_TYPES.SPREAD && isOrderOnChain(order)) {
-            this.logger.log(`ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${order.state}. SPREAD orders must remain VIRTUAL.`, 'error');
+        if (nextOrder.type === ORDER_TYPES.SPREAD && isOrderOnChain(nextOrder)) {
+            this.logger.log(`ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${nextOrder.state}. SPREAD orders must remain VIRTUAL.`, 'error');
             return;
         }
 
         // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
         // This is a defense-in-depth check to catch bugs in any module that might try to
         // create an ACTIVE or PARTIAL order without a corresponding blockchain order ID.
-        if (isPhantomOrder(order)) {
+        if (isPhantomOrder(nextOrder)) {
             this.logger.log(
-                `ILLEGAL STATE: Refusing to set order ${id} to ${order.state} without orderId. ` +
+                `ILLEGAL STATE: Refusing to set order ${id} to ${nextOrder.state} without orderId. ` +
                 `Context: ${context}. This would create a phantom order that doubles fund tracking. ` +
                 `Downgrading to VIRTUAL instead.`,
                 'error'
@@ -714,16 +762,16 @@ class OrderManager {
             // Auto-correct to VIRTUAL to prevent fund tracking corruption
             // NOTE: Keep the size - VIRTUAL orders can have non-zero sizes (planned placements)
             // Only SPREAD orders should have size 0
-            order.state = ORDER_STATES.VIRTUAL;
+            nextOrder.state = ORDER_STATES.VIRTUAL;
         }
 
         // 1. Update optimistic balance (atomic update of tracked funds)
         if (this.accountant) {
-            this.accountant.updateOptimisticFreeBalance(oldOrder, order, context, fee, skipAccounting);
+            this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, fee, skipAccounting);
         }
 
         // 2. Clone the order to prevent external modification races
-        const updatedOrder = { ...order };
+        const updatedOrder = { ...nextOrder };
 
         // 3. Robust index maintenance
         Object.values(this._ordersByState).forEach(set => set.delete(id));
