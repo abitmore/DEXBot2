@@ -1909,10 +1909,36 @@ class DEXBot {
                     this.manager.logger.log(`Skipping rotation of ${oldOrder.orderId}: no blockchain change needed`, 'debug');
                 }
             } catch (err) {
-                // If the error indicates the order is missing, treat as unmet rotation
-                if (err.message.includes('not found')) {
-                    this.manager.logger.log(`Rotation fallback to creation: Order ${oldOrder.orderId} not found (assuming filled or cancelled)`, 'warn');
-                    unmetRotations.push({ newGridId, newPrice, newSize, type });
+                // If the error indicates the order is missing, re-check open orders once
+                // before converting rotation to placement. This reduces false fallback
+                // conversions caused by transient API/index lag.
+                if (/not found|does not exist|unable to find object/i.test(String(err?.message || ''))) {
+                    let confirmedMissing = false;
+                    try {
+                        const accountRef = this.accountId || this.account;
+                        const freshOpenOrders = await chainOrders.readOpenOrders(accountRef);
+                        const stillExists = Array.isArray(freshOpenOrders)
+                            && freshOpenOrders.some(o => String(o?.id) === String(oldOrder.orderId));
+
+                        if (stillExists) {
+                            this.manager.logger.log(
+                                `Rotation recheck found order ${oldOrder.orderId} still on-chain. Skipping create fallback for this cycle.`,
+                                'warn'
+                            );
+                        } else {
+                            confirmedMissing = true;
+                        }
+                    } catch (recheckErr) {
+                        this.manager.logger.log(
+                            `Rotation missing-order recheck failed for ${oldOrder.orderId}: ${recheckErr.message}. Deferring fallback to avoid duplicate exposure.`,
+                            'warn'
+                        );
+                    }
+
+                    if (confirmedMissing) {
+                        this.manager.logger.log(`Rotation fallback to creation: Order ${oldOrder.orderId} not found after recheck`, 'warn');
+                        unmetRotations.push({ newGridId, newPrice, newSize, type });
+                    }
                 } else {
                     this.manager.logger.log(`Failed to prepare rotation op: ${err.message}`, 'error');
                 }
