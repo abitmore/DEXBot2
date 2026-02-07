@@ -36,7 +36,9 @@ Branch-promotion scripts include:
 Read-only git commands are always allowed (for example: `git status`, `git diff`, `git log`, `git show`).
 
 Strict interpretation rules:
-1. Replies like "yes", "ok", "do it", "y", or "go ahead" are NOT sufficient for git write actions unless the immediately previous assistant message requested one single explicit git action and no other interpretation is possible.
+1. Replies like "yes", "ok", "okay", "do it", "y", "go ahead", or "auth" are sufficient only when the immediately previous assistant message requested one single explicit low-risk git write action and no other interpretation is possible.
+   - Low-risk actions for shorthand approval: `git add`, `git commit`, `git commit --amend`, `git rm --cached <path>`.
+   - High-risk actions always require explicit command text from the user: `git reset`, `git rebase`, `git merge`, `git push`, `git tag`, `git checkout` / `git switch`.
 2. Requests like "update changelog", "include in patch notes", or "merge into patch17" mean file-content edits only, not commit/amend/push.
 3. Never amend unless the user explicitly says "amend" or "merge with last commit".
 4. If wording is ambiguous, do file edits only and stop before any git write action.
