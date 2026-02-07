@@ -308,10 +308,18 @@ class StrategyEngine {
             // isDoubleReplacementTrigger is only set for full fills in sync_engine
             if (fill.isPartial && !fill.isDelayedRotationTrigger && !fill.isDoubleReplacementTrigger) continue;
 
+            if (!fill.type) {
+                mgr.logger.log('[REACTION-CAP] Skipping fill with missing type.', 'warn');
+                continue;
+            }
+
             const count = fill.isDoubleReplacementTrigger ? 2 : 1;
             // A SELL fill triggers a BUY replacement
             if (fill.type === ORDER_TYPES.SELL) reactionCapBuy += count;
-            else reactionCapSell += count;
+            else if (fill.type === ORDER_TYPES.BUY) reactionCapSell += count;
+            else {
+                mgr.logger.log(`[REACTION-CAP] Skipping fill with unknown type: ${fill.type}. Expected BUY or SELL.`, 'warn');
+            }
         }
 
         // Always allow at least 1 action per side if processing any fill
@@ -640,6 +648,7 @@ class StrategyEngine {
 
         // Remove handled partial slots from shortages so they aren't targeted for rotation or placement
         const filteredShortages = shortages.filter(idx => !handledPartialIds.has(allSlots[idx].id));
+        const inPlaceUpdatedIds = new Set();
 
         // ================================================================================
         // STEP 4: ROTATIONS (Refill Inner Gaps)
@@ -689,6 +698,26 @@ class StrategyEngine {
             const gridDifference = Math.max(0, idealSize - destinationSize);
             const cappedIncrease = Math.min(gridDifference, remainingAvail);
             const finalSize = destinationSize + cappedIncrease;
+
+            // Prevent self-rotation churn: when the same dust order is both shortage and surplus,
+            // convert to an in-place size update instead of issuing a no-op rotation on the same slot.
+            if (currentSurplus.id === shortageSlot.id) {
+                const minHealthySize = getDoubleDustThreshold(idealSize);
+                if (isOrderHealthy(finalSize, type, mgr.assets, idealSize)) {
+                    ordersToUpdate.push({ partialOrder: { ...currentSurplus }, newSize: finalSize });
+                    stateUpdates.push({ ...currentSurplus, size: finalSize, state: ORDER_STATES.ACTIVE });
+                    inPlaceUpdatedIds.add(currentSurplus.id);
+                    totalNewPlacementSize += cappedIncrease;
+                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    budgetRemaining--;
+                    mgr.logger.log(`[ROTATION] Converted self-rotation at ${currentSurplus.id} to in-place update (${Format.formatAmount8(currentSurplus.size)} -> ${Format.formatAmount8(finalSize)})`, 'info');
+                } else {
+                    mgr.logger.log(`[ROTATION] Skipping self-rotation at ${currentSurplus.id}: resulting size ${Format.formatAmount8(finalSize)} below double-dust threshold ${Format.formatAmount8(minHealthySize)}`, 'debug');
+                }
+                surplusIdx++;
+                shortageIdx++;
+                continue;
+            }
 
             // Logic:
             // 1. If the ideal target is too small (dust), skip it.
@@ -771,7 +800,7 @@ class StrategyEngine {
         const rotatedOldIds = new Set(ordersToRotate.map(r => r.oldOrder.id));
         for (let i = filteredSurpluses.length - 1; i >= 0; i--) {
             const surplus = filteredSurpluses[i];
-            if (!rotatedOldIds.has(surplus.id)) {
+            if (!rotatedOldIds.has(surplus.id) && !inPlaceUpdatedIds.has(surplus.id)) {
                 ordersToCancel.push({ ...surplus });
                 stateUpdates.push(virtualizeOrder(surplus));
             }

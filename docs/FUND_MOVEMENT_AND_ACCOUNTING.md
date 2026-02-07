@@ -191,8 +191,10 @@ The *opposite* side receives a `ReactionCap` bonus (+1). This allows the bot to 
 **Trigger:** Non-dust partial exists in a target slot.
 **Action:**
 1.  The existing partial order stays anchored at its price (maintains queue priority).
-2.  The *excess* ideal size (`Ideal - Current`) is treated as a "Split".
-3.  A **New Order** is placed at the *adjacent* price level with the split size.
+2.  The anchored order is topped up toward ideal size with capped increase:
+    $$Increase_{capped} = \min(Ideal - Current, Available)$$
+3.  A **New Order** is placed at the *adjacent* price level with the **old anchored size** (`Current`).
+4.  Operationally, surplus/cache consumption for this action tracks the **net increase** (`Increase_{capped}`), while the split leg preserves queue-shaping structure.
 
 ---
 
