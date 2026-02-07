@@ -1158,8 +1158,11 @@ class OrderManager {
         const driftSell = Math.abs(actualSell - expectedSell);
 
         // Calculate precision tolerances
-        const buyPrecision = this.assets?.assetB?.precision || 8;
-        const sellPrecision = this.assets?.assetA?.precision || 8;
+        const buyPrecision = this.assets?.assetB?.precision;
+        const sellPrecision = this.assets?.assetA?.precision;
+        if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
+            return { isValid: true, reason: 'Skipped: precision not available' };
+        }
         const precisionSlackBuy = getPrecisionSlack(buyPrecision);
         const precisionSlackSell = getPrecisionSlack(sellPrecision);
         const percentTolerance = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;

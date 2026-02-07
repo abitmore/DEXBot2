@@ -264,9 +264,9 @@ class Logger {
             }
         }
 
-        // Available funds - use asset-aware precision
-        const buyPrecision = manager.config?.assetB?.precision || 8;
-        const sellPrecision = manager.config?.assetA?.precision || 8;
+         // Available funds - use asset-aware precision
+         const buyPrecision = manager.config.assetB.precision;
+         const sellPrecision = manager.config.assetA.precision;
         const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmountByPrecision(manager.funds.available.buy, buyPrecision) : 'N/A';
         const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmountByPrecision(manager.funds.available.sell, sellPrecision) : 'N/A';
 
@@ -299,10 +299,10 @@ class Logger {
      * @private
      */
      _logDetailedFunds(manager, headerContext = '') {
-         const buyName = manager.config?.assetB || 'quote';
-         const sellName = manager.config?.assetA || 'base';
-         const buyPrecision = manager.config?.assetB?.precision || 8;
-         const sellPrecision = manager.config?.assetA?.precision || 8;
+          const buyName = manager.config?.assetB || 'quote';
+          const sellName = manager.config?.assetA || 'base';
+          const buyPrecision = manager.config.assetB.precision;
+          const sellPrecision = manager.config.assetA.precision;
          const c = this.colors;
          const debug = c.debug;
          const reset = c.reset;
@@ -373,14 +373,14 @@ class Logger {
         const virtualOrders = manager.getOrdersByTypeAndState(null, ORDER_STATES.VIRTUAL);
         console.log('\n===== STATUS =====');
         console.log(`Market: ${market}`);
-         const buyName = manager.config?.assetB || 'quote';
-         const sellName = manager.config?.assetA || 'base';
-         const buyPrecision = manager.config?.assetB?.precision || 8;
-         const sellPrecision = manager.config?.assetA?.precision || 8;
+          const buyName = manager.config?.assetB || 'quote';
+          const sellName = manager.config?.assetA || 'base';
+          const buyPrecision = manager.config.assetB.precision;
+          const sellPrecision = manager.config.assetA.precision;
 
-          // Use new nested structure with asset-aware precision
-          const gridBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmountByPrecision(manager.funds.available.buy, buyPrecision) : 'N/A';
-          const gridSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmountByPrecision(manager.funds.available.sell, sellPrecision) : 'N/A';
+           // Use new nested structure with asset-aware precision
+           const gridBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmountByPrecision(manager.funds.available.buy, buyPrecision) : 'N/A';
+           const gridSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmountByPrecision(manager.funds.available.sell, sellPrecision) : 'N/A';
         const totalChainBuy = manager.funds?.total?.chain?.buy ?? 0;
         const totalChainSell = manager.funds?.total?.chain?.sell ?? 0;
         const totalGridBuy = manager.funds?.total?.grid?.buy ?? 0;

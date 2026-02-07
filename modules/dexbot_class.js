@@ -1738,17 +1738,17 @@ class DEXBot {
     async _buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts) {
         if (!ordersToPlace || ordersToPlace.length === 0) return;
 
-        // Pre-check: Verify available funds before attempting to build operations
-        // IMPORTANT: Separate BUY and SELL orders - they use different asset budgets!
-        const buyOrders = ordersToPlace.filter(o => o.type === 'buy');
-        const sellOrders = ordersToPlace.filter(o => o.type === 'sell');
+         // Pre-check: Verify available funds before attempting to build operations
+         // IMPORTANT: Separate BUY and SELL orders - they use different asset budgets!
+         const buyOrders = ordersToPlace.filter(o => o.type === 'buy');
+         const sellOrders = ordersToPlace.filter(o => o.type === 'sell');
 
-        // Check BUY orders against buyFree (assetB funds)
+         // Check BUY orders against buyFree (assetB funds)
          if (buyOrders.length > 0) {
              const buyTotalSize = buyOrders.reduce((sum, o) => sum + o.size, 0);
              const buyFund = this.manager.accountTotals?.buyFree ?? 0;
              if (buyTotalSize > buyFund) {
-                 const buyPrecision = this.manager.config?.assetB?.precision || 8;
+                 const buyPrecision = this.manager.config.assetB.precision;
                  this.manager.logger.log(
                      `Warning: total order size (${Format.formatAmountByPrecision(buyTotalSize, buyPrecision)}) exceeds available funds (${Format.formatAmountByPrecision(buyFund, buyPrecision)}) for buy. ` +
                      `Some orders may be skipped or placed at reduced size.`,
@@ -1762,7 +1762,7 @@ class DEXBot {
              const sellTotalSize = sellOrders.reduce((sum, o) => sum + o.size, 0);
              const sellFund = this.manager.accountTotals?.sellFree ?? 0;
              if (sellTotalSize > sellFund) {
-                 const sellPrecision = this.manager.config?.assetA?.precision || 8;
+                 const sellPrecision = this.manager.config.assetA.precision;
                  this.manager.logger.log(
                      `Warning: total order size (${Format.formatAmountByPrecision(sellTotalSize, sellPrecision)}) exceeds available funds (${Format.formatAmountByPrecision(sellFund, sellPrecision)}) for sell. ` +
                      `Some orders may be skipped or placed at reduced size.`,

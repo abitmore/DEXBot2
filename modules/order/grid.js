@@ -1219,10 +1219,10 @@ class Grid {
         else if (buyRatio >= 1) side = ORDER_TYPES.BUY;
         else if (sellRatio >= 1) side = ORDER_TYPES.SELL;
 
-         if (!side) {
-             // FIX: Use consistent optional chaining pattern for logger calls
-             const buyPrecision = manager.config?.assetB?.precision || 8;
-             const sellPrecision = manager.config?.assetA?.precision || 8;
+          if (!side) {
+              // FIX: Use consistent optional chaining pattern for logger calls
+              const buyPrecision = manager.config.assetB.precision;
+              const sellPrecision = manager.config.assetA.precision;
              manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${Format.formatPercent2(buyRatio)}, sell ratio: ${Format.formatPercent2(sellRatio)}). Required: buy=${reqBuy ? Format.formatAmountByPrecision(reqBuy, buyPrecision) : 'N/A'}, sell=${reqSell ? Format.formatAmountByPrecision(reqSell, sellPrecision) : 'N/A'}`, 'warn');
          }
 
@@ -1373,13 +1373,13 @@ class Grid {
              } else {
                  const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
                  const minHealthy = getDoubleDustThreshold(idealSize);
-                 manager.logger?.log?.(
-                     `Spread correction skipped at slot ${candidate.id}: ` +
-                     `size=${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} < threshold=${Format.formatSizeByOrderType(minHealthy, railType, manager.assets)} ` +
-                     `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatSizeByOrderType(idealSize, railType, manager.assets)}). ` +
-                     `Available funds: ${Format.formatAmountByPrecision(availableFund, sideName === 'buy' ? (manager.config?.assetB?.precision || 8) : (manager.config?.assetA?.precision || 8))}`,
-                     'debug'
-                 );
+                  manager.logger?.log?.(
+                      `Spread correction skipped at slot ${candidate.id}: ` +
+                      `size=${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} < threshold=${Format.formatSizeByOrderType(minHealthy, railType, manager.assets)} ` +
+                      `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatSizeByOrderType(idealSize, railType, manager.assets)}). ` +
+                      `Available funds: ${Format.formatAmountByPrecision(availableFund, sideName === 'buy' ? manager.config.assetB.precision : manager.config.assetA.precision)}`,
+                      'debug'
+                  );
              }
         }
 

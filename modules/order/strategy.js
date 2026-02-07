@@ -294,11 +294,11 @@ class StrategyEngine {
         const availBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0);
         const availSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0);
 
-         if (mgr.logger.level === 'debug') {
-             const buyPrecision = mgr.config?.assetB?.precision || 8;
-             const sellPrecision = mgr.config?.assetA?.precision || 8;
-             mgr.logger.log(`[BUDGET] Unified Sizing: Buy=${Format.formatAmountByPrecision(budgetBuy, buyPrecision)}, Sell=${Format.formatAmountByPrecision(budgetSell, sellPrecision)} (Respects botFunds % and Fees)`, 'debug');
-         }
+          if (mgr.logger.level === 'debug') {
+              const buyPrecision = mgr.config.assetB.precision;
+              const sellPrecision = mgr.config.assetA.precision;
+              mgr.logger.log(`[BUDGET] Unified Sizing: Buy=${Format.formatAmountByPrecision(budgetBuy, buyPrecision)}, Sell=${Format.formatAmountByPrecision(budgetSell, sellPrecision)} (Respects botFunds % and Fees)`, 'debug');
+          }
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
         // NOTE: Only count FULL fills - partial fills don't spend capital, so they shouldn't count toward budget.
@@ -662,10 +662,10 @@ class StrategyEngine {
         let shortageIdx = 0;
         let rotationsPerformed = 0;
 
-         if (mgr.logger.level === 'debug') {
-             const precision = side === ORDER_TYPES.BUY ? (mgr.config?.assetB?.precision || 8) : (mgr.config?.assetA?.precision || 8);
-             mgr.logger.log(`[REBALANCE] ${side.toUpperCase()} planning: ${filteredShortages.length} shortages, ${filteredSurpluses.length} surpluses, budget=${budgetRemaining}, avail=${Format.formatAmountByPrecision(remainingAvail, precision)}`, 'debug');
-         }
+          if (mgr.logger.level === 'debug') {
+              const precision = side === ORDER_TYPES.BUY ? mgr.config.assetB.precision : mgr.config.assetA.precision;
+              mgr.logger.log(`[REBALANCE] ${side.toUpperCase()} planning: ${filteredShortages.length} shortages, ${filteredSurpluses.length} surpluses, budget=${budgetRemaining}, avail=${Format.formatAmountByPrecision(remainingAvail, precision)}`, 'debug');
+          }
 
         while (surplusIdx < filteredSurpluses.length &&
             shortageIdx < filteredShortages.length &&
@@ -908,20 +908,20 @@ class StrategyEngine {
                         mgr.logger.log(`[FILL-FEE] ${filledOrder.type} fill: applied ${feeType} fee for ${assetForFee}`, 'debug');
                     } catch (e) {
                          // FIX: Consolidated fee calculation failure logging (Issue #8)
-                         const proceedsPrecision = filledOrder.type === ORDER_TYPES.SELL ? 
-                             (mgr.config?.assetB?.precision || 8) : 
-                             (mgr.config?.assetA?.precision || 8);
-                         mgr.logger.log(
-                             `[FILL-FEE-ERROR] ${filledOrder.type} fill ${filledOrder.id}: fee calc failed for ${assetForFee} (${e.message}). ` +
-                             `Using raw proceeds=${Format.formatAmountByPrecision(rawProceeds, proceedsPrecision)} - manual verification recommended.`,
-                             "warn"
-                         );
-                     }
-                }
+                          const proceedsPrecision = filledOrder.type === ORDER_TYPES.SELL ? 
+                              mgr.config.assetB.precision : 
+                              mgr.config.assetA.precision;
+                          mgr.logger.log(
+                              `[FILL-FEE-ERROR] ${filledOrder.type} fill ${filledOrder.id}: fee calc failed for ${assetForFee} (${e.message}). ` +
+                              `Using raw proceeds=${Format.formatAmountByPrecision(rawProceeds, proceedsPrecision)} - manual verification recommended.`,
+                              "warn"
+                          );
+                      }
+                 }
 
-                 const proceedsPrecision = filledOrder.type === ORDER_TYPES.SELL ? 
-                     (mgr.config?.assetB?.precision || 8) : 
-                     (mgr.config?.assetA?.precision || 8);
+                  const proceedsPrecision = filledOrder.type === ORDER_TYPES.SELL ? 
+                      mgr.config.assetB.precision : 
+                      mgr.config.assetA.precision;
                  mgr.logger.log(
                      `[FILL] ${filledOrder.type} fill: size=${Format.formatSizeByOrderType(filledOrder.size, filledOrder.type, mgr.assets)}, ` +
                      `price=${Format.formatPrice(filledOrder.price)}, proceeds=${Format.formatAmountByPrecision(netProceeds, proceedsPrecision)} ${assetForFee}`,

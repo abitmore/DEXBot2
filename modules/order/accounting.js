@@ -182,12 +182,14 @@ class Accountant {
             mgr.applyBotFundsAllocation();
         }
 
-        if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0 && mgr._recalcLoggingDepth === 0) {
-            const buyPrecision = mgr.config.assetB?.precision || 8;
-            const sellPrecision = mgr.config.assetA?.precision || 8;
-            mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmountByPrecision(chainTotalBuy, buyPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)}, Grid=${Format.formatAmountByPrecision(gridBuy, buyPrecision)})`, 'debug');
-            mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmountByPrecision(chainTotalSell, sellPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)}, Grid=${Format.formatAmountByPrecision(gridSell, sellPrecision)})`, 'debug');
-        }
+         if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0 && mgr._recalcLoggingDepth === 0) {
+             const buyPrecision = mgr.config?.assetB?.precision;
+             const sellPrecision = mgr.config?.assetA?.precision;
+             if (Number.isFinite(buyPrecision) && Number.isFinite(sellPrecision)) {
+                 mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmountByPrecision(chainTotalBuy, buyPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)}, Grid=${Format.formatAmountByPrecision(gridBuy, buyPrecision)})`, 'debug');
+                 mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmountByPrecision(chainTotalSell, sellPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)}, Grid=${Format.formatAmountByPrecision(gridSell, sellPrecision)})`, 'debug');
+             }
+         }
 
         if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping && !mgr._isBroadcasting) {
             const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell };
@@ -226,9 +228,12 @@ class Accountant {
      * Verify critical fund tracking invariants.
      * Now async to support immediate recovery attempts without blocking.
      */
-    async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
-        const buyPrecision = mgr.assets?.assetB?.precision || 8;
-        const sellPrecision = mgr.assets?.assetA?.precision || 8;
+     async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
+         const buyPrecision = mgr.assets?.assetB?.precision;
+         const sellPrecision = mgr.assets?.assetA?.precision;
+         if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
+             return;  // Skip invariant check if precision not available
+         }
         const precisionSlackBuy = getPrecisionSlack(buyPrecision);
         const precisionSlackSell = getPrecisionSlack(sellPrecision);
         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;

@@ -525,30 +525,7 @@ class SyncEngine {
                 }
             );
 
-            // Fallback: If strict match failed, try lax matching for orphans
-            // Helps recover orders that "drifted" slightly or were missed by strict tolerance
-            if (!match) {
-                const candidates = [];
-                for (const gridOrder of mgr.orders.values()) {
-                    if (!gridOrder || gridOrder.type !== chainOrder.type) continue;
-                    // Candidate must be VIRTUAL and NOT have an orderId (if it has one, it should have matched in Pass 1)
-                    if (gridOrder.state !== ORDER_STATES.VIRTUAL || gridOrder.orderId) continue;
 
-                    const priceDiffPercent = Math.abs(gridOrder.price - chainOrder.price) / gridOrder.price * 100;
-                    // Use a lax tolerance (e.g., 2x increment or minimum 2%)
-                    const laxTolerance = Math.max((mgr.config?.incrementPercent || 0.5) * 2, 2);
-
-                    if (priceDiffPercent <= laxTolerance) {
-                        candidates.push({ gridOrder, priceDiffPercent });
-                    }
-                }
-
-                if (candidates.length > 0) {
-                    candidates.sort((a, b) => a.priceDiffPercent - b.priceDiffPercent);
-                    match = candidates[0].gridOrder;
-                    mgr.logger?.log?.(`[orphan-fallback] Matched chain order ${chainOrderId} using lax tolerance`, 'warn');
-                }
-            }
 
             // CRITICAL: Check matchedGridOrderIds BEFORE assigning to prevent double-processing
             // If another chain order already claimed this grid order, skip silently but log

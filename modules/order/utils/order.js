@@ -217,8 +217,6 @@ function getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
 }
 
 function resolveConfiguredPriceBound(value, fallback, startPrice, mode) {
-    const relative = MathUtils.resolveRelativePrice(value, startPrice, mode);
-    if (Number.isFinite(relative)) return relative;
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
 }

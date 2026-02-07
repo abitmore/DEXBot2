@@ -88,9 +88,9 @@ async function testMarketPrice() {
             console.log(`${colors.yellow}✗ Market price unavailable or zero${colors.reset}\n`);
         }
 
-        // Test 3: Fetch with auto fallback
-        console.log(`${colors.bold}Test 3: Auto Fallback (Pool → Market → Limit Orders)${colors.reset}`);
-        console.log(`Fetching price with automatic fallback...`);
+         // Test 3: Fetch with auto mode (no cross-fallback)
+         console.log(`${colors.bold}Test 3: Auto Mode (Pool preferred, Market fallback only in auto)${colors.reset}`);
+         console.log(`Fetching price with auto mode...`);
         const startAuto = Date.now();
         const autoPrice = await derivePrice(BitShares, symA, symB, 'auto');
         const autoTime = Date.now() - startAuto;

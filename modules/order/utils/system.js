@@ -204,17 +204,27 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
 const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
     mode = String(mode).toLowerCase();
+    const validModes = new Set(['pool', 'market', 'auto']);
 
+    if (!validModes.has(mode)) {
+        return null;
+    }
+
+    if (mode === 'pool') {
+        return await derivePoolPrice(BitShares, symA, symB).catch(() => null);
+    }
+
+    if (mode === 'market') {
+        return await deriveMarketPrice(BitShares, symA, symB).catch(() => null);
+    }
+
+    // mode === 'auto': pool preferred, market fallback
     let poolP = null;
-    if (mode === 'pool' || mode === 'auto') {
-        poolP = await derivePoolPrice(BitShares, symA, symB).catch(() => null);
-        if (poolP > 0) return poolP;
-    }
+    poolP = await derivePoolPrice(BitShares, symA, symB).catch(() => null);
+    if (poolP > 0) return poolP;
 
-    if (mode === 'market' || mode === 'auto' || mode === 'pool') {
-        const m = await deriveMarketPrice(BitShares, symA, symB).catch(() => null);
-        if (m > 0) return m;
-    }
+    const m = await deriveMarketPrice(BitShares, symA, symB).catch(() => null);
+    if (m > 0) return m;
 
     return null;
 };
