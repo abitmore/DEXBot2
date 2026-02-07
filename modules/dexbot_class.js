@@ -2376,7 +2376,7 @@ class DEXBot {
             // on the corrected grid state.
             // Only performed when pipeline is empty to prevent premature resizing from temporary surplus.
 
-            const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager, this.manager.funds.cacheFunds);
+            const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager);
 
             if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
                 this._log(`Grid updated during ${context} due to funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
@@ -2400,7 +2400,7 @@ class DEXBot {
                 try {
                     const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
                     const calculatedGrid = Array.from(this.manager.orders.values());
-                    const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGridData, this.manager, this.manager.funds.cacheFunds);
+                    const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGridData, this.manager);
 
                     if (comparisonResult?.buy?.updated || comparisonResult?.sell?.updated) {
                         this._log(`Grid divergence detected during ${context}: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);

@@ -39,14 +39,14 @@
  *   9. recalculateGrid(manager, opts) - Recalculate grid based on current state
  *
  * GRID STATE CHECKING (1 method)
- *   10. checkAndUpdateGridIfNeeded(manager, cacheFunds) - Check if grid needs update
+ *   10. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
  *
  * BLOCKCHAIN SYNCHRONIZATION (2 methods - async)
  *   11. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
  *   12. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
  *
  * GRID COMPARISON (1 method - async)
- *   13. compareGrids(calculatedGrid, persistedGrid, manager, cacheFunds) - Compare two grids
+ *   13. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
  *       Validates grid structure and reports divergence metrics
  *
  * SPREAD MANAGEMENT (2 methods - async)
@@ -731,25 +731,20 @@ class Grid {
      * FIX: Complete JSDoc with parameter types and return value documentation
      *
      * @param {OrderManager} manager - Manager instance with order state
-     * @param {Object} cacheFunds - Current cache funds state
-     * @param {number} cacheFunds.buy - Buy side cache funds available
-     * @param {number} cacheFunds.sell - Sell side cache funds available
      * @returns {Object} Update status for each side
      * @returns {boolean} returns.buyUpdated - Buy side exceeded regeneration threshold
      * @returns {boolean} returns.sellUpdated - Sell side exceeded regeneration threshold
      */
-    static checkAndUpdateGridIfNeeded(manager, cacheFunds = { buy: 0, sell: 0 }) {
+    static checkAndUpdateGridIfNeeded(manager) {
         const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 1;
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
         const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
-        const cacheBuy = Number(manager.funds?.cacheFunds?.buy || 0);
-        const cacheSell = Number(manager.funds?.cacheFunds?.sell || 0);
         const result = { buyUpdated: false, sellUpdated: false };
 
         const sides = [
-            { name: 'buy', grid: gridBuy, cache: cacheFunds.buy || cacheBuy, orderType: ORDER_TYPES.BUY },
-            { name: 'sell', grid: gridSell, cache: cacheFunds.sell || cacheSell, orderType: ORDER_TYPES.SELL }
+            { name: 'buy', grid: gridBuy, orderType: ORDER_TYPES.BUY },
+            { name: 'sell', grid: gridSell, orderType: ORDER_TYPES.SELL }
         ];
 
         for (const s of sides) {
@@ -887,7 +882,7 @@ class Grid {
      *   - metric: RMS% divergence (higher = more divergent)
      *   - updated: true if metric exceeds GRID_COMPARISON.RMS_PERCENTAGE threshold for that side
      */
-    static async compareGrids(calculatedGrid, persistedGrid, manager = null, cacheFunds = null) {
+    static async compareGrids(calculatedGrid, persistedGrid, manager = null) {
         if (!Array.isArray(calculatedGrid) || !Array.isArray(persistedGrid)) {
             return { buy: { metric: 0, updated: false }, sell: { metric: 0, updated: false } };
         }

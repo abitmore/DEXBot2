@@ -208,7 +208,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
+    const result = await Grid.compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === true && result.sell.updated === false;
     logTest('Only BUY side updated when threshold exceeded', passed,
@@ -227,7 +227,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
+    const result = await Grid.compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === false && result.sell.updated === true;
     logTest('Only SELL side updated when threshold exceeded', passed,
@@ -246,7 +246,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
+    const result = await Grid.compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === true && result.sell.updated === true;
     logTest('Both sides updated when both exceed threshold', passed,
@@ -265,7 +265,7 @@ console.log('\n=== Auto-Update Tests (By Side) ===\n');
         createOrder(ORDER_TYPES.BUY, 0.90, 10)
     ];
     
-    const result = await Grid.compareGrids(calculated, persisted, manager, { buy: 0, sell: 0 });
+    const result = await Grid.compareGrids(calculated, persisted, manager);
     
     const passed = result.buy.updated === false && result.sell.updated === false;
     logTest('No sides updated when all below threshold', passed);

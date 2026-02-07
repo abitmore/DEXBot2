@@ -1,160 +1,201 @@
 
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
+const { initializeFeeCache } = require('../modules/order/utils/system');
 
-// Mock Manager
+// Mock BitShares for fee cache initialization
+const mockBitShares = {
+    db: {
+        getGlobalProperties: async () => ({
+            parameters: { current_fees: { parameters: [[1, { fee: 100000 }], [2, { fee: 10000 }], [77, { fee: 1000 }]] } }
+        }),
+        lookupAssetSymbols: async (symbols) => symbols.map(s => ({
+            id: s === 'BTS' ? '1.3.0' : '1.3.1',
+            symbol: s,
+            options: { market_fee_percent: 0, extensions: {} }
+        }))
+    }
+};
+
+/**
+ * MockManager that satisfies checkAndUpdateGridIfNeeded's real data contract.
+ *
+ * The threshold check works as follows:
+ *   avail  = calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders)
+ *          = max(0, chainFree - virtual - btsFeesOwed - btsFeesReservation)
+ *   ratio  = (avail / allocated) * 100
+ *   trigger when ratio >= GRID_REGENERATION_PERCENTAGE (default 3%)
+ *
+ * To isolate threshold logic from BTS fee reservation, tests use non-BTS asset
+ * pairs (USD/EUR) so btsFeesReservation = 0 and avail = chainFree exactly.
+ */
 class MockManager {
-    constructor() {
+    constructor({ gridBuy = 1000, gridSell = 1000, chainFreeBuy = 0, chainFreeSell = 0 } = {}) {
         this.config = {
-            weightDistribution: { buy: 1, sell: 1 },
+            assetA: 'USD',
+            assetB: 'EUR',
+            activeOrders: { buy: 10, sell: 10 },
             incrementPercent: 1,
-            assetA: 'BTC',
-            assetB: 'BTS',
-            activeOrders: { buy: 10, sell: 10 }
+            weightDistribution: { buy: 1, sell: 1 }
         };
         this.orders = new Map();
         this.funds = {
             available: { buy: 0, sell: 0 },
-            total: { grid: { buy: 1000, sell: 1000 } },
-            cacheFunds: { buy: 0, sell: 0 }
+            total: { grid: { buy: gridBuy, sell: gridSell } },
+            cacheFunds: { buy: 0, sell: 0 },
+            virtual: { buy: 0, sell: 0 },
+            btsFeesOwed: 0
+        };
+        // accountTotals drives calculateAvailableFundsValue
+        this.accountTotals = {
+            buyFree: chainFreeBuy,
+            sellFree: chainFreeSell,
+            buy: gridBuy + chainFreeBuy,
+            sell: gridSell + chainFreeSell
         };
         this.assets = {
             assetA: { precision: 8 },
             assetB: { precision: 8 }
         };
         this.logger = {
-            log: (msg) => console.log(`[MockManager] ${msg}`)
+            log: (msg) => console.log(`  [MockManager] ${msg}`)
         };
         this._gridSidesUpdated = new Set();
     }
 
-    calculateAvailableFunds(side) {
-        return this.funds.available[side];
-    }
-
     getChainFundsSnapshot() {
         return {
-            chainTotalBuy: this.funds.total.grid.buy + this.funds.cacheFunds.buy,
-            chainTotalSell: this.funds.total.grid.sell + this.funds.cacheFunds.sell,
-            allocatedBuy: this.funds.total.grid.buy + this.funds.cacheFunds.buy,
-            allocatedSell: this.funds.total.grid.sell + this.funds.cacheFunds.sell
+            chainTotalBuy: this.accountTotals.buy,
+            chainTotalSell: this.accountTotals.sell,
+            allocatedBuy: this.accountTotals.buy,
+            allocatedSell: this.accountTotals.sell
         };
     }
+}
 
-    recalculateFunds() {
-        // Mock: in real life this updates available based on chain totals
-        // Here we just ensure available is set for our tests
-    }
-
-    _updateOrder(order) {
-        this.orders.set(order.id, order);
-    }
-
-    _persistCacheFunds() { }
-    _persistBtsFeesOwed() { }
-
-    async processFilledOrders(filledOrders) {
-        // Mock the fund migration logic from manager.js
-        const currentAvailBuy = this.calculateAvailableFunds('buy');
-        const currentAvailSell = this.calculateAvailableFunds('sell');
-
-        this.funds.cacheFunds.buy += currentAvailBuy;
-        this.funds.cacheFunds.sell += currentAvailSell;
-
-        // Simulating recalculateFunds reset
-        this.funds.available.buy = 0;
-        this.funds.available.sell = 0;
-
-        this.logger.log(`Mock: Moved available funds to cacheFunds. Buy: ${this.funds.cacheFunds.buy.toFixed(8)}, Sell: ${this.funds.cacheFunds.sell.toFixed(8)}`);
-
-        // After migration, check if grid update is needed
-        Grid.checkAndUpdateGridIfNeeded(this, this.funds.cacheFunds);
-
-        // Emulate the reactor: if flagged, perform the update separately per side
-        if (this._gridSidesUpdated && this._gridSidesUpdated.size > 0) {
-            // Using the new logic where we only update the specific side that triggered the threshold
-            if (this._gridSidesUpdated.has(ORDER_TYPES.BUY)) {
-                // Use internal method or simulate single side update
-                // Grid.updateGridOrderSizes blindly updates both, so for this test we stick to simulating
-                // a targeted update mechanism or just accept that our MockManager's usage of Grid.updateGridOrderSizes 
-                // needs to imply "update flagged sides". But Grid.updateGridOrderSizes updates ALL.
-
-                // To truly test separation, we should use _recalculateGridOrderSizesFromBlockchain if possible, 
-                // OR explicitly call updateGridOrderSizesForSide if exposed. 
-                // Since updateGridOrderSizesForSide is private/internal to updateGridOrderSizes, 
-                // we will mock the behavior by calling updateGridOrderSizes but asserting that if we HAD split flags, 
-                // we would only call the relevant one. 
-
-                // For this test script, let's use the public method but acknowledge strict separation is enforced by the caller (DEXBot class)
-                // which uses updateGridFromBlockchainSnapshot(type).
-
-                // Let's match DEXBot class behavior:
-                const { getOrderTypeFromUpdatedFlags } = require('../modules/order/utils/math');
-                const orderType = getOrderTypeFromUpdatedFlags(
-                    this._gridSidesUpdated.has(ORDER_TYPES.BUY),
-                    this._gridSidesUpdated.has(ORDER_TYPES.SELL)
-                );
-
-                // We can't easily import Grid._recalculateGridOrderSizesFromBlockchain here as it might be private or require different args.
-                // Let's just use updateGridFromBlockchainSnapshot which updates both, but we know our test setup only triggers one.
-                await Grid.updateGridFromBlockchainSnapshot(this, orderType, true);
-            }
-            this._gridSidesUpdated.clear(); // Clear flags
-        }
-
-        return { ordersToPlace: [], ordersToRotate: [], partialMoves: [] };
+function populateOrders(manager, side, count = 10) {
+    const type = side === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+    const basePrice = side === 'buy' ? 1.0 : 1.01;
+    const dir = side === 'buy' ? -0.01 : 0.01;
+    for (let i = 0; i < count; i++) {
+        manager.orders.set(`${side}-${i}`, {
+            id: `${side}-${i}`, type, size: 100,
+            price: basePrice + i * dir, state: ORDER_STATES.ACTIVE, orderId: `order-${side}-${i}`
+        });
     }
 }
 
-async function runTest() {
-    console.log('--- Test: available -> cacheFunds -> grid update ---');
+const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 3;
 
-    const manager = new MockManager();
+async function testThresholdExceeded() {
+    console.log('\n--- Test 1: Available funds exceed regeneration threshold ---');
 
-    // Setup initial grid state (1000 BTS locked in 10 orders)
-    for (let i = 0; i < 10; i++) {
-        manager.orders.set(`buy-${i}`, { id: `buy-${i}`, type: ORDER_TYPES.BUY, size: 100, price: 1, state: ORDER_STATES.ACTIVE, orderId: `order-${i}` });
-    }
+    // chainFreeBuy = 50, allocated = 1050 → ratio = 4.76% > 3%
+    const manager = new MockManager({ gridBuy: 1000, chainFreeBuy: 50 });
+    populateOrders(manager, 'buy');
 
-    // 1. Add available funds (50)
-    manager.funds.available.buy = 50;
-    console.log(`Initial Available: ${manager.funds.available.buy}`);
+    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    const ratio = (50 / 1050) * 100;
+    console.log(`  chainFreeBuy=50, allocated=1050, ratio=${ratio.toFixed(2)}% (threshold=${threshold}%)`);
+    console.log(`  buyUpdated=${result.buyUpdated}`);
 
-    // 2. Process an empty fill (simulating a fill event or just a sync cycle)
-    // In our new logic, this should move 50 from available to cacheFunds and trigger a resize
-    await manager.processFilledOrders([]);
-
-    // 3. Assertions
-    console.log(`Final Available: ${manager.funds.available.buy}`);
-    console.log(`Final CacheFunds: ${manager.funds.cacheFunds.buy}`);
-
-    assert.strictEqual(manager.funds.available.buy, 0, 'Available funds should be 0 after cycling');
-    // Note: cacheFunds might be 0 or small if completely consumed by sizing (depending on precision/dust)
-    // In our MockManager, updateGridOrderSizesForSide is called, which calculates surplus.
-
-    const orders = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
-    const totalSize = orders.reduce((sum, o) => sum + o.size, 0);
-    console.log(`Total grid size after update: ${totalSize.toFixed(8)}`);
-    assert.ok(totalSize !== 1000, 'Grid should have been updated (size changed)');
-
-    console.log('\n--- Test: Threshold NOT Exceeded ---');
-    const manager2 = new MockManager();
-    for (let i = 0; i < 10; i++) {
-        manager2.orders.set(`buy-${i}`, { id: `buy-${i}`, type: ORDER_TYPES.BUY, size: 100, price: 1, state: ORDER_STATES.ACTIVE, orderId: `order-${i}` });
-    }
-    manager2.funds.available.buy = 10; // 1% < 3%
-    console.log('Scenario: available=10, grid=1000, threshold=3%. Update should NOT trigger.');
-
-    await manager2.processFilledOrders([]);
-    const totalSize2 = Array.from(manager2.orders.values()).filter(o => o.type === ORDER_TYPES.BUY).reduce((s, o) => s + o.size, 0);
-    assert.strictEqual(totalSize2, 1000, 'Grid should NOT have been updated');
-    assert.strictEqual(manager2.funds.cacheFunds.buy, 10, 'Available funds should move to cacheFunds even if threshold not met');
-
-    console.log('\n✅ All Fund Cycling Trigger Tests Passed!');
+    assert.strictEqual(result.buyUpdated, true, 'Buy side should exceed regeneration threshold');
+    assert.ok(manager._gridSidesUpdated.has(ORDER_TYPES.BUY), '_gridSidesUpdated should contain BUY');
+    console.log('  PASS');
 }
 
-runTest().catch(err => {
-    console.error('❌ Test Failed:', err);
-    process.exit(1);
-});
+async function testThresholdNotExceeded() {
+    console.log('\n--- Test 2: Available funds below regeneration threshold ---');
+
+    // chainFreeBuy = 5, allocated = 1005 → ratio = 0.50% < 3%
+    const manager = new MockManager({ gridBuy: 1000, chainFreeBuy: 5 });
+    populateOrders(manager, 'buy');
+
+    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    const ratio = (5 / 1005) * 100;
+    console.log(`  chainFreeBuy=5, allocated=1005, ratio=${ratio.toFixed(2)}% (threshold=${threshold}%)`);
+    console.log(`  buyUpdated=${result.buyUpdated}`);
+
+    assert.strictEqual(result.buyUpdated, false, 'Buy side should NOT exceed regeneration threshold');
+    assert.ok(!manager._gridSidesUpdated.has(ORDER_TYPES.BUY), '_gridSidesUpdated should NOT contain BUY');
+    console.log('  PASS');
+}
+
+async function testBothSidesIndependent() {
+    console.log('\n--- Test 3: Independent per-side triggering ---');
+
+    // Buy: 80 / 1080 = 7.4% > 3%  → triggers
+    // Sell: 10 / 1010 = 1.0% < 3%  → does not trigger
+    const manager = new MockManager({ gridBuy: 1000, gridSell: 1000, chainFreeBuy: 80, chainFreeSell: 10 });
+    populateOrders(manager, 'buy');
+    populateOrders(manager, 'sell');
+
+    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    console.log(`  buy ratio=${(80 / 1080 * 100).toFixed(2)}%, sell ratio=${(10 / 1010 * 100).toFixed(2)}%`);
+    console.log(`  buyUpdated=${result.buyUpdated} (expected true), sellUpdated=${result.sellUpdated} (expected false)`);
+
+    assert.strictEqual(result.buyUpdated, true, 'Buy side should trigger');
+    assert.strictEqual(result.sellUpdated, false, 'Sell side should not trigger');
+    console.log('  PASS');
+}
+
+async function testZeroGridSkipped() {
+    console.log('\n--- Test 4: Zero grid capital skips threshold check ---');
+
+    const manager = new MockManager({ gridBuy: 0, gridSell: 0, chainFreeBuy: 100, chainFreeSell: 100 });
+
+    const result = Grid.checkAndUpdateGridIfNeeded(manager);
+    console.log(`  buyUpdated=${result.buyUpdated}, sellUpdated=${result.sellUpdated}`);
+
+    assert.strictEqual(result.buyUpdated, false, 'Zero grid buy should skip');
+    assert.strictEqual(result.sellUpdated, false, 'Zero grid sell should skip');
+    console.log('  PASS');
+}
+
+async function testExactThresholdBoundary() {
+    console.log('\n--- Test 5: Exact threshold boundary ---');
+
+    // Need ratio = exactly threshold. For threshold=3%, allocated=1000+x, free=x:
+    // x/(1000+x) = 0.03 → x = 30/0.97 ≈ 30.93
+    // Use 31 → ratio = 31/1031 = 3.006% ≥ 3% → triggers
+    const manager1 = new MockManager({ gridBuy: 1000, chainFreeBuy: 31 });
+    populateOrders(manager1, 'buy');
+    const result1 = Grid.checkAndUpdateGridIfNeeded(manager1);
+    const ratio1 = (31 / 1031) * 100;
+    console.log(`  chainFreeBuy=31, ratio=${ratio1.toFixed(3)}% → buyUpdated=${result1.buyUpdated} (expected true)`);
+    assert.strictEqual(result1.buyUpdated, true, 'Just above threshold should trigger');
+
+    // Use 29 → ratio = 29/1029 = 2.818% < 3% → does not trigger
+    const manager2 = new MockManager({ gridBuy: 1000, chainFreeBuy: 29 });
+    populateOrders(manager2, 'buy');
+    const result2 = Grid.checkAndUpdateGridIfNeeded(manager2);
+    const ratio2 = (29 / 1029) * 100;
+    console.log(`  chainFreeBuy=29, ratio=${ratio2.toFixed(3)}% → buyUpdated=${result2.buyUpdated} (expected false)`);
+    assert.strictEqual(result2.buyUpdated, false, 'Just below threshold should not trigger');
+    console.log('  PASS');
+}
+
+(async () => {
+    try {
+        console.log('=== Fund Cycling Trigger Tests ===');
+        console.log('Tests verify checkAndUpdateGridIfNeeded threshold logic');
+        console.log(`using calculateAvailableFundsValue (chainFree - virtual - fees)`);
+        console.log(`GRID_REGENERATION_PERCENTAGE = ${threshold}%`);
+
+        // Initialize fee cache (required by calculateAvailableFundsValue internals)
+        await initializeFeeCache(['BTS', 'USD', 'EUR'], mockBitShares);
+
+        await testThresholdExceeded();
+        await testThresholdNotExceeded();
+        await testBothSidesIndependent();
+        await testZeroGridSkipped();
+        await testExactThresholdBoundary();
+
+        console.log('\n✅ All Fund Cycling Trigger Tests Passed!');
+        process.exit(0);
+    } catch (err) {
+        console.error('\n❌ Test Failed:', err);
+        process.exit(1);
+    }
+})();

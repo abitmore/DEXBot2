@@ -318,9 +318,9 @@ async function runGridComparisons(manager, accountOrders, botKey) {
     try {
         const Grid = require('../grid');
         const persistedGrid = accountOrders.loadBotGrid(botKey, true) || [];
-        const simpleCheckResult = Grid.checkAndUpdateGridIfNeeded(manager, manager.funds.cacheFunds);
+        const simpleCheckResult = Grid.checkAndUpdateGridIfNeeded(manager);
         if (!simpleCheckResult.buyUpdated && !simpleCheckResult.sellUpdated) {
-            await Grid.compareGrids(Array.from(manager.orders.values()), persistedGrid, manager, manager.funds.cacheFunds);
+            await Grid.compareGrids(Array.from(manager.orders.values()), persistedGrid, manager);
         }
     } catch (e) {}
 }
