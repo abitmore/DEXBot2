@@ -8,7 +8,9 @@
 
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { OrderManager } = require('../modules/order/manager');
+const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
 
 async function runTests() {
     console.log('Running Grid Logic Tests...');
@@ -73,6 +75,24 @@ async function runTests() {
         });
     }
 
+    console.log(' - Testing minPrice validation and empty-grid protection...');
+    {
+        assert.throws(
+            () => Grid.createOrderGrid({ startPrice: 100, minPrice: 0, maxPrice: 200, incrementPercent: 1, targetSpreadPercent: 2 }),
+            /minPrice.*positive/i
+        );
+
+        assert.throws(
+            () => Grid.createOrderGrid({ startPrice: 100, minPrice: 99.9, maxPrice: 100.1, incrementPercent: 1, targetSpreadPercent: 2 }),
+            /produced no price levels/i
+        );
+
+        assert.throws(
+            () => Grid.createOrderGrid({ startPrice: 100, minPrice: 99, maxPrice: 101, incrementPercent: 1, targetSpreadPercent: 2 }),
+            /imbalanced rail/i
+        );
+    }
+
     console.log(' - Testing Geometric Progression...');
     {
         const config = { startPrice: 100, minPrice: 50, maxPrice: 200, incrementPercent: 1, targetSpreadPercent: 2 };
@@ -86,6 +106,64 @@ async function runTests() {
                 assert(Math.abs(ratio - 1.01) < 0.05);
             }
         }
+    }
+
+    console.log(' - Testing BUY dust threshold orientation consistency...');
+    {
+        const manager = new OrderManager({
+            assetA: 'TESTA',
+            assetB: 'TESTB',
+            startPrice: 104,
+            incrementPercent: 5,
+            weightDistribution: { buy: 1, sell: 1 },
+            botFunds: { buy: '100%', sell: '100%' },
+            activeOrders: { buy: 6, sell: 6 }
+        });
+
+        manager.assets = {
+            assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
+            assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
+        };
+        manager.setAccountTotals({ buy: 300, sell: 300, buyFree: 300, sellFree: 300 });
+
+        const buyPrices = [98, 99, 100, 101, 102, 103];
+        buyPrices.forEach((price, i) => {
+            manager._updateOrder({
+                id: `b${i}`,
+                type: ORDER_TYPES.BUY,
+                state: ORDER_STATES.VIRTUAL,
+                size: 1,
+                price
+            });
+        });
+
+        const partialId = 'b5';
+        const sideSlots = Array.from(manager.orders.values())
+            .filter(o => o.type === ORDER_TYPES.BUY)
+            .sort((a, b) => a.price - b.price);
+        const ctx = Grid.getSizingContext(manager, 'buy');
+        const idealSizes = allocateFundsByWeights(
+            ctx.budget,
+            sideSlots.length,
+            manager.config.weightDistribution.buy,
+            manager.config.incrementPercent / 100,
+            true,
+            0,
+            ctx.precision
+        );
+        const partialIdx = sideSlots.findIndex(s => s.id === partialId);
+        const threshold = getSingleDustThreshold(idealSizes[partialIdx]);
+        const partialSize = threshold * 0.95;
+
+        manager._updateOrder({
+            ...manager.orders.get(partialId),
+            state: ORDER_STATES.PARTIAL,
+            size: partialSize,
+            orderId: '1.7.555'
+        });
+
+        const partial = manager.orders.get(partialId);
+        assert.strictEqual(Grid.hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
     }
 
     console.log('✓ Grid logic tests passed!');

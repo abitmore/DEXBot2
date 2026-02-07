@@ -293,6 +293,9 @@ class Grid {
         if (!Number.isFinite(minPrice)) {
             throw new Error(`Invalid minPrice: ${minPrice}. Must be a finite number.`);
         }
+        if (minPrice <= 0) {
+            throw new Error(`Invalid minPrice: ${minPrice}. Must be positive.`);
+        }
         if (!Number.isFinite(maxPrice)) {
             throw new Error(`Invalid maxPrice: ${maxPrice}. Must be a finite number.`);
         }
@@ -348,6 +351,14 @@ class Grid {
 
         // Sort all levels from lowest to highest (Master Rail order)
         priceLevels.sort((a, b) => a - b);
+
+        if (priceLevels.length === 0) {
+            throw new Error(
+                `Grid generation produced no price levels for startPrice=${startPrice}, ` +
+                `bounds=[${minPrice}, ${maxPrice}], incrementPercent=${incrementPercent}. ` +
+                `Widen bounds or reduce incrementPercent.`
+            );
+        }
 
         // ================================================================================
         // STEP 2: FIND SPLIT INDEX (First slot at or above startPrice)
@@ -423,6 +434,16 @@ class Grid {
 
             return order;
         });
+
+        const buyCount = orders.filter(o => o.type === ORDER_TYPES.BUY).length;
+        const sellCount = orders.filter(o => o.type === ORDER_TYPES.SELL).length;
+        if (buyCount === 0 || sellCount === 0) {
+            throw new Error(
+                `Grid generation produced an imbalanced rail (buy=${buyCount}, sell=${sellCount}) for ` +
+                `startPrice=${startPrice}, bounds=[${minPrice}, ${maxPrice}], incrementPercent=${incrementPercent}, ` +
+                `targetSpreadPercent=${config.targetSpreadPercent}. Widen bounds or reduce target spread.`
+            );
+        }
 
         const initialSpreadCount = {
             buy: buySpread,
@@ -1141,7 +1162,7 @@ class Grid {
 
         const sideSlots = Array.from(manager.orders.values())
             .filter(o => o.type === type)
-            .sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+            .sort((a, b) => a.price - b.price);
 
         if (sideSlots.length === 0) return false;
 
