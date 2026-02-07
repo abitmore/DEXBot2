@@ -12,6 +12,42 @@
 
 See `docs/WORKFLOW.md` for detailed workflow guide.
 
+## Commit Quality Standard
+When creating commits, prefer high-context commit messages for non-trivial fixes/features.
+
+- **Subject**: concise conventional prefix (`fix:`, `feat:`, `docs:`) with clear scope.
+- **Body required for substantial changes**: explain **why**, not only what changed.
+- **Structure**:
+  1. Short problem statement/context
+  2. Per-fix sections with file path(s) and behavioral impact
+  3. Risk/edge-case notes when relevant
+  4. Validation/testing notes (commands or scenario checks)
+- **Formatting**: use readable markdown headers/bullets in commit body for scanability.
+- **Atomicity**: keep unrelated edits out of the commit; document only included changes.
+
+Recommended template:
+
+```text
+fix: <short summary>
+
+<1-2 line context>
+
+## <Fix area 1>
+File: <path>
+- Problem:
+- Impact:
+- Solution:
+
+## <Fix area 2>
+File: <path>
+- Problem:
+- Impact:
+- Solution:
+
+## Testing Notes
+- <test/verification>
+```
+
 ## Current Status
 | Branch | Commits Ahead | Status |
 |--------|---|--------|

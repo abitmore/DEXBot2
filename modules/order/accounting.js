@@ -255,12 +255,20 @@ class Accountant {
      * @returns {Promise<Object>} - Validation result from validateGridStateForPersistence()
      */
     async _performStateRecovery(mgr) {
+        const accountRef = mgr.accountId || mgr.account || null;
+        if (!accountRef) {
+            return {
+                isValid: false,
+                reason: 'Recovery skipped: missing account context (accountId/account)'
+            };
+        }
+
         // 1. Fetch fresh blockchain state
-        await mgr.fetchAccountTotals();
+        await mgr.fetchAccountTotals(accountRef);
 
         // 2. Sync from open orders
         const chainOrders = require('../chain_orders');
-        const openOrders = await chainOrders.readOpenOrders(mgr.accountId);
+        const openOrders = await chainOrders.readOpenOrders(accountRef);
         await mgr.syncFromOpenOrders(openOrders, { skipAccounting: false });
 
         // 3. Validate recovery

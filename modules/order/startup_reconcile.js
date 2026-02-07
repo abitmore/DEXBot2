@@ -139,6 +139,27 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
 }
 
 /**
+ * Resolve the best account reference for recovery blockchain reads.
+ * Prefer account ID when available, fall back to account name.
+ * @param {Object} manager - OrderManager instance
+ * @param {string} account - Account name
+ * @returns {string|null}
+ * @private
+ */
+function _resolveRecoveryAccountRef(manager, account) {
+    if (manager && typeof manager.accountId === 'string' && manager.accountId) {
+        return manager.accountId;
+    }
+    if (manager && typeof manager.account === 'string' && manager.account) {
+        return manager.account;
+    }
+    if (typeof account === 'string' && account) {
+        return account;
+    }
+    return null;
+}
+
+/**
  * Update an existing chain order to match a grid slot.
  * @param {Object} params - Update parameters.
  * @param {Object} params.chainOrders - Chain orders module.
@@ -328,7 +349,10 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         const logger = manager && manager.logger;
         logger?.log?.(`[_createOrderFromGrid] CRITICAL: createOrder succeeded but chainOrderId extraction failed`, 'error');
         try {
-            const freshChainOrders = await chainOrders.readOpenOrders(null, TIMING.CONNECTION_TIMEOUT_MS);
+            const freshChainOrders = await chainOrders.readOpenOrders(
+                _resolveRecoveryAccountRef(manager, account),
+                TIMING.CONNECTION_TIMEOUT_MS
+            );
             // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
             // Orphan order requires fund deduction to prevent phantom capital
             await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'chainOrderIdExtractionFailure' });
@@ -616,7 +640,10 @@ async function reconcileStartupOrders({
             // This prevents grid/chain desync where grid expects update succeeded but chain order still exists/differs
             try {
                 logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL update failure`, 'warn');
-                const freshChainOrders = await chainOrders.readOpenOrders(null, TIMING.CONNECTION_TIMEOUT_MS);
+                const freshChainOrders = await chainOrders.readOpenOrders(
+                    _resolveRecoveryAccountRef(manager, account),
+                    TIMING.CONNECTION_TIMEOUT_MS
+                );
                 // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
                 // Pre-adjustment happened but post-deduction didn't; sync must correct fund tracking
                 await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'startupReconcileFailure' });
@@ -641,7 +668,10 @@ async function reconcileStartupOrders({
                 // CRITICAL FIX: Recovery sync
                 try {
                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL creation failure`, 'warn');
-                    const freshChainOrders = await chainOrders.readOpenOrders(null, TIMING.CONNECTION_TIMEOUT_MS);
+                    const freshChainOrders = await chainOrders.readOpenOrders(
+                        _resolveRecoveryAccountRef(manager, account),
+                        TIMING.CONNECTION_TIMEOUT_MS
+                    );
                     // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
                     // Orphan order requires fund deduction to prevent phantom capital (same pattern as line 279)
                     await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'phase3CreationFailure' });
@@ -788,7 +818,10 @@ async function reconcileStartupOrders({
             // This prevents grid/chain desync where grid expects update succeeded but chain order still exists/differs
             try {
                 logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY update failure`, 'warn');
-                const freshChainOrders = await chainOrders.readOpenOrders(null, TIMING.CONNECTION_TIMEOUT_MS);
+                const freshChainOrders = await chainOrders.readOpenOrders(
+                    _resolveRecoveryAccountRef(manager, account),
+                    TIMING.CONNECTION_TIMEOUT_MS
+                );
                 // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
                 // Pre-adjustment happened but post-deduction didn't; sync must correct fund tracking
                 await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'startupReconcileFailure' });
@@ -813,7 +846,10 @@ async function reconcileStartupOrders({
                 // CRITICAL FIX: Recovery sync
                 try {
                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY creation failure`, 'warn');
-                    const freshChainOrders = await chainOrders.readOpenOrders(null, TIMING.CONNECTION_TIMEOUT_MS);
+                    const freshChainOrders = await chainOrders.readOpenOrders(
+                        _resolveRecoveryAccountRef(manager, account),
+                        TIMING.CONNECTION_TIMEOUT_MS
+                    );
                     // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
                     // Orphan order requires fund deduction to prevent phantom capital (same pattern as line 588)
                     await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'phase3CreationFailure' });

@@ -101,12 +101,7 @@ const {
     correctAllPriceMismatches,
     convertToSpreadPlaceholder
 } = require('./order/utils/order');
-const {
-    blockchainToFloat,
-    isSignificantSizeChange,
-    validateOrderSize,
-    getDustThresholdFactor
-} = require('./order/utils/math');
+const { validateOrderSize } = require('./order/utils/math');
 const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
@@ -169,6 +164,14 @@ class DEXBot {
 
         // Shutdown state
         this._shuttingDown = false;
+
+        // Runtime handles for graceful lifecycle management
+        this._blockchainFetchInterval = null;
+        this._fillsUnsubscribe = null;
+        this._triggerWatcher = null;
+        this._triggerDebounceTimer = null;
+        this._mainLoopActive = false;
+        this._mainLoopPromise = null;
     }
 
     /**
@@ -215,12 +218,19 @@ class DEXBot {
      * @param {string} msg - The message to log.
      * @private
      */
-    _log(msg) {
-        if (this.logPrefix) {
-            console.log(`${this.logPrefix} ${msg}`);
-        } else {
-            console.log(msg);
+    _log(msg, level = 'info') {
+        if (level === 'warn') {
+            this._warn(msg);
+            return;
         }
+
+        const line = this.logPrefix ? `${this.logPrefix} ${msg}` : msg;
+        if (level === 'error') {
+            console.error(line);
+            return;
+        }
+
+        console.log(line);
     }
 
     /**
@@ -358,7 +368,14 @@ class DEXBot {
         try {
             // CRITICAL: Activate fill listener EARLY - before ANY operations that place orders
             // This ensures fills during trigger reset and grid initialization are captured
-            await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+            if (typeof this._fillsUnsubscribe === 'function') {
+                await this._fillsUnsubscribe().catch(() => { });
+            }
+            this._fillsUnsubscribe = await chainOrders.listenForFills(this.account || undefined, this._createFillCallback(chainOrders));
+            if (typeof this._fillsUnsubscribe !== 'function') {
+                this._warn('Fill listener did not provide an unsubscribe handler. Shutdown cleanup may be incomplete.');
+                this._fillsUnsubscribe = null;
+            }
             this._log('Fill listener activated (ready to process fills during startup)');
 
             // CRITICAL: Handle any pending trigger file reset FIRST before any other startup operations
@@ -421,7 +438,7 @@ class DEXBot {
 
                                 if (allOrders.length > 0) {
                                     this._log(`[POST-RESET] Placing ${allOrders.length} order(s) for filled slot`);
-                                    await this.updateOrdersOnChainBatch(allOrders);
+                                    await this.updateOrdersOnChainBatch(rebalanceResult);
                                 }
                             }
                         }
@@ -444,27 +461,8 @@ class DEXBot {
                 await this._setupTriggerFileDetection();
                 this._setupBlockchainFetchInterval();
 
-                // Main loop
-                const loopDelayMs = Number(process.env.RUN_LOOP_MS || TIMING.RUN_LOOP_DEFAULT_MS);
-                this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
-
-                (async () => {
-                    while (true) {
-                        try {
-                            if (this.manager && !this.config.dryRun) {
-                                if (!this.manager._fillProcessingLock.isLocked() &&
-                                    this.manager._fillProcessingLock.getQueueLength() === 0) {
-                                    await this.manager._fillProcessingLock.acquire(async () => {
-                                        await this.manager.syncFromOpenOrders();
-                                    });
-                                }
-                            }
-                        } catch (err) { console.error('Order manager loop error:', err.message); }
-                        await new Promise(resolve => setTimeout(resolve, loopDelayMs));
-                    }
-                })();
-
-                console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
+                this._startMainLoop();
+                this._log(`DEXBot started. OrderManager running (dryRun=${!!this.config.dryRun})`);
                 return; // Skip normal startup path
             }
 
@@ -487,6 +485,10 @@ class DEXBot {
                 if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
                     this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
                 }
+            }
+
+            if (!this.config.dryRun && !this.accountId) {
+                throw new Error('Cannot start bot without a resolved account ID');
             }
 
             // Use this.accountId which was set during initialize()
@@ -606,27 +608,8 @@ class DEXBot {
             await this._setupTriggerFileDetection();
             this._setupBlockchainFetchInterval();
 
-            // Main loop
-            const loopDelayMs = Number(process.env.RUN_LOOP_MS || 5000);
-            this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
-
-            (async () => {
-                while (true) {
-                    try {
-                        if (this.manager && !this.config.dryRun) {
-                            if (!this.manager._fillProcessingLock.isLocked() &&
-                                this.manager._fillProcessingLock.getQueueLength() === 0) {
-                                await this.manager._fillProcessingLock.acquire(async () => {
-                                    await this.manager.syncFromOpenOrders();
-                                });
-                            }
-                        }
-                    } catch (err) { console.error('Order manager loop error:', err.message); }
-                    await new Promise(resolve => setTimeout(resolve, loopDelayMs));
-                }
-            })();
-
-            console.log('DEXBot started. OrderManager running (dryRun=' + !!this.config.dryRun + ')');
+            this._startMainLoop();
+            this._log(`DEXBot started. OrderManager running (dryRun=${!!this.config.dryRun})`);
 
         } catch (err) {
             this._warn(`Error during grid initialization: ${err.message}`);
@@ -644,12 +627,18 @@ class DEXBot {
      */
     _createFillCallback(chainOrders) {
         return async (fills) => {
-            if (this.manager && !this.config.dryRun) {
+            if (this._shuttingDown) {
+                return;
+            }
+
+            if (this.manager && !this.config.dryRun && Array.isArray(fills) && fills.length > 0) {
                 // PUSH to queue immediately (non-blocking)
                 this._incomingFillQueue.push(...fills);
 
                 // Trigger consumer (fire-and-forget: it will acquire lock if needed)
-                this._consumeFillQueue(chainOrders);
+                this._consumeFillQueue(chainOrders).catch(err => {
+                    this._warn(`Fill queue consume failed: ${err.message}`);
+                });
                 return;
             }
         };
@@ -982,7 +971,7 @@ class DEXBot {
 
         // Post-processing: If new fills arrived while processing, schedule another cycle
         // SAFE: Done outside lock context, no async work in finally block
-        if (this._incomingFillQueue.length > 0) {
+        if (!this._shuttingDown && this._incomingFillQueue.length > 0) {
             // Schedule consumer restart asynchronously (not in finally block)
             setImmediate(() => this._consumeFillQueue(chainOrders).catch(err => {
                 this._log(`Error in deferred consumer restart: ${err.message}`);
@@ -1158,9 +1147,13 @@ class DEXBot {
             }
         } catch (e) { /* best-effort */ }
 
-        if (accId) chainOrders.setPreferredAccount(accId, accountName);
+        if (!accId) {
+            throw new Error(`Unable to resolve account id for '${accountName}'`);
+        }
+
+        await chainOrders.setPreferredAccount(accId, accountName);
         this.account = accountName;
-        this.accountId = accId || null;
+        this.accountId = accId;
         this._log(`Initialized DEXBot for account: ${this.account}`);
     }
 
@@ -1958,16 +1951,17 @@ class DEXBot {
      * Perform grid recalculation triggered by trigger file.
      * Reloads config from disk, recalculates grid, resets funds, and removes trigger file.
      * Must be called with _fillProcessingLock already held.
+     * @returns {Promise<boolean>} True if resync succeeded
      * @private
      */
     async _performGridResync() {
+        let success = false;
         this.manager.startBootstrap();
         this._log('Grid regeneration triggered. Performing full grid resync...');
         try {
             // 1. Reload configuration from disk to pick up any changes
             try {
                 const { parseJsonWithComments } = require('./account_bots');
-                const { createBotKey } = require('./account_orders');
                 const content = fs.readFileSync(PROFILES_BOTS_FILE, 'utf8');
                 const allBotsConfig = parseJsonWithComments(content).bots || [];
 
@@ -2003,22 +1997,25 @@ class DEXBot {
             this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
             this.manager.funds.btsFeesOwed = 0;
             await this.manager.persistGrid();
+            success = true;
 
             if (fs.existsSync(this.triggerFile)) {
                 fs.unlinkSync(this.triggerFile);
                 this._log('Removed trigger file.');
             }
         } catch (err) {
-            this._log(`Error during triggered resync: ${err.message}`);
+            this._log(`Error during triggered resync: ${err.message}`, 'error');
         } finally {
             this.manager.finishBootstrap();
         }
+
+        return success;
     }
 
     /**
      * Handle any pending trigger file reset at startup.
      * This is called FIRST during startup before any grid operations.
-     * @returns {Promise<boolean>} True if a trigger reset was performed, false otherwise
+     * @returns {Promise<boolean>} True if trigger reset completed successfully, false otherwise
      * @private
      */
     async _handlePendingTriggerReset() {
@@ -2029,11 +2026,16 @@ class DEXBot {
         this._log('Pending trigger file detected. Processing reset before startup...');
 
         // Use fill lock to prevent concurrent modifications during resync
+        let resetSucceeded = false;
         await this.manager._fillProcessingLock.acquire(async () => {
-            await this._performGridResync();
+            resetSucceeded = await this._performGridResync();
         });
 
-        return true; // Reset was performed
+        if (!resetSucceeded) {
+            this._warn('Pending trigger reset failed. Continuing with normal startup path.');
+        }
+
+        return resetSucceeded;
     }
 
     /**
@@ -2046,18 +2048,34 @@ class DEXBot {
         // This method now only sets up the runtime file watcher for trigger detection.
 
         // Debounced watcher to avoid duplicate rapid triggers on some platforms
-        let _triggerDebounce = null;
+        if (this._triggerWatcher && typeof this._triggerWatcher.close === 'function') {
+            this._triggerWatcher.close();
+            this._triggerWatcher = null;
+        }
+
+        if (this._triggerDebounceTimer) {
+            clearTimeout(this._triggerDebounceTimer);
+            this._triggerDebounceTimer = null;
+        }
+
         try {
-            fs.watch(PROFILES_DIR, (eventType, filename) => {
+            this._triggerWatcher = fs.watch(PROFILES_DIR, (eventType, filename) => {
                 try {
+                    if (this._shuttingDown) return;
+
                     if (filename === path.basename(this.triggerFile)) {
                         if ((eventType === 'rename' || eventType === 'change') && fs.existsSync(this.triggerFile)) {
-                            if (_triggerDebounce) clearTimeout(_triggerDebounce);
-                            _triggerDebounce = setTimeout(() => {
-                                _triggerDebounce = null;
+                            if (this._triggerDebounceTimer) clearTimeout(this._triggerDebounceTimer);
+                            this._triggerDebounceTimer = setTimeout(() => {
+                                this._triggerDebounceTimer = null;
                                 // Use fill lock to prevent concurrent modifications during resync
                                 this.manager._fillProcessingLock.acquire(async () => {
-                                    await this._performGridResync();
+                                    const ok = await this._performGridResync();
+                                    if (!ok) {
+                                        this._warn('Runtime trigger reset failed; retaining existing grid state.');
+                                    }
+                                }).catch(err => {
+                                    this._warn(`Trigger reset lock error: ${err.message}`);
                                 });
                             }, 200);
                         }
@@ -2137,6 +2155,54 @@ class DEXBot {
     }
 
     /**
+     * Start the lightweight background sync loop.
+     * Uses fill lock contention checks to avoid competing with fill processing.
+     * @private
+     */
+    _startMainLoop() {
+        if (this._mainLoopPromise) {
+            return;
+        }
+
+        const loopDelayMs = Number(process.env.RUN_LOOP_MS || TIMING.RUN_LOOP_DEFAULT_MS);
+        this._mainLoopActive = true;
+        this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
+
+        this._mainLoopPromise = (async () => {
+            while (this._mainLoopActive && !this._shuttingDown) {
+                try {
+                    if (this.manager && this.accountId && !this.config.dryRun) {
+                        if (!this.manager._fillProcessingLock.isLocked() &&
+                            this.manager._fillProcessingLock.getQueueLength() === 0) {
+                            await this.manager._fillProcessingLock.acquire(async () => {
+                                const chainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
+                                await this.manager.syncFromOpenOrders(chainOpenOrders);
+                            });
+                        }
+                    }
+                } catch (err) {
+                    this._warn(`Order manager loop error: ${err.message}`);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, loopDelayMs));
+            }
+        })().finally(() => {
+            this._mainLoopPromise = null;
+        });
+    }
+
+    /**
+     * Stop the background sync loop started by _startMainLoop.
+     * @private
+     */
+    async _stopMainLoop() {
+        this._mainLoopActive = false;
+        if (this._mainLoopPromise) {
+            await this._mainLoopPromise;
+        }
+    }
+
+    /**
      * Set up periodic blockchain account balance fetch interval.
      * Fetches available funds at regular intervals to keep blockchain variables up-to-date.
      * @private
@@ -2144,6 +2210,10 @@ class DEXBot {
     _setupBlockchainFetchInterval() {
         const { TIMING } = require('./constants');
         const intervalMin = TIMING.BLOCKCHAIN_FETCH_INTERVAL_MIN;
+
+        if (this._blockchainFetchInterval !== null && this._blockchainFetchInterval !== undefined) {
+            this._stopBlockchainFetchInterval();
+        }
 
         // Validate the interval setting
         if (!Number.isFinite(intervalMin) || intervalMin <= 0) {
@@ -2230,8 +2300,8 @@ class DEXBot {
         return {
             ...this._metrics,
             queueDepth: this._incomingFillQueue.length,
-            fillProcessingLockActive: this.manager._fillProcessingLock?.isLocked() || false,
-            divergenceLockActive: this.manager._divergenceLock?.isLocked() || false,
+            fillProcessingLockActive: this.manager?._fillProcessingLock?.isLocked() || false,
+            divergenceLockActive: this.manager?._divergenceLock?.isLocked() || false,
             shadowLocksActive: this.manager?.shadowOrderIds?.size || 0,
             recentFillsTracked: this._recentlyProcessedFills.size
         };
@@ -2422,10 +2492,44 @@ class DEXBot {
         // Stop accepting new work
         this._stopBlockchainFetchInterval();
 
+        if (this._triggerDebounceTimer) {
+            clearTimeout(this._triggerDebounceTimer);
+            this._triggerDebounceTimer = null;
+        }
+
+        if (this._triggerWatcher && typeof this._triggerWatcher.close === 'function') {
+            try {
+                this._triggerWatcher.close();
+            } catch (err) {
+                this._warn(`Failed to close trigger watcher: ${err.message}`);
+            } finally {
+                this._triggerWatcher = null;
+            }
+        }
+
+        if (typeof this._fillsUnsubscribe === 'function') {
+            try {
+                await this._fillsUnsubscribe();
+            } catch (err) {
+                this._warn(`Failed to unsubscribe fill listener: ${err.message}`);
+            } finally {
+                this._fillsUnsubscribe = null;
+            }
+        }
+
+        try {
+            await this._stopMainLoop();
+        } catch (err) {
+            this._warn(`Error while stopping main loop: ${err.message}`);
+        }
+
         // Wait for current fill processing to complete
         try {
-            await this.manager._fillProcessingLock.acquire(async () => {
-                this._log('Fill processing lock acquired for shutdown');
+            if (!this.manager?._fillProcessingLock) {
+                this._warn('Shutdown lock skipped: manager or fillProcessingLock unavailable');
+            } else {
+                await this.manager._fillProcessingLock.acquire(async () => {
+                    this._log('Fill processing lock acquired for shutdown');
 
                 // Log any remaining queued fills
                 if (this._incomingFillQueue.length > 0) {
@@ -2441,7 +2545,8 @@ class DEXBot {
                         this._warn(`Failed to persist final state: ${err.message}`);
                     }
                 }
-            });
+                });
+            }
         } catch (err) {
             this._warn(`Error during shutdown lock acquisition: ${err.message}`);
         }
