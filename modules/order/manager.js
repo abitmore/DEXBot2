@@ -1176,8 +1176,8 @@ class OrderManager {
             driftSell,
             allowedDriftBuy,
             allowedDriftSell,
-            reason: !buyOk ? `BUY drift ${Format.formatAmount8(driftBuy)} > ${Format.formatAmount8(allowedDriftBuy)}` :
-                    !sellOk ? `SELL drift ${Format.formatAmount8(driftSell)} > ${Format.formatAmount8(allowedDriftSell)}` : null
+            reason: !buyOk ? `BUY drift ${Format.formatAmountByPrecision(driftBuy, buyPrecision)} > ${Format.formatAmountByPrecision(allowedDriftBuy, buyPrecision)}` :
+                    !sellOk ? `SELL drift ${Format.formatAmountByPrecision(driftSell, sellPrecision)} > ${Format.formatAmountByPrecision(allowedDriftSell, sellPrecision)}` : null
         };
     }
 

@@ -393,25 +393,27 @@ function getMinAbsoluteOrderSize(orderType, assets, minFactor = 50) {
 }
 
 function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSize = null, dustThresholdPercent = 5) {
-    const orderSizeFloat = toFiniteNumber(orderSize);
-    const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, assets, minFactor);
-    
-    if (orderSizeFloat < minAbsoluteSize) {
-        return { isValid: false, reason: `Order size (${orderSizeFloat.toFixed(8)}) below absolute minimum (${minAbsoluteSize.toFixed(8)})`, minAbsoluteSize, minDustSize: null };
-    }
+     const orderSizeFloat = toFiniteNumber(orderSize);
+     const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, assets, minFactor);
+     
+     let precision = null;
+     if (assets) {
+         if ((orderType === ORDER_TYPES.SELL) && assets.assetA) precision = assets.assetA.precision;
+         else if ((orderType === ORDER_TYPES.BUY) && assets.assetB) precision = assets.assetB.precision;
+     }
+     // Fallback to 8 if precision not found
+     const displayPrecision = precision || 8;
+     
+     if (orderSizeFloat < minAbsoluteSize) {
+         return { isValid: false, reason: `Order size (${Format.formatAmountByPrecision(orderSizeFloat, displayPrecision)}) below absolute minimum (${Format.formatAmountByPrecision(minAbsoluteSize, displayPrecision)})`, minAbsoluteSize, minDustSize: null };
+     }
 
-    if (idealSize !== null && idealSize !== undefined && idealSize > 0) {
-        const minDustSize = getDoubleDustThreshold(idealSize, dustThresholdPercent);
-        if (orderSizeFloat < minDustSize) {
-            return { isValid: false, reason: `Order size (${orderSizeFloat.toFixed(8)}) below double-dust threshold (${minDustSize.toFixed(8)})`, minAbsoluteSize, minDustSize };
-        }
-    }
-
-    let precision = null;
-    if (assets) {
-        if ((orderType === ORDER_TYPES.SELL) && assets.assetA) precision = assets.assetA.precision;
-        else if ((orderType === ORDER_TYPES.BUY) && assets.assetB) precision = assets.assetB.precision;
-    }
+     if (idealSize !== null && idealSize !== undefined && idealSize > 0) {
+         const minDustSize = getDoubleDustThreshold(idealSize, dustThresholdPercent);
+         if (orderSizeFloat < minDustSize) {
+             return { isValid: false, reason: `Order size (${Format.formatAmountByPrecision(orderSizeFloat, displayPrecision)}) below double-dust threshold (${Format.formatAmountByPrecision(minDustSize, displayPrecision)})`, minAbsoluteSize, minDustSize };
+         }
+     }
 
     if (typeof precision === 'number') {
         if (floatToBlockchainInt(orderSizeFloat, precision) <= 0) {

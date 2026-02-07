@@ -264,9 +264,11 @@ class Logger {
             }
         }
 
-        // Available funds
-        const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
-        const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
+        // Available funds - use asset-aware precision
+        const buyPrecision = manager.config?.assetB?.precision || 8;
+        const sellPrecision = manager.config?.assetA?.precision || 8;
+        const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmountByPrecision(manager.funds.available.buy, buyPrecision) : 'N/A';
+        const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmountByPrecision(manager.funds.available.sell, sellPrecision) : 'N/A';
 
         const c = this.colors;
         const buy = c.buy;
@@ -296,17 +298,19 @@ class Logger {
      *
      * @private
      */
-    _logDetailedFunds(manager, headerContext = '') {
-        const buyName = manager.config?.assetB || 'quote';
-        const sellName = manager.config?.assetA || 'base';
-        const c = this.colors;
-        const debug = c.debug;
-        const reset = c.reset;
-        const buy = c.buy;
-        const sell = c.sell;
+     _logDetailedFunds(manager, headerContext = '') {
+         const buyName = manager.config?.assetB || 'quote';
+         const sellName = manager.config?.assetA || 'base';
+         const buyPrecision = manager.config?.assetB?.precision || 8;
+         const sellPrecision = manager.config?.assetA?.precision || 8;
+         const c = this.colors;
+         const debug = c.debug;
+         const reset = c.reset;
+         const buy = c.buy;
+         const sell = c.sell;
 
-         const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
-         const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
+          const availableBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmountByPrecision(manager.funds.available.buy, buyPrecision) : 'N/A';
+          const availableSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmountByPrecision(manager.funds.available.sell, sellPrecision) : 'N/A';
 
         // Chain balances
         const chainFreeBuy = manager.accountTotals?.buyFree ?? 0;
@@ -334,21 +338,21 @@ class Logger {
         console.log(`${debug}AVAILABLE:${reset}`);
         console.log(`  ${buy}Buy ${availableBuy}${reset} ${buyName} | ${sell}Sell ${availableSell}${reset} ${sellName}`);
 
-        console.log(`\n${debug}CHAIN BALANCES:${reset}`);
-         console.log(`  chainFree: ${buy}Buy ${Format.formatAmount8(chainFreeBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(chainFreeSell)}${reset}`);
-         console.log(`  total.chain: ${buy}Buy ${Format.formatAmount8(totalChainBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(totalChainSell)}${reset}`);
+         console.log(`\n${debug}CHAIN BALANCES:${reset}`);
+          console.log(`  chainFree: ${buy}Buy ${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)}${reset} | ${sell}Sell ${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)}${reset}`);
+          console.log(`  total.chain: ${buy}Buy ${Format.formatAmountByPrecision(totalChainBuy, buyPrecision)}${reset} | ${sell}Sell ${Format.formatAmountByPrecision(totalChainSell, sellPrecision)}${reset}`);
 
-         console.log(`\n${debug}GRID ALLOCATIONS:${reset}`);
-         console.log(`  total.grid: ${buy}Buy ${Format.formatAmount8(totalGridBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(totalGridSell)}${reset}`);
-         console.log(`  committed.grid: ${buy}Buy ${Format.formatAmount8(committedGridBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(committedGridSell)}${reset}`);
-         console.log(`  virtual (reserved): ${buy}Buy ${Format.formatAmount8(virtualBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(virtualSell)}${reset}`);
+          console.log(`\n${debug}GRID ALLOCATIONS:${reset}`);
+          console.log(`  total.grid: ${buy}Buy ${Format.formatAmountByPrecision(totalGridBuy, buyPrecision)}${reset} | ${sell}Sell ${Format.formatAmountByPrecision(totalGridSell, sellPrecision)}${reset}`);
+          console.log(`  committed.grid: ${buy}Buy ${Format.formatAmountByPrecision(committedGridBuy, buyPrecision)}${reset} | ${sell}Sell ${Format.formatAmountByPrecision(committedGridSell, sellPrecision)}${reset}`);
+          console.log(`  virtual (reserved): ${buy}Buy ${Format.formatAmountByPrecision(virtualBuy, buyPrecision)}${reset} | ${sell}Sell ${Format.formatAmountByPrecision(virtualSell, sellPrecision)}${reset}`);
 
-         console.log(`\n${debug}COMMITTED ON-CHAIN:${reset}`);
-         console.log(`  ${buy}Buy ${Format.formatAmount8(committedChainBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(committedChainSell)}${reset}`);
+          console.log(`\n${debug}COMMITTED ON-CHAIN:${reset}`);
+          console.log(`  ${buy}Buy ${Format.formatAmountByPrecision(committedChainBuy, buyPrecision)}${reset} | ${sell}Sell ${Format.formatAmountByPrecision(committedChainSell, sellPrecision)}${reset}`);
 
-         console.log(`\n${debug}DEDUCTIONS & PENDING:${reset}`);
-         console.log(`  cacheFunds: ${buy}Buy ${Format.formatAmount8(cacheBuy)}${reset} | ${sell}Sell ${Format.formatAmount8(cacheSell)}${reset}`);
-         console.log(`  btsFeesOwed: ${Format.formatAmount8(btsFeesOwed)} BTS${reset}\n`);
+          console.log(`\n${debug}DEDUCTIONS & PENDING:${reset}`);
+          console.log(`  cacheFunds: ${buy}Buy ${Format.formatAmountByPrecision(cacheBuy, buyPrecision)}${reset} | ${sell}Sell ${Format.formatAmountByPrecision(cacheSell, sellPrecision)}${reset}`);
+          console.log(`  btsFeesOwed: ${Format.formatAmount8(btsFeesOwed)} BTS${reset}\n`);
     }
 
     /**
@@ -369,12 +373,14 @@ class Logger {
         const virtualOrders = manager.getOrdersByTypeAndState(null, ORDER_STATES.VIRTUAL);
         console.log('\n===== STATUS =====');
         console.log(`Market: ${market}`);
-        const buyName = manager.config?.assetB || 'quote';
-        const sellName = manager.config?.assetA || 'base';
+         const buyName = manager.config?.assetB || 'quote';
+         const sellName = manager.config?.assetA || 'base';
+         const buyPrecision = manager.config?.assetB?.precision || 8;
+         const sellPrecision = manager.config?.assetA?.precision || 8;
 
-         // Use new nested structure
-         const gridBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmount8(manager.funds.available.buy) : 'N/A';
-         const gridSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmount8(manager.funds.available.sell) : 'N/A';
+          // Use new nested structure with asset-aware precision
+          const gridBuy = Number.isFinite(Number(manager.funds?.available?.buy)) ? Format.formatAmountByPrecision(manager.funds.available.buy, buyPrecision) : 'N/A';
+          const gridSell = Number.isFinite(Number(manager.funds?.available?.sell)) ? Format.formatAmountByPrecision(manager.funds.available.sell, sellPrecision) : 'N/A';
         const totalChainBuy = manager.funds?.total?.chain?.buy ?? 0;
         const totalChainSell = manager.funds?.total?.chain?.sell ?? 0;
         const totalGridBuy = manager.funds?.total?.grid?.buy ?? 0;
@@ -394,13 +400,13 @@ class Logger {
         const buy = c.buy;
         const sell = c.sell;
 
-        console.log(`funds.available: ${buy}Buy ${gridBuy}${reset} ${buyName} | ${sell}Sell ${gridSell}${reset} ${sellName}`);
-         console.log(`total.chain: ${buy}Buy ${Format.formatAmount8(totalChainBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(totalChainSell)}${reset} ${sellName}`);
-         console.log(`total.grid: ${buy}Buy ${Format.formatAmount8(totalGridBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(totalGridSell)}${reset} ${sellName}`);
-         console.log(`virtual.grid: ${buy}Buy ${Format.formatAmount8(virtualBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(virtualSell)}${reset} ${sellName}`);
-         console.log(`cacheFunds: ${buy}Buy ${Format.formatAmount8(cacheBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(cacheSell)}${reset} ${sellName}`);
-         console.log(`committed.grid: ${buy}Buy ${Format.formatAmount8(committedGridBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(committedGridSell)}${reset} ${sellName}`);
-         console.log(`committed.chain: ${buy}Buy ${Format.formatAmount8(committedChainBuy)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmount8(committedChainSell)}${reset} ${sellName}`);
+         console.log(`funds.available: ${buy}Buy ${gridBuy}${reset} ${buyName} | ${sell}Sell ${gridSell}${reset} ${sellName}`);
+          console.log(`total.chain: ${buy}Buy ${Format.formatAmountByPrecision(totalChainBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(totalChainSell, sellPrecision)}${reset} ${sellName}`);
+          console.log(`total.grid: ${buy}Buy ${Format.formatAmountByPrecision(totalGridBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(totalGridSell, sellPrecision)}${reset} ${sellName}`);
+          console.log(`virtual.grid: ${buy}Buy ${Format.formatAmountByPrecision(virtualBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(virtualSell, sellPrecision)}${reset} ${sellName}`);
+          console.log(`cacheFunds: ${buy}Buy ${Format.formatAmountByPrecision(cacheBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(cacheSell, sellPrecision)}${reset} ${sellName}`);
+          console.log(`committed.grid: ${buy}Buy ${Format.formatAmountByPrecision(committedGridBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(committedGridSell, sellPrecision)}${reset} ${sellName}`);
+          console.log(`committed.chain: ${buy}Buy ${Format.formatAmountByPrecision(committedChainBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${Format.formatAmountByPrecision(committedChainSell, sellPrecision)}${reset} ${sellName}`);
         console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length} | Partial ${partialOrders.length}`);
                 console.log(`Spreads: ${manager.currentSpreadCount}/${manager.targetSpreadCount}`);
                 // calculateCurrentSpread may exist on manager
@@ -473,7 +479,7 @@ class Logger {
         console.log(`\n${partial}PARTIAL ORDERS${reset}: ${partialOrders.length}`);
         if (partialOrders.length > 0) {
             for (const order of partialOrders) {
-                 console.log(`  ${partial}${order.id}@${Format.formatPrice4(order.price)} size=${Format.formatAmount8(order.size)}${reset}`);
+                console.log(`  ${partial}${order.id}@${Format.formatPrice4(order.price)} size=${Format.formatSizeByOrderType(order.size, order.type, manager.assets)}${reset}`);
             }
         }
 
@@ -494,4 +500,3 @@ class Logger {
 }
 
 module.exports = Logger;
-

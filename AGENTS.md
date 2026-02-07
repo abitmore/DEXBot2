@@ -8,9 +8,39 @@
 - **main**: Production-ready (merged from dev)
 
 ⚠️ **KEY RULE**: Always merge **test → dev**, NEVER dev → test
-⚠️ **KEY RULE**: Do not commit, push, merge, or run branch-sync scripts unless the user explicitly asks.
-⚠️ **KEY RULE**: `npm run ptest`, `npm run pdev`, and `npm run pmain` are allowed only when explicitly requested by the user.
+⚠️ **KEY RULE**: See **Absolute Git Action Gate** below for all write-action authorization rules.
 ⚠️ **KEY RULE**: Default to manual merge/push flow for branch promotion when requested, unless the user specifically asks to use one of the sync scripts.
+
+## Absolute Git Action Gate (No Inference)
+
+The agent must NEVER run any git write action unless the user explicitly names that action in the current message.
+
+The agent must NEVER run branch-promotion scripts unless the user explicitly names the script in the current message.
+
+Git write actions include:
+- `git add`
+- `git commit`
+- `git commit --amend`
+- `git reset` (any mode)
+- `git rebase`
+- `git merge`
+- `git push`
+- `git tag`
+- `git checkout` / `git switch` to another branch
+
+Branch-promotion scripts include:
+- `npm run ptest`
+- `npm run pdev`
+- `npm run pmain`
+
+Read-only git commands are always allowed (for example: `git status`, `git diff`, `git log`, `git show`).
+
+Strict interpretation rules:
+1. Replies like "yes", "ok", "do it", "y", or "go ahead" are NOT sufficient for git write actions unless the immediately previous assistant message requested one single explicit git action and no other interpretation is possible.
+2. Requests like "update changelog", "include in patch notes", or "merge into patch17" mean file-content edits only, not commit/amend/push.
+3. Never amend unless the user explicitly says "amend" or "merge with last commit".
+4. If wording is ambiguous, do file edits only and stop before any git write action.
+5. Before any git write action, the assistant should restate the exact user authorization phrase in its reply.
 
 See `docs/WORKFLOW.md` for detailed workflow guide.
 

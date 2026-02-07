@@ -1728,30 +1728,32 @@ class DEXBot {
         const sellOrders = ordersToPlace.filter(o => o.type === 'sell');
 
         // Check BUY orders against buyFree (assetB funds)
-        if (buyOrders.length > 0) {
-            const buyTotalSize = buyOrders.reduce((sum, o) => sum + o.size, 0);
-            const buyFund = this.manager.accountTotals?.buyFree ?? 0;
-            if (buyTotalSize > buyFund) {
-                this.manager.logger.log(
-                    `Warning: total order size (${buyTotalSize.toFixed(8)}) exceeds available funds (${buyFund.toFixed(8)}) for buy. ` +
-                    `Some orders may be skipped or placed at reduced size.`,
-                    'warn'
-                );
-            }
-        }
+         if (buyOrders.length > 0) {
+             const buyTotalSize = buyOrders.reduce((sum, o) => sum + o.size, 0);
+             const buyFund = this.manager.accountTotals?.buyFree ?? 0;
+             if (buyTotalSize > buyFund) {
+                 const buyPrecision = this.manager.config?.assetB?.precision || 8;
+                 this.manager.logger.log(
+                     `Warning: total order size (${Format.formatAmountByPrecision(buyTotalSize, buyPrecision)}) exceeds available funds (${Format.formatAmountByPrecision(buyFund, buyPrecision)}) for buy. ` +
+                     `Some orders may be skipped or placed at reduced size.`,
+                     'warn'
+                 );
+             }
+         }
 
-        // Check SELL orders against sellFree (assetA funds)
-        if (sellOrders.length > 0) {
-            const sellTotalSize = sellOrders.reduce((sum, o) => sum + o.size, 0);
-            const sellFund = this.manager.accountTotals?.sellFree ?? 0;
-            if (sellTotalSize > sellFund) {
-                this.manager.logger.log(
-                    `Warning: total order size (${sellTotalSize.toFixed(8)}) exceeds available funds (${sellFund.toFixed(8)}) for sell. ` +
-                    `Some orders may be skipped or placed at reduced size.`,
-                    'warn'
-                );
-            }
-        }
+         // Check SELL orders against sellFree (assetA funds)
+         if (sellOrders.length > 0) {
+             const sellTotalSize = sellOrders.reduce((sum, o) => sum + o.size, 0);
+             const sellFund = this.manager.accountTotals?.sellFree ?? 0;
+             if (sellTotalSize > sellFund) {
+                 const sellPrecision = this.manager.config?.assetA?.precision || 8;
+                 this.manager.logger.log(
+                     `Warning: total order size (${Format.formatAmountByPrecision(sellTotalSize, sellPrecision)}) exceeds available funds (${Format.formatAmountByPrecision(sellFund, sellPrecision)}) for sell. ` +
+                     `Some orders may be skipped or placed at reduced size.`,
+                     'warn'
+                 );
+             }
+         }
 
         for (const order of ordersToPlace) {
             // Determine order type for validation (not just first order)
@@ -1787,7 +1789,7 @@ class DEXBot {
                 if (!result) {
                     this.manager.logger.log(
                         `Skipping placement: amounts would round to 0 on blockchain. ` +
-                        `Order: ${order.type} ${order.id} size=${order.size} @ price=${order.price}`,
+                        `Order: ${order.type} ${order.id} size=${Format.formatSizeByOrderType(order.size, order.type, this.manager.assets)} @ price=${Format.formatPrice(order.price)}`,
                         'warn'
                     );
                     continue;

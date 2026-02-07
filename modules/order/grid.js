@@ -1219,10 +1219,12 @@ class Grid {
         else if (buyRatio >= 1) side = ORDER_TYPES.BUY;
         else if (sellRatio >= 1) side = ORDER_TYPES.SELL;
 
-        if (!side) {
-            // FIX: Use consistent optional chaining pattern for logger calls
-            manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${Format.formatPercent2(buyRatio)}, sell ratio: ${Format.formatPercent2(sellRatio)}). Required: buy=${reqBuy ? Format.formatAmount8(reqBuy) : 'N/A'}, sell=${reqSell ? Format.formatAmount8(reqSell) : 'N/A'}`, 'warn');
-        }
+         if (!side) {
+             // FIX: Use consistent optional chaining pattern for logger calls
+             const buyPrecision = manager.config?.assetB?.precision || 8;
+             const sellPrecision = manager.config?.assetA?.precision || 8;
+             manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${Format.formatPercent2(buyRatio)}, sell ratio: ${Format.formatPercent2(sellRatio)}). Required: buy=${reqBuy ? Format.formatAmountByPrecision(reqBuy, buyPrecision) : 'N/A'}, sell=${reqSell ? Format.formatAmountByPrecision(reqSell, sellPrecision) : 'N/A'}`, 'warn');
+         }
 
         return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
     }
@@ -1355,10 +1357,10 @@ class Grid {
                 
                 const activated = { ...candidate, type: railType, size: targetSize, state: newState };
 
-                // Log if we are scaling down
-                if (targetSize < idealSize) {
-                    manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatAmount8(idealSize)} -> target ${Format.formatAmount8(targetSize)} (ratio: ${Format.formatPercent2((targetSize/idealSize)*100)})`, 'info');
-                }
+                 // Log if we are scaling down
+                 if (targetSize < idealSize) {
+                     manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatSizeByOrderType(idealSize, railType, manager.assets)} -> target ${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} (ratio: ${Format.formatPercent2((targetSize/idealSize)*100)})`, 'info');
+                 }
 
                 if (candidate.state === ORDER_STATES.PARTIAL && candidate.orderId) {
                     ordersToUpdate.push({
@@ -1368,17 +1370,17 @@ class Grid {
                 } else {
                     ordersToPlace.push(activated);
                 }
-            } else {
-                const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
-                const minHealthy = getDoubleDustThreshold(idealSize);
-                manager.logger?.log?.(
-                    `Spread correction skipped at slot ${candidate.id}: ` +
-                    `size=${Format.formatAmount8(targetSize)} < threshold=${Format.formatAmount8(minHealthy)} ` +
-                    `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatAmount8(idealSize)}). ` +
-                    `Available funds: ${Format.formatAmount8(availableFund)}`,
-                    'debug'
-                );
-            }
+             } else {
+                 const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
+                 const minHealthy = getDoubleDustThreshold(idealSize);
+                 manager.logger?.log?.(
+                     `Spread correction skipped at slot ${candidate.id}: ` +
+                     `size=${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} < threshold=${Format.formatSizeByOrderType(minHealthy, railType, manager.assets)} ` +
+                     `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatSizeByOrderType(idealSize, railType, manager.assets)}). ` +
+                     `Available funds: ${Format.formatAmountByPrecision(availableFund, sideName === 'buy' ? (manager.config?.assetB?.precision || 8) : (manager.config?.assetA?.precision || 8))}`,
+                     'debug'
+                 );
+             }
         }
 
         return { ordersToPlace, ordersToUpdate };

@@ -185,7 +185,9 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
 
     const logger = manager && manager.logger;
     logger?.log?.(
-        `[_updateChainOrderToGrid] BEFORE updateOrder: chainOrderId=${chainOrderId}, gridOrder.type=${gridOrder.type}, gridOrder.size=${gridOrder.size}, gridOrder.price=${gridOrder.price}, amountToSell=${amountToSell}, minToReceive=${minToReceive}`,
+        `[_updateChainOrderToGrid] BEFORE updateOrder: chainOrderId=${chainOrderId}, gridOrder.type=${gridOrder.type}, ` +
+        `gridOrder.size=${Format.formatSizeByOrderType(gridOrder.size, gridOrder.type, manager.assets)}, gridOrder.price=${Format.formatPrice(gridOrder.price)}, ` +
+        `amountToSell=${amountToSell}, minToReceive=${minToReceive}`,
         'info'
     );
 
@@ -469,14 +471,14 @@ async function _reconcileStartupSide({
 
         if (sizeIncrease > currentAssetBalance) {
             logger?.log?.(
-                `Startup: Skipping ${sideUpper} update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} ${balanceSymbol}, have ${Format.formatAmount8(currentAssetBalance)} ${balanceSymbol})`,
+                `Startup: Skipping ${sideUpper} update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatSizeByOrderType(sizeIncrease, orderType, manager.assets)} ${balanceSymbol}, have ${Format.formatSizeByOrderType(currentAssetBalance, orderType, manager.assets)} ${balanceSymbol})`,
                 'warn'
             );
             continue;
         }
 
         logger?.log?.(
-            `Startup: Updating chain ${sideUpper} ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+            `Startup: Updating chain ${sideUpper} ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatSizeByOrderType(gridOrder.size, orderType, manager.assets)})`,
             'info'
         );
 
@@ -508,7 +510,7 @@ async function _reconcileStartupSide({
         const targetGridOrder = desiredSlots[cancelledIndex];
         if (targetGridOrder) {
             logger?.log?.(
-                `Startup: Creating new ${sideUpper} for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatAmount8(targetGridOrder.size)})`,
+                `Startup: Creating new ${sideUpper} for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatSizeByOrderType(targetGridOrder.size, orderType, manager.assets)})`,
                 'info'
             );
             try {
@@ -535,7 +537,7 @@ async function _reconcileStartupSide({
     for (let i = 0; i < Math.min(createCount, remainingSlots.length); i++) {
         const gridOrder = remainingSlots[i];
         logger?.log?.(
-            `Startup: Creating ${sideUpper} for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+            `Startup: Creating ${sideUpper} for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatSizeByOrderType(gridOrder.size, orderType, manager.assets)})`,
             'info'
         );
         try {

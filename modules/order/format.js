@@ -15,32 +15,34 @@
  * Time/Performance (ms, %):     1-2 decimals - readable metrics
  *
  * ===============================================================================
- * TABLE OF CONTENTS (14 exported functions)
+ * TABLE OF CONTENTS (16 exported functions)
  * ===============================================================================
  *
  * SECTION 1: ASSET FORMATTING (2 functions)
  *   1. formatAmount8(value) - Format to 8 decimals (blockchain standard)
  *   2. formatAmount(value, decimals) - Format with custom decimal places
+ *   3. formatAmountByPrecision(value, precision, fallbackPrecision) - Format using chain precision
+ *   4. formatSizeByOrderType(value, orderType, assets, fallbackPrecision) - Format order size by BUY/SELL asset precision
  *
  * SECTION 2: PRICE FORMATTING (3 functions)
- *   3. formatPrice(value) - Format to 8 decimals (maximum precision)
- *   4. formatPrice6(value) - Format to 6 decimals
- *   5. formatPrice4(value) - Format to 4 decimals (simplified display)
+ *   5. formatPrice(value) - Format to 8 decimals (maximum precision)
+ *   6. formatPrice6(value) - Format to 6 decimals
+ *   7. formatPrice4(value) - Format to 4 decimals (simplified display)
  *
  * SECTION 3: PERCENTAGE FORMATTING (3 functions)
- *   6. formatPercent2(value) - Format to 2 decimals (spread %, ratios)
- *   7. formatPercent4(value) - Format to 4 decimals (precise measurements)
- *   8. formatPercent(value, decimals) - Format with custom decimal places
+ *   8. formatPercent2(value) - Format to 2 decimals (spread %, ratios)
+ *   9. formatPercent4(value) - Format to 4 decimals (precise measurements)
+ *   10. formatPercent(value, decimals) - Format with custom decimal places
  *
  * SECTION 4: RATIO/METRIC FORMATTING (3 functions)
- *   9. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
- *   10. formatMetric2(value) - Format to 2 decimals (timing, performance)
- *   11. formatMetric5(value) - Format to 5 decimals (detailed metrics)
+ *   11. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
+ *   12. formatMetric2(value) - Format to 2 decimals (timing, performance)
+ *   13. formatMetric5(value) - Format to 5 decimals (detailed metrics)
  *
  * SECTION 5: HELPER UTILITIES (3 functions)
- *   12. isValidNumber(value) - Check if value is defined and finite
- *   13. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
- *   14. safeFormat(value, decimals, fallback) - Safely format with fallback
+ *   14. isValidNumber(value) - Check if value is defined and finite
+ *   15. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
+ *   16. safeFormat(value, decimals, fallback) - Safely format with fallback
  *
  * ===============================================================================
  */
@@ -69,6 +71,37 @@ function formatAmount8(value) {
  */
 function formatAmount(value, decimals = 8) {
 	return safeFormat(value, decimals);
+}
+
+/**
+ * Format asset amount using an explicit blockchain precision.
+ *
+ * @param {number} value - The value to format
+ * @param {number} precision - Asset precision to apply
+ * @param {number} [fallbackPrecision=8] - Fallback decimals when precision is invalid
+ * @returns {string} Formatted value
+ */
+function formatAmountByPrecision(value, precision, fallbackPrecision = 8) {
+	const decimals = Number.isInteger(precision) && precision >= 0 ? precision : fallbackPrecision;
+	return safeFormat(value, decimals);
+}
+
+/**
+ * Format an order size using market-side precision.
+ * BUY size is in assetB units, SELL size is in assetA units.
+ *
+ * @param {number} value - The value to format
+ * @param {string} orderType - Order side ('buy' or 'sell')
+ * @param {Object} assets - Asset metadata with assetA/assetB precision
+ * @param {number} [fallbackPrecision=8] - Fallback decimals
+ * @returns {string} Formatted value
+ */
+function formatSizeByOrderType(value, orderType, assets, fallbackPrecision = 8) {
+	const side = String(orderType || '').toLowerCase();
+	const buyPrecision = assets?.assetB?.precision;
+	const sellPrecision = assets?.assetA?.precision;
+	const precision = side === 'buy' ? buyPrecision : side === 'sell' ? sellPrecision : undefined;
+	return formatAmountByPrecision(value, precision, fallbackPrecision);
 }
 
 // ===============================================================================
@@ -233,6 +266,8 @@ module.exports = {
 	// Asset formatting
 	formatAmount8,
 	formatAmount,
+	formatAmountByPrecision,
+	formatSizeByOrderType,
 
 	// Price formatting
 	formatPrice,

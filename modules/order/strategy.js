@@ -174,9 +174,9 @@ class StrategyEngine {
                 }
             }
 
-            if (bestBuyIdx !== -1) {
-                mgr.boundaryIdx = bestBuyIdx;
-                mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from market-closest BUY order (distance=${Format.formatAmount8(bestBuyDistance)} from startPrice).`, "info");
+             if (bestBuyIdx !== -1) {
+                 mgr.boundaryIdx = bestBuyIdx;
+                 mgr.logger.log(`[BOUNDARY] Recovered boundaryIdx ${mgr.boundaryIdx} from market-closest BUY order (distance=${Format.formatPrice(bestBuyDistance)} from startPrice).`, "info");
             } else {
                 // 2. Fallback to startPrice-based initialization (Initial or Recovery)
                 mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
@@ -294,9 +294,11 @@ class StrategyEngine {
         const availBuy = (mgr.funds?.available?.buy ?? mgr.accountTotals?.buyFree ?? 0);
         const availSell = (mgr.funds?.available?.sell ?? mgr.accountTotals?.sellFree ?? 0);
 
-        if (mgr.logger.level === 'debug') {
-            mgr.logger.log(`[BUDGET] Unified Sizing: Buy=${Format.formatAmount8(budgetBuy)}, Sell=${Format.formatAmount8(budgetSell)} (Respects botFunds % and Fees)`, 'debug');
-        }
+         if (mgr.logger.level === 'debug') {
+             const buyPrecision = mgr.config?.assetB?.precision || 8;
+             const sellPrecision = mgr.config?.assetA?.precision || 8;
+             mgr.logger.log(`[BUDGET] Unified Sizing: Buy=${Format.formatAmountByPrecision(budgetBuy, buyPrecision)}, Sell=${Format.formatAmountByPrecision(budgetSell, sellPrecision)} (Respects botFunds % and Fees)`, 'debug');
+         }
 
         // Reaction Cap: Limit how many orders we rotate/place per cycle.
         // NOTE: Only count FULL fills - partial fills don't spend capital, so they shouldn't count toward budget.
@@ -574,11 +576,11 @@ class StrategyEngine {
                     cappedIncrease = Math.min(sizeIncrease, dustResizeBudget);
                     finalSize = currentSize + cappedIncrease;
                     usedDustFallback = true;
-                    mgr.logger.log(`[PARTIAL] Dust resize using cache funds (${Format.formatAmount8(dustResizeBudget)}) for ${partial.id}`, 'debug');
+                    mgr.logger.log(`[PARTIAL] Dust resize using cache funds (${Format.formatSizeByOrderType(dustResizeBudget, type, mgr.assets)}) for ${partial.id}`, 'debug');
                 }
 
                 if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
-                    mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatAmount8(partial.size)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and flagging side as doubled.`, 'info');
+                    mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatSizeByOrderType(partial.size, type, mgr.assets)}, target=${Format.formatSizeByOrderType(idealSize, type, mgr.assets)}). Updating to ${Format.formatSizeByOrderType(finalSize, type, mgr.assets)} and flagging side as doubled.`, 'info');
 
                     if (type === ORDER_TYPES.BUY) mgr.buySideIsDoubled = true;
                     else mgr.sellSideIsDoubled = true;
@@ -625,7 +627,7 @@ class StrategyEngine {
                 const minAbsoluteSize = getMinAbsoluteOrderSize(type, mgr.assets);
 
                 if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
-                    mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatAmount8(oldSize)}, target=${Format.formatAmount8(idealSize)}). Updating to ${Format.formatAmount8(finalSize)} and placing split order.`, 'info');
+                    mgr.logger.log(`[PARTIAL] Non-dust partial at ${partial.id} (size=${Format.formatSizeByOrderType(oldSize, type, mgr.assets)}, target=${Format.formatSizeByOrderType(idealSize, type, mgr.assets)}). Updating to ${Format.formatSizeByOrderType(finalSize, type, mgr.assets)} and placing split order.`, 'info');
                     ordersToUpdate.push({ partialOrder: { ...partial }, newSize: finalSize });
                     // CRITICAL: Only upgrade to ACTIVE if order has valid orderId to prevent phantom orders
                     const newState = hasOnChainId(partial) ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
@@ -660,9 +662,10 @@ class StrategyEngine {
         let shortageIdx = 0;
         let rotationsPerformed = 0;
 
-        if (mgr.logger.level === 'debug') {
-            mgr.logger.log(`[REBALANCE] ${side.toUpperCase()} planning: ${filteredShortages.length} shortages, ${filteredSurpluses.length} surpluses, budget=${budgetRemaining}, avail=${Format.formatAmount8(remainingAvail)}`, 'debug');
-        }
+         if (mgr.logger.level === 'debug') {
+             const precision = side === ORDER_TYPES.BUY ? (mgr.config?.assetB?.precision || 8) : (mgr.config?.assetA?.precision || 8);
+             mgr.logger.log(`[REBALANCE] ${side.toUpperCase()} planning: ${filteredShortages.length} shortages, ${filteredSurpluses.length} surpluses, budget=${budgetRemaining}, avail=${Format.formatAmountByPrecision(remainingAvail, precision)}`, 'debug');
+         }
 
         while (surplusIdx < filteredSurpluses.length &&
             shortageIdx < filteredShortages.length &&
@@ -710,9 +713,9 @@ class StrategyEngine {
                     totalNewPlacementSize += cappedIncrease;
                     remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                     budgetRemaining--;
-                    mgr.logger.log(`[ROTATION] Converted self-rotation at ${currentSurplus.id} to in-place update (${Format.formatAmount8(currentSurplus.size)} -> ${Format.formatAmount8(finalSize)})`, 'info');
+                     mgr.logger.log(`[ROTATION] Converted self-rotation at ${currentSurplus.id} to in-place update (${Format.formatSizeByOrderType(currentSurplus.size, currentSurplus.type, mgr.assets)} -> ${Format.formatSizeByOrderType(finalSize, currentSurplus.type, mgr.assets)})`, 'info');
                 } else {
-                    mgr.logger.log(`[ROTATION] Skipping self-rotation at ${currentSurplus.id}: resulting size ${Format.formatAmount8(finalSize)} below double-dust threshold ${Format.formatAmount8(minHealthySize)}`, 'debug');
+                     mgr.logger.log(`[ROTATION] Skipping self-rotation at ${currentSurplus.id}: resulting size ${Format.formatSizeByOrderType(finalSize, currentSurplus.type, mgr.assets)} below double-dust threshold ${Format.formatSizeByOrderType(minHealthySize, currentSurplus.type, mgr.assets)}`, 'debug');
                 }
                 surplusIdx++;
                 shortageIdx++;
@@ -740,7 +743,7 @@ class StrategyEngine {
                 // New rotated order must stay VIRTUAL until blockchain confirms
                 stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });
 
-                mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatAmount8(currentSurplus.size)}) → ${shortageSlot.id} (${Format.formatAmount8(finalSize)})`, 'info');
+                 mgr.logger.log(`[ROTATION] Atomic rotation: ${currentSurplus.id} (${Format.formatSizeByOrderType(currentSurplus.size, type, mgr.assets)}) → ${shortageSlot.id} (${Format.formatSizeByOrderType(finalSize, type, mgr.assets)})`, 'info');
 
                 totalNewPlacementSize += cappedIncrease;
                 remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
@@ -749,7 +752,7 @@ class StrategyEngine {
                 rotationsPerformed++;
                 budgetRemaining--;
             } else {
-                mgr.logger.log(`[ROTATION] Skipping rotation: resulting size ${Format.formatAmount8(finalSize)} below double-dust threshold ${Format.formatAmount8(minHealthySize)}`, 'debug');
+                 mgr.logger.log(`[ROTATION] Skipping rotation: resulting size ${Format.formatSizeByOrderType(finalSize, type, mgr.assets)} below double-dust threshold ${Format.formatSizeByOrderType(minHealthySize, type, mgr.assets)}`, 'debug');
                 surplusIdx++;
                 continue;
             }
@@ -788,7 +791,7 @@ class StrategyEngine {
                     remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                     budgetRemaining--;
                 } else {
-                    mgr.logger.log(`[PLACEMENT] Skipping placement: resulting size ${Format.formatAmount8(finalSize)} below double-dust threshold ${Format.formatAmount8(minHealthySize)}`, 'debug');
+                     mgr.logger.log(`[PLACEMENT] Skipping placement: resulting size ${Format.formatSizeByOrderType(finalSize, type, mgr.assets)} below double-dust threshold ${Format.formatSizeByOrderType(minHealthySize, type, mgr.assets)}`, 'debug');
                 }
             }
         }
@@ -904,16 +907,26 @@ class StrategyEngine {
                         const feeType = isMaker ? 'market' : 'taker';
                         mgr.logger.log(`[FILL-FEE] ${filledOrder.type} fill: applied ${feeType} fee for ${assetForFee}`, 'debug');
                     } catch (e) {
-                        // FIX: Consolidated fee calculation failure logging (Issue #8)
-                        mgr.logger.log(
-                            `[FILL-FEE-ERROR] ${filledOrder.type} fill ${filledOrder.id}: fee calc failed for ${assetForFee} (${e.message}). ` +
-                            `Using raw proceeds=${Format.formatAmount8(rawProceeds)} - manual verification recommended.`,
-                            "warn"
-                        );
-                    }
+                         // FIX: Consolidated fee calculation failure logging (Issue #8)
+                         const proceedsPrecision = filledOrder.type === ORDER_TYPES.SELL ? 
+                             (mgr.config?.assetB?.precision || 8) : 
+                             (mgr.config?.assetA?.precision || 8);
+                         mgr.logger.log(
+                             `[FILL-FEE-ERROR] ${filledOrder.type} fill ${filledOrder.id}: fee calc failed for ${assetForFee} (${e.message}). ` +
+                             `Using raw proceeds=${Format.formatAmountByPrecision(rawProceeds, proceedsPrecision)} - manual verification recommended.`,
+                             "warn"
+                         );
+                     }
                 }
 
-                mgr.logger.log(`[FILL] ${filledOrder.type} fill: size=${filledOrder.size}, price=${filledOrder.price}, proceeds=${Format.formatAmount8(netProceeds)} ${assetForFee}`, "debug");
+                 const proceedsPrecision = filledOrder.type === ORDER_TYPES.SELL ? 
+                     (mgr.config?.assetB?.precision || 8) : 
+                     (mgr.config?.assetA?.precision || 8);
+                 mgr.logger.log(
+                     `[FILL] ${filledOrder.type} fill: size=${Format.formatSizeByOrderType(filledOrder.size, filledOrder.type, mgr.assets)}, ` +
+                     `price=${Format.formatPrice(filledOrder.price)}, proceeds=${Format.formatAmountByPrecision(netProceeds, proceedsPrecision)} ${assetForFee}`,
+                     "debug"
+                 );
 
                 // Note: fill proceeds and consumption are now handled by SyncEngine/Accountant.processFillAccounting
                 // to ensure consistency between fill detection and rebalance cycle.

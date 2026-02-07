@@ -183,8 +183,10 @@ class Accountant {
         }
 
         if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0 && mgr._recalcLoggingDepth === 0) {
-            mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmount8(chainTotalBuy)} (Free=${Format.formatAmount8(chainFreeBuy)}, Grid=${Format.formatAmount8(gridBuy)})`, 'debug');
-            mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmount8(chainTotalSell)} (Free=${Format.formatAmount8(chainFreeSell)}, Grid=${Format.formatAmount8(gridSell)})`, 'debug');
+            const buyPrecision = mgr.config.assetB?.precision || 8;
+            const sellPrecision = mgr.config.assetA?.precision || 8;
+            mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmountByPrecision(chainTotalBuy, buyPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)}, Grid=${Format.formatAmountByPrecision(gridBuy, buyPrecision)})`, 'debug');
+            mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmountByPrecision(chainTotalSell, sellPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)}, Grid=${Format.formatAmountByPrecision(gridSell, sellPrecision)})`, 'debug');
         }
 
         if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping && !mgr._isBroadcasting) {
@@ -244,7 +246,7 @@ class Accountant {
             // CRITICAL FIX: Log as ERROR instead of WARN
             // Invariant violations indicate serious fund tracking corruption and must not be silent
             // This triggers immediate recovery attempt
-            mgr.logger?.log?.(`CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmount8(actualBuy)}) != trackedTotal (${Format.formatAmount8(expectedBuy)}) (diff: ${Format.formatAmount8(diffBuy)}, allowed: ${Format.formatAmount8(allowedBuyTolerance)})`, 'error');
+            mgr.logger?.log?.(`CRITICAL: Fund invariant violation (BUY): blockchainTotal (${Format.formatAmountByPrecision(actualBuy, buyPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedBuy, buyPrecision)}) (diff: ${Format.formatAmountByPrecision(diffBuy, buyPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedBuyTolerance, buyPrecision)})`, 'error');
         }
 
         const expectedSell = chainFreeSell + chainSell;
@@ -255,7 +257,7 @@ class Accountant {
         if (actualSell !== null && actualSell !== undefined && diffSell > allowedSellTolerance) {
             hasViolation = true;
             // CRITICAL FIX: Log as ERROR instead of WARN
-            mgr.logger?.log?.(`CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmount8(actualSell)}) != trackedTotal (${Format.formatAmount8(expectedSell)}) (diff: ${Format.formatAmount8(diffSell)}, allowed: ${Format.formatAmount8(allowedSellTolerance)})`, 'error');
+            mgr.logger?.log?.(`CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmountByPrecision(actualSell, sellPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedSell, sellPrecision)}) (diff: ${Format.formatAmountByPrecision(diffSell, sellPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedSellTolerance, sellPrecision)})`, 'error');
         }
 
         // INVARIANT 2: Surplus check
@@ -264,12 +266,12 @@ class Accountant {
         if (cacheBuy > chainFreeBuy + allowedBuyTolerance) {
             hasViolation = true;
             // CRITICAL FIX: Log as ERROR - surplus over-estimation can cause overdrafts
-            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmount8(cacheBuy)}) > chainFree (${Format.formatAmount8(chainFreeBuy)})`, 'error');
+            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmountByPrecision(cacheBuy, buyPrecision)}) > chainFree (${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)})`, 'error');
         }
         if (cacheSell > chainFreeSell + allowedSellTolerance) {
             hasViolation = true;
             // CRITICAL FIX: Log as ERROR
-            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmount8(cacheSell)}) > chainFree (${Format.formatAmount8(chainFreeSell)})`, 'error');
+            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmountByPrecision(cacheSell, sellPrecision)}) > chainFree (${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)})`, 'error');
         }
 
         // NEW: Attempt immediate recovery if violation detected
@@ -517,7 +519,18 @@ class Accountant {
             const commitmentDelta = newGridCommitted - oldGridCommitted;
 
             if (mgr.logger && mgr.logger.level === 'debug') {
-                mgr.logger.log(`[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, state=${oldOrder.state}->${newOrder.state}, size=${oldSize}->${newSize}, delta=${Format.formatAmount8(commitmentDelta)}, context=${context}`, 'debug');
+                const sideForPrecision =
+                    (newOrder.type === ORDER_TYPES.BUY || oldOrder.type === ORDER_TYPES.BUY) ? ORDER_TYPES.BUY
+                        : (newOrder.type === ORDER_TYPES.SELL || oldOrder.type === ORDER_TYPES.SELL) ? ORDER_TYPES.SELL
+                            : null;
+
+                mgr.logger.log(
+                    `[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, ` +
+                    `state=${oldOrder.state}->${newOrder.state}, ` +
+                    `size=${Format.formatSizeByOrderType(oldSize, sideForPrecision, mgr.assets)}->${Format.formatSizeByOrderType(newSize, sideForPrecision, mgr.assets)}, ` +
+                    `delta=${Format.formatSizeByOrderType(commitmentDelta, sideForPrecision, mgr.assets)}, context=${context}`,
+                    'debug'
+                );
             }
 
             if (commitmentDelta > 0) {

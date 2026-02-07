@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.6.0-patch.17] - 2026-02-07 - Adaptive Fill Batching, Periodic Recovery Retries & Orphan-Fill Double-Credit Prevention
 
-Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed three structural weaknesses in the fill processing pipeline that cascaded into a 4.5-hour trading halt with 47,842 BTS fund tracking drift. This patch addresses all three root causes.
+Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed three structural weaknesses in the fill processing pipeline that cascaded into a 4.5-hour trading halt. This patch addresses all three root causes.
 
 ### Fixed
 - **Adaptive Batch Fill Processing** in `modules/dexbot_class.js`, `modules/constants.js` (commits 21af7d2)
@@ -24,6 +24,11 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
   - **Solution**: Track stale-cleaned order IDs in `_staleCleanedOrderIds`. Initial set-based guard was hardened to timestamp retention (Map + TTL pruning) so delayed/repeated orphan fill events are still blocked. Orphan-fill handler skips credit with explicit `[ORPHAN-FILL] Skipping double-credit` log.
   - **Impact**: Eliminates double-counting root cause that fed the fund invariant violations and recovery cascade.
 
+- **Precision-Aware Logging Normalization** in `modules/order/format.js`, `modules/order/accounting.js`, `modules/order/strategy.js`, `modules/order/startup_reconcile.js`, `modules/order/logger.js`, `modules/dexbot_class.js` (commit pending)
+  - **Problem**: Several debug/info logs emitted raw floating-point values (e.g. `52.82927000000115`) instead of chain-precision values, creating noise and false drift perception.
+  - **Solution**: Added reusable precision helpers (`formatAmountByPrecision`, `formatSizeByOrderType`) and routed size logs through side-aware asset precision formatting.
+  - **Impact**: Logs now consistently reflect blockchain precision across fill, accounting, startup reconcile, diagnostics, and placement-validation paths.
+
 ### Added
 - **New Configuration Constants** in `modules/constants.js`:
   - `FILL_PROCESSING.MAX_FILL_BATCH_SIZE`: Maximum fills per rebalance batch (default 4).
@@ -39,6 +44,7 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
 - `resetRecoveryState()` verified: resets count (0), time (0), and legacy flag (false).
 - Backward compatible: batch size 1 = legacy one-at-a-time behavior.
 - Follow-up verification: `node tests/test_periodic_sync_fill_rebalance.js`, `node tests/test_layer2_self_healing.js`.
+- Precision-format verification: `node tests/test_strategy_logic.js`, `node tests/test_accounting_logic.js`, `node tests/test_startup_reconcile_regressions.js`.
 
 ---
 
