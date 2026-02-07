@@ -85,6 +85,75 @@ async function runTests() {
         assert(synced !== undefined, 'Should match within tolerance');
     }
 
+    console.log(' - Testing Type Mismatch Does Not Mutate Grid Slot...');
+    {
+        const manager = createManager();
+        manager._updateOrder({
+            id: 'tm-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
+            size: 100, price: 10, orderId: 'c-tm'
+        });
+
+        // On-chain order uses opposite side (SELL) for same orderId.
+        const chainOrders = [{
+            id: 'c-tm',
+            sell_price: { base: { amount: 100000000, asset_id: '1.3.0' }, quote: { amount: 10000000, asset_id: '1.3.1' } },
+            for_sale: 50000000
+        }];
+
+        const result = await manager.sync.syncFromOpenOrders(chainOrders);
+        const slot = manager.orders.get('tm-1');
+
+        assert.strictEqual(slot.type, ORDER_TYPES.BUY, 'Type-mismatched sync must not mutate slot type');
+        assert.strictEqual(slot.state, ORDER_STATES.ACTIVE, 'Type-mismatched sync must not mutate slot state');
+        assert.strictEqual(slot.size, 100, 'Type-mismatched sync must not mutate slot size');
+        assert.strictEqual(result.updatedOrders.length, 0, 'Type-mismatched sync should not apply local order updates');
+        assert(manager.ordersNeedingPriceCorrection.some(c => c.chainOrderId === 'c-tm' && c.isSurplus), 'Mismatch should queue stale order cancellation');
+    }
+
+    console.log(' - Testing Non-Grid Pair Chain Orders Are Ignored...');
+    {
+        const manager = createManager();
+        manager._updateOrder({
+            id: 'fg-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY,
+            size: 5, price: 10, orderId: null
+        });
+
+        // This order does NOT belong to the managed asset pair (1.3.0/1.3.1).
+        const chainOrders = [{
+            id: 'c-foreign',
+            sell_price: { base: { amount: 10000, asset_id: '1.3.999' }, quote: { amount: 1000000, asset_id: '1.3.0' } },
+            for_sale: 500000
+        }];
+
+        const result = await manager.sync.syncFromOpenOrders(chainOrders);
+        const slot = manager.orders.get('fg-1');
+
+        assert.strictEqual(slot.state, ORDER_STATES.VIRTUAL, 'Foreign pair order must not activate any slot');
+        assert.strictEqual(slot.orderId, null, 'Foreign pair order must not be assigned to grid slot');
+        assert.strictEqual(result.updatedOrders.length, 0, 'Foreign pair orders should produce no grid updates');
+    }
+
+    console.log(' - Testing Price Mismatch Queues Manager Correction...');
+    {
+        const manager = createManager();
+        manager._updateOrder({
+            id: 'pc-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
+            size: 100, price: 100, orderId: 'c-price'
+        });
+
+        const chainOrders = [{
+            id: 'c-price',
+            // BUY orientation for this market pair; price resolves to 120 (outside normal tolerance).
+            sell_price: { base: { amount: 120000, asset_id: '1.3.1' }, quote: { amount: 1000000, asset_id: '1.3.0' } },
+            for_sale: 10000000
+        }];
+
+        const result = await manager.sync.syncFromOpenOrders(chainOrders);
+
+        assert(result.ordersNeedingCorrection.some(c => c.chainOrderId === 'c-price'), 'Sync result should include price correction');
+        assert(manager.ordersNeedingPriceCorrection.some(c => c.chainOrderId === 'c-price' && !c.isSurplus), 'Manager correction queue should include regular price mismatch');
+    }
+
     console.log(' - Testing Concurrent Sync Race Protection...');
     {
         const manager = createManager();

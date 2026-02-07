@@ -246,6 +246,13 @@ class SyncEngine {
 
         const assetAPrecision = mgr.assets.assetA.precision;
         const assetBPrecision = mgr.assets.assetB.precision;
+        const assetAId = mgr.assets.assetA.id;
+        const assetBId = mgr.assets.assetB.id;
+
+        if (!assetAId || !assetBId) {
+            mgr.logger?.log?.('Error: manager.assets asset IDs missing', 'error');
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
+        }
 
         // Use separate maps: parsed (floats) and raw (blockchain integers)
         // This eliminates type confusion - each map has a single, clear purpose
@@ -254,7 +261,7 @@ class SyncEngine {
 
         for (const order of chainOrders) {
             // Validate order structure before processing
-            if (!order || !order.id || !order.sell_price || !order.for_sale) {
+            if (!order || !order.id || !order.sell_price || order.for_sale === undefined || order.for_sale === null) {
                 mgr.logger?.log?.(`Warning: Skipping malformed chain order missing required fields`, 'warn');
                 continue;
             }
@@ -268,12 +275,26 @@ class SyncEngine {
                     continue;
                 }
 
-                const type = (sellAssetId === mgr.assets.assetA.id) ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
+                const isSellPair = sellAssetId === assetAId && receiveAssetId === assetBId;
+                const isBuyPair = sellAssetId === assetBId && receiveAssetId === assetAId;
+                if (!isSellPair && !isBuyPair) {
+                    mgr.logger?.log?.(`Skipping non-grid pair order ${order.id} (${sellAssetId} -> ${receiveAssetId})`, 'debug');
+                    continue;
+                }
+
+                const baseAmount = Number(order.sell_price.base?.amount);
+                const quoteAmount = Number(order.sell_price.quote?.amount);
+                if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0 || quoteAmount <= 0) {
+                    mgr.logger?.log?.(`Warning: Chain order ${order.id} has invalid sell_price amounts`, 'warn');
+                    continue;
+                }
+
+                const type = isSellPair ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
                 const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const size = blockchainToFloat(order.for_sale, precision);
                 const price = (type === ORDER_TYPES.SELL)
-                    ? (Number(order.sell_price.quote.amount) / Number(order.sell_price.base.amount)) * Math.pow(10, assetAPrecision - assetBPrecision)
-                    : (Number(order.sell_price.base.amount) / Number(order.sell_price.quote.amount)) * Math.pow(10, assetAPrecision - assetBPrecision);
+                    ? (quoteAmount / baseAmount) * Math.pow(10, assetAPrecision - assetBPrecision)
+                    : (baseAmount / quoteAmount) * Math.pow(10, assetAPrecision - assetBPrecision);
 
                 // Store parsed (converted) data in parsedChainOrders
                 parsedChainOrders.set(order.id, { id: order.id, type, size, price });
@@ -358,6 +379,24 @@ class SyncEngine {
     _performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
         chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection, options) {
 
+        const queueCorrection = (entry) => {
+            ordersNeedingCorrection.push(entry);
+            if (!Array.isArray(mgr.ordersNeedingPriceCorrection)) return;
+
+            const existingIndex = mgr.ordersNeedingPriceCorrection.findIndex((queued) =>
+                queued?.chainOrderId === entry.chainOrderId && Boolean(queued?.isSurplus) === Boolean(entry.isSurplus)
+            );
+
+            if (existingIndex >= 0) {
+                mgr.ordersNeedingPriceCorrection[existingIndex] = {
+                    ...mgr.ordersNeedingPriceCorrection[existingIndex],
+                    ...entry
+                };
+            } else {
+                mgr.ordersNeedingPriceCorrection.push({ ...entry });
+            }
+        };
+
         for (const gridOrder of mgr.orders.values()) {
 
             if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) {
@@ -376,21 +415,19 @@ class SyncEngine {
                         `Queuing stale chain order for cancellation.`,
                         'warn'
                     );
-                    mgr.ordersNeedingPriceCorrection.push({
-                        gridOrder: { ...gridOrder },
-                        chainOrderId: gridOrder.orderId,
-                        isSurplus: true,
-                        sideUpdated: chainOrder.type
-                    });
-                    ordersNeedingCorrection.push({
+                    queueCorrection({
                         gridOrder: { ...gridOrder },
                         chainOrderId: gridOrder.orderId,
                         expectedPrice: gridOrder.price,
                         actualPrice: chainOrder.price,
                         size: chainOrder.size,
                         type: chainOrder.type,
-                        typeMismatch: true
+                        typeMismatch: true,
+                        isSurplus: true,
+                        sideUpdated: chainOrder.type
                     });
+                    // Do NOT sync size/state for mismatched side; wait for cancellation correction.
+                    continue;
                 } else {
                     // Calculate price tolerance for comparison (skip type-mismatched orders — handled above)
                     // CRITICAL FIX: Skip orders where tolerance is null (e.g., size=0, which happens for SPREAD placeholders)
@@ -398,7 +435,14 @@ class SyncEngine {
 
                     // Skip price correction for orders with null tolerance (zero-sized slots, SPREADs, etc)
                     if (priceTolerance !== null && Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
-                        ordersNeedingCorrection.push({ gridOrder: { ...gridOrder }, chainOrderId: gridOrder.orderId, expectedPrice: gridOrder.price, actualPrice: chainOrder.price, size: chainOrder.size, type: gridOrder.type });
+                        queueCorrection({
+                            gridOrder: { ...gridOrder },
+                            chainOrderId: gridOrder.orderId,
+                            expectedPrice: gridOrder.price,
+                            actualPrice: chainOrder.price,
+                            size: chainOrder.size,
+                            type: gridOrder.type
+                        });
                     }
                 }
 
