@@ -158,8 +158,10 @@ class DEXBot {
         // last sync and broadcast), the stale-cleanup converts the slot to VIRTUAL/SPREAD,
         // releasing committed funds back to chainFree. If a fill event later arrives for
         // that same order (orphan-fill), we must NOT credit the proceeds again — the capital
-        // was already freed. This set prevents that double-crediting.
-        this._staleCleanedOrderIds = new Set();
+        // was already freed. Track IDs with timestamps and retain them for a cooldown window
+        // to handle delayed history/RPC delivery of orphan fills.
+        this._staleCleanedOrderIds = new Map();
+        this._staleCleanupRetentionMs = Math.max(this._fillDedupeWindowMs || 0, 5 * 60 * 1000);
 
         // Metrics for monitoring lock contention and fill processing
         this._metrics = {
@@ -735,14 +737,20 @@ class DEXBot {
                                 // When a batch fails due to a stale order reference, the cleanup converts the
                                 // slot to VIRTUAL/SPREAD, releasing committed funds to chainFree. If we also
                                 // credit the fill proceeds here, we double-count the capital.
-                                if (this._staleCleanedOrderIds.has(fillOp.order_id)) {
+                                const staleMarkedAt = this._staleCleanedOrderIds.get(fillOp.order_id);
+                                const staleAgeMs = Date.now() - staleMarkedAt;
+                                if (Number.isFinite(staleMarkedAt) && staleAgeMs <= this._staleCleanupRetentionMs) {
                                     this.manager.logger.log(
                                         `[ORPHAN-FILL] Skipping double-credit for stale-cleaned order ${fillOp.order_id} ` +
-                                        `(funds already freed by batch cleanup)`,
+                                        `(funds already freed by batch cleanup, age=${staleAgeMs}ms)`,
                                         'warn'
                                     );
-                                    this._staleCleanedOrderIds.delete(fillOp.order_id);
                                     continue;
+                                }
+
+                                // Entry exists but expired: remove and process as normal orphan fill.
+                                if (this._staleCleanedOrderIds.has(fillOp.order_id)) {
+                                    this._staleCleanedOrderIds.delete(fillOp.order_id);
                                 }
 
                                 // Legitimate orphan fill: order was virtualized during sequential processing
@@ -1011,16 +1019,24 @@ class DEXBot {
                     this._metrics.fillsProcessed += validFills.length;
                     this._metrics.fillProcessingTimeMs += Date.now() - batchStartTime;
 
-                    // Prune stale-cleaned order tracking after processing.
-                    // Orphan fills for stale orders typically arrive within the same fill batch
-                    // or the immediately following one. If the queue is now empty (no more pending
-                    // fills), it's safe to clear — any future fills would go through a fresh cycle.
-                    if (this._staleCleanedOrderIds.size > 0 && this._incomingFillQueue.length === 0) {
-                        this.manager.logger.log(
-                            `[STALE-CLEANUP] Clearing ${this._staleCleanedOrderIds.size} stale-cleaned order IDs (queue empty)`,
-                            'debug'
-                        );
-                        this._staleCleanedOrderIds.clear();
+                    // Prune expired stale-cleaned order IDs after each processing cycle.
+                    // Keep entries for a retention window to protect against delayed orphan-fill delivery.
+                    if (this._staleCleanedOrderIds.size > 0) {
+                        const now = Date.now();
+                        let prunedCount = 0;
+                        for (const [orderId, markedAt] of this._staleCleanedOrderIds) {
+                            if (!Number.isFinite(markedAt) || now - markedAt > this._staleCleanupRetentionMs) {
+                                this._staleCleanedOrderIds.delete(orderId);
+                                prunedCount++;
+                            }
+                        }
+                        if (prunedCount > 0) {
+                            this.manager.logger.log(
+                                `[STALE-CLEANUP] Pruned ${prunedCount} expired stale-cleaned order IDs ` +
+                                `(retention=${this._staleCleanupRetentionMs}ms, remaining=${this._staleCleanedOrderIds.size})`,
+                                'debug'
+                            );
+                        }
                     }
 
                 } // End while(_incomingFillQueue)
@@ -1615,7 +1631,7 @@ class DEXBot {
                 for (const gridOrder of this.manager.orders.values()) {
                     if (staleOrderIds.has(gridOrder.orderId)) {
                         this.manager.logger.log(`Cleaning stale reference from grid slot ${gridOrder.id} (orderId=${gridOrder.orderId})`, 'warn');
-                        this._staleCleanedOrderIds.add(gridOrder.orderId);
+                        this._staleCleanedOrderIds.set(gridOrder.orderId, Date.now());
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         this.manager._updateOrder(spreadOrder, 'batch-stale-cleanup', false, 0);
                     }
@@ -2335,8 +2351,13 @@ class DEXBot {
             try {
                 await this.manager._fillProcessingLock.acquire(async () => {
                     // Reset recovery state each periodic cycle so accounting recovery can be re-attempted
-                    // even when no fills occur (processFilledOrders also resets this, but only runs on fills)
-                    this.manager.accountant.resetRecoveryState();
+                    // even when no fills occur (processFilledOrders also resets this, but only runs on fills).
+                    // Fallback keeps compatibility with lightweight test stubs that may not attach accountant.
+                    if (this.manager.accountant && typeof this.manager.accountant.resetRecoveryState === 'function') {
+                        this.manager.accountant.resetRecoveryState();
+                    } else {
+                        this.manager._recoveryAttempted = false;
+                    }
                     this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     await this.manager.fetchAccountTotals(this.accountId);
 

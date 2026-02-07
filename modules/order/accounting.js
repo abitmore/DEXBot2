@@ -334,8 +334,14 @@ class Accountant {
             return false;
         }
 
-        const retryInterval = PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS || 60000;
-        const maxAttempts = PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS || 5;
+        const configuredRetryInterval = Number(PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS);
+        const retryInterval = Number.isFinite(configuredRetryInterval) && configuredRetryInterval >= 0
+            ? configuredRetryInterval
+            : 60000;
+        const configuredMaxAttempts = Number(PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS);
+        const maxAttempts = Number.isFinite(configuredMaxAttempts) && configuredMaxAttempts >= 0
+            ? configuredMaxAttempts
+            : 5;
         const now = Date.now();
         const elapsed = now - this._lastRecoveryAttemptTime;
 
@@ -351,7 +357,7 @@ class Accountant {
         }
 
         // Enforce minimum retry interval (skip if too soon since last attempt)
-        if (this._recoveryAttemptCount > 0 && elapsed < retryInterval) {
+        if (retryInterval > 0 && this._recoveryAttemptCount > 0 && elapsed < retryInterval) {
             // Silent skip — don't spam logs. Only log periodically.
             if (elapsed > retryInterval / 2) {
                 mgr.logger?.log?.(

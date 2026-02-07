@@ -840,8 +840,13 @@ class StrategyEngine {
         const mgr = this.manager;
         if (!mgr || !Array.isArray(filledOrders)) return;
 
-        // Reset recovery state at start of each cycle to allow fresh recovery attempts
-        mgr.accountant.resetRecoveryState();
+        // Reset recovery state at start of each cycle to allow fresh recovery attempts.
+        // Fallback keeps compatibility with lightweight test stubs that may not attach accountant.
+        if (mgr.accountant && typeof mgr.accountant.resetRecoveryState === 'function') {
+            mgr.accountant.resetRecoveryState();
+        } else {
+            mgr._recoveryAttempted = false;
+        }
 
         mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders`, "info");
         mgr.pauseFundRecalc();
