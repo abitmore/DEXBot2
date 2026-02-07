@@ -67,7 +67,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, PIPELINE_TIMING } = require('../constants');
 const {
     calculateAvailableFundsValue,
     getAssetFees,
@@ -96,6 +96,10 @@ class Accountant {
         this._isRecovering = false;  // Prevents nested recovery attempts
         this._isVerifyingInvariants = false;  // Prevents overlapping invariant checks
         this._pendingInvariantSnapshot = null;  // Coalesces latest request while one is running
+
+        // Periodic recovery retry state (replaces one-shot _recoveryAttempted flag)
+        this._recoveryAttemptCount = 0;  // Number of recovery attempts in current episode
+        this._lastRecoveryAttemptTime = 0;  // Timestamp of last recovery attempt (ms)
     }
 
     /**
@@ -311,6 +315,18 @@ class Accountant {
      * @param {string} violationType - Description of the violation for logging
      * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
      */
+    /**
+     * Reset the periodic recovery retry state.
+     * Called at the start of each fill processing cycle and by periodic blockchain fetch
+     * to allow fresh recovery attempts when new data arrives.
+     */
+    resetRecoveryState() {
+        this._recoveryAttemptCount = 0;
+        this._lastRecoveryAttemptTime = 0;
+        // Also reset the legacy flag for backward compat with strategy.js stabilization gate
+        if (this.manager) this.manager._recoveryAttempted = false;
+    }
+
     async _attemptFundRecovery(mgr, violationType) {
         // Prevent nested recovery attempts
         if (this._isRecovering) {
@@ -318,30 +334,74 @@ class Accountant {
             return false;
         }
 
-        // Prevent double recovery if stabilization gate already attempted it
-        if (mgr._recoveryAttempted) {
-            mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery already attempted this cycle, skipping`, 'debug');
+        const retryInterval = PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS || 60000;
+        const maxAttempts = PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS || 5;
+        const now = Date.now();
+        const elapsed = now - this._lastRecoveryAttemptTime;
+
+        // Check if we've exhausted max attempts (0 = unlimited)
+        if (maxAttempts > 0 && this._recoveryAttemptCount >= maxAttempts) {
+            mgr.logger?.log?.(
+                `[IMMEDIATE-RECOVERY] Max recovery attempts (${maxAttempts}) exhausted. ` +
+                `Waiting for next fill or periodic sync to reset.`,
+                'warn'
+            );
+            mgr._recoveryAttempted = true;
+            return false;
+        }
+
+        // Enforce minimum retry interval (skip if too soon since last attempt)
+        if (this._recoveryAttemptCount > 0 && elapsed < retryInterval) {
+            // Silent skip — don't spam logs. Only log periodically.
+            if (elapsed > retryInterval / 2) {
+                mgr.logger?.log?.(
+                    `[IMMEDIATE-RECOVERY] Retry cooldown: ${Math.ceil((retryInterval - elapsed) / 1000)}s remaining ` +
+                    `(attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'})`,
+                    'debug'
+                );
+            }
             return false;
         }
 
         this._isRecovering = true;
-        mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] ${violationType} detected. Attempting recovery...`, 'warn');
+        this._recoveryAttemptCount++;
+        this._lastRecoveryAttemptTime = now;
+
+        mgr.logger?.log?.(
+            `[IMMEDIATE-RECOVERY] ${violationType} detected. Attempting recovery ` +
+            `(attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'})...`,
+            'warn'
+        );
 
         try {
             const validation = await this._performStateRecovery(mgr);
 
             if (validation.isValid) {
-                mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery succeeded`, 'info');
-                mgr._recoveryAttempted = true;  // Mark recovery as attempted
+                mgr.logger?.log?.(
+                    `[IMMEDIATE-RECOVERY] Recovery succeeded (attempt ${this._recoveryAttemptCount})`,
+                    'info'
+                );
+                // Reset on success so subsequent violations get fresh attempts
+                this._recoveryAttemptCount = 0;
+                this._lastRecoveryAttemptTime = 0;
+                mgr._recoveryAttempted = true;
                 return true;
             } else {
-                mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery failed: ${validation.reason}. Will retry on next cycle.`, 'error');
-                mgr._recoveryAttempted = true;  // Mark recovery as attempted even on failure
+                mgr.logger?.log?.(
+                    `[IMMEDIATE-RECOVERY] Recovery failed (attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'}): ` +
+                    `${validation.reason}. Will retry in ${retryInterval / 1000}s.`,
+                    'error'
+                );
+                mgr._recoveryAttempted = true;
                 return false;
             }
         } catch (err) {
-            mgr.logger?.log?.(`[IMMEDIATE-RECOVERY] Recovery exception: ${err.message}`, 'error');
-            mgr._recoveryAttempted = true;  // Mark recovery as attempted
+            mgr.logger?.log?.(
+                `[IMMEDIATE-RECOVERY] Recovery exception (attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'}): ` +
+                `${err.message}. Will retry in ${retryInterval / 1000}s.`,
+                'error'
+            );
+            mgr._recoveryAttempted = true;
             return false;
         } finally {
             this._isRecovering = false;

@@ -153,6 +153,14 @@ class DEXBot {
         this._incomingFillQueue = [];
         this.logPrefix = options.logPrefix || '';
 
+        // Track order IDs whose grid slots were already freed by stale-order batch cleanup.
+        // When a batch fails because an order no longer exists on-chain (filled between our
+        // last sync and broadcast), the stale-cleanup converts the slot to VIRTUAL/SPREAD,
+        // releasing committed funds back to chainFree. If a fill event later arrives for
+        // that same order (orphan-fill), we must NOT credit the proceeds again — the capital
+        // was already freed. This set prevents that double-crediting.
+        this._staleCleanedOrderIds = new Set();
+
         // Metrics for monitoring lock contention and fill processing
         this._metrics = {
             fillsProcessed: 0,
@@ -723,9 +731,22 @@ class DEXBot {
                             const gridOrder = this.manager.orders.get(fillOp.order_id) ||
                                 Array.from(this.manager.orders.values()).find(o => o.orderId === fillOp.order_id);
                             if (!gridOrder) {
-                                // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
-                                // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
-                                // Without this, we get fund invariant violations (blockchain has more funds than we track)
+                                // Check if this order was already freed by stale-order batch cleanup.
+                                // When a batch fails due to a stale order reference, the cleanup converts the
+                                // slot to VIRTUAL/SPREAD, releasing committed funds to chainFree. If we also
+                                // credit the fill proceeds here, we double-count the capital.
+                                if (this._staleCleanedOrderIds.has(fillOp.order_id)) {
+                                    this.manager.logger.log(
+                                        `[ORPHAN-FILL] Skipping double-credit for stale-cleaned order ${fillOp.order_id} ` +
+                                        `(funds already freed by batch cleanup)`,
+                                        'warn'
+                                    );
+                                    this._staleCleanedOrderIds.delete(fillOp.order_id);
+                                    continue;
+                                }
+
+                                // Legitimate orphan fill: order was virtualized during sequential processing
+                                // but a fill arrived afterward. Credit proceeds to maintain fund tracking.
                                 this.manager.logger.log(`[ORPHAN-FILL] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
                                 try {
                                     this.manager.accountant.processFillAccounting(fillOp);
@@ -826,9 +847,35 @@ class DEXBot {
                         this.manager.resumeFundRecalc();
                     }
 
-                    // 5. Sequential Rebalance Loop (Interruptible)
+                    // 5. Adaptive Batch Rebalance Loop
+                    // Instead of processing fills one-at-a-time (each requiring a separate broadcast),
+                    // group multiple fills into batches. The batch size scales with queue depth (stress):
+                    //   low stress (1-2 fills)  → process 1 at a time (normal sequential)
+                    //   moderate (3-5 fills)     → batch of 2
+                    //   high (6-14 fills)        → batch of 3
+                    //   extreme (15+ fills)      → batch of MAX_FILL_BATCH_SIZE (default 4)
+                    //
+                    // This is safe because processFilledOrders() already supports multiple fills:
+                    // it virtualizes each fill, shifts the boundary for each, computes a single
+                    // unified rebalance, and returns one set of operations to broadcast.
                     if (allFilledOrders.length > 0) {
-                        this.manager.logger.log(`Processing ${allFilledOrders.length} filled orders sequentially...`, 'info');
+                        const { FILL_PROCESSING: FP } = require('./constants');
+                        const stressTiers = FP.BATCH_STRESS_TIERS || [[0, 1]];
+                        const maxBatch = FP.MAX_FILL_BATCH_SIZE || 1;
+
+                        // Determine batch size from stress tiers based on total fill count
+                        let batchSize = 1;
+                        for (const [minDepth, size] of stressTiers) {
+                            if (allFilledOrders.length >= minDepth) {
+                                batchSize = Math.min(size, maxBatch);
+                                break;
+                            }
+                        }
+
+                        this.manager.logger.log(
+                            `Processing ${allFilledOrders.length} filled orders in batches of ${batchSize}...`,
+                            'info'
+                        );
 
                         let anyRotations = false;
 
@@ -836,42 +883,42 @@ class DEXBot {
                         try {
                             let i = 0;
                             while (i < allFilledOrders.length) {
-                                const filledOrder = allFilledOrders[i];
-                                i++;
+                                // Slice the next batch of fills
+                                const batchEnd = Math.min(i + batchSize, allFilledOrders.length);
+                                const fillBatch = allFilledOrders.slice(i, batchEnd);
+                                i = batchEnd;
 
-                                this.manager.logger.log(`>>> Processing sequential fill for order ${filledOrder.id} (${i}/${allFilledOrders.length})`, 'info');
+                                const batchIds = fillBatch.map(f => f.id).join(', ');
+                                this.manager.logger.log(
+                                    `>>> Processing fill batch [${batchIds}] (${i}/${allFilledOrders.length})`,
+                                    'info'
+                                );
 
-                                // Create an exclusion set from OTHER pending fills in the worklist
-                                // to prevent the rebalancer from picking an order that is about to be processed.
-                                // CRITICAL: Do NOT exclude the current order we are processing!
+                                // Create an exclusion set from fills NOT in this batch
+                                // to prevent the rebalancer from picking orders about to be processed.
+                                const batchIdSet = new Set(fillBatch.map(f => f.id));
                                 const fullExcludeSet = new Set();
                                 for (const other of allFilledOrders) {
-                                    // Skip the current fill - we WANT to process it
-                                    if (other === filledOrder) continue;
-
+                                    if (batchIdSet.has(other.id)) continue;
                                     if (other.orderId) fullExcludeSet.add(other.orderId);
                                     if (other.id) fullExcludeSet.add(other.id);
                                 }
 
-                                // Log funding state before processing this fill
-                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill ${filledOrder.id}`);
+                                // Log funding state before processing this batch
+                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill batch [${batchIds}]`);
 
-                                const rebalanceResult = await this.manager.processFilledOrders([filledOrder], fullExcludeSet);
+                                const rebalanceResult = await this.manager.processFilledOrders(fillBatch, fullExcludeSet);
 
                                 // Log funding state after rebalance calculation (before actual placement)
-                                this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for ${filledOrder.id} (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
+                                this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for batch [${batchIds}] (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
 
                                 const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
 
                                 if (batchResult.hadRotation) {
                                     anyRotations = true;
-                                    // Log funding state after rotation completes
-                                    this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for ${filledOrder.id}`);
+                                    this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for batch [${batchIds}]`);
                                 }
                                 await this.manager.persistGrid();
-
-                                // NOTE: Interrupt logic removed to prevent stale chain state race conditions.
-                                // New fills accumulating in _incomingFillQueue will be processed in the next consumer cycle.
                             }
                         } finally {
                             this.manager.resumeFundRecalc();
@@ -963,6 +1010,18 @@ class DEXBot {
                     // Update metrics
                     this._metrics.fillsProcessed += validFills.length;
                     this._metrics.fillProcessingTimeMs += Date.now() - batchStartTime;
+
+                    // Prune stale-cleaned order tracking after processing.
+                    // Orphan fills for stale orders typically arrive within the same fill batch
+                    // or the immediately following one. If the queue is now empty (no more pending
+                    // fills), it's safe to clear — any future fills would go through a fresh cycle.
+                    if (this._staleCleanedOrderIds.size > 0 && this._incomingFillQueue.length === 0) {
+                        this.manager.logger.log(
+                            `[STALE-CLEANUP] Clearing ${this._staleCleanedOrderIds.size} stale-cleaned order IDs (queue empty)`,
+                            'debug'
+                        );
+                        this._staleCleanedOrderIds.clear();
+                    }
 
                 } // End while(_incomingFillQueue)
 
@@ -1548,10 +1607,15 @@ class DEXBot {
             if (staleOrderIds.size > 0 && operations.length > 1) {
                 this.manager.logger.log(`Stale order(s) ${[...staleOrderIds].join(', ')} detected in failed batch. Cleaning up and retrying.`, 'warn');
 
-                // Clean up grid slot(s) referencing stale orderIds
+                // Clean up grid slot(s) referencing stale orderIds.
+                // CRITICAL: Track these IDs so orphan-fill handler won't double-credit proceeds.
+                // When the slot is converted to SPREAD/VIRTUAL, committed funds are released to
+                // chainFree. If a fill event later arrives for this order, the orphan-fill handler
+                // must skip crediting to avoid double-counting.
                 for (const gridOrder of this.manager.orders.values()) {
                     if (staleOrderIds.has(gridOrder.orderId)) {
-                        this.manager.logger.log(`Cleaning stale reference from grid slot ${gridOrder.id}`, 'warn');
+                        this.manager.logger.log(`Cleaning stale reference from grid slot ${gridOrder.id} (orderId=${gridOrder.orderId})`, 'warn');
+                        this._staleCleanedOrderIds.add(gridOrder.orderId);
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
                         this.manager._updateOrder(spreadOrder, 'batch-stale-cleanup', false, 0);
                     }
@@ -2270,9 +2334,9 @@ class DEXBot {
         this._blockchainFetchInterval = setInterval(async () => {
             try {
                 await this.manager._fillProcessingLock.acquire(async () => {
-                    // Reset recovery flag each periodic cycle so accounting recovery can be re-attempted
+                    // Reset recovery state each periodic cycle so accounting recovery can be re-attempted
                     // even when no fills occur (processFilledOrders also resets this, but only runs on fills)
-                    this.manager._recoveryAttempted = false;
+                    this.manager.accountant.resetRecoveryState();
                     this._log(`Fetching blockchain account values (interval: every ${intervalMin}min)`);
                     await this.manager.fetchAccountTotals(this.accountId);
 

@@ -840,8 +840,8 @@ class StrategyEngine {
         const mgr = this.manager;
         if (!mgr || !Array.isArray(filledOrders)) return;
 
-        // Reset recovery flag at start of each cycle to allow recovery attempts
-        mgr._recoveryAttempted = false;
+        // Reset recovery state at start of each cycle to allow fresh recovery attempts
+        mgr.accountant.resetRecoveryState();
 
         mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders`, "info");
         mgr.pauseFundRecalc();

@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.17] - 2026-02-07 - Adaptive Fill Batching, Periodic Recovery Retries & Orphan-Fill Double-Credit Prevention
+
+Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed three structural weaknesses in the fill processing pipeline that cascaded into a 4.5-hour trading halt with 47,842 BTS fund tracking drift. This patch addresses all three root causes.
+
+### Fixed
+- **Adaptive Batch Fill Processing** in `modules/dexbot_class.js`, `modules/constants.js` (commits 21af7d2)
+  - **Problem**: Fills processed one-at-a-time (~3s per broadcast). 29 fills = ~90s during which market outran bot, causing stale orders and orphan fills.
+  - **Solution**: Group fills into stress-scaled batches (1/2/3/4 per broadcast based on queue depth). `processFilledOrders()` already supports multi-fill input; the bottleneck was the sequential 1-at-a-time loop.
+  - **Config**: `FILL_PROCESSING.MAX_FILL_BATCH_SIZE` (default 4), `BATCH_STRESS_TIERS` (configurable stress tiers). Batch size 1 = legacy sequential behavior.
+  - **Impact**: 29 fills processed in ~8 broadcasts (~24s) instead of 29 (~90s). Reduces market divergence window during fill bursts.
+
+- **Periodic Recovery Retries** in `modules/order/accounting.js`, `modules/order/strategy.js` (commit 21af7d2)
+  - **Problem**: One-shot `_recoveryAttempted` flag meant a single failed recovery bricked the bot permanently until the next `processFilledOrders()` call (which never comes if the bot can't trade). In crash: "Recovery already attempted" logged thousands of times over 4.5 hours.
+  - **Solution**: Replace boolean guard with count+time-based retry system. Up to 5 attempts per episode with 60s minimum interval. `resetRecoveryState()` called by each fill cycle and periodic blockchain fetch.
+  - **Config**: `PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS` (default 60000ms), `MAX_RECOVERY_ATTEMPTS` (default 5). Both overridable via `general.settings.json`.
+  - **Impact**: After market settles, recovery auto-retries periodically instead of giving up after one failure. Bot self-heals within minutes instead of requiring manual restart.
+
+- **Orphan-Fill Double-Credit Prevention** in `modules/dexbot_class.js` (commit 21af7d2)
+  - **Problem**: When batch failed due to stale order (filled on-chain between sync and broadcast), cleanup freed slot (releasing funds to `chainFree`). Then orphan-fill handler ALSO credited proceeds — double-counting. In crash: 7 orphan fills at ~700 BTS each inflated trackedTotal by ~4,600 BTS, cascading into 47,842 BTS drift.
+  - **Solution**: Track stale-cleaned order IDs in `_staleCleanedOrderIds` set. Orphan-fill handler checks this set before crediting. Matched IDs skip credit with explicit `[ORPHAN-FILL] Skipping double-credit` log. Set cleared when fill queue drains.
+  - **Impact**: Eliminates double-counting root cause that fed the fund invariant violations and recovery cascade.
+
+### Added
+- **New Configuration Constants** in `modules/constants.js`:
+  - `FILL_PROCESSING.MAX_FILL_BATCH_SIZE`: Maximum fills per rebalance batch (default 4).
+  - `FILL_PROCESSING.BATCH_STRESS_TIERS`: Array of [minQueueDepth, batchSize] tuples for adaptive sizing.
+  - `PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS`: Minimum time between recovery attempts (default 60000ms).
+  - `PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS`: Max retries per recovery episode (default 5, 0 = unlimited).
+- **New Accountant Method** in `modules/order/accounting.js`:
+  - `resetRecoveryState()`: Resets retry counter and time for new fill cycle. Called by `processFilledOrders()` and periodic blockchain fetch.
+
+### Testing
+- All existing test suites pass: accounting, strategy, manager, grid, ghost order, BTS fee, engine integration, layer2 self-healing, critical bug fixes.
+- Constants load and freeze correctly with new `PIPELINE_TIMING` export.
+- `resetRecoveryState()` verified: resets count (0), time (0), and legacy flag (false).
+- Backward compatible: batch size 1 = legacy one-at-a-time behavior.
+
+---
+
 ## [0.6.0-patch.16] - 2026-02-07 - Runtime Safety, Sync Execution Completeness, Grid/Accounting Hardening & Ops Dashboard Scaffold
 
 ### Added

@@ -296,7 +296,28 @@ let FILL_PROCESSING = {
     // Operation type for fill_order blockchain operations
     OPERATION_TYPE: 4,
     // Indicator for taker (non-maker) fills
-    TAKER_INDICATOR: 0
+    TAKER_INDICATOR: 0,
+
+    // Adaptive batch sizing for fill processing under stress.
+    // Instead of processing fills one-at-a-time (each requiring a separate broadcast),
+    // multiple fills are grouped into a single processFilledOrders + broadcast cycle.
+    // The batch size scales with queue depth:
+    //   queueDepth 1-2  → batch of 1 (normal operation)
+    //   queueDepth 3-5  → batch of 2
+    //   queueDepth 6-14 → batch of 3
+    //   queueDepth 15+  → batch of MAX_FILL_BATCH_SIZE
+    // Set to 1 to disable batching (legacy sequential behavior).
+    MAX_FILL_BATCH_SIZE: 4,
+
+    // Queue depth thresholds for adaptive batch sizing.
+    // Array of [minQueueDepth, batchSize] pairs, evaluated in order.
+    // The first matching threshold determines the batch size.
+    BATCH_STRESS_TIERS: [
+        [15, 4],  // 15+ fills queued → batch of 4
+        [6,  3],  // 6-14 fills queued → batch of 3
+        [3,  2],  // 3-5 fills queued  → batch of 2
+        [0,  1]   // 0-2 fills queued  → sequential (1-at-a-time)
+    ]
 };
 
 // Cleanup and maintenance parameters
@@ -335,7 +356,23 @@ let NODE_MANAGEMENT = {
 // Pipeline timeout configuration
 let PIPELINE_TIMING = {
     // Force maintenance if pipeline stuck for this long (5 minutes)
-    TIMEOUT_MS: 300000
+    TIMEOUT_MS: 300000,
+
+    // Fund recovery retry configuration.
+    // When a fund invariant violation is detected, the bot attempts self-healing recovery.
+    // In patch15, recovery was one-shot: if the first attempt failed, the bot was bricked
+    // until the next processFilledOrders() call (which might never come if no fills arrive).
+    // These settings allow periodic retries with a maximum attempt cap.
+    //
+    // RECOVERY_RETRY_INTERVAL_MS: Minimum time between recovery attempts (default: 60s).
+    //   After a failed recovery, the bot waits at least this long before trying again.
+    //   This prevents tight retry loops while allowing eventual convergence.
+    RECOVERY_RETRY_INTERVAL_MS: 60000,
+    //
+    // MAX_RECOVERY_ATTEMPTS: Maximum recovery attempts per invariant violation episode (default: 5).
+    //   After this many failed attempts, the bot stops retrying until the next fill or
+    //   periodic blockchain fetch resets the counter. Set to 0 for unlimited retries.
+    MAX_RECOVERY_ATTEMPTS: 5
 };
 
 // Logging Level Configuration
@@ -478,6 +515,20 @@ if (settings) {
     }
 
     // Load expert settings (for advanced troubleshooting)
+    if (settings.FILL_PROCESSING) {
+        const fillSettings = Object.fromEntries(
+            Object.entries(settings.FILL_PROCESSING).filter(([key]) => !key.startsWith('_'))
+        );
+        FILL_PROCESSING = { ...FILL_PROCESSING, ...fillSettings };
+    }
+
+    if (settings.PIPELINE_TIMING) {
+        const pipelineSettings = Object.fromEntries(
+            Object.entries(settings.PIPELINE_TIMING).filter(([key]) => !key.startsWith('_'))
+        );
+        PIPELINE_TIMING = { ...PIPELINE_TIMING, ...pipelineSettings };
+    }
+
     if (settings.EXPERT) {
         if (settings.EXPERT.GRID_LIMITS) {
             const expertGridSettings = Object.fromEntries(
@@ -528,9 +579,11 @@ Object.freeze(INCREMENT_BOUNDS);
 Object.freeze(FEE_PARAMETERS);
 Object.freeze(API_LIMITS);
 Object.freeze(FILL_PROCESSING);
+Object.freeze(FILL_PROCESSING.BATCH_STRESS_TIERS);
 Object.freeze(MAINTENANCE);
 Object.freeze(NODE_MANAGEMENT);
+Object.freeze(PIPELINE_TIMING);
 Object.freeze(UPDATER);
 Object.freeze(LOGGING_CONFIG);
 
-module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, UPDATER };
+module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER };
