@@ -4,6 +4,108 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0-patch.16] - 2026-02-07 - Runtime Safety, Sync Execution Completeness, Grid/Accounting Hardening & Ops Dashboard Scaffold
+
+### Added
+- **Operations Dashboard (Experimental Rust TUI Sidecar)** in `dashboard/` (commit 0d6af8f)
+  - Added a ratatui/crossterm terminal dashboard loop with tabbed UI, periodic refresh ticks, centralized key handling, and stateful list navigation.
+  - Added runtime snapshot ingestion that merges `profiles/bots.json`, `pm2 jlist` status, and per-bot log tails with basic alert signal detection.
+  - Added guarded script action model (`safe` / `confirm` / `danger`) with confirmation modal flow and typed-token protection for dangerous actions.
+  - Added dashboard docs/spec (`dashboard/README.md`, `docs/tui_dashboard_spec.md`) and repo hygiene updates (`dashboard/target` + generated aliases in `.gitignore`).
+  - Scope guard: dashboard excludes branch-sync scripts (`ptest`, `pdev`, `pmain`) and operates as a sidecar, not a direct trading-logic mutator.
+
+- **Clear-All Cleanup Script** (commit 3742d1c)
+  - Added a new script command for broad local/runtime cleanup in one operation, reducing manual operational cleanup steps.
+
+### Fixed
+- **Sync-Detected Fills Now Execute Full Rebalance Pipeline** in `modules/dexbot_class.js` (commit 65f8970)
+  - **Problem**: Two runtime sync paths detected fills but stopped at strategy computation.
+  - **Fix**: Both main-loop and periodic sync paths now run the full chain: `synchronizeWithChain(...)` -> `processFilledOrders(...)` -> `updateOrdersOnChainBatch(...)` -> `persistGrid()`.
+  - **Impact**: Full fills found during sync are now replaced/persisted immediately instead of waiting for unrelated future events.
+
+- **Open-Order Watchdog Churn Reduction + Explicit Opt-In Polling** in `modules/order/sync_engine.js`, `modules/dexbot_class.js`, `modules/constants.js`, `dexbot.js` (commit a2d6fc4)
+  - **Problem**: No-op pass-1 updates still called `_updateOrder(...)`, producing repeated logs/work and lock contention.
+  - **Fix**: Added quantized size/state + raw-chain equivalence checks to suppress material no-op updates.
+  - **Behavior Change**: Renamed runtime semantics to explicit open-orders watchdog loop and made polling opt-in by default (`OPEN_ORDERS_SYNC_LOOP_ENABLED=false`), with `OPEN_ORDERS_SYNC_LOOP_MS` as the interval override.
+
+- **Lifecycle Shutdown and Account-Context Recovery Hardening** in `modules/dexbot_class.js`, `modules/order/accounting.js`, `modules/order/startup_reconcile.js` (commit 47ca2d8)
+  - **Problem**: Duplicate/uncancelled loops and missing cleanup handles could leave watchers/listeners active post-shutdown; startup/trigger paths could proceed with unresolved account context.
+  - **Fix**: Introduced managed runtime handles and dedicated start/stop loop controls, added explicit fs watcher/fill listener cleanup, added shutdown guards, enforced account-id resolution, and made trigger-reset short-circuit contingent on actual success.
+  - **Impact**: Prevents background activity leakage and late read failures; startup/recovery now fail fast and deterministically when account context is unavailable.
+
+- **Open-Order Reconciliation Safety Guards** in `modules/order/sync_engine.js` (commit 7ff07d7)
+  - **Type mismatch safety**: Type-mismatched chain orders are queued for cancellation and skipped from reconciliation in the same pass (prevents slot mutation to false PARTIAL states).
+  - **Pair validation safety**: Reconciliation now accepts only true market-pair orders (`assetA->assetB` or `assetB->assetA`) and rejects unrelated account orders.
+  - **Correction queue consistency**: Regular price mismatches now update both returned corrections and `manager.ordersNeedingPriceCorrection` with dedupe/update semantics.
+
+- **Accounting Resiliency Against Fee-Cache and Optimistic Drift Failures** in `modules/order/accounting.js` + `modules/order/sync_engine.js` (commit b6649e6)
+  - Added fail-safe fallback in `_deductFeesFromProceeds()` when fee cache lookup fails (logs and uses raw proceeds).
+  - Added explicit critical-path handling when `tryDeductFromChainFree()` fails, with immediate recovery scheduling.
+  - Coalesced overlapping invariant checks into one in-flight run + latest pending snapshot to reduce noise and overlap.
+  - Normalized BTS fee side selection and aligned missing `fillOp.is_maker` default to maker in sync for accounting parity.
+
+- **Grid Generation and Spread-Correction Safety Hardening** in `modules/order/grid.js` (commits bafed2b, 59e1d8f)
+  - Enforced `minPrice > 0` guard to prevent non-terminating downward progression.
+  - Added fail-fast guards for empty level generation and imbalanced BUY/SELL rails.
+  - Removed pre-broadcast local mutation from spread correction preparation to avoid local/chain drift when batch execution fails or does not execute.
+  - Spread-correction outcomes now apply only when chain batch reports `executed=true`.
+  - Increment validation now enforces configured `INCREMENT_BOUNDS` (0.01..10), replacing legacy 0..100 logic.
+
+- **Dust Sizing Orientation Consistency (BUY Side)** in `modules/order/grid.js` (commit bafed2b)
+  - **Problem**: BUY dust checks sorted slots opposite geometric sizing assumptions.
+  - **Fix**: Normalized BUY slot sorting orientation to preserve correct ideal-size mapping under reverse allocation.
+  - **Impact**: Eliminates threshold-adjacent BUY dust misclassification.
+
+- **Strategy Safety: Fill-Type Validation + Self-Rotation Churn Prevention** in `modules/order/strategy.js` (commit 7b24491)
+  - Invalid/missing fill types no longer consume SELL reaction budget implicitly; unknown types are warned and skipped.
+  - Self-rotation candidates (`oldOrder.id === newGridId`) are converted to in-place updates and excluded from later cancellation flow.
+  - Prevents unnecessary cancel/update churn and avoidable fee pressure.
+
+- **OrderManager Waiter/State Guard Corrections** in `modules/order/manager.js` (commit 715ebd7)
+  - `waitForAccountTotals` now creates/reuses waiter under lock but awaits outside lock to avoid serialized timeout behavior.
+  - Readiness checks aligned to `buyFree/sellFree` semantics.
+  - Explicit zero allocation caps are honored (`0` no longer treated as "no cap").
+  - Added strict enum validation for order type/state updates, with backward-compat normalization for zero-size virtual placeholders.
+
+- **Startup Reconcile Fund-Release and Race Recovery Hardening** in `modules/order/startup_reconcile.js` (commit e413e35)
+  - Unmatched chain cancels now route through release-aware path to return optimistic free balances.
+  - Stale-slot updates are skipped when slot already mapped to same orderId (prevents double-credit).
+  - Resume persistence now awaits async `storeGrid` completion; chain-order ID extraction hardened against null entries.
+
+### Refactored
+- **Deduplicated Startup/Auth/Settings/Resolution Paths** across core modules (commit d479015)
+  - Consolidated mirrored SELL/BUY startup reconciliation flows into shared side-parameterized helpers.
+  - Unified general settings load/write behavior into shared utility consumed across modules.
+  - Reused common account resolution/authentication paths to reduce divergence in sensitive startup/auth code.
+  - Removed duplicate conversion helpers and hoisted shared int64 constants.
+
+- **Grid Helper Consolidation + Dead Path Removal** in order modules (commit 4736777)
+  - Centralized spread gap and dust helpers (`calculateGapSlots`, `hasAnyDust`, `getSizingContext`) and routed strategy/manager callers through shared implementations.
+  - Removed stale manager state/methods/imports and aligned signatures to live call patterns.
+
+- **Removed Dead `cacheFunds` Trigger Wiring in Grid Regen Checks** (commit 609ca12)
+  - Removed unused `cacheFunds` parameter from `checkAndUpdateGridIfNeeded` and `compareGrids`, updated call sites/tests.
+  - Clarifies that trigger behavior is driven by available funds (`buyFree/sellFree`), not unused cache fallback plumbing.
+
+- **Legacy Utility Surface Pruning** in split utils modules (commit c820cbf)
+  - Removed unreferenced helper exports from `modules/order/utils/{system,math,order}.js`.
+  - Updated module documentation references to match current split utility architecture.
+
+- **Post-Hardening Cleanup: Shared Account-Ref Utility Extraction** (commit 2d5f2fe)
+  - Extracted common account reference fallback logic and improved code readability around lifecycle/account-resolution paths.
+
+### Changed
+- **Documentation and Repository Guidance Consolidation** (commits dabe591, 47ca2d8, e413e35)
+  - Renamed OPENCODE guidance to `AGENTS.md` and standardized agent-doc references.
+  - Added commit quality guidance for substantial changes (high-context body with problem/impact/solution + testing notes).
+  - Added newline-safe commit/PR formatting guidance (heredoc-first patterns for CLI reliability).
+
+### Quality Assurance
+- Regression and behavior-lock tests added/updated across sync, startup reconcile, manager/account totals, grid logic, strategy reaction-cap/self-rotation, and full sync-fill rebalance execution paths.
+- Dashboard build validation: `cargo check --manifest-path dashboard/Cargo.toml`.
+- JavaScript runtime checks and focused Node test runs were executed per change set and documented in commit testing notes.
+
+
 ## [0.6.0-patch.15] - 2026-02-06 - Stale Order Recovery Hardening, Liquidity Pool Pagination & Type-Mismatch Correction Pipeline
 
 ### Fixed
@@ -2159,4 +2261,3 @@ See README.md for detailed installation and usage instructions.
 - Always test with `dryRun: true` before enabling live trading
 - Secure your keys; do not commit private keys to version control
 - Use `profiles/` directory for live configuration (not tracked by git)
-
