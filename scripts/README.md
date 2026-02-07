@@ -29,18 +29,26 @@ bash scripts/create-bot-symlinks.sh
 
 ### Wipe Logs
 **File:** `clear-logs.sh`
-**Purpose:** Free up disk space by deleting all bot logs.
+**Purpose:** Delete all bot `.log` files.
 ```bash
-# IRREVERSIBLE: Deletes everything in profiles/logs/*.log
+# IRREVERSIBLE: Deletes all files in profiles/logs/*.log
 bash scripts/clear-logs.sh
 ```
 
-### Hard Reset Grid
+### Wipe Orders
 **File:** `clear-orders.sh`
-**Purpose:** Clear all persistent grid state.
+**Purpose:** Delete all persistent order state files.
 ```bash
-# IRREVERSIBLE: Forces full grid regeneration on next run
+# IRREVERSIBLE: Deletes all files in profiles/orders/*
 bash scripts/clear-orders.sh
+```
+
+### Wipe Orders + Logs
+**File:** `clear-all.sh`
+**Purpose:** Delete order state files and `.log` files in one confirmed operation.
+```bash
+# IRREVERSIBLE: Deletes profiles/orders/* and profiles/logs/*.log
+bash scripts/clear-all.sh
 ```
 
 ---
@@ -189,6 +197,7 @@ Boost your workflow by adding these aliases to your `~/.bashrc` or `~/.zshrc`:
 alias dbu='node dexbot update'
 alias dbc='bash scripts/clear-logs.sh'
 alias dbr='bash scripts/clear-orders.sh'
+alias dba='bash scripts/clear-all.sh'
 alias dbv='node scripts/validate_bots.js'
 alias dbd='node scripts/divergence-calc.js'
 ```
