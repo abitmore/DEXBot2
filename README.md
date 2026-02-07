@@ -24,6 +24,7 @@ node dexbot bots
 
 # 3. Start with PM2 or directly
 node pm2           # For production
+node unlock-start.js  # Single prompt, no PM2
 node dexbot start  # For testing
 ```
 
@@ -538,4 +539,3 @@ MIT License - see LICENSE file for details
 - [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/froooze/DEXBot2)
 - [![Awesome BitShares](https://camo.githubusercontent.com/9d49598b873146ec650fb3f275e8a532c765dabb1f61d5afa25be41e79891aa7/68747470733a2f2f617765736f6d652e72652f62616467652e737667)](https://github.com/bitshares/awesome-bitshares)
 - [![Reddit](https://img.shields.io/badge/Reddit-r%2FBitShares-ff4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/BitShares/)
-

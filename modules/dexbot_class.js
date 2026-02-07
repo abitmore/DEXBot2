@@ -1242,8 +1242,24 @@ class DEXBot {
         await waitForConnected(TIMING.CONNECTION_TIMEOUT_MS);
         if (this.config && this.config.preferredAccount) {
             try {
-                const pwd = masterPassword || await chainKeys.authenticate();
-                this.privateKey = chainKeys.getPrivateKey(this.config.preferredAccount, pwd);
+                let privateKey = null;
+
+                if (masterPassword) {
+                    privateKey = chainKeys.getPrivateKey(this.config.preferredAccount, masterPassword);
+                } else if (chainKeys.isDaemonReady()) {
+                    try {
+                        privateKey = await chainKeys.getPrivateKeyFromDaemon(this.config.preferredAccount);
+                    } catch (daemonErr) {
+                        this._warn(`Credential daemon request failed: ${daemonErr.message}. Falling back to interactive authentication.`);
+                    }
+                }
+
+                if (!privateKey) {
+                    const pwd = await chainKeys.authenticate();
+                    privateKey = chainKeys.getPrivateKey(this.config.preferredAccount, pwd);
+                }
+
+                this.privateKey = privateKey;
                 await this._setupAccountContext(this.config.preferredAccount);
             } catch (err) {
                 this._warn(`Auto-selection of preferredAccount failed: ${err.message}`);

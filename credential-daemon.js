@@ -92,11 +92,10 @@ async function initialize() {
             throw new Error('profiles/keys.json not found. Please run: node dexbot.js keys');
         }
 
-        // Get master password from environment variable (passed by pm2.js)
-        // This avoids stdin inheritance issues entirely
+        // Accept password from PM2 environment when available, otherwise prompt once.
         masterPassword = process.env.DAEMON_PASSWORD;
         if (!masterPassword) {
-            throw new Error('No password provided - daemon must be started by pm2.js');
+            masterPassword = await chainKeys.authenticate();
         }
 
         // Clean up old socket if it exists

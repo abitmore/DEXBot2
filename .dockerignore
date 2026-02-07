@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log
+coverage
+.env
+.env.*
+.git
+.github
+.vscode
+.idea
+*.log
+update.log
+profiles
+analysis
+dashboard
+market_adapter
+tests
+docs

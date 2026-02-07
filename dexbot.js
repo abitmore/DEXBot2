@@ -422,16 +422,24 @@ async function runBotInstances(botEntries, { forceDryRun = false, sourceName = '
     const needMaster = prepared.some(b => b.active && b.preferredAccount);
     let masterPassword = null;
     if (needMaster) {
+        const daemonReady = chainKeys.isDaemonReady();
+        if (daemonReady) {
+            console.log('Credential daemon detected. Starting bots with daemon-backed key access (no extra password prompt).');
+        }
+
         try {
             await waitForConnected();
         } catch (err) {
             console.warn('Timed out waiting for BitShares connection before prompting for master password.');
         }
-        try {
-            masterPassword = await authenticateMasterPassword();
-        } catch (err) {
-            console.warn('Master password entry failed or was cancelled. Bots requiring preferredAccount may need interactive selection.');
-            masterPassword = null;
+
+        if (!daemonReady) {
+            try {
+                masterPassword = await authenticateMasterPassword();
+            } catch (err) {
+                console.warn('Master password entry failed or was cancelled. Bots requiring preferredAccount may need interactive selection.');
+                masterPassword = null;
+            }
         }
     }
 

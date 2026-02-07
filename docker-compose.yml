@@ -1,0 +1,14 @@
+services:
+  dexbot:
+    image: ghcr.io/froooze/dexbot2:latest
+    container_name: dexbot2
+    restart: unless-stopped
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    environment:
+      BOT_NAME: ${BOT_NAME}
+      RUN_LOOP_MS: ${RUN_LOOP_MS:-5000}
+    command: sh -c "node dexbot.js start \"${BOT_NAME}\""
+    volumes:
+      - ./profiles:/app/profiles
