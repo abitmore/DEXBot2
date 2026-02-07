@@ -23,7 +23,39 @@ When creating commits, prefer high-context commit messages for non-trivial fixes
   3. Risk/edge-case notes when relevant
   4. Validation/testing notes (commands or scenario checks)
 - **Formatting**: use readable markdown headers/bullets in commit body for scanability.
+- **CLI formatting safety**:
+  - Never use `/n` or literal `\\n` text as a newline placeholder in commit/PR bodies.
+  - Always pass real newlines to Git/GitHub (multi-line body), not escaped newline text.
+  - Prefer heredocs for reliability when using `git commit` and `gh pr create`.
 - **Atomicity**: keep unrelated edits out of the commit; document only included changes.
+
+Recommended CLI patterns (newline-safe):
+
+```bash
+# Commit message with proper markdown/newlines
+git commit -F- <<'EOF'
+fix: <short summary>
+
+<context>
+
+## <Fix area>
+- Problem:
+- Impact:
+- Solution:
+
+## Testing Notes
+- <test command>
+EOF
+
+# PR body with proper markdown/newlines
+gh pr create --title "<title>" --body-file - <<'EOF'
+## Summary
+- <item>
+
+## Testing
+- <command>
+EOF
+```
 
 Recommended template:
 

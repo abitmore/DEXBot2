@@ -48,8 +48,8 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, TIMING } = require('../constants');
-const { getMinAbsoluteOrderSize, getAssetFees, hasValidAccountTotals } = require('./utils/math');
+const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');
+const { getMinAbsoluteOrderSize, getAssetFees } = require('./utils/math');
 const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, isOrderOnChain, getPartialsByType } = require('./utils/order');
 const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
@@ -162,6 +162,13 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
         return;
     }
 
+    // Recovery sync may have already matched this chain order to this slot.
+    // Skip to avoid double-crediting chainFree and redundant on-chain updates.
+    if (currentSlot.orderId === chainOrderId) {
+        manager.logger?.log?.(`[_updateChainOrderToGrid] SKIP: Slot ${gridOrder.id} already mapped to ${chainOrderId}`, 'debug');
+        return;
+    }
+
     // CRITICAL ACCOUNTING ALIGNMENT:
     // This order already exists on chain. To track its funds correctly:
     // 1. Add its CURRENT size to our optimistic Free balance (bring external funds into tracking)
@@ -253,8 +260,17 @@ async function _cancelLargestOrder({ chainOrders, account, privateKey, manager, 
     );
 
     try {
-        // Cancel the largest order on blockchain
-        await chainOrders.cancelOrder(account, privateKey, orderId);
+        // Cancel the largest order on blockchain and release untracked funds.
+        await _cancelChainOrder({
+            chainOrders,
+            account,
+            privateKey,
+            manager,
+            chainOrderId: orderId,
+            chainOrderObj: largestOrder,
+            releaseUntrackedFunds: true,
+            dryRun,
+        });
         logger?.log?.(`Cancelled largest order ${orderId}`, 'info');
 
         // Mark for removal from unmatched list (handled by caller)
@@ -351,14 +367,27 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
  * @param {Object} params.manager - OrderManager instance.
  * @param {string} params.chainOrderId - ID of the chain order to cancel.
  * @param {boolean} params.dryRun - Whether to simulate.
+ * @param {Object} [params.chainOrderObj] - Raw chain order object (needed for fund release).
+ * @param {boolean} [params.releaseUntrackedFunds=false] - If true, release the cancelled order's
+ *   committed funds via addToChainFree. Use only for unmatched chain orders that have no
+ *   corresponding ACTIVE/PARTIAL grid slot (where synchronizeWithChain cannot release them).
  * @returns {Promise<void>}
  * @private
  */
-async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun }) {
+async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false }) {
     if (dryRun) return;
 
     await chainOrders.cancelOrder(account, privateKey, chainOrderId);
     await manager.synchronizeWithChain(chainOrderId, 'cancelOrder');
+
+    // Unmatched chain orders are not represented as ACTIVE/PARTIAL grid slots, so
+    // synchronizeWithChain('cancelOrder') cannot release their commitment.
+    if (releaseUntrackedFunds && manager.accountant && chainOrderObj) {
+        const parsed = parseChainOrder(chainOrderObj, manager.assets);
+        if (parsed && parsed.size > 0) {
+            manager.accountant.addToChainFree(parsed.type, parsed.size, 'startup-cancel-unmatched');
+        }
+    }
 }
 
 async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }) {
@@ -527,7 +556,16 @@ async function _reconcileStartupSide({
             if (cancelCount <= 0) break;
             logger?.log?.(`Startup: Cancelling excess ${sideUpper} chain order ${x.chain.id}`, 'info');
             try {
-                await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: x.chain.id, dryRun });
+                await _cancelChainOrder({
+                    chainOrders,
+                    account,
+                    privateKey,
+                    manager,
+                    chainOrderId: x.chain.id,
+                    chainOrderObj: x.chain,
+                    releaseUntrackedFunds: true,
+                    dryRun,
+                });
                 logger?.log?.(`Startup: Successfully cancelled excess ${sideUpper} order ${x.chain.id}`, 'info');
                 cancelCount--;
             } catch (err) {
@@ -596,7 +634,7 @@ async function attemptResumePersistedGridByPriceMatch({
 
         logger && logger.log && logger.log(`Successfully matched ${matchedOrderIds.size} orders by price. Resuming with existing grid.`, 'info');
         if (typeof storeGrid === 'function') {
-            storeGrid(Array.from(manager.orders.values()));
+            await storeGrid(Array.from(manager.orders.values()));
         }
         return { resumed: true, matchedCount: matchedOrderIds.size };
     } catch (err) {
@@ -696,7 +734,7 @@ async function reconcileStartupOrders({
     // CRITICAL FIX: Sanitize phantom orders - grid orders that claim to be active with an ID,
     // but that ID is missing from the chain. Downgrade to VIRTUAL so they don't block
     // new orders or cause balance invariants.
-    const chainIds = new Set(chainOpenOrders.map(o => o.id));
+    const chainIds = new Set((Array.isArray(chainOpenOrders) ? chainOpenOrders : []).map(o => o && o.id).filter(Boolean));
     for (const order of manager.orders.values()) {
         if (isOrderPlaced(order)) {
             if (!chainIds.has(order.orderId)) {
@@ -733,7 +771,7 @@ async function reconcileStartupOrders({
         }
     }
 
-    const unmatchedChain = chainOpenOrders.filter(co => !matchedChainOrderIds.has(co.id));
+    const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter(co => co && !matchedChainOrderIds.has(co.id));
     const unmatchedParsed = unmatchedChain
         .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
         .filter(x => x.parsed);
