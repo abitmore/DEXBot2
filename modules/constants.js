@@ -103,8 +103,7 @@
  * ===============================================================================
  */
 
-const fs = require('fs');
-const path = require('path');
+const { readGeneralSettings } = require('./general_settings');
 
 // Order categories used by the OrderManager when classifying grid entries.
 const ORDER_TYPES = Object.freeze({
@@ -446,77 +445,75 @@ let UPDATER = {
 // --- LOCAL SETTINGS OVERRIDES ---
 // Load user-defined settings from profiles/general.settings.json if it exists.
 // This allows preserving settings during updates without git stashing.
-const SETTINGS_FILE = path.join(__dirname, '..', 'profiles', 'general.settings.json');
+const settings = readGeneralSettings({
+    fallback: null,
+    onError: (err, filePath) => {
+        console.warn(`[WARN] Failed to load local settings from ${filePath}: ${err.message}`);
+    }
+});
 
-if (fs.existsSync(SETTINGS_FILE)) {
-    try {
-        const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
-        const settings = JSON.parse(raw);
+if (settings) {
+    if (settings.LOG_LEVEL) LOG_LEVEL = settings.LOG_LEVEL;
 
-        if (settings.LOG_LEVEL) LOG_LEVEL = settings.LOG_LEVEL;
+    if (settings.TIMING) {
+        // Filter out comment fields (keys starting with _) before merging
+        const timingSettings = Object.fromEntries(
+            Object.entries(settings.TIMING).filter(([key]) => !key.startsWith('_'))
+        );
+        TIMING = { ...TIMING, ...timingSettings };
+    }
 
-        if (settings.TIMING) {
-            // Filter out comment fields (keys starting with _) before merging
-            const timingSettings = Object.fromEntries(
-                Object.entries(settings.TIMING).filter(([key]) => !key.startsWith('_'))
+    if (settings.GRID_LIMITS) {
+        const gridSettings = settings.GRID_LIMITS;
+        // Filter out comment fields before merging
+        const cleanGridSettings = Object.fromEntries(
+            Object.entries(gridSettings).filter(([key]) => !key.startsWith('_'))
+        );
+        GRID_LIMITS = {
+            ...GRID_LIMITS,
+            ...cleanGridSettings,
+            GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON, ...(cleanGridSettings.GRID_COMPARISON || {}) }
+        };
+    }
+
+    // Load expert settings (for advanced troubleshooting)
+    if (settings.EXPERT) {
+        if (settings.EXPERT.GRID_LIMITS) {
+            const expertGridSettings = Object.fromEntries(
+                Object.entries(settings.EXPERT.GRID_LIMITS).filter(([key]) => !key.startsWith('_'))
             );
-            TIMING = { ...TIMING, ...timingSettings };
+            GRID_LIMITS = { ...GRID_LIMITS, ...expertGridSettings };
         }
-
-        if (settings.GRID_LIMITS) {
-            const gridSettings = settings.GRID_LIMITS;
-            // Filter out comment fields before merging
-            const cleanGridSettings = Object.fromEntries(
-                Object.entries(gridSettings).filter(([key]) => !key.startsWith('_'))
+        if (settings.EXPERT.TIMING) {
+            const expertTimingSettings = Object.fromEntries(
+                Object.entries(settings.EXPERT.TIMING).filter(([key]) => !key.startsWith('_'))
             );
-            GRID_LIMITS = {
-                ...GRID_LIMITS,
-                ...cleanGridSettings,
-                GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON, ...(cleanGridSettings.GRID_COMPARISON || {}) }
-            };
+            TIMING = { ...TIMING, ...expertTimingSettings };
         }
+    }
 
-        // Load expert settings (for advanced troubleshooting)
-        if (settings.EXPERT) {
-            if (settings.EXPERT.GRID_LIMITS) {
-                const expertGridSettings = Object.fromEntries(
-                    Object.entries(settings.EXPERT.GRID_LIMITS).filter(([key]) => !key.startsWith('_'))
-                );
-                GRID_LIMITS = { ...GRID_LIMITS, ...expertGridSettings };
-            }
-            if (settings.EXPERT.TIMING) {
-                const expertTimingSettings = Object.fromEntries(
-                    Object.entries(settings.EXPERT.TIMING).filter(([key]) => !key.startsWith('_'))
-                );
-                TIMING = { ...TIMING, ...expertTimingSettings };
-            }
-        }
+    if (settings.DEFAULT_CONFIG) {
+        DEFAULT_CONFIG = { ...DEFAULT_CONFIG, ...settings.DEFAULT_CONFIG };
+    }
 
-        if (settings.DEFAULT_CONFIG) {
-            DEFAULT_CONFIG = { ...DEFAULT_CONFIG, ...settings.DEFAULT_CONFIG };
-        }
+    if (settings.UPDATER) {
+        UPDATER = { ...UPDATER, ...settings.UPDATER };
+    }
 
-        if (settings.UPDATER) {
-            UPDATER = { ...UPDATER, ...settings.UPDATER };
-        }
-
-        if (settings.LOGGING_CONFIG) {
-            // Deep merge logging config to preserve defaults not specified in settings
-            const mergeConfig = (target, source) => {
-                for (const key in source) {
-                    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-                        target[key] = { ...target[key], ...source[key] };
-                        mergeConfig(target[key], source[key]);
-                    } else {
-                        target[key] = source[key];
-                    }
+    if (settings.LOGGING_CONFIG) {
+        // Deep merge logging config to preserve defaults not specified in settings
+        const mergeConfig = (target, source) => {
+            for (const key in source) {
+                if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+                    target[key] = { ...target[key], ...source[key] };
+                    mergeConfig(target[key], source[key]);
+                } else {
+                    target[key] = source[key];
                 }
-                return target;
-            };
-            LOGGING_CONFIG = mergeConfig({ ...LOGGING_CONFIG }, settings.LOGGING_CONFIG);
-        }
-    } catch (err) {
-        console.warn(`[WARN] Failed to load local settings from ${SETTINGS_FILE}: ${err.message}`);
+            }
+            return target;
+        };
+        LOGGING_CONFIG = mergeConfig({ ...LOGGING_CONFIG }, settings.LOGGING_CONFIG);
     }
 }
 

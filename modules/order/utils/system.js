@@ -18,14 +18,6 @@ const OrderUtils = require('./order');
 
 const poolIdCache = new Map();
 
-/**
- * Enhanced blockchainToFloat that allows precision 0
- */
-function safeBlockchainToFloat(amount, precision) {
-    const p = (typeof precision === 'number') ? precision : 0;
-    return Number(amount) / Math.pow(10, p);
-}
-
 const lookupAsset = async (BitShares, s) => {
     if (!BitShares) return null;
     const sym = s.toLowerCase();
@@ -200,8 +192,8 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
 
         if (!isValidNumber(amtA) || !isValidNumber(amtB) || Number(amtB) === 0) return null;
 
-        const floatA = safeBlockchainToFloat(amtA, aMeta.precision);
-        const floatB = safeBlockchainToFloat(amtB, bMeta.precision);
+        const floatA = MathUtils.blockchainToFloat(amtA, aMeta.precision);
+        const floatB = MathUtils.blockchainToFloat(amtB, bMeta.precision);
 
         // Return B/A orientation to match market price format
         return floatB > 0 ? floatB / floatA : null;
@@ -251,7 +243,7 @@ async function initializeFeeCache(botsConfig, BitShares) {
                     return {
                         raw: feeNum,
                         satoshis: feeNum,
-                        bts: safeBlockchainToFloat(feeNum, 5)
+                        bts: MathUtils.blockchainToFloat(feeNum, 5)
                     };
                 };
                 cache.BTS = {
@@ -270,7 +262,7 @@ async function initializeFeeCache(botsConfig, BitShares) {
                     takerFee: options.taker_fee_percent ? { percent: options.taker_fee_percent / 100 } : null,
                     maxMarketFee: {
                         raw: options.max_market_fee || 0,
-                        float: safeBlockchainToFloat(options.max_market_fee || 0, fullAsset.precision)
+                        float: MathUtils.blockchainToFloat(options.max_market_fee || 0, fullAsset.precision)
                     }
                 };
             }

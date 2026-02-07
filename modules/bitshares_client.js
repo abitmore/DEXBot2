@@ -44,8 +44,7 @@ const BitSharesLib = require('btsdex');
 require('./btsdex_event_patch');
 const { TIMING, NODE_MANAGEMENT } = require('./constants');
 const NodeManager = require('./node_manager');
-const fs = require('fs');
-const path = require('path');
+const { readGeneralSettings } = require('./general_settings');
 
 // Shared connection state for the process. Modules should use waitForConnected()
 // to ensure the shared BitShares client is connected before making DB calls.
@@ -58,18 +57,17 @@ let nodeManager = null;
 let nodeConfig = null;
 
 // Load node configuration from settings file
-try {
-    const settingsPath = path.join(__dirname, '..', 'profiles', 'general.settings.json');
-    if (fs.existsSync(settingsPath)) {
-        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        if (settings.NODES?.enabled && settings.NODES?.list?.length > 0) {
-            nodeConfig = settings.NODES;
-            nodeManager = new NodeManager(nodeConfig);
-            console.log(`[NodeManager] Loaded config for ${nodeConfig.list.length} nodes`);
-        }
+const settings = readGeneralSettings({
+    fallback: null,
+    onError: (err) => {
+        console.warn('[NodeManager] Config load failed, continuing with defaults:', err.message);
     }
-} catch (err) {
-    console.warn('[NodeManager] Config load failed, continuing with defaults:', err.message);
+});
+
+if (settings?.NODES?.enabled && settings.NODES?.list?.length > 0) {
+    nodeConfig = settings.NODES;
+    nodeManager = new NodeManager(nodeConfig);
+    console.log(`[NodeManager] Loaded config for ${nodeConfig.list.length} nodes`);
 }
 
 /**
@@ -155,4 +153,3 @@ module.exports = {
     getNodeSummary: () => nodeManager?.getSummary(),
     _internal: { get connected() { return connected; } }
 };
-

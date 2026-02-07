@@ -57,6 +57,7 @@ const readline = require('readline');
 const { execSync } = require('child_process');
 const { ensureProfilesDirectory, readInput } = require('./order/utils/system');
 const { DEFAULT_CONFIG, GRID_LIMITS, TIMING, LOG_LEVEL, UPDATER } = require('./constants');
+const { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } = require('./general_settings');
 
 /**
  * Parses JSON content that may contain comments (/* or //).
@@ -69,7 +70,6 @@ function parseJsonWithComments(raw) {
 }
 
 const BOTS_FILE = path.join(__dirname, '..', 'profiles', 'bots.json');
-const SETTINGS_FILE = path.join(__dirname, '..', 'profiles', 'general.settings.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 
 /**
@@ -113,31 +113,29 @@ function saveBotsConfig(config, filePath) {
  * @returns {Object} The loaded settings or default settings if the file doesn't exist.
  */
 function loadGeneralSettings() {
-    if (!fs.existsSync(SETTINGS_FILE)) {
-        return {
-            LOG_LEVEL: LOG_LEVEL,
-            GRID_LIMITS: { ...GRID_LIMITS },
-            TIMING: { ...TIMING },
-            UPDATER: { ...UPDATER }
-        };
-    }
-    try {
-        const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
-        const settings = JSON.parse(raw);
-        // Ensure UPDATER section exists
-        if (!settings.UPDATER) {
-            settings.UPDATER = { ...UPDATER };
+    const defaults = {
+        LOG_LEVEL: LOG_LEVEL,
+        GRID_LIMITS: { ...GRID_LIMITS },
+        TIMING: { ...TIMING },
+        UPDATER: { ...UPDATER }
+    };
+
+    const settings = readGeneralSettings({
+        fallback: null,
+        onError: (err) => {
+            console.error('Failed to load general settings:', err.message);
         }
-        return settings;
-    } catch (err) {
-        console.error('Failed to load general settings:', err.message);
-        return {
-            LOG_LEVEL: LOG_LEVEL,
-            GRID_LIMITS: { ...GRID_LIMITS },
-            TIMING: { ...TIMING },
-            UPDATER: { ...UPDATER }
-        };
+    });
+
+    if (!settings || typeof settings !== 'object') {
+        return defaults;
     }
+
+    // Ensure UPDATER section exists
+    if (!settings.UPDATER) {
+        settings.UPDATER = { ...UPDATER };
+    }
+    return settings;
 }
 
 /**
@@ -146,8 +144,7 @@ function loadGeneralSettings() {
  */
 function saveGeneralSettings(settings) {
     try {
-        ensureProfilesDirectory(PROFILES_DIR);
-        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+        writeGeneralSettings(settings);
         console.log(`\n✓ General settings saved to ${path.basename(SETTINGS_FILE)}`);
     } catch (err) {
         console.error('Failed to save general settings:', err.message);

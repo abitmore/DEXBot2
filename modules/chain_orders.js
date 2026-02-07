@@ -981,6 +981,8 @@ function getFillProcessingMode() {
 module.exports = {
     selectAccount,
     setPreferredAccount,
+    resolveAccountId,
+    resolveAccountName,
     readOpenOrders,
     listenForFills,
     updateOrder,

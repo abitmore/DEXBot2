@@ -1137,15 +1137,7 @@ class DEXBot {
      * @private
      */
     async _setupAccountContext(accountName) {
-        let accId = null;
-        try {
-            const full = await BitShares.db.get_full_accounts([accountName], false);
-            if (full && full[0]) {
-                const maybe = full[0][0];
-                if (maybe && String(maybe).startsWith('1.2.')) accId = maybe;
-                else if (full[0][1] && full[0][1].account && full[0][1].account.id) accId = full[0][1].account.id;
-            }
-        } catch (e) { /* best-effort */ }
+        const accId = await chainOrders.resolveAccountId(accountName);
 
         if (!accId) {
             throw new Error(`Unable to resolve account id for '${accountName}'`);

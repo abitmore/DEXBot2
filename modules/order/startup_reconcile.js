@@ -361,6 +361,204 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     await manager.synchronizeWithChain(chainOrderId, 'cancelOrder');
 }
 
+async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }) {
+    try {
+        logger?.log?.(triggerMessage, 'warn');
+        const freshChainOrders = await chainOrders.readOpenOrders(
+            resolveAccountRef(manager, account),
+            TIMING.CONNECTION_TIMEOUT_MS
+        );
+        await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source });
+    } catch (syncErr) {
+        logger?.log?.(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
+    }
+}
+
+async function _reconcileStartupSide({
+    orderType,
+    targetCount,
+    chainSideOrders,
+    unmatchedSideOrders,
+    manager,
+    chainOrders,
+    account,
+    privateKey,
+    dryRun,
+}) {
+    const logger = manager?.logger;
+    const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
+    const balanceKey = orderType === ORDER_TYPES.SELL ? 'sellFree' : 'buyFree';
+    const balanceSymbol = orderType === ORDER_TYPES.SELL ? manager.assets.assetA.symbol : manager.assets.assetB.symbol;
+    const sortUpdateComparator = orderType === ORDER_TYPES.SELL
+        ? (a, b) => (parseChainOrder(a, manager.assets)?.price || 0) - (parseChainOrder(b, manager.assets)?.price || 0)
+        : (a, b) => (parseChainOrder(b, manager.assets)?.price || 0) - (parseChainOrder(a, manager.assets)?.price || 0);
+    const sortExcessCancelComparator = orderType === ORDER_TYPES.SELL
+        ? (a, b) => (b.parsed.price || 0) - (a.parsed.price || 0)
+        : (a, b) => (a.parsed.price || 0) - (b.parsed.price || 0);
+    const sortMatchedCancelComparator = orderType === ORDER_TYPES.SELL
+        ? (a, b) => (b.price || 0) - (a.price || 0)
+        : (a, b) => (a.price || 0) - (b.price || 0);
+
+    const matchedOnGrid = _countActiveOnGrid(manager, orderType);
+    const neededSlots = Math.max(0, targetCount - matchedOnGrid);
+    const desiredSlots = _pickVirtualSlotsToActivate(manager, orderType, neededSlots);
+
+    const sortedUnmatched = unmatchedSideOrders.slice(0).sort(sortUpdateComparator);
+    const updateCount = Math.min(sortedUnmatched.length, desiredSlots.length);
+    let cancelledIndex = null;
+
+    logger?.log?.(
+        `Startup ${sideUpper}: matchedOnGrid=${matchedOnGrid}, needSlots=${neededSlots}, unmatched=${sortedUnmatched.length}, updates=${updateCount}`,
+        'info'
+    );
+
+    if (updateCount > 0 && _isGridEdgeFullyActive(manager, orderType, updateCount)) {
+        logger?.log?.(`Startup: ${sideUpper} grid edge is fully active, cancelling largest order to free funds`, 'info');
+        const cancelInfo = await _cancelLargestOrder({
+            chainOrders,
+            account,
+            privateKey,
+            manager,
+            unmatchedOrders: sortedUnmatched,
+            updateCount,
+            orderType,
+            dryRun,
+        });
+        if (cancelInfo) cancelledIndex = cancelInfo.index;
+    }
+
+    for (let i = 0; i < updateCount; i++) {
+        if (cancelledIndex !== null && i === cancelledIndex) continue;
+
+        const chainOrder = sortedUnmatched[i];
+        const gridOrder = desiredSlots[i];
+        const gridSize = Number(gridOrder.size) || 0;
+        const parsedChain = parseChainOrder(chainOrder, manager.assets);
+        const currentSize = parsedChain ? parsedChain.size : 0;
+        const sizeIncrease = Math.max(0, gridSize - currentSize);
+        const currentAssetBalance = manager.accountTotals?.[balanceKey] || 0;
+
+        if (sizeIncrease > currentAssetBalance) {
+            logger?.log?.(
+                `Startup: Skipping ${sideUpper} update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} ${balanceSymbol}, have ${Format.formatAmount8(currentAssetBalance)} ${balanceSymbol})`,
+                'warn'
+            );
+            continue;
+        }
+
+        logger?.log?.(
+            `Startup: Updating chain ${sideUpper} ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+            'info'
+        );
+
+        try {
+            await _updateChainOrderToGrid({
+                chainOrders,
+                account,
+                privateKey,
+                manager,
+                chainOrderId: chainOrder.id,
+                gridOrder,
+                dryRun,
+                chainOrderObj: chainOrder,
+            });
+        } catch (err) {
+            logger?.log?.(`Startup: Failed to update ${sideUpper} ${chainOrder.id}: ${err.message}`, 'error');
+            await _recoverStartupSyncFailure({
+                chainOrders,
+                manager,
+                account,
+                logger,
+                triggerMessage: `Startup: Triggering recovery sync after ${sideUpper} update failure`,
+                source: 'startupReconcileFailure',
+            });
+        }
+    }
+
+    if (cancelledIndex !== null && !dryRun) {
+        const targetGridOrder = desiredSlots[cancelledIndex];
+        if (targetGridOrder) {
+            logger?.log?.(
+                `Startup: Creating new ${sideUpper} for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatAmount8(targetGridOrder.size)})`,
+                'info'
+            );
+            try {
+                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
+            } catch (err) {
+                logger?.log?.(`Startup: Failed to create ${sideUpper} for cancelled slot: ${err.message}`, 'error');
+                await _recoverStartupSyncFailure({
+                    chainOrders,
+                    manager,
+                    account,
+                    logger,
+                    triggerMessage: `Startup: Triggering recovery sync after ${sideUpper} creation failure`,
+                    source: 'phase3CreationFailure',
+                });
+            }
+        }
+    }
+
+    const processedUnmatched = sortedUnmatched.slice(updateCount);
+    const chainCount = chainSideOrders.length;
+    const createCount = Math.max(0, targetCount - chainCount);
+    const remainingSlots = desiredSlots.slice(updateCount);
+
+    for (let i = 0; i < Math.min(createCount, remainingSlots.length); i++) {
+        const gridOrder = remainingSlots[i];
+        logger?.log?.(
+            `Startup: Creating ${sideUpper} for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
+            'info'
+        );
+        try {
+            await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
+        } catch (err) {
+            logger?.log?.(`Startup: Failed to create ${sideUpper}: ${err.message}`, 'error');
+        }
+    }
+
+    let cancelCount = Math.max(0, chainCount - targetCount);
+    if (cancelCount > 0) {
+        const parsedUnmatched = processedUnmatched
+            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+            .filter(x => x.parsed)
+            .sort(sortExcessCancelComparator);
+
+        for (const x of parsedUnmatched) {
+            if (cancelCount <= 0) break;
+            logger?.log?.(`Startup: Cancelling excess ${sideUpper} chain order ${x.chain.id}`, 'info');
+            try {
+                await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: x.chain.id, dryRun });
+                logger?.log?.(`Startup: Successfully cancelled excess ${sideUpper} order ${x.chain.id}`, 'info');
+                cancelCount--;
+            } catch (err) {
+                logger?.log?.(`Startup: Failed to cancel ${sideUpper} ${x.chain.id}: ${err.message}`, 'error');
+            }
+        }
+
+        if (cancelCount > 0) {
+            const activeOrders = manager.getOrdersByTypeAndState(orderType, ORDER_STATES.ACTIVE)
+                .filter(o => o && o.orderId)
+                .sort(sortMatchedCancelComparator);
+
+            for (const o of activeOrders) {
+                if (cancelCount <= 0) break;
+                logger?.log?.(`Startup: Cancelling excess matched ${sideUpper} ${o.orderId} (grid ${o.id})`, 'warn');
+                try {
+                    await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun });
+                    logger?.log?.(`Startup: Successfully cancelled excess matched ${sideUpper} order ${o.orderId} (grid ${o.id})`, 'info');
+                    cancelCount--;
+                } catch (err) {
+                    logger?.log?.(`Startup: Failed to cancel matched ${sideUpper} ${o.orderId}: ${err.message}`, 'error');
+                }
+            }
+        }
+    }
+
+    return {
+        chainCount,
+    };
+}
+
 /**
  * Attempt to resume a persisted grid when orderIds don't match (e.g. orders.json out of sync),
  * by matching existing on-chain open orders to grid orders using price+size matching.
@@ -548,356 +746,31 @@ async function reconcileStartupOrders({
         'info'
     );
 
-    // ---- SELL SIDE ----
-    const matchedSell = _countActiveOnGrid(manager, ORDER_TYPES.SELL);
-    const needSellSlots = Math.max(0, targetSell - matchedSell);
-    const desiredSellSlots = _pickVirtualSlotsToActivate(manager, ORDER_TYPES.SELL, needSellSlots);
+    const sellResult = await _reconcileStartupSide({
+        orderType: ORDER_TYPES.SELL,
+        targetCount: targetSell,
+        chainSideOrders: chainSells,
+        unmatchedSideOrders: unmatchedSells,
+        manager,
+        chainOrders,
+        account,
+        privateKey,
+        dryRun,
+    });
+    const chainSellCount = sellResult.chainCount;
 
-    // Sort unmatched SELL orders by price (low to high) to pair with desiredSellSlots
-    // which are already sorted by price (closest to market first)
-    const sortedUnmatchedSells = unmatchedSells
-        .slice(0)  // Create copy to avoid mutating original
-        .sort((a, b) => {
-            const priceA = parseChainOrder(a, manager.assets)?.price || 0;
-            const priceB = parseChainOrder(b, manager.assets)?.price || 0;
-            return priceA - priceB;  // Low to high (market to edge)
-        });
-
-    const sellUpdates = Math.min(sortedUnmatchedSells.length, desiredSellSlots.length);
-    let cancelledSellIndex = null;
-
-    logger && logger.log && logger.log(
-        `Startup SELL: matchedOnGrid=${matchedSell}, needSlots=${needSellSlots}, unmatched=${sortedUnmatchedSells.length}, updates=${sellUpdates}`,
-        'info'
-    );
-
-    // PHASE 1: Cancel largest order if grid edge is fully active (frees maximum funds)
-    if (sellUpdates > 0 && _isGridEdgeFullyActive(manager, ORDER_TYPES.SELL, sellUpdates)) {
-        logger && logger.log && logger.log(`Startup: SELL grid edge is fully active, cancelling largest order to free funds`, 'info');
-        const cancelInfo = await _cancelLargestOrder({
-            chainOrders, account, privateKey, manager,
-            unmatchedOrders: sortedUnmatchedSells,
-            updateCount: sellUpdates,
-            orderType: ORDER_TYPES.SELL,
-            dryRun
-        });
-        if (cancelInfo) {
-            cancelledSellIndex = cancelInfo.index;
-            // Don't splice - keep index alignment with desiredSellSlots
-        }
-    }
-
-    // PHASE 2: Update remaining unmatched orders to their target sizes
-    for (let i = 0; i < sellUpdates; i++) {
-        // Skip the cancelled order's slot - will be handled in Phase 3
-        if (cancelledSellIndex !== null && i === cancelledSellIndex) {
-            continue;
-        }
-        const chainOrder = sortedUnmatchedSells[i];
-        const gridOrder = desiredSellSlots[i];
-
-        // Check if update is feasible: SELL orders need to sell assetA
-        // If account doesn't have enough free assetA, skip this update (keep old order as-is)
-        const gridSize = Number(gridOrder.size) || 0;
-        const parsedChain = parseChainOrder(chainOrder, manager.assets);
-        const currentSize = parsedChain ? parsedChain.size : 0;
-        const sizeIncrease = Math.max(0, gridSize - currentSize);
-        const currentSellAssetBalance = (manager.accountTotals?.sellFree) || 0;
-
-        if (sizeIncrease > currentSellAssetBalance) {
-            logger && logger.log && logger.log(
-                `Startup: Skipping SELL update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} ${manager.assets.assetA.symbol}, have ${Format.formatAmount8(currentSellAssetBalance)} ${manager.assets.assetA.symbol})`,
-                'warn'
-            );
-            continue;
-        }
-
-        try {
-            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun, chainOrderObj: chainOrder });
-        } catch (err) {
-            logger && logger.log && logger.log(`Startup: Failed to update SELL ${chainOrder.id}: ${err.message}`, 'error');
-            // CRITICAL: On update failure, resync from blockchain to catch order-not-found or other state mismatches
-            // This prevents grid/chain desync where grid expects update succeeded but chain order still exists/differs
-            try {
-                logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL update failure`, 'warn');
-                const freshChainOrders = await chainOrders.readOpenOrders(
-                    resolveAccountRef(manager, account),
-                    TIMING.CONNECTION_TIMEOUT_MS
-                );
-                // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
-                // Pre-adjustment happened but post-deduction didn't; sync must correct fund tracking
-                await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'startupReconcileFailure' });
-            } catch (syncErr) {
-                logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
-            }
-        }
-    }
-
-    // PHASE 3: Create new order for the grid slot that had the cancelled order
-    if (cancelledSellIndex !== null && !dryRun) {
-        const targetGridOrder = desiredSellSlots[cancelledSellIndex];
-        if (targetGridOrder) {
-            logger && logger.log && logger.log(
-                `Startup: Creating new SELL for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatAmount8(targetGridOrder.size)})`,
-                'info'
-            );
-            try {
-                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
-            } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to create SELL for cancelled slot: ${err.message}`, 'error');
-                // CRITICAL FIX: Recovery sync
-                try {
-                    logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL creation failure`, 'warn');
-                    const freshChainOrders = await chainOrders.readOpenOrders(
-                        resolveAccountRef(manager, account),
-                        TIMING.CONNECTION_TIMEOUT_MS
-                    );
-                    // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
-                    // Orphan order requires fund deduction to prevent phantom capital (same pattern as line 279)
-                    await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'phase3CreationFailure' });
-                } catch (syncErr) {
-                    logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
-                }
-            }
-        }
-    }
-
-    // Remove processed orders from the unmatched list
-    // NOTE: cancelledSellIndex is already within the sellUpdates range, don't add 1
-    const sellProcessedCount = sellUpdates;
-    unmatchedSells = sortedUnmatchedSells.slice(sellProcessedCount);
-
-    const chainSellCount = chainSells.length;
-    const sellCreateCount = Math.max(0, targetSell - chainSellCount);
-    const remainingSellSlots = desiredSellSlots.slice(sellUpdates);
-    for (let i = 0; i < Math.min(sellCreateCount, remainingSellSlots.length); i++) {
-        const gridOrder = remainingSellSlots[i];
-        logger && logger.log && logger.log(
-            `Startup: Creating SELL for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
-            'info'
-        );
-        try {
-            await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
-        } catch (err) {
-            logger && logger.log && logger.log(`Startup: Failed to create SELL: ${err.message}`, 'error');
-        }
-    }
-
-    let sellCancelCount = Math.max(0, chainSellCount - targetSell);
-    if (sellCancelCount > 0) {
-        const parsedUnmatchedSells = unmatchedSells
-            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-            .filter(x => x.parsed)
-            .sort((a, b) => (b.parsed.price || 0) - (a.parsed.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
-
-        for (const x of parsedUnmatchedSells) {
-            if (sellCancelCount <= 0) break;
-            logger && logger.log && logger.log(`Startup: Cancelling excess SELL chain order ${x.chain.id}`, 'info');
-            try {
-                await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: x.chain.id, dryRun });
-                logger && logger.log && logger.log(`Startup: Successfully cancelled excess SELL order ${x.chain.id}`, 'info');
-                sellCancelCount--;
-            } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to cancel SELL ${x.chain.id}: ${err.message}`, 'error');
-            }
-        }
-
-        if (sellCancelCount > 0) {
-            const activeSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE)
-                .filter(o => o && o.orderId)
-                .sort((a, b) => (b.price || 0) - (a.price || 0));  // Sort HIGH to LOW: cancel worst (edge) orders first
-
-            for (const o of activeSells) {
-                if (sellCancelCount <= 0) break;
-                logger && logger.log && logger.log(`Startup: Cancelling excess matched SELL ${o.orderId} (grid ${o.id})`, 'warn');
-                try {
-                    await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun });
-                    logger && logger.log && logger.log(`Startup: Successfully cancelled excess matched SELL order ${o.orderId} (grid ${o.id})`, 'info');
-                    sellCancelCount--;
-                } catch (err) {
-                    logger && logger.log && logger.log(`Startup: Failed to cancel matched SELL ${o.orderId}: ${err.message}`, 'error');
-                }
-            }
-        }
-    }
-
-    // ---- BUY SIDE ----
-    const matchedBuy = _countActiveOnGrid(manager, ORDER_TYPES.BUY);
-    const needBuySlots = Math.max(0, targetBuy - matchedBuy);
-    const desiredBuySlots = _pickVirtualSlotsToActivate(manager, ORDER_TYPES.BUY, needBuySlots);
-
-    // Sort unmatched BUY orders by price (high to low) to pair with desiredBuySlots
-    // which are already sorted by price (closest to market first = highest to lowest)
-    const sortedUnmatchedBuys = unmatchedBuys
-        .slice(0)  // Create copy to avoid mutating original
-        .sort((a, b) => {
-            const priceA = parseChainOrder(a, manager.assets)?.price || 0;
-            const priceB = parseChainOrder(b, manager.assets)?.price || 0;
-            return priceB - priceA;  // High to low (market to edge)
-        });
-
-    const buyUpdates = Math.min(sortedUnmatchedBuys.length, desiredBuySlots.length);
-    let cancelledBuyIndex = null;
-
-    logger && logger.log && logger.log(
-        `Startup BUY: matchedOnGrid=${matchedBuy}, needSlots=${needBuySlots}, unmatched=${sortedUnmatchedBuys.length}, updates=${buyUpdates}`,
-        'info'
-    );
-
-    // PHASE 1: Cancel largest order if grid edge is fully active (frees maximum funds)
-    if (buyUpdates > 0 && _isGridEdgeFullyActive(manager, ORDER_TYPES.BUY, buyUpdates)) {
-        logger && logger.log && logger.log(`Startup: BUY grid edge is fully active, cancelling largest order to free funds`, 'info');
-        const cancelInfo = await _cancelLargestOrder({
-            chainOrders, account, privateKey, manager,
-            unmatchedOrders: sortedUnmatchedBuys,
-            updateCount: buyUpdates,
-            orderType: ORDER_TYPES.BUY,
-            dryRun
-        });
-        if (cancelInfo) {
-            cancelledBuyIndex = cancelInfo.index;
-            // Don't splice - keep index alignment with desiredBuySlots
-        }
-    }
-
-    // PHASE 2: Update remaining unmatched orders to their target sizes
-    for (let i = 0; i < buyUpdates; i++) {
-        // Skip the cancelled order's slot - will be handled in Phase 3
-        if (cancelledBuyIndex !== null && i === cancelledBuyIndex) {
-            continue;
-        }
-        const chainOrder = sortedUnmatchedBuys[i];
-        const gridOrder = desiredBuySlots[i];
-
-        // Check if update is feasible: BUY orders need to sell assetB
-        // If account doesn't have enough free assetB, skip this update (keep old order as-is)
-        // NOTE: gridOrder.size for BUY orders is already in assetB units
-        const gridSize = Number(gridOrder.size) || 0;
-        const parsedChain = parseChainOrder(chainOrder, manager.assets);
-        const currentSize = parsedChain ? parsedChain.size : 0;
-        const sizeIncrease = Math.max(0, gridSize - currentSize);
-        const currentBuyAssetBalance = (manager.accountTotals?.buyFree) || 0;
-
-        if (sizeIncrease > currentBuyAssetBalance) {
-            logger && logger.log && logger.log(
-                `Startup: Skipping BUY update ${chainOrder.id} - insufficient balance for increase (need +${Format.formatAmount8(sizeIncrease)} ${manager.assets.assetB.symbol}, have ${Format.formatAmount8(currentBuyAssetBalance)} ${manager.assets.assetB.symbol})`,
-                'warn'
-            );
-            continue;
-        }
-
-        logger && logger.log && logger.log(
-            `Startup: Updating chain BUY ${chainOrder.id} -> grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
-            'info'
-        );
-        try {
-            await _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId: chainOrder.id, gridOrder, dryRun, chainOrderObj: chainOrder });
-        } catch (err) {
-            logger && logger.log && logger.log(`Startup: Failed to update BUY ${chainOrder.id}: ${err.message}`, 'error');
-            // CRITICAL: On update failure, resync from blockchain to catch order-not-found or other state mismatches
-            // This prevents grid/chain desync where grid expects update succeeded but chain order still exists/differs
-            try {
-                logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY update failure`, 'warn');
-                const freshChainOrders = await chainOrders.readOpenOrders(
-                    resolveAccountRef(manager, account),
-                    TIMING.CONNECTION_TIMEOUT_MS
-                );
-                // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
-                // Pre-adjustment happened but post-deduction didn't; sync must correct fund tracking
-                await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'startupReconcileFailure' });
-            } catch (syncErr) {
-                logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
-            }
-        }
-    }
-
-    // PHASE 3: Create new order for the grid slot that had the cancelled order
-    if (cancelledBuyIndex !== null && !dryRun) {
-        const targetGridOrder = desiredBuySlots[cancelledBuyIndex];
-        if (targetGridOrder) {
-            logger && logger.log && logger.log(
-                `Startup: Creating new BUY for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatAmount8(targetGridOrder.size)})`,
-                'info'
-            );
-            try {
-                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
-            } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to create BUY for cancelled slot: ${err.message}`, 'error');
-                // CRITICAL FIX: Recovery sync
-                try {
-                    logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY creation failure`, 'warn');
-                    const freshChainOrders = await chainOrders.readOpenOrders(
-                        resolveAccountRef(manager, account),
-                        TIMING.CONNECTION_TIMEOUT_MS
-                    );
-                    // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
-                    // Orphan order requires fund deduction to prevent phantom capital (same pattern as line 588)
-                    await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'phase3CreationFailure' });
-                } catch (syncErr) {
-                    logger && logger.log && logger.log(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
-                }
-            }
-        }
-    }
-
-    // Remove processed orders from the unmatched list
-    // NOTE: cancelledBuyIndex is already within the buyUpdates range, don't add 1
-    const buyProcessedCount = buyUpdates;
-    unmatchedBuys = sortedUnmatchedBuys.slice(buyProcessedCount);
-
-    const chainBuyCount = chainBuys.length;
-    const buyCreateCount = Math.max(0, targetBuy - chainBuyCount);
-    const remainingBuySlots = desiredBuySlots.slice(buyUpdates);
-    for (let i = 0; i < Math.min(buyCreateCount, remainingBuySlots.length); i++) {
-        const gridOrder = remainingBuySlots[i];
-        logger && logger.log && logger.log(
-            `Startup: Creating BUY for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatAmount8(gridOrder.size)})`,
-            'info'
-        );
-        try {
-            await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
-        } catch (err) {
-            logger && logger.log && logger.log(`Startup: Failed to create BUY: ${err.message}`, 'error');
-        }
-    }
-
-    let buyCancelCount = Math.max(0, chainBuyCount - targetBuy);
-    if (buyCancelCount > 0) {
-        const parsedUnmatchedBuys = unmatchedBuys
-            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-            .filter(x => x.parsed)
-            .sort((a, b) => (a.parsed.price || 0) - (b.parsed.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
-
-        for (const x of parsedUnmatchedBuys) {
-            if (buyCancelCount <= 0) break;
-            logger && logger.log && logger.log(`Startup: Cancelling excess BUY chain order ${x.chain.id}`, 'info');
-            try {
-                await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: x.chain.id, dryRun });
-                logger && logger.log && logger.log(`Startup: Successfully cancelled excess BUY order ${x.chain.id}`, 'info');
-                buyCancelCount--;
-            } catch (err) {
-                logger && logger.log && logger.log(`Startup: Failed to cancel BUY ${x.chain.id}: ${err.message}`, 'error');
-            }
-        }
-
-        if (buyCancelCount > 0) {
-            const activeBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
-                .filter(o => o && o.orderId)
-                .sort((a, b) => (a.price || 0) - (b.price || 0));  // Sort LOW to HIGH: cancel worst (edge) orders first
-
-            for (const o of activeBuys) {
-                if (buyCancelCount <= 0) break;
-                logger && logger.log && logger.log(`Startup: Cancelling excess matched BUY ${o.orderId} (grid ${o.id})`, 'warn');
-                try {
-                    await _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId: o.orderId, dryRun });
-                    logger && logger.log && logger.log(`Startup: Successfully cancelled excess matched BUY order ${o.orderId} (grid ${o.id})`, 'info');
-                    buyCancelCount--;
-                } catch (err) {
-                    logger && logger.log && logger.log(`Startup: Failed to cancel matched BUY ${o.orderId}: ${err.message}`, 'error');
-                }
-            }
-        }
-    }
+    const buyResult = await _reconcileStartupSide({
+        orderType: ORDER_TYPES.BUY,
+        targetCount: targetBuy,
+        chainSideOrders: chainBuys,
+        unmatchedSideOrders: unmatchedBuys,
+        manager,
+        chainOrders,
+        account,
+        privateKey,
+        dryRun,
+    });
+    const chainBuyCount = buyResult.chainCount;
 
     logger && logger.log && logger.log(
         `Startup reconcile complete: target(sell=${targetSell}, buy=${targetBuy}), chain(sell=${chainSellCount}, buy=${chainBuyCount}), ` +

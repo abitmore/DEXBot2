@@ -8,6 +8,9 @@ const { ORDER_TYPES, FEE_PARAMETERS } = require('../../constants');
 const Format = require('../format');
 const { isValidNumber, toFiniteNumber } = Format;
 
+const MAX_INT64 = 9223372036854775807;
+const MIN_INT64 = -9223372036854775808;
+
 // ================================================================================
 // SECTION 1: PARSING & VALIDATION
 // ================================================================================
@@ -246,9 +249,6 @@ function floatToBlockchainInt(floatValue, precision) {
     const v = toFiniteNumber(floatValue);
     const scaled = Math.round(v * Math.pow(10, p));
 
-    const MAX_INT64 = 9223372036854775807;
-    const MIN_INT64 = -9223372036854775808;
-
     if (scaled > MAX_INT64 || scaled < MIN_INT64) {
         console.warn(`[floatToBlockchainInt] Overflow detected: ${floatValue} with precision ${p} resulted in ${scaled}. Clamping to safe limits.`);
         return scaled > 0 ? MAX_INT64 : MIN_INT64;
@@ -338,7 +338,6 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
 }
 
 function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecision, receivePrecision) {
-    const MAX_INT64 = 9223372036854775807;
     const sellPrecFloat = Math.pow(10, toFiniteNumber(sellPrecision));
     const receivePrecFloat = Math.pow(10, toFiniteNumber(receivePrecision));
 
