@@ -51,6 +51,7 @@
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS, TIMING } = require('../constants');
 const { getMinAbsoluteOrderSize, getAssetFees, hasValidAccountTotals } = require('./utils/math');
 const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, isOrderOnChain, getPartialsByType } = require('./utils/order');
+const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
 
 /**
@@ -136,27 +137,6 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
     const allEdgeActive = edgeOrders.every(o => isOrderPlaced(o));
 
     return allEdgeActive;
-}
-
-/**
- * Resolve the best account reference for recovery blockchain reads.
- * Prefer account ID when available, fall back to account name.
- * @param {Object} manager - OrderManager instance
- * @param {string} account - Account name
- * @returns {string|null}
- * @private
- */
-function _resolveRecoveryAccountRef(manager, account) {
-    if (manager && typeof manager.accountId === 'string' && manager.accountId) {
-        return manager.accountId;
-    }
-    if (manager && typeof manager.account === 'string' && manager.account) {
-        return manager.account;
-    }
-    if (typeof account === 'string' && account) {
-        return account;
-    }
-    return null;
 }
 
 /**
@@ -350,7 +330,7 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         logger?.log?.(`[_createOrderFromGrid] CRITICAL: createOrder succeeded but chainOrderId extraction failed`, 'error');
         try {
             const freshChainOrders = await chainOrders.readOpenOrders(
-                _resolveRecoveryAccountRef(manager, account),
+                resolveAccountRef(manager, account),
                 TIMING.CONNECTION_TIMEOUT_MS
             );
             // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
@@ -641,7 +621,7 @@ async function reconcileStartupOrders({
             try {
                 logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL update failure`, 'warn');
                 const freshChainOrders = await chainOrders.readOpenOrders(
-                    _resolveRecoveryAccountRef(manager, account),
+                    resolveAccountRef(manager, account),
                     TIMING.CONNECTION_TIMEOUT_MS
                 );
                 // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
@@ -669,7 +649,7 @@ async function reconcileStartupOrders({
                 try {
                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after SELL creation failure`, 'warn');
                     const freshChainOrders = await chainOrders.readOpenOrders(
-                        _resolveRecoveryAccountRef(manager, account),
+                        resolveAccountRef(manager, account),
                         TIMING.CONNECTION_TIMEOUT_MS
                     );
                     // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
@@ -819,7 +799,7 @@ async function reconcileStartupOrders({
             try {
                 logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY update failure`, 'warn');
                 const freshChainOrders = await chainOrders.readOpenOrders(
-                    _resolveRecoveryAccountRef(manager, account),
+                    resolveAccountRef(manager, account),
                     TIMING.CONNECTION_TIMEOUT_MS
                 );
                 // CRITICAL FIX: Use skipAccounting: false - update failure recovery must update accounting
@@ -847,7 +827,7 @@ async function reconcileStartupOrders({
                 try {
                     logger && logger.log && logger.log(`Startup: Triggering recovery sync after BUY creation failure`, 'warn');
                     const freshChainOrders = await chainOrders.readOpenOrders(
-                        _resolveRecoveryAccountRef(manager, account),
+                        resolveAccountRef(manager, account),
                         TIMING.CONNECTION_TIMEOUT_MS
                     );
                     // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting

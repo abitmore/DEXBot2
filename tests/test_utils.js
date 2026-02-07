@@ -23,4 +23,26 @@ const intval = utils.floatToBlockchainInt(1.2345, 4);
 assert.strictEqual(typeof intval === 'number', true, 'floatToBlockchainInt should return Number');
 assert.strictEqual(intval, Math.round(1.2345 * 10000));
 
+// resolveAccountRef
+assert.strictEqual(
+    utils.resolveAccountRef({ accountId: '1.2.345', account: 'fallback-account' }, 'explicit-account'),
+    '1.2.345',
+    'resolveAccountRef should prefer manager.accountId'
+);
+assert.strictEqual(
+    utils.resolveAccountRef({ account: 'manager-account' }, 'explicit-account'),
+    'manager-account',
+    'resolveAccountRef should fall back to manager.account'
+);
+assert.strictEqual(
+    utils.resolveAccountRef({}, 'explicit-account'),
+    'explicit-account',
+    'resolveAccountRef should fall back to account arg'
+);
+assert.strictEqual(
+    utils.resolveAccountRef({}, null),
+    null,
+    'resolveAccountRef should return null when no reference exists'
+);
+
 console.log('utils tests passed');

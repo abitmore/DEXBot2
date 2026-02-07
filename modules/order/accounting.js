@@ -75,6 +75,7 @@ const {
     blockchainToFloat,
     getPrecisionSlack
 } = require('./utils/math');
+const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
 
 /**
@@ -255,7 +256,7 @@ class Accountant {
      * @returns {Promise<Object>} - Validation result from validateGridStateForPersistence()
      */
     async _performStateRecovery(mgr) {
-        const accountRef = mgr.accountId || mgr.account || null;
+        const accountRef = resolveAccountRef(mgr);
         if (!accountRef) {
             return {
                 isValid: false,

@@ -487,6 +487,27 @@ async function withRetry(fn, options = {}) {
     }
 }
 
+/**
+ * Resolve the best account reference for blockchain reads.
+ * Prefer account ID when available, fall back to account name.
+ * Used by recovery and startup paths where implicit account context may be unavailable.
+ * @param {Object} manager - OrderManager instance (optional)
+ * @param {string} account - Account name (optional)
+ * @returns {string|null} Resolved account reference or null
+ */
+function resolveAccountRef(manager, account) {
+    if (manager && typeof manager.accountId === 'string' && manager.accountId) {
+        return manager.accountId;
+    }
+    if (manager && typeof manager.account === 'string' && manager.account) {
+        return manager.account;
+    }
+    if (typeof account === 'string' && account) {
+        return account;
+    }
+    return null;
+}
+
 module.exports = {
     lookupAsset,
     deriveMarketPrice,
@@ -501,5 +522,6 @@ module.exports = {
     ensureProfilesDirectory,
     readInput,
     readPassword,
-    withRetry
+    withRetry,
+    resolveAccountRef
 };

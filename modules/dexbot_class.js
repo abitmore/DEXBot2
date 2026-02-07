@@ -2531,20 +2531,20 @@ class DEXBot {
                 await this.manager._fillProcessingLock.acquire(async () => {
                     this._log('Fill processing lock acquired for shutdown');
 
-                // Log any remaining queued fills
-                if (this._incomingFillQueue.length > 0) {
-                    this._warn(`${this._incomingFillQueue.length} fills queued but not processed at shutdown`);
-                }
-
-                // Persist final state
-                if (this.manager && this.accountOrders && this.config?.botKey) {
-                    try {
-                        await this.manager.persistGrid();
-                        this._log('Final grid snapshot persisted');
-                    } catch (err) {
-                        this._warn(`Failed to persist final state: ${err.message}`);
+                    // Log any remaining queued fills
+                    if (this._incomingFillQueue.length > 0) {
+                        this._warn(`${this._incomingFillQueue.length} fills queued but not processed at shutdown`);
                     }
-                }
+
+                    // Persist final state
+                    if (this.manager && this.accountOrders && this.config?.botKey) {
+                        try {
+                            await this.manager.persistGrid();
+                            this._log('Final grid snapshot persisted');
+                        } catch (err) {
+                            this._warn(`Failed to persist final state: ${err.message}`);
+                        }
+                    }
                 });
             }
         } catch (err) {
