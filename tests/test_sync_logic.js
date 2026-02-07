@@ -163,6 +163,33 @@ async function runTests() {
         assert(r1 !== undefined && r2 !== undefined);
     }
 
+    console.log(' - Testing Fill History defaults missing is_maker to maker...');
+    {
+        const manager = createManager();
+        manager._updateOrder({
+            id: 'mk-1',
+            state: ORDER_STATES.ACTIVE,
+            type: ORDER_TYPES.SELL,
+            size: 1,
+            price: 100,
+            orderId: 'c-maker-default'
+        });
+
+        const fill = {
+            op: [4, {
+                order_id: 'c-maker-default',
+                pays: { amount: 100000000, asset_id: '1.3.0' },
+                receives: { amount: 100000, asset_id: '1.3.1' }
+            }],
+            block_num: 999,
+            id: '1.11.999'
+        };
+
+        const result = manager.sync.syncFromFillHistory(fill);
+        assert.strictEqual(result.filledOrders.length, 1, 'Expected full fill to be detected');
+        assert.strictEqual(result.filledOrders[0].isMaker, true, 'Missing is_maker should default to maker');
+    }
+
     OrderUtils.getAssetFees = originalGetAssetFees;
     console.log('✓ Sync logic tests passed!');
 }

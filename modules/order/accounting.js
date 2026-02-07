@@ -30,7 +30,7 @@
  *   9. adjustTotalBalance(orderType, delta, operation, totalOnly) - Adjust total and free balances
  *   10. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
  *
- * FEE MANAGEMENT (2 methods - async)
+ * FEE MANAGEMENT (2 methods)
  *   11. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy
  *   12. modifyCacheFunds(side, delta, operation) - Modify cache funds (rotation surplus + fill proceeds)
  *
@@ -69,7 +69,6 @@
 
 const { ORDER_TYPES, ORDER_STATES, GRID_LIMITS } = require('../constants');
 const {
-    computeChainFundTotals,
     calculateAvailableFundsValue,
     getAssetFees,
     blockchainToFloat,
@@ -95,6 +94,8 @@ class Accountant {
     constructor(manager) {
         this.manager = manager;
         this._isRecovering = false;  // Prevents nested recovery attempts
+        this._isVerifyingInvariants = false;  // Prevents overlapping invariant checks
+        this._pendingInvariantSnapshot = null;  // Coalesces latest request while one is running
     }
 
     /**
@@ -183,10 +184,35 @@ class Accountant {
         }
 
         if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping && !mgr._isBroadcasting) {
-            // Don't await - allow recovery to run in background without blocking
-            this._verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell).catch(err => {
-                mgr.logger?.log?.(`[RECOVERY] Verification error: ${err.message}`, 'error');
-            });
+            const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell };
+
+            const runVerification = (nextSnapshot) => {
+                this._isVerifyingInvariants = true;
+                this._verifyFundInvariants(
+                    mgr,
+                    nextSnapshot.chainFreeBuy,
+                    nextSnapshot.chainFreeSell,
+                    nextSnapshot.chainBuy,
+                    nextSnapshot.chainSell
+                )
+                    .catch(err => {
+                        mgr.logger?.log?.(`[RECOVERY] Verification error: ${err.message}`, 'error');
+                    })
+                    .finally(() => {
+                        this._isVerifyingInvariants = false;
+                        if (this._pendingInvariantSnapshot) {
+                            const pending = this._pendingInvariantSnapshot;
+                            this._pendingInvariantSnapshot = null;
+                            runVerification(pending);
+                        }
+                    });
+            };
+
+            if (this._isVerifyingInvariants) {
+                this._pendingInvariantSnapshot = snapshot;
+            } else {
+                runVerification(snapshot);
+            }
         }
     }
 
@@ -430,7 +456,16 @@ class Accountant {
 
             if (commitmentDelta > 0) {
                 // Lock capital: move from Free to Committed
-                this.tryDeductFromChainFree(newOrder.type, commitmentDelta, `${context}`);
+                const deducted = this.tryDeductFromChainFree(newOrder.type, commitmentDelta, `${context}`);
+                if (!deducted) {
+                    mgr.logger?.log?.(
+                        `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${newOrder.type} during ${context}. Scheduling recovery.`,
+                        'error'
+                    );
+                    this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure').catch(err => {
+                        mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
+                    });
+                }
             } else if (commitmentDelta < 0) {
                 // Release capital: move from Committed back to Free
                 this.addToChainFree(oldOrder.type, Math.abs(commitmentDelta), `${context}`);
@@ -463,7 +498,16 @@ class Accountant {
         if (!mgr.accountTotals) return;
 
         const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
-        const side = requestedSide || btsSide;
+        const normalizedRequestedSide = (requestedSide === 'buy' || requestedSide === 'sell') ? requestedSide : null;
+        let side = btsSide || normalizedRequestedSide;
+
+        if (normalizedRequestedSide && btsSide && normalizedRequestedSide !== btsSide) {
+            mgr.logger?.log?.(
+                `[BTS-FEE] Ignoring requested side '${normalizedRequestedSide}' (configured BTS side is '${btsSide}').`,
+                'warn'
+            );
+            side = btsSide;
+        }
 
         if (!side) return;
 
@@ -485,7 +529,7 @@ class Accountant {
         const cacheDeduction = Math.min(fees, cache);
 
         if (cacheDeduction > 0) {
-            await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
+            this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
         }
 
         // FULL DEDUCTION from chainFree (cache is part of chainFree, so always deduct full amount)
@@ -503,7 +547,7 @@ class Accountant {
         mgr.recalculateFunds();
     }
 
-    async modifyCacheFunds(side, delta, operation = 'update') {
+    modifyCacheFunds(side, delta, operation = 'update') {
         const mgr = this.manager;
         if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
         const oldValue = mgr.funds.cacheFunds[side] || 0;
@@ -538,7 +582,21 @@ class Accountant {
         }
 
         // For other assets: apply normal fee calculation (market fee %)
-        return getAssetFees(assetSymbol, rawAmount, isMaker).netProceeds;
+        // Fail-safe: if fee cache is missing/stale, do not crash fill processing.
+        try {
+            const feeInfo = getAssetFees(assetSymbol, rawAmount, isMaker);
+            const netProceeds = Number(feeInfo?.netProceeds);
+            if (!Number.isFinite(netProceeds)) {
+                throw new Error('netProceeds is not finite');
+            }
+            return netProceeds;
+        } catch (err) {
+            this.manager?.logger?.log?.(
+                `[FILL-FEE] Failed to compute fees for ${assetSymbol}: ${err.message}. Using raw proceeds (${Format.formatAmount8(rawAmount)}).`,
+                'warn'
+            );
+            return rawAmount;
+        }
     }
 
     /**

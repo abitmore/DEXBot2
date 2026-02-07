@@ -29,11 +29,11 @@ async function runTests() {
     {
         const manager = createManager();
         manager.funds.btsFeesOwed = 50;
-        manager.funds.cacheFunds.sell = 50;
-        const sellFreeBefore = manager.accountTotals.sellFree;
-        await manager.accountant.deductBtsFees('sell');
-        assert.strictEqual(manager.accountTotals.sellFree, sellFreeBefore - 50);
-        assert.strictEqual(manager.funds.cacheFunds.sell, 0);
+        manager.funds.cacheFunds.buy = 50;
+        const buyFreeBefore = manager.accountTotals.buyFree;
+        await manager.accountant.deductBtsFees('buy');
+        assert.strictEqual(manager.accountTotals.buyFree, buyFreeBefore - 50);
+        assert.strictEqual(manager.funds.cacheFunds.buy, 0);
         assert.strictEqual(manager.funds.btsFeesOwed, 0);
     }
 
@@ -41,11 +41,11 @@ async function runTests() {
     {
         const manager = createManager();
         manager.funds.btsFeesOwed = 50;
-        manager.funds.cacheFunds.sell = 30;
-        const sellFreeBefore = manager.accountTotals.sellFree;
-        await manager.accountant.deductBtsFees('sell');
-        assert.strictEqual(sellFreeBefore - manager.accountTotals.sellFree, 50, 'Full fee amount must reduce chainFree');
-        assert.strictEqual(manager.funds.cacheFunds.sell, 0);
+        manager.funds.cacheFunds.buy = 30;
+        const buyFreeBefore = manager.accountTotals.buyFree;
+        await manager.accountant.deductBtsFees('buy');
+        assert.strictEqual(buyFreeBefore - manager.accountTotals.buyFree, 50, 'Full fee amount must reduce chainFree');
+        assert.strictEqual(manager.funds.cacheFunds.buy, 0);
         assert.strictEqual(manager.funds.btsFeesOwed, 0);
     }
 
@@ -53,18 +53,18 @@ async function runTests() {
     {
         const manager = createManager();
         manager.funds.btsFeesOwed = 50;
-        manager.funds.cacheFunds.sell = 30;
-        manager.setAccountTotals({ buy: 10000, sell: 40, buyFree: 10000, sellFree: 40 });
-        await manager.accountant.deductBtsFees('sell');
+        manager.funds.cacheFunds.buy = 30;
+        manager.setAccountTotals({ buy: 40, sell: 10000, buyFree: 40, sellFree: 10000 });
+        await manager.accountant.deductBtsFees('buy');
         assert.strictEqual(manager.funds.btsFeesOwed, 50, 'Settlement should be deferred');
-        assert.strictEqual(manager.funds.cacheFunds.sell, 30);
+        assert.strictEqual(manager.funds.cacheFunds.buy, 30);
     }
 
     console.log(' - Testing Zero Fees Graceful Handling...');
     {
         const manager = createManager();
         manager.funds.btsFeesOwed = 0;
-        await manager.accountant.deductBtsFees('sell');
+        await manager.accountant.deductBtsFees('buy');
         assert.strictEqual(manager.funds.btsFeesOwed, 0);
     }
 

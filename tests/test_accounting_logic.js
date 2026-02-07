@@ -192,6 +192,30 @@ async function runTests() {
         );
     }
 
+    // Test: Missing fee cache must not crash fill accounting (fallback to raw proceeds)
+    console.log(' - Testing fill accounting fee-cache fallback...');
+    {
+        const manager = createManager();
+        manager.assets = {
+            assetA: { id: '1.3.0', precision: 5 },
+            assetB: { id: '1.3.1', precision: 5 }
+        };
+
+        const sellTotalBefore = manager.accountTotals.sell;
+        const cacheSellBefore = manager.funds.cacheFunds.sell;
+        const rawReceives = 2.5;
+
+        assert.doesNotThrow(() => {
+            manager.accountant.processFillAccounting({
+                pays: { asset_id: '1.3.1', amount: 100000 },
+                receives: { asset_id: '1.3.0', amount: 250000 }
+            });
+        }, 'processFillAccounting should tolerate missing fee cache and continue');
+
+        assert.strictEqual(manager.accountTotals.sell, sellTotalBefore + rawReceives, 'Sell total should credit raw proceeds when fee lookup fails');
+        assert.strictEqual(manager.funds.cacheFunds.sell, cacheSellBefore + rawReceives, 'cacheFunds should track credited raw proceeds');
+    }
+
     // Restore original
     OrderUtils.getAssetFees = originalGetAssetFees;
 

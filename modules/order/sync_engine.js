@@ -613,7 +613,7 @@ class SyncEngine {
         const fillOp = fill.op[1];
         const blockNum = fill.block_num;
         const historyId = fill.id;
-        const isMaker = fillOp.is_maker === true;  // Preserve maker/taker flag for fee calculation
+        const isMaker = fillOp.is_maker !== false;  // Default missing flag to maker for consistency with accounting
         const orderId = fillOp.order_id;
 
         // Optimistically update account totals to reflect the fill
