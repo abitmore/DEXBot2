@@ -1,7 +1,7 @@
 /**
  * modules/order/utils/system.js - System and I/O Utilities
  * 
- * Price derivation, persistence, grid comparisons, and UI/interactive utilities.
+ * Price derivation, persistence, grid correction, and UI/interactive utilities.
  */
 
 const fs = require('fs');
@@ -313,18 +313,6 @@ async function retryPersistenceIfNeeded(manager) {
     } catch (e) { return false; }
 }
 
-async function runGridComparisons(manager, accountOrders, botKey) {
-    if (!manager || !accountOrders) return;
-    try {
-        const Grid = require('../grid');
-        const persistedGrid = accountOrders.loadBotGrid(botKey, true) || [];
-        const simpleCheckResult = Grid.checkAndUpdateGridIfNeeded(manager);
-        if (!simpleCheckResult.buyUpdated && !simpleCheckResult.sellUpdated) {
-            await Grid.compareGrids(Array.from(manager.orders.values()), persistedGrid, manager);
-        }
-    } catch (e) {}
-}
-
 async function applyGridDivergenceCorrections(manager, accountOrders, botKey, updateOrdersOnChainBatchFn) {
     if (!manager._correctionsLock) return;
     const Grid = require('../grid');
@@ -516,7 +504,6 @@ module.exports = {
     initializeFeeCache,
     persistGridSnapshot,
     retryPersistenceIfNeeded,
-    runGridComparisons,
     applyGridDivergenceCorrections,
     syncBoundaryToFunds,
     ensureProfilesDirectory,

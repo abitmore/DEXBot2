@@ -302,25 +302,6 @@ function getPrecisionsForManager(assets) {
     };
 }
 
-function validateAssetPrecisions(assets) {
-    if (typeof assets?.assetA?.precision !== 'number') {
-        const errorMsg = `CRITICAL: Asset A precision missing or invalid. Asset: ${assets?.assetA?.symbol || '(unknown)'}`;
-        console.error(`[validateAssetPrecisions] ${errorMsg}`);
-        throw new Error(errorMsg);
-    }
-
-    if (typeof assets?.assetB?.precision !== 'number') {
-        const errorMsg = `CRITICAL: Asset B precision missing or invalid. Asset: ${assets?.assetB?.symbol || '(unknown)'}`;
-        console.error(`[validateAssetPrecisions] ${errorMsg}`);
-        throw new Error(errorMsg);
-    }
-
-    return {
-        A: assets.assetA.precision,
-        B: assets.assetB.precision
-    };
-}
-
 function getPrecisionSlack(precision, factor = 2) {
     return factor * Math.pow(10, -precision);
 }
@@ -561,24 +542,6 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
 // SECTION 10: VALIDATION HELPERS
 // ================================================================================
 
-function isSignificantSizeChange(currentSize, newSize, thresholdPercent) {
-    const threshold = toFiniteNumber(thresholdPercent, 3);
-    const current = toFiniteNumber(currentSize);
-    const proposed = toFiniteNumber(newSize);
-
-    if (current <= 0) return { isSignificant: proposed > 0, percentChange: proposed > 0 ? 100 : 0 };
-
-    const diff = Math.abs(proposed - current);
-    const percentChange = (diff / current) * 100;
-    const isSignificant = percentChange >= threshold;
-
-    return { isSignificant, percentChange };
-}
-
-function hasSignificantSizeChange(currentSize, newSize, thresholdPercent) {
-    return isSignificantSizeChange(currentSize, newSize, thresholdPercent).isSignificant;
-}
-
 function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier = FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) {
     if (assetA !== 'BTS' && assetB !== 'BTS') return 0;
     try {
@@ -622,7 +585,6 @@ module.exports = {
     getPrecisionByOrderType,
     getPrecisionForSide,
     getPrecisionsForManager,
-    validateAssetPrecisions,
     getPrecisionSlack,
     calculatePriceTolerance,
     validateOrderAmountsWithinLimits,
@@ -637,8 +599,6 @@ module.exports = {
     calculateOrderSizes,
     calculateRotationOrderSizes,
     calculateGridSideDivergenceMetric,
-    isSignificantSizeChange,
-    hasSignificantSizeChange,
     calculateOrderCreationFees,
     deductOrderFeesFromFunds,
     _setFeeCache,

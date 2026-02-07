@@ -11,7 +11,7 @@
  * CORE COMPONENTS:
  * - OrderManager - Core class managing order grid and fund tracking (manager.js)
  * - grid - Grid creation and sizing utilities (grid.js)
- * - utils - Parsing, tolerance, matching, reconciliation helpers (utils.js)
+ * - utils - Combined helpers from utils/math.js, utils/order.js, and utils/system.js
  * - constants - ORDER_TYPES, ORDER_STATES, defaults, and limits (../constants.js)
  * - logger - Color-coded console output for debugging (logger.js)
  *
@@ -39,7 +39,7 @@
  * SUBSYSTEM MODULES:
  * 1. manager.js - OrderManager class (order lifecycle, fund tracking)
  * 2. grid.js - Grid class (grid creation, synchronization, health)
- * 3. utils.js - Helper functions (78 utilities across 11 categories)
+ * 3. utils/math.js, utils/order.js, utils/system.js - Helper functions by concern
  * 4. format.js - Numeric formatting (14 functions for consistent display)
  * 5. accounting.js - Accountant class (fund calculations and reconciliation)
  * 6. logger.js - Logger class (structured, color-coded output)
@@ -74,4 +74,3 @@ module.exports = {
   logger,
   grid,
 };
-

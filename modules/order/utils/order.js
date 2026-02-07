@@ -240,14 +240,6 @@ function filterOrdersByType(orders, orderType) {
     return Array.isArray(orders) ? orders.filter(o => o && o.type === orderType) : [];
 }
 
-function filterOrdersByTypeAndState(orders, orderType, excludeState = null) {
-    return Array.isArray(orders) ? orders.filter(o => o && o.type === orderType && (!excludeState || o.state !== excludeState)) : [];
-}
-
-function sumOrderSizes(orders) {
-    return Array.isArray(orders) ? orders.reduce((sum, o) => sum + toFiniteNumber(o.size), 0) : 0;
-}
-
 function getPartialsByType(orders) {
     if (!Array.isArray(orders)) return { buy: [], sell: [] };
     return {
@@ -345,8 +337,6 @@ module.exports = {
     virtualizeOrder,
     convertToSpreadPlaceholder,
     filterOrdersByType,
-    filterOrdersByTypeAndState,
-    sumOrderSizes,
     getPartialsByType,
     countOrdersByType,
     isOrderOnChain,
