@@ -2168,7 +2168,16 @@ class DEXBot {
                             this.manager._fillProcessingLock.getQueueLength() === 0) {
                             await this.manager._fillProcessingLock.acquire(async () => {
                                 const chainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
-                                await this.manager.syncFromOpenOrders(chainOpenOrders);
+                                const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+
+                                if (syncResult?.filledOrders && syncResult.filledOrders.length > 0) {
+                                    this._log(`Main loop sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
+                                    const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, new Set());
+                                    if (rebalanceResult) {
+                                        await this.updateOrdersOnChainBatch(rebalanceResult);
+                                        await this.manager.persistGrid();
+                                    }
+                                }
                             });
                         }
                     }
@@ -2249,8 +2258,13 @@ class DEXBot {
                             if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
                                 this._log(`Periodic sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
 
-                                // Process these fills through the strategy to place replacement orders
-                                await this.manager.processFilledOrders(syncResult.filledOrders);
+                                // Process these fills through the full strategy + batch pipeline
+                                // so periodic detection behaves consistently with fill listener processing.
+                                const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, new Set());
+                                if (rebalanceResult) {
+                                    await this.updateOrdersOnChainBatch(rebalanceResult);
+                                    await this.manager.persistGrid();
+                                }
                             }
 
                             if (syncResult.unmatchedChainOrders && syncResult.unmatchedChainOrders.length > 0) {
