@@ -37,7 +37,7 @@
  *      FILL_CLEANUP_INTERVAL_MS, FILL_RECORD_RETENTION_MS
  *      LOCK_TIMEOUT_MS, SYNC_LOCK_TIMEOUT_MS
  *      CONNECTION_TIMEOUT_MS, DAEMON_STARTUP_TIMEOUT_MS
- *      RUN_LOOP_DEFAULT_MS, CHECK_INTERVAL_MS
+ *      RUN_LOOP_DEFAULT_MS, OPEN_ORDERS_SYNC_LOOP_ENABLED, CHECK_INTERVAL_MS
  *
  * GRID & ORDER LIMITS:
  *   5. GRID_LIMITS - Grid sizing and scaling constraints
@@ -175,7 +175,8 @@ let TIMING = {
     DAEMON_STARTUP_TIMEOUT_MS: 60000,  // 60 seconds - Private key daemon startup timeout
 
     // Main loop and polling defaults
-    RUN_LOOP_DEFAULT_MS: 5000,  // 5 seconds - default main loop cycle delay (can be overridden by RUN_LOOP_MS env var)
+    RUN_LOOP_DEFAULT_MS: 5000,  // 5 seconds - default open-orders sync cycle delay (env override: OPEN_ORDERS_SYNC_LOOP_MS)
+    OPEN_ORDERS_SYNC_LOOP_ENABLED: false,  // Preferred flag: continuous open-order watchdog sync loop
     CHECK_INTERVAL_MS: 100  // 100 milliseconds - polling interval for connection/daemon readiness checks
 };
 

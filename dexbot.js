@@ -135,7 +135,7 @@ function printCLIUsage() {
     console.log('Options:');
     console.log('  --cli-examples    Print curated CLI snippets.');
     console.log('  -h, --help        Show this help text.');
-    console.log('Envs: RUN_LOOP_MS controls the polling delay; LIVE_BOT_NAME or BOT_NAME selects a single entry.');
+    console.log('Envs: OPEN_ORDERS_SYNC_LOOP_MS controls the open-orders sync polling delay; LIVE_BOT_NAME or BOT_NAME selects a single entry.');
 }
 
 /**

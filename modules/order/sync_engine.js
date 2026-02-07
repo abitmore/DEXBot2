@@ -102,6 +102,23 @@ const {
 } = require('./utils/order');
 const { lookupAsset } = require('./utils/system');
 
+function hasEquivalentRawOnChainOrder(a, b) {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+
+    const aBase = a.sell_price?.base || {};
+    const bBase = b.sell_price?.base || {};
+    const aQuote = a.sell_price?.quote || {};
+    const bQuote = b.sell_price?.quote || {};
+
+    return String(a.id ?? '') === String(b.id ?? '') &&
+        String(a.for_sale ?? '') === String(b.for_sale ?? '') &&
+        String(aBase.amount ?? '') === String(bBase.amount ?? '') &&
+        String(aBase.asset_id ?? '') === String(bBase.asset_id ?? '') &&
+        String(aQuote.amount ?? '') === String(bQuote.amount ?? '') &&
+        String(aQuote.asset_id ?? '') === String(bQuote.asset_id ?? '');
+}
+
 class SyncEngine {
     /**
      * @param {Object} manager - OrderManager instance
@@ -468,8 +485,15 @@ class SyncEngine {
                         continue;
                     }
                 }
-                mgr._updateOrder(updatedOrder, 'sync-pass1-partial', options?.skipAccounting || false, 0);
-                updatedOrders.push(updatedOrder);
+                const currentPrecision = (updatedOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                const sizeChanged = floatToBlockchainInt(updatedOrder.size, currentPrecision) !== floatToBlockchainInt(gridOrder.size, currentPrecision);
+                const stateChanged = updatedOrder.state !== gridOrder.state;
+                const rawChanged = !hasEquivalentRawOnChainOrder(gridOrder.rawOnChain, updatedOrder.rawOnChain);
+
+                if (sizeChanged || stateChanged || rawChanged) {
+                    mgr._updateOrder(updatedOrder, 'sync-pass1-partial', options?.skipAccounting || false, 0);
+                    updatedOrders.push(updatedOrder);
+                }
             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
                 const currentGridOrder = mgr.orders.get(gridOrder.id);
                 // CRITICAL FIX: If order has no ID OR its ID is not on chain, it's a phantom/filled order

@@ -461,7 +461,11 @@ class DEXBot {
                 await this._setupTriggerFileDetection();
                 this._setupBlockchainFetchInterval();
 
-                this._startMainLoop();
+                if (this._isOpenOrdersSyncLoopEnabled()) {
+                    this._startOpenOrdersSyncLoop();
+                } else {
+                    this._log('Open-orders sync loop disabled by configuration (TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED=false)');
+                }
                 this._log(`DEXBot started. OrderManager running (dryRun=${!!this.config.dryRun})`);
                 return; // Skip normal startup path
             }
@@ -608,7 +612,11 @@ class DEXBot {
             await this._setupTriggerFileDetection();
             this._setupBlockchainFetchInterval();
 
-            this._startMainLoop();
+            if (this._isOpenOrdersSyncLoopEnabled()) {
+                this._startOpenOrdersSyncLoop();
+            } else {
+                this._log('Open-orders sync loop disabled by configuration (TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED=false)');
+            }
             this._log(`DEXBot started. OrderManager running (dryRun=${!!this.config.dryRun})`);
 
         } catch (err) {
@@ -2146,19 +2154,40 @@ class DEXBot {
         await this._runGridMaintenance('periodic', true);
     }
 
+    _isOpenOrdersSyncLoopEnabled() {
+        return !!TIMING.OPEN_ORDERS_SYNC_LOOP_ENABLED;
+    }
+
     /**
-     * Start the lightweight background sync loop.
+     * Start the open-orders watchdog sync loop.
      * Uses fill lock contention checks to avoid competing with fill processing.
      * @private
      */
-    _startMainLoop() {
+    _startOpenOrdersSyncLoop() {
         if (this._mainLoopPromise) {
             return;
         }
 
-        const loopDelayMs = Number(process.env.RUN_LOOP_MS || TIMING.RUN_LOOP_DEFAULT_MS);
+        const hasPreferredEnvLoopDelay = Object.prototype.hasOwnProperty.call(process.env, 'OPEN_ORDERS_SYNC_LOOP_MS');
+        const loopDelayRaw = hasPreferredEnvLoopDelay
+            ? process.env.OPEN_ORDERS_SYNC_LOOP_MS
+            : undefined;
+        const hasEnvLoopDelay = loopDelayRaw !== undefined;
+        const configuredLoopDelayMs = hasEnvLoopDelay
+            ? Number(loopDelayRaw)
+            : Number(TIMING.RUN_LOOP_DEFAULT_MS);
+        const loopDelayMs = Number.isFinite(configuredLoopDelayMs) && configuredLoopDelayMs > 0
+            ? configuredLoopDelayMs
+            : Number(TIMING.RUN_LOOP_DEFAULT_MS);
+
+        if (hasEnvLoopDelay && loopDelayMs !== configuredLoopDelayMs) {
+            this._warn(
+                `Invalid OPEN_ORDERS_SYNC_LOOP_MS='${loopDelayRaw}'. Falling back to default ${TIMING.RUN_LOOP_DEFAULT_MS}ms.`
+            );
+        }
+
         this._mainLoopActive = true;
-        this._log(`DEXBot started. Running loop every ${loopDelayMs}ms (dryRun=${!!this.config.dryRun})`);
+        this._log(`Open-orders sync loop started (every ${loopDelayMs}ms, dryRun=${!!this.config.dryRun})`);
 
         this._mainLoopPromise = (async () => {
             while (this._mainLoopActive && !this._shuttingDown) {
@@ -2171,7 +2200,7 @@ class DEXBot {
                                 const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
                                 if (syncResult?.filledOrders && syncResult.filledOrders.length > 0) {
-                                    this._log(`Main loop sync: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
+                                    this._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
                                     const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, new Set());
                                     if (rebalanceResult) {
                                         await this.updateOrdersOnChainBatch(rebalanceResult);
@@ -2193,10 +2222,10 @@ class DEXBot {
     }
 
     /**
-     * Stop the background sync loop started by _startMainLoop.
+     * Stop the open-orders watchdog sync loop.
      * @private
      */
-    async _stopMainLoop() {
+    async _stopOpenOrdersSyncLoop() {
         this._mainLoopActive = false;
         if (this._mainLoopPromise) {
             await this._mainLoopPromise;
@@ -2524,9 +2553,9 @@ class DEXBot {
         }
 
         try {
-            await this._stopMainLoop();
+            await this._stopOpenOrdersSyncLoop();
         } catch (err) {
-            this._warn(`Error while stopping main loop: ${err.message}`);
+            this._warn(`Error while stopping open-orders sync loop: ${err.message}`);
         }
 
         // Wait for current fill processing to complete

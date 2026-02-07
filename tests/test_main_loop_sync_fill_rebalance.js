@@ -28,10 +28,10 @@ class MockAsyncLock {
 async function runTests() {
     console.log('Running Main Loop Sync Fill Rebalance Test...');
 
-    const originalRunLoopMs = process.env.RUN_LOOP_MS;
+    const originalLoopMs = process.env.OPEN_ORDERS_SYNC_LOOP_MS;
     const originalReadOpenOrders = chainOrders.readOpenOrders;
 
-    process.env.RUN_LOOP_MS = '20';
+    process.env.OPEN_ORDERS_SYNC_LOOP_MS = '20';
 
     try {
         let syncCalls = 0;
@@ -94,9 +94,9 @@ async function runTests() {
 
         chainOrders.readOpenOrders = async () => [];
 
-        bot._startMainLoop();
+        bot._startOpenOrdersSyncLoop();
         await new Promise((resolve) => setTimeout(resolve, 90));
-        await bot._stopMainLoop();
+        await bot._stopOpenOrdersSyncLoop();
 
         assert(syncCalls >= 1, 'Main loop should run synchronizeWithChain at least once');
         assert.strictEqual(processCalls, 1, 'Main loop should process sync-detected fills');
@@ -105,10 +105,10 @@ async function runTests() {
 
         console.log('✓ Main loop processes sync-detected fills through rebalance pipeline');
     } finally {
-        if (originalRunLoopMs === undefined) {
-            delete process.env.RUN_LOOP_MS;
+        if (originalLoopMs === undefined) {
+            delete process.env.OPEN_ORDERS_SYNC_LOOP_MS;
         } else {
-            process.env.RUN_LOOP_MS = originalRunLoopMs;
+            process.env.OPEN_ORDERS_SYNC_LOOP_MS = originalLoopMs;
         }
         chainOrders.readOpenOrders = originalReadOpenOrders;
     }
