@@ -20,7 +20,7 @@ async function testCompleteLifecycle() {
     console.log('╚========================================================╝\n');
 
     const botKey = createBotKey({ name: 'integration-test' }, 0);
-    const accountOrders = new AccountOrders();
+    const accountOrders = new AccountOrders({ botKey });
 
     // ============================================================
     // PHASE 1: Bot Running - Partial Fill Occurs
@@ -84,7 +84,7 @@ async function testCompleteLifecycle() {
     console.log('📌 PHASE 3: Bot Restart - Load from Disk\n');
 
     // Simulate fresh bot instance after restart
-    const accountOrders2 = new AccountOrders();
+    const accountOrders2 = new AccountOrders({ botKey });
     const manager2 = new OrderManager(config);
     manager2.accountOrders = accountOrders2;
     manager2.funds = {

@@ -12,7 +12,8 @@
 const BitShares = require('btsdex');
 const fs = require('fs');
 const path = require('path');
-const { initializeFeeCache, getAssetFees } = require('../modules/order/utils/system');
+const { initializeFeeCache } = require('../modules/order/utils/system');
+const { getAssetFees } = require('../modules/order/utils/math');
 const Format = require('../modules/order/format');
 
 async function main() {
@@ -104,6 +105,8 @@ async function main() {
             BitShares.disconnect();
         }
     }
+    
+    process.exit(0);
 }
 
 main().catch(error => {

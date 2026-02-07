@@ -9,7 +9,8 @@
  */
 
 const BitShares = require('btsdex');
-const { initializeFeeCache, getAssetFees } = require('../modules/order/utils/system');
+const { initializeFeeCache } = require('../modules/order/utils/system');
+const { getAssetFees } = require('../modules/order/utils/math');
 
 async function main() {
     try {
@@ -42,8 +43,11 @@ async function main() {
         const testAmounts = [100, 1000, 5000, 10000];
 
         for (const amount of testAmounts) {
-            const fees = getAssetFees('TWENTIX', amount);
-            console.log(`getAssetFees('TWENTIX', ${amount}) = ${fees.toFixed(8)} TWENTIX`);
+            const feeObj = getAssetFees('TWENTIX', amount);
+            // getAssetFees returns an object with netProceeds, feeAmount, feePercent
+            const netProceeds = feeObj.netProceeds;
+            const feeAmount = feeObj.feeAmount;
+            console.log(`getAssetFees('TWENTIX', ${amount}): fee=${feeAmount.toFixed(8)}, net=${netProceeds.toFixed(8)} TWENTIX`);
         }
 
         // Test BTS blockchain fees
@@ -57,6 +61,7 @@ async function main() {
         console.log(`  createFee: ${btsFees.createFee.toFixed(8)} BTS`);
 
         console.log('\n' + '='.repeat(80) + '\n');
+        process.exit(0);
 
     } catch (error) {
         console.error('Error:', error.message);

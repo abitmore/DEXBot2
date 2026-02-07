@@ -194,7 +194,9 @@ async function runTests() {
     console.log('✓ Sync logic tests passed!');
 }
 
-runTests().catch(err => {
+runTests().then(() => {
+    process.exit(0);
+}).catch(err => {
     console.error('✗ Tests failed!');
     console.error(err);
     process.exit(1);

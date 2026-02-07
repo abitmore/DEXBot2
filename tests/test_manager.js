@@ -123,8 +123,12 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     assert.strictEqual(placedSells[0].price, 110, 'Should have activated Inner Sell (110)');
     assert.strictEqual(placedSells[1].price, 120, 'Should have activated Outer Sell (120)');
 
-    console.log('spread selection tests (via rebalance) passed');
-})();
+     console.log('spread selection tests (via rebalance) passed');
+     process.exit(0);
+})().catch(err => {
+    console.error('Test failed:', err);
+    process.exit(1);
+});
 
 // --- Test the rotation behavior via rebalance ---
 (async () => {
@@ -169,6 +173,11 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     assert.strictEqual(result.ordersToRotate[0].oldOrder.id, 'slot-0', 'Should rotate the furthest outlier');
     assert.strictEqual(result.ordersToRotate[0].newGridId, 'slot-51', 'Should rotate to the new market hole (slot-51)');
 
-    console.log('rotation behavior tests (via rebalance) passed');
-})();
+     console.log('rotation behavior tests (via rebalance) passed');
+     process.exit(0);
+})().catch(err => {
+    console.error('Test failed:', err);
+    process.exit(1);
+});
+
 

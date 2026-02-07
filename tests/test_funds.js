@@ -158,3 +158,9 @@ main().catch(err => {
     console.error('Error:', err && err.message ? err.message : err);
     process.exit(1);
 });
+
+// Safety timeout to prevent hanging (this is an integration test that connects to blockchain)
+setTimeout(() => {
+    console.error('Test timeout: process did not exit within 20s');
+    process.exit(1);
+}, 20000);

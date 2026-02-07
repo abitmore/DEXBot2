@@ -44,15 +44,19 @@ function blockchainToFloat(intValue, precision) {
     console.log(`    Basis Points: ${marketFeeBasisPoints}`);
     console.log(`    Percentage: ${marketFeePercent.toFixed(4)}%`);
 
-    if (takerFeePercent !== null) {
-        console.log(`\n  Taker Fee (additional):`);
-        console.log(`    Percentage: ${takerFeePercent.toFixed(4)}%`);
-    } else {
-        console.log(`\n  Taker Fee: None`);
-    }
+     if (takerFeePercent !== null) {
+         console.log(`\n  Taker Fee (additional):`);
+         console.log(`    Percentage: ${takerFeePercent.toFixed(4)}%`);
+     } else {
+         console.log(`\n  Taker Fee: None`);
+     }
 
-  } catch(e) {
-    console.error('Error:', e.message);
-    process.exit(1);
-  }
-})();
+     process.exit(0);
+   } catch(e) {
+     console.error('Error:', e.message);
+     process.exit(1);
+   }
+})().catch(err => {
+   console.error('Test error:', err);
+   process.exit(1);
+});
