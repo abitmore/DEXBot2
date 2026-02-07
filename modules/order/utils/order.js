@@ -217,8 +217,17 @@ function getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
 }
 
 function resolveConfiguredPriceBound(value, fallback, startPrice, mode) {
+    if (value === null || value === undefined || value === '') {
+        return fallback;
+    }
+
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : fallback;
+    if (!Number.isFinite(numeric)) {
+        const boundName = mode === 'min' ? 'minPrice' : mode === 'max' ? 'maxPrice' : 'price bound';
+        throw new Error(`Invalid ${boundName}: ${String(value)}. Expected a numeric value.`);
+    }
+
+    return numeric;
 }
 
 function virtualizeOrder(order) {

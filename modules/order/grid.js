@@ -1219,12 +1219,13 @@ class Grid {
         else if (buyRatio >= 1) side = ORDER_TYPES.BUY;
         else if (sellRatio >= 1) side = ORDER_TYPES.SELL;
 
-          if (!side) {
-              // FIX: Use consistent optional chaining pattern for logger calls
-              const buyPrecision = manager.config.assetB.precision;
-              const sellPrecision = manager.config.assetA.precision;
-             manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${Format.formatPercent2(buyRatio)}, sell ratio: ${Format.formatPercent2(sellRatio)}). Required: buy=${reqBuy ? Format.formatAmountByPrecision(reqBuy, buyPrecision) : 'N/A'}, sell=${reqSell ? Format.formatAmountByPrecision(reqSell, sellPrecision) : 'N/A'}`, 'warn');
-         }
+        if (!side) {
+            const buyPrecision = manager.assets?.assetB?.precision;
+            const sellPrecision = manager.assets?.assetA?.precision;
+            const reqBuyText = reqBuy && Number.isFinite(buyPrecision) ? Format.formatAmountByPrecision(reqBuy, buyPrecision) : 'N/A';
+            const reqSellText = reqSell && Number.isFinite(sellPrecision) ? Format.formatAmountByPrecision(reqSell, sellPrecision) : 'N/A';
+            manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${Format.formatPercent2(buyRatio)}, sell ratio: ${Format.formatPercent2(sellRatio)}). Required: buy=${reqBuyText}, sell=${reqSellText}`, 'warn');
+        }
 
         return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
     }
@@ -1370,17 +1371,21 @@ class Grid {
                 } else {
                     ordersToPlace.push(activated);
                 }
-             } else {
-                 const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
-                 const minHealthy = getDoubleDustThreshold(idealSize);
-                  manager.logger?.log?.(
-                      `Spread correction skipped at slot ${candidate.id}: ` +
-                      `size=${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} < threshold=${Format.formatSizeByOrderType(minHealthy, railType, manager.assets)} ` +
-                      `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatSizeByOrderType(idealSize, railType, manager.assets)}). ` +
-                      `Available funds: ${Format.formatAmountByPrecision(availableFund, sideName === 'buy' ? manager.config.assetB.precision : manager.config.assetA.precision)}`,
-                      'debug'
-                  );
-             }
+            } else {
+                const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
+                const minHealthy = getDoubleDustThreshold(idealSize);
+                const availablePrecision = sideName === 'buy' ? manager.assets?.assetB?.precision : manager.assets?.assetA?.precision;
+                const availableText = Number.isFinite(availablePrecision)
+                    ? Format.formatAmountByPrecision(availableFund, availablePrecision)
+                    : 'N/A';
+                manager.logger?.log?.(
+                    `Spread correction skipped at slot ${candidate.id}: ` +
+                    `size=${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} < threshold=${Format.formatSizeByOrderType(minHealthy, railType, manager.assets)} ` +
+                    `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatSizeByOrderType(idealSize, railType, manager.assets)}). ` +
+                    `Available funds: ${availableText}`,
+                    'debug'
+                );
+            }
         }
 
         return { ordersToPlace, ordersToUpdate };

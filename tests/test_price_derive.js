@@ -76,7 +76,7 @@ async function main() {
          // When pool is removed, forcing 'pool' mode returns ONLY pool (null if no pool)
          const derivedPoolOnly = await derivePrice(mock, assetA, assetB, 'pool');
          assert(derivedPoolOnly === null, 'derivePrice(mode=pool) should return null when pool unavailable (no fallback to market)');
-         
+
          // Forcing 'market' mode returns ONLY market (null if unavailable)
          const derivedMarketOnly = await derivePrice(mock, assetA, assetB, 'market');
          assert(Number.isFinite(derivedMarketOnly) && Math.abs(derivedMarketOnly - marketP) < 1e-9, 'derivePrice(mode=market) should return market price');

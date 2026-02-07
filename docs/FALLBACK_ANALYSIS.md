@@ -5,7 +5,7 @@
 ### Summary
 Found **37+ distinct instances** of "fallback" across the codebase, organized into 7 categories with file paths, line numbers, and context.
 
-⚠️ **Recent Updates**: 
+⚠️ **Recent Updates**:
 - Numeric format precision fallback has been completely removed. Precision is now strictly validated at startup.
 - Price fallback system has been removed. All price modes (`pool`, `market`, `auto`) now use strict semantics with no cross-fallback.
 - Orphan order lax tolerance fallback has been removed. Orphaned chain orders that don't strictly match grid orders are no longer recovered.

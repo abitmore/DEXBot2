@@ -36,7 +36,7 @@ Over the course of this session, **multiple fallback mechanisms have been system
 | `modules/order/strategy.js` | `config?.assetB?.precision \|\| 8` → `config.assetB.precision` | Strategy execution requires valid precision |
 | `modules/order/strategy.js` | `config?.assetA?.precision \|\| 8` → `config.assetA.precision` | Same as above |
 
-**Impact**: 
+**Impact**:
 - **Risk Reduction**: No silent defaults hiding precision issues
 - **Failure Clarity**: Bots fail fast and clearly if precision metadata is missing
 - **Data Integrity**: All amounts are formatted with correct precision, no guessing
@@ -281,7 +281,7 @@ assert(Number.isFinite(derivedMarketOnly), 'market mode returns market only');
 
 ## Summary of Fallback Philosophy Changes
 
-**Before**: 
+**Before**:
 - Permissive defaults and silent fallbacks
 - Try multiple sources, use whatever works
 - Precision defaults to 8 if missing
