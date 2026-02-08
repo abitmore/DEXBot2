@@ -151,7 +151,8 @@ class StrategyEngine {
         // Sort all grid slots by price (Master Rail order)
         const allSlots = Array.from(mgr.orders.values())
             .filter(o => o.price != null)
-            .sort((a, b) => a.price - b.price);
+            .sort((a, b) => a.price - b.price)
+            .map(o => ({ ...o }));
 
         if (allSlots.length === 0) return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], hadRotation: false };
 
@@ -245,7 +246,7 @@ class StrategyEngine {
         // Fund accounting is safe because no-op changes (same size, same state) don't move funds
         mgr.pauseFundRecalc();
 
-        assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES);
+        assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
 
         // Partition slots into role-based arrays for rebalancing logic
         const buyEndIdx = boundaryIdx;
@@ -255,22 +256,28 @@ class StrategyEngine {
         const spreadSlots = allSlots.slice(buyEndIdx + 1, sellStartIdx);
 
         // Notify manager of actual updates for synchronization
-        allSlots.forEach(s => {
-            const original = mgr.orders.get(s.id);
-            if (original && original.type !== s.type) {
-                if (s.type === ORDER_TYPES.SPREAD && isOrderPlaced(s)) {
+        allSlots.forEach(slot => {
+            const original = mgr.orders.get(slot.id);
+            if (original && original.type !== slot.type) {
+                if (slot.type === ORDER_TYPES.SPREAD && isOrderPlaced(original)) {
                     if (mgr?._metrics) {
                         mgr._metrics.spreadRoleConversionBlocked = (mgr._metrics.spreadRoleConversionBlocked || 0) + 1;
                     }
                     mgr.logger.log(
-                        `[ROLE-ASSIGNMENT] BLOCKED SPREAD conversion for ${s.id}: type=${s.type}, state=${s.state}, orderId=${s.orderId || 'none'}`,
+                        `[ROLE-ASSIGNMENT] BLOCKED SPREAD conversion for ${slot.id}: type=${original.type}, state=${original.state}, orderId=${original.orderId || 'none'}`,
                         'warn'
                     );
                     // Revert type if blocked
-                    s.type = original.type;
+                    slot.type = original.type;
                     return;
                 }
-                mgr._updateOrder(s, 'role-assignment', false, 0);
+
+                const nextOrder = { ...original, type: slot.type };
+                if (nextOrder.type === ORDER_TYPES.SPREAD) {
+                    mgr._updateOrder(convertToSpreadPlaceholder(nextOrder), 'role-assignment', false, 0);
+                } else {
+                    mgr._updateOrder(nextOrder, 'role-assignment', false, 0);
+                }
             }
         });
 

@@ -314,11 +314,12 @@ function calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) 
     return Math.max(0, Math.min(allSlots.length - gapSlots - 1, targetBuySlots - 1));
 }
 
-function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES) {
+function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, options = {}) {
+    const assignOnChain = options.assignOnChain === true;
     const buyEndIdx = boundaryIdx;
     const sellStartIdx = boundaryIdx + gapSlots + 1;
     allSlots.forEach((slot, i) => {
-        if (slot.state !== ORDER_STATES.ACTIVE && slot.state !== ORDER_STATES.PARTIAL) {
+        if (assignOnChain || (slot.state !== ORDER_STATES.ACTIVE && slot.state !== ORDER_STATES.PARTIAL)) {
             if (i <= buyEndIdx) slot.type = ORDER_TYPES.BUY;
             else if (i >= sellStartIdx) slot.type = ORDER_TYPES.SELL;
             else slot.type = ORDER_TYPES.SPREAD;
