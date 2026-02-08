@@ -805,7 +805,7 @@ class SyncEngine {
 
         switch (source) {
             case 'createOrder': {
-                const { gridOrderId, chainOrderId, isPartialPlacement, fee } = chainData;
+                const { gridOrderId, chainOrderId, isPartialPlacement, expectedType, fee } = chainData;
                 // Lock order to prevent concurrent modifications during state transition
                 mgr.lockOrders([gridOrderId]);
                 try {
@@ -833,7 +833,15 @@ class SyncEngine {
                         }
 
                         const newState = isPartialPlacement ? ORDER_STATES.PARTIAL : ORDER_STATES.ACTIVE;
-                        const updatedOrder = { ...gridOrder, state: newState, orderId: chainOrderId };
+                        const normalizedExpectedType = (expectedType === ORDER_TYPES.BUY || expectedType === ORDER_TYPES.SELL)
+                            ? expectedType
+                            : null;
+                        const updatedOrder = {
+                            ...gridOrder,
+                            type: normalizedExpectedType || gridOrder.type,
+                            state: newState,
+                            orderId: chainOrderId
+                        };
                         // Deduced fee (createFee or updateFee) must always be applied to reflect blockchain cost
                         const actualFee = fee;
                         mgr._updateOrder(updatedOrder, 'fill-place', chainData.skipAccounting || false, actualFee);

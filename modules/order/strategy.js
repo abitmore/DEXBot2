@@ -271,10 +271,17 @@ class StrategyEngine {
         });
 
         spreadSlots.forEach(s => {
-            // Only convert to SPREAD if it doesn't have an active on-chain order!
-            // FIX: Check state (ACTIVE/PARTIAL means on-chain order exists) rather than just orderId
-            // This prevents converting slots that have real orders to SPREAD prematurely
-            if (s.type !== ORDER_TYPES.SPREAD && !isOrderPlaced(s)) {
+            if (s.type !== ORDER_TYPES.SPREAD) {
+                if (isOrderPlaced(s)) {
+                    if (mgr?._metrics) {
+                        mgr._metrics.spreadRoleConversionBlocked = (mgr._metrics.spreadRoleConversionBlocked || 0) + 1;
+                    }
+                    mgr.logger.log(
+                        `[ROLE-ASSIGNMENT] BLOCKED SPREAD conversion for ${s.id}: type=${s.type}, state=${s.state}, orderId=${s.orderId || 'none'}`,
+                        'warn'
+                    );
+                    return;
+                }
                 mgr._updateOrder(convertToSpreadPlaceholder(s), 'role-assignment', false, 0);
             }
         });
@@ -318,6 +325,7 @@ class StrategyEngine {
         // NEW: Handle double replacement triggers by increasing reaction cap.
         let reactionCapBuy = 0;
         let reactionCapSell = 0;
+        let boundaryShiftCount = 0;
 
         for (const fill of fills) {
             // isDoubleReplacementTrigger is only set for full fills in sync_engine
@@ -329,6 +337,7 @@ class StrategyEngine {
             }
 
             const count = fill.isDoubleReplacementTrigger ? 2 : 1;
+            boundaryShiftCount += count;
             // A SELL fill triggers a BUY replacement
             if (fill.type === ORDER_TYPES.SELL) reactionCapBuy += count;
             else if (fill.type === ORDER_TYPES.BUY) reactionCapSell += count;
@@ -337,12 +346,13 @@ class StrategyEngine {
             }
         }
 
-        // Always allow at least 1 action per side if processing any fill
-        // CRITICAL: In boundary-crawl, both sides MUST crawl whenever the boundary shifts.
-        // Restricting one side causes it to fall out of the target window.
+        // In boundary-crawl, each full fill shifts the boundary and requires crawl budget
+        // on BOTH sides. Keep opposite-side replacement pressure (above), but floor both
+        // sides by total boundary shifts seen in this cycle.
         if (fills.length > 0) {
-            reactionCapBuy = Math.max(reactionCapBuy, 1);
-            reactionCapSell = Math.max(reactionCapSell, 1);
+            const minimumCrawlCap = Math.max(1, boundaryShiftCount);
+            reactionCapBuy = Math.max(reactionCapBuy, minimumCrawlCap);
+            reactionCapSell = Math.max(reactionCapSell, minimumCrawlCap);
         } else {
             // Periodic rebalance (no fills) - allow 1 action per side
             reactionCapBuy = 1;
@@ -427,12 +437,30 @@ class StrategyEngine {
         const ordersToCancel = [];
         const ordersToUpdate = [];
 
-        const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side])) ? Math.max(1, mgr.config.activeOrders[side]) : sideSlots.length;
+        // Hybrid/asymmetric targeting:
+        // - Stable side (enough active on-chain orders): keep window discipline.
+        // - Depleted side (active count below window target): relax to whole side so
+        //   refill can use best available free slots without window starvation.
+        const targetCount = (mgr.config.activeOrders && Number.isFinite(mgr.config.activeOrders[side]))
+            ? Math.max(1, mgr.config.activeOrders[side])
+            : sideSlots.length;
 
-        // Strictly follow targetCount (isDoubled and outOfSpread no longer expand the count)
-        // If a side is doubled (merged dust), we reduce target count by 1 to maintain balance
         const isDoubled = type === ORDER_TYPES.BUY ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
-        const finalTargetCount = isDoubled ? Math.max(1, targetCount - 1) : targetCount;
+        const stableWindowTargetCount = isDoubled ? Math.max(1, targetCount - 1) : targetCount;
+
+        const activeOnChainSideCount = allSlots.filter(s =>
+            s.type === type && isOrderPlaced(s) &&
+            !(excludeIds.has(s.id) || (hasOnChainId(s) && excludeIds.has(s.orderId)))
+        ).length;
+        const finalTargetCount = stableWindowTargetCount;
+
+        if (mgr.logger.level === 'debug') {
+            mgr.logger.log(
+                `[TARGETING] ${side.toUpperCase()} side: active=${activeOnChainSideCount}, ` +
+                `window=${stableWindowTargetCount}, mode=window`,
+                'debug'
+            );
+        }
 
         // ================================================================================
         // BUILD SLOT INDEX MAP FOR O(1) LOOKUPS (FIX: O(n²) → O(n) complexity)
@@ -524,6 +552,28 @@ class StrategyEngine {
         });
 
         let budgetRemaining = reactionCap;
+        const reservedPlacementIds = new Set();
+
+        // Placement priority is market-nearest free slot first.
+        // BUY: highest price first (closest to spread)
+        // SELL: lowest price first (closest to spread)
+        const sidePrioritySlots = [...sideSlots].sort((a, b) =>
+            type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price
+        );
+
+        const pickPriorityFreeSlot = (excludeSlotId = null) => {
+            for (const candidate of sidePrioritySlots) {
+                if (!candidate || !candidate.id || candidate.id === excludeSlotId) continue;
+                if (reservedPlacementIds.has(candidate.id)) continue;
+                const current = mgr.orders.get(candidate.id);
+                if (!current) continue;
+                if (excludeIds.has(current.id) || (hasOnChainId(current) && excludeIds.has(current.orderId))) continue;
+                if (current.state === ORDER_STATES.VIRTUAL && !hasOnChainId(current)) {
+                    return current;
+                }
+            }
+            return null;
+        };
 
         // ================================================================================
         // STEP 3: PARTIAL ORDER HANDLING (Update In-Place Before Rotations/Placements)
@@ -616,19 +666,10 @@ class StrategyEngine {
                 // Non-dust partial: Update to ideal size and place new order with old partial size
                 const oldSize = partial.size;
 
-                // Place new order with old partial size at next available slot
-                const nextSlotIdx = partialIdx + (type === ORDER_TYPES.BUY ? -1 : 1);
-
-                // FIX: Validate nextSlot BEFORE committing to the operation (Issue #2 + capital leak fix)
-                if (nextSlotIdx < 0 || nextSlotIdx >= allSlots.length) {
-                    mgr.logger.log(`[PARTIAL] Skipping non-dust partial at ${partial.id}: no adjacent slot available (idx=${nextSlotIdx} out of bounds)`, "warn");
-                    continue;
-                }
-
-                const nextSlot = allSlots[nextSlotIdx];
-                const currentNextSlot = mgr.orders.get(nextSlot.id);
-                if (!currentNextSlot || hasOnChainId(currentNextSlot) || currentNextSlot.state !== ORDER_STATES.VIRTUAL) {
-                    mgr.logger.log(`[PARTIAL] Skipping non-dust partial at ${partial.id}: target slot ${nextSlot.id} not available (state=${currentNextSlot?.state}, orderId=${currentNextSlot?.orderId})`, "warn");
+                // Place split order on the extreme free slot of the same side.
+                const currentNextSlot = pickPriorityFreeSlot(partial.id);
+                if (!currentNextSlot) {
+                    mgr.logger.log(`[PARTIAL] Skipping non-dust partial at ${partial.id}: no priority free slot available`, "warn");
                     continue;
                 }
 
@@ -647,8 +688,9 @@ class StrategyEngine {
                     stateUpdates.push({ ...partial, size: finalSize, state: newState });
 
                     // NEW: Set new split order to VIRTUAL until confirmed on-chain
-                    ordersToPlace.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
-                    stateUpdates.push({ ...nextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
+                    ordersToPlace.push({ ...currentNextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
+                    stateUpdates.push({ ...currentNextSlot, type: type, size: oldSize, state: ORDER_STATES.VIRTUAL });
+                    reservedPlacementIds.add(currentNextSlot.id);
 
                     totalNewPlacementSize += cappedIncrease;
                     remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
@@ -777,21 +819,35 @@ class StrategyEngine {
         // Use remaining budget to place new orders at the edge of the grid window.
         // CRITICAL: Cap placement sizes to respect available funds.
         if (budgetRemaining > 0) {
-            const outerShortages = filteredShortages.slice(shortageIdx).reverse();
-            const placeCount = Math.min(outerShortages.length, budgetRemaining);
+            const pickPlacementShortageSlot = () => {
+                for (let i = shortageIdx; i < filteredShortages.length; i++) {
+                    const idx = filteredShortages[i];
+                    const candidate = allSlots[idx];
+                    if (!candidate || !candidate.id) continue;
+                    if (reservedPlacementIds.has(candidate.id)) continue;
 
-            for (let i = 0; i < placeCount; i++) {
-                const idx = outerShortages[i];
-                const slot = allSlots[idx];
+                    const current = mgr.orders.get(candidate.id) || candidate;
+                    if (excludeIds.has(current.id) || (hasOnChainId(current) && excludeIds.has(current.orderId))) continue;
+                    if (hasOnChainId(current) || current.state !== ORDER_STATES.VIRTUAL) continue;
+
+                    return { slot: current, idx };
+                }
+                return null;
+            };
+
+            while (budgetRemaining > 0) {
+                const placementTarget = pickPlacementShortageSlot();
+                if (!placementTarget) break;
+
+                const { slot, idx } = placementTarget;
+                reservedPlacementIds.add(slot.id);
                 const idealSize = finalIdealSizes[idx];
-
-                if (!slot || !slot.id || !slot.price) continue;
                 if (idealSize <= 0) continue;
 
                 const currentSize = slot.size || 0;
                 const sizeIncrease = Math.max(0, idealSize - currentSize);
 
-                const remainingOrders = placeCount - i;
+                const remainingOrders = Math.max(1, budgetRemaining);
                 const cappedIncrease = Math.min(sizeIncrease, remainingAvail / remainingOrders);
                 const finalSize = currentSize + cappedIncrease;
 
@@ -812,11 +868,14 @@ class StrategyEngine {
         // ================================================================================
         // STEP 6: CANCEL REMAINING SURPLUSES
         // ================================================================================
-        // Cancel surpluses from the outside in (lowest buy/highest sell first)
+        // Cancel only hard surpluses (outside target set), from the outside in.
+        // Dust surpluses inside the target set are left for update/rotation in later cycles.
         const rotatedOldIds = new Set(ordersToRotate.map(r => r.oldOrder.id));
         for (let i = filteredSurpluses.length - 1; i >= 0; i--) {
             const surplus = filteredSurpluses[i];
-            if (!rotatedOldIds.has(surplus.id) && !inPlaceUpdatedIds.has(surplus.id)) {
+            const surplusIdx = slotIndexMap.get(surplus.id);
+            const isHardSurplus = surplusIdx !== undefined && !targetSet.has(surplusIdx);
+            if (isHardSurplus && !rotatedOldIds.has(surplus.id) && !inPlaceUpdatedIds.has(surplus.id)) {
                 ordersToCancel.push({ ...surplus });
                 stateUpdates.push(virtualizeOrder(surplus));
             }

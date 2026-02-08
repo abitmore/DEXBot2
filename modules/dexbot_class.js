@@ -182,6 +182,14 @@ class DEXBot {
         this._triggerDebounceTimer = null;
         this._mainLoopActive = false;
         this._mainLoopPromise = null;
+
+        // Pipeline state flags (used by maintenance gating)
+        this._batchInFlight = false;
+        this._batchRetryInFlight = false;
+        this._recoverySyncInFlight = false;
+        this._maintenanceCooldownCycles = 0;
+        this._spreadCorrectionCooldownCycles = 0;
+        this._divergenceResizeCooldownCycles = 0;
     }
 
     /**
@@ -274,6 +282,51 @@ class DEXBot {
                 this._warn(`Startup recovery failed: ${recoveryValidation.reason}. Bot proceeding with caution.`);
             }
         }
+    }
+
+    _getPipelineSignals() {
+        return {
+            incomingFillQueueLength: this._incomingFillQueue.length,
+            shadowLocks: this.manager?.shadowOrderIds?.size || 0,
+            batchInFlight: this._batchInFlight,
+            retryInFlight: this._batchRetryInFlight,
+            recoveryInFlight: this._recoverySyncInFlight,
+            broadcasting: this.manager?._isBroadcasting || false
+        };
+    }
+
+    async _triggerStateRecoverySync(reason = 'state recovery sync') {
+        if (!this.manager) return;
+
+        if (this._recoverySyncInFlight) {
+            this.manager.logger.log(`[RECOVERY] Skipping duplicate recovery request: ${reason}`, 'warn');
+            return;
+        }
+
+        this._recoverySyncInFlight = true;
+        try {
+            this.manager.logger.log(`Triggering state recovery sync (${reason})...`, 'info');
+            await this.manager.fetchAccountTotals(this.accountId);
+            const openOrders = await chainOrders.readOpenOrders(this.accountId);
+            await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: false });
+        } finally {
+            this._recoverySyncInFlight = false;
+        }
+    }
+
+    async _abortFlowIfIllegalState(flowContext) {
+        const illegalSignal = this.manager?.consumeIllegalStateSignal?.();
+        if (!illegalSignal) {
+            return false;
+        }
+
+        this.manager.logger.log(
+            `[HARD-ABORT] ${flowContext} aborted due to illegal state (${illegalSignal.context}): ${illegalSignal.message}`,
+            'error'
+        );
+        await this._triggerStateRecoverySync(`hard-abort ${flowContext}`);
+        this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
+        return true;
     }
 
     /**
@@ -448,7 +501,11 @@ class DEXBot {
 
                                 if (allOrders.length > 0) {
                                     this._log(`[POST-RESET] Placing ${allOrders.length} order(s) for filled slot`);
-                                    await this.updateOrdersOnChainBatch(rebalanceResult);
+                                    const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
+                                    if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
+                                        this._warn('[POST-RESET] Aborted batch due to illegal state; skipping grid persistence this cycle');
+                                        continue;
+                                    }
                                 }
                             }
                         }
@@ -855,76 +912,98 @@ class DEXBot {
                         this.manager.resumeFundRecalc();
                     }
 
-                    // 5. Adaptive Batch Rebalance Loop
-                    // Instead of processing fills one-at-a-time (each requiring a separate broadcast),
-                    // group multiple fills into batches. The batch size scales with queue depth (stress):
-                    //   low stress (1-2 fills)  → process 1 at a time (normal sequential)
-                    //   moderate (3-5 fills)     → batch of 2
-                    //   high (6-14 fills)        → batch of 3
-                    //   extreme (15+ fills)      → batch of MAX_FILL_BATCH_SIZE (default 4)
-                    //
-                    // This is safe because processFilledOrders() already supports multiple fills:
-                    // it virtualizes each fill, shifts the boundary for each, computes a single
-                    // unified rebalance, and returns one set of operations to broadcast.
+                    // 5. Hybrid Fill Rebalance
+                    // Middle ground between strict sequential and always-full-batch:
+                    // - 1 fill: legacy single-fill pass
+                    // - 2..MAX_FILL_BATCH_SIZE fills: unified full-set planning (no mini-batch churn)
+                    // - larger bursts: adaptive chunking with anti-singleton tail balancing
                     if (allFilledOrders.length > 0) {
                         const { FILL_PROCESSING: FP } = require('./constants');
                         const stressTiers = FP.BATCH_STRESS_TIERS || [[0, 1]];
-                        const maxBatch = FP.MAX_FILL_BATCH_SIZE || 1;
+                        const maxBatch = Math.max(1, FP.MAX_FILL_BATCH_SIZE || 1);
+                        const totalFills = allFilledOrders.length;
 
-                        // Determine batch size from stress tiers based on total fill count
-                        let batchSize = 1;
+                        let adaptiveBatchSize = 1;
                         for (const [minDepth, size] of stressTiers) {
-                            if (allFilledOrders.length >= minDepth) {
-                                batchSize = Math.min(size, maxBatch);
+                            if (totalFills >= minDepth) {
+                                adaptiveBatchSize = Math.max(1, Math.min(size, maxBatch));
                                 break;
                             }
                         }
 
+                        const useUnifiedPlan = totalFills > 1 && totalFills <= maxBatch;
+                        const modeLabel = useUnifiedPlan ? 'unified' : 'chunked';
                         this.manager.logger.log(
-                            `Processing ${allFilledOrders.length} filled orders in batches of ${batchSize}...`,
+                            `Processing ${totalFills} filled orders (${modeLabel}, baseBatch=${useUnifiedPlan ? totalFills : adaptiveBatchSize})...`,
                             'info'
                         );
 
                         let anyRotations = false;
+                        let abortedFillCycle = false;
 
                         this.manager.pauseFundRecalc();
                         try {
                             let i = 0;
-                            while (i < allFilledOrders.length) {
-                                // Slice the next batch of fills
-                                const batchEnd = Math.min(i + batchSize, allFilledOrders.length);
+                            while (i < totalFills) {
+                                const remaining = totalFills - i;
+                                let currentBatchSize;
+
+                                if (useUnifiedPlan) {
+                                    currentBatchSize = remaining;
+                                } else {
+                                    currentBatchSize = Math.min(adaptiveBatchSize, remaining);
+                                    // Avoid ending with a singleton tail when possible.
+                                    const tail = remaining - currentBatchSize;
+                                    if (tail === 1 && currentBatchSize < maxBatch) {
+                                        currentBatchSize = Math.min(maxBatch, currentBatchSize + 1);
+                                    }
+                                }
+
+                                const batchEnd = Math.min(i + currentBatchSize, totalFills);
                                 const fillBatch = allFilledOrders.slice(i, batchEnd);
                                 i = batchEnd;
 
                                 const batchIds = fillBatch.map(f => f.id).join(', ');
                                 this.manager.logger.log(
-                                    `>>> Processing fill batch [${batchIds}] (${i}/${allFilledOrders.length})`,
+                                    `>>> Processing fill set [${batchIds}] (${i}/${totalFills})`,
                                     'info'
                                 );
 
-                                // Create an exclusion set from fills NOT in this batch
-                                // to prevent the rebalancer from picking orders about to be processed.
+                                // For chunked mode, exclude fills planned for later chunks to reduce churn.
                                 const batchIdSet = new Set(fillBatch.map(f => f.id));
                                 const fullExcludeSet = new Set();
-                                for (const other of allFilledOrders) {
-                                    if (batchIdSet.has(other.id)) continue;
-                                    if (other.orderId) fullExcludeSet.add(other.orderId);
-                                    if (other.id) fullExcludeSet.add(other.id);
+                                if (!useUnifiedPlan) {
+                                    for (const other of allFilledOrders) {
+                                        if (batchIdSet.has(other.id)) continue;
+                                        if (other.orderId) fullExcludeSet.add(other.orderId);
+                                        if (other.id) fullExcludeSet.add(other.id);
+                                    }
                                 }
 
-                                // Log funding state before processing this batch
-                                this.manager.logger.logFundsStatus(this.manager, `BEFORE processing fill batch [${batchIds}]`);
+                                this.manager.logger.logFundsStatus(this.manager, `BEFORE fill set processing [${batchIds}]`);
 
                                 const rebalanceResult = await this.manager.processFilledOrders(fillBatch, fullExcludeSet);
 
-                                // Log funding state after rebalance calculation (before actual placement)
-                                this.manager.logger.logFundsStatus(this.manager, `AFTER rebalanceOrders calculated for batch [${batchIds}] (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`);
+                                this.manager.logger.logFundsStatus(
+                                    this.manager,
+                                    `AFTER rebalanceOrders calculated for fill set [${batchIds}] (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`
+                                );
 
                                 const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
 
+                                if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
+                                    this.manager.logger.log(
+                                        `[HARD-ABORT] Fill set [${batchIds}] aborted due to critical state. ` +
+                                        'Skipping persistence and ending current fill cycle.',
+                                        'error'
+                                    );
+                                    abortedFillCycle = true;
+                                    break;
+                                }
+
                                 if (batchResult.hadRotation) {
                                     anyRotations = true;
-                                    this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for batch [${batchIds}]`);
+                                    this.manager.logger.logFundsStatus(this.manager, `AFTER rotation completed for fill set [${batchIds}]`);
                                 }
                                 await this.manager.persistGrid();
                             }
@@ -946,12 +1025,12 @@ class DEXBot {
                         // immediately after creates new orders that may get filled by market before next cycle,
                         // causing cascading fills and potentially SPREAD slots becoming PARTIAL (error condition).
                         // Spread correction runs in the main loop instead.
-                        if (anyRotations || allFilledOrders.length > 0) {
+                        if (!abortedFillCycle && (anyRotations || allFilledOrders.length > 0)) {
                             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications
                             this.manager.recalculateFunds();
 
                             // Check grid health only if pipeline is empty (no pending fills, no pending operations)
-                            const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
+                            const pipelineStatus = this.manager.isPipelineEmpty(this._getPipelineSignals());
                             if (pipelineStatus.isEmpty) {
                                 const healthResult = await this.manager.checkGridHealth(
                                     this.updateOrdersOnChainBatch.bind(this)
@@ -978,7 +1057,41 @@ class DEXBot {
                         // After: Grid maintenance waits for isPipelineEmpty() before structural changes
                         // Also run when rotations failed (allFilledOrders > 0) so divergence/spread correction
                         // can attempt grid recovery even when fill-triggered rotations didn't complete.
-                        if (anyRotations || allFilledOrders.length > 0) {
+                        const fullFillCount = allFilledOrders.filter(o =>
+                            o && o.isPartial !== true
+                        ).length;
+                        const partialFillCount = allFilledOrders.filter(o =>
+                            o && o.isPartial === true
+                        ).length;
+                        const hadFullFill = fullFillCount > 0;
+                        const hadPartialFill = partialFillCount > 0;
+                        if (hadPartialFill && !hadFullFill) {
+                            this._spreadCorrectionCooldownCycles = Math.max(this._spreadCorrectionCooldownCycles, 1);
+                            this.manager.logger.log(
+                                '[SPREAD-GATE] Partial-only fill cycle detected. Deferring spread correction for one maintenance cycle.',
+                                'warn'
+                            );
+                        }
+
+                        // Defer post-fill maintenance only for burst fills (2+) where transient
+                        // one-sided depletion is common and false spread/divergence corrections occur.
+                        if (allFilledOrders.length >= 2) {
+                            this._spreadCorrectionCooldownCycles = Math.max(this._spreadCorrectionCooldownCycles, 1);
+                            this.manager.logger.log(
+                                `[SPREAD-GATE] Burst fill cycle (${allFilledOrders.length} fills, full=${fullFillCount}, partial=${partialFillCount}) detected. Deferring spread correction for one maintenance cycle.`,
+                                'warn'
+                            );
+                        }
+
+                        if (allFilledOrders.length >= 2) {
+                            this._divergenceResizeCooldownCycles = Math.max(this._divergenceResizeCooldownCycles, 1);
+                            this.manager.logger.log(
+                                `[DIVERGENCE-GATE] Burst fill cycle (${allFilledOrders.length} fills, full=${fullFillCount}, partial=${partialFillCount}) detected. Deferring post-fill divergence resize for one maintenance cycle.`,
+                                'warn'
+                            );
+                        }
+
+                        if (!abortedFillCycle && (anyRotations || allFilledOrders.length > 0)) {
                             await this._runGridMaintenance('post-fill', true);
                         }
                     }
@@ -1552,8 +1665,55 @@ class DEXBot {
         // Apply shadow locks to prevent concurrent selection of these orders
         // IMPORTANT: This is cooperative locking - rebalancing must respect these locks via exclusion sets
         this.manager.lockOrders(idsToLock);
+        this._batchInFlight = true;
 
         try {
+            // Pre-filter cancel operations against fresh open orders to avoid poisoning mixed batches
+            // with expected "order does not exist" races during fast fills.
+            if (Array.isArray(ordersToCancel) && ordersToCancel.length > 0) {
+                try {
+                    const openOrders = await chainOrders.readOpenOrders(this.accountId);
+                    const openOrderIds = new Set((openOrders || []).map(o => String(o?.id)).filter(Boolean));
+                    const staleCancels = [];
+                    const liveCancels = [];
+
+                    for (const order of ordersToCancel) {
+                        const orderId = String(order?.orderId || '');
+                        if (!orderId) continue;
+                        if (openOrderIds.has(orderId)) {
+                            liveCancels.push(order);
+                        } else {
+                            staleCancels.push(order);
+                        }
+                    }
+
+                    if (staleCancels.length > 0) {
+                        this.manager.logger.log(
+                            `[CANCEL-PREFILTER] ${staleCancels.length} cancel(s) already absent on-chain; cleaning grid refs and continuing`,
+                            'warn'
+                        );
+
+                        for (const staleOrder of staleCancels) {
+                            if (staleOrder?.orderId) {
+                                this._staleCleanedOrderIds.set(staleOrder.orderId, Date.now());
+                            }
+                            const existing = this.manager.orders.get(staleOrder.id);
+                            if (existing) {
+                                const spreadOrder = convertToSpreadPlaceholder(existing);
+                                this.manager._updateOrder(spreadOrder, 'batch-stale-cleanup', false, 0);
+                            }
+                        }
+                    }
+
+                    ordersToCancel = liveCancels;
+                } catch (prefilterErr) {
+                    this.manager.logger.log(
+                        `[CANCEL-PREFILTER] Open-order prefilter failed, proceeding with original cancel list: ${prefilterErr.message}`,
+                        'warn'
+                    );
+                }
+            }
+
             // 1. Build Operations
             // Priority 1: Cancellations (Outside-In surpluses)
             await this._buildCancelOps(ordersToCancel, operations, opContexts);
@@ -1591,11 +1751,7 @@ class DEXBot {
 
                 // Trigger sync to revert optimistic state on validation failure
                 try {
-                    this.manager.logger.log('Triggering state recovery sync...', 'info');
-                    // FETCH FRESH BALANCES FIRST to reset optimistic drift
-                    await this.manager.fetchAccountTotals(this.accountId);
-                    const openOrders = await chainOrders.readOpenOrders(this.accountId);
-                    await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: false });
+                    await this._triggerStateRecoverySync('batch fund validation failure');
                 } catch (syncErr) {
                     this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
                 }
@@ -1610,16 +1766,33 @@ class DEXBot {
             // 4. Process Results
             this.manager.pauseFundRecalc();
             try {
+                this.manager._throwOnIllegalState = true;
                 const batchResult = await this._processBatchResults(result, opContexts);
                 this._metrics.batchesExecuted++;
                 return batchResult;
             } finally {
+                this.manager._throwOnIllegalState = false;
                 this.manager.resumeFundRecalc();
                 this.manager.logger.logFundsStatus(this.manager, `AFTER updateOrdersOnChainBatch (placed=${ordersToPlace?.length || 0}, rotated=${ordersToRotate?.length || 0})`);
             }
 
         } catch (err) {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
+
+            if (err?.code === 'ILLEGAL_ORDER_STATE') {
+                const illegalSignal = this.manager.consumeIllegalStateSignal?.();
+                await this._triggerStateRecoverySync(illegalSignal?.message || 'illegal order state during batch processing');
+                return { executed: false, hadRotation: false, abortedForIllegalState: true };
+            }
+
+            if (err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
+                const accountingSignal = this.manager.consumeAccountingFailureSignal?.();
+                const reason = accountingSignal
+                    ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
+                    : 'accounting commitment lock failure during batch processing';
+                await this._triggerStateRecoverySync(reason);
+                return { executed: false, hadRotation: false, abortedForAccountingFailure: true };
+            }
 
             // Check if failure is due to stale (non-existent) order references.
             // Match all stale order IDs — multiple formats possible across BitShares node versions.
@@ -1671,36 +1844,62 @@ class DEXBot {
                 if (filteredOps.length > 0) {
                     try {
                         this.manager.logger.log(`Retrying batch with ${filteredOps.length} operation(s) (excluded ${staleOrderIds.size} stale ref(s))...`, 'info');
+                        this._batchRetryInFlight = true;
                         const retryResult = await chainOrders.executeBatch(this.account, this.privateKey, filteredOps);
 
                         this.manager.pauseFundRecalc();
                         try {
+                            this.manager._throwOnIllegalState = true;
                             const batchResult = await this._processBatchResults(retryResult, filteredCtxs);
                             this._metrics.batchesExecuted++;
                             return batchResult;
                         } finally {
+                            this.manager._throwOnIllegalState = false;
                             this.manager.resumeFundRecalc();
+                            this._batchRetryInFlight = false;
                         }
                     } catch (retryErr) {
+                        this._batchRetryInFlight = false;
                         this.manager.logger.log(`Retry batch also failed: ${retryErr.message}`, 'error');
+
+                        if (retryErr?.code === 'ILLEGAL_ORDER_STATE') {
+                            const illegalSignal = this.manager.consumeIllegalStateSignal?.();
+                            await this._triggerStateRecoverySync(illegalSignal?.message || 'illegal order state during retry batch processing');
+                            return { executed: false, hadRotation: false, abortedForIllegalState: true };
+                        }
+
+                        if (retryErr?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
+                            const accountingSignal = this.manager.consumeAccountingFailureSignal?.();
+                            const reason = accountingSignal
+                                ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
+                                : 'accounting commitment lock failure during retry batch processing';
+                            await this._triggerStateRecoverySync(reason);
+                            return { executed: false, hadRotation: false, abortedForAccountingFailure: true };
+                        }
+
                         // Fall through to recovery sync below
+                    }
+                } else {
+                    const staleOnlyCancels = opContexts.length > 0 && opContexts.every(ctx => ctx.kind === 'cancel');
+                    if (staleOnlyCancels) {
+                        this.manager.logger.log('Batch contained only stale cancel references; treating as expected race and continuing.', 'warn');
+                        return { executed: false, hadRotation: false, staleOnly: true };
                     }
                 }
             }
 
             // Trigger sync to revert optimistic state on execution failure
             try {
-                this.manager.logger.log('Triggering state recovery sync...', 'info');
-                // FETCH FRESH BALANCES FIRST to reset optimistic drift
-                await this.manager.fetchAccountTotals(this.accountId);
-                const openOrders = await chainOrders.readOpenOrders(this.accountId);
-                await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: false });
+                await this._triggerStateRecoverySync('batch execution failure');
             } catch (syncErr) {
                 this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
             }
 
             return { executed: false, hadRotation: false };
         } finally {
+            this._batchRetryInFlight = false;
+            this._batchInFlight = false;
+            this.manager._throwOnIllegalState = false;
             this.manager.unlockOrders(idsToLock);
         }
     }
@@ -2012,7 +2211,7 @@ class DEXBot {
                     }
 
                     await this.manager.synchronizeWithChain({
-                        gridOrderId: ctx.order.id, chainOrderId, fee: btsFeeData.createFee
+                        gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData.createFee
                     }, 'createOrder');
                     this.manager.logger.log(`Placed ${ctx.order.type} order ${ctx.order.id} -> ${chainOrderId}`, 'info');
                 }
@@ -2071,10 +2270,13 @@ class DEXBot {
 
                 try {
                     await this.manager.synchronizeWithChain({
-                        gridOrderId: newGridId, chainOrderId: oldOrder.orderId, isPartialPlacement, fee: btsFeeData.updateFee
+                        gridOrderId: newGridId, chainOrderId: oldOrder.orderId, expectedType: type, isPartialPlacement, fee: btsFeeData.updateFee
                     }, 'createOrder');
                     updateOperationCount++;
                 } catch (err) {
+                    if (err?.code === 'ILLEGAL_ORDER_STATE' || err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
+                        throw err;
+                    }
                     this.manager.logger.log(`ERROR: Sync failed for rotation ${oldOrder.orderId} -> ${newGridId}`, 'error');
                 }
             }
@@ -2339,8 +2541,10 @@ class DEXBot {
                                     this._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
                                     const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, new Set());
                                     if (rebalanceResult) {
-                                        await this.updateOrdersOnChainBatch(rebalanceResult);
-                                        await this.manager.persistGrid();
+                                        const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
+                                        if (!batchResult?.abortedForIllegalState && !batchResult?.abortedForAccountingFailure) {
+                                            await this.manager.persistGrid();
+                                        }
                                     }
                                 }
                             });
@@ -2432,8 +2636,10 @@ class DEXBot {
                                 // so periodic detection behaves consistently with fill listener processing.
                                 const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, new Set());
                                 if (rebalanceResult) {
-                                    await this.updateOrdersOnChainBatch(rebalanceResult);
-                                    await this.manager.persistGrid();
+                                    const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
+                                    if (!batchResult?.abortedForIllegalState && !batchResult?.abortedForAccountingFailure) {
+                                        await this.manager.persistGrid();
+                                    }
                                 }
                             }
 
@@ -2520,7 +2726,16 @@ class DEXBot {
         // Clear any operations that have been stuck beyond timeout threshold
         this.manager.clearStalePipelineOperations();
 
-        const pipelineStatus = this.manager.isPipelineEmpty(this._incomingFillQueue.length);
+        if (this._maintenanceCooldownCycles > 0) {
+            this._maintenanceCooldownCycles--;
+            this._log(
+                `[MAINT-COOLDOWN] Skipping ${context} maintenance after hard-abort recovery sync (remaining=${this._maintenanceCooldownCycles})`,
+                'warn'
+            );
+            return;
+        }
+
+        const pipelineStatus = this.manager.isPipelineEmpty(this._getPipelineSignals());
         if (pipelineStatus.isEmpty) {
             // ================================================================================
             // STEP 1: SPREAD AND HEALTH CHECKS
@@ -2529,18 +2744,30 @@ class DEXBot {
             // This ensures divergence calculation sees corrected spread state.
             // Only performed when pipeline is empty to prevent cascading trades.
 
-            const spreadResult = await this.manager.checkSpreadCondition(
-                BitShares,
-                this.updateOrdersOnChainBatch.bind(this)
-            );
-            if (spreadResult && spreadResult.ordersPlaced > 0) {
-                this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-                await this._persistAndRecoverIfNeeded();
+            const shouldSkipSpreadCorrection =
+                context === 'post-fill' && this._spreadCorrectionCooldownCycles > 0;
+            if (shouldSkipSpreadCorrection) {
+                this._spreadCorrectionCooldownCycles--;
+                this._log(
+                    `[SPREAD-GATE] Skipping spread correction during ${context} (remaining cooldown=${this._spreadCorrectionCooldownCycles})`,
+                    'warn'
+                );
+            } else {
+                const spreadResult = await this.manager.checkSpreadCondition(
+                    BitShares,
+                    this.updateOrdersOnChainBatch.bind(this)
+                );
+                if (await this._abortFlowIfIllegalState(`${context} spread check`)) return;
+                if (spreadResult && spreadResult.ordersPlaced > 0) {
+                    this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+                    await this._persistAndRecoverIfNeeded();
+                }
             }
 
             const healthResult = await this.manager.checkGridHealth(
                 this.updateOrdersOnChainBatch.bind(this)
             );
+            if (await this._abortFlowIfIllegalState(`${context} health check`)) return;
             if (healthResult.buyDust && healthResult.sellDust) {
                 await this._persistAndRecoverIfNeeded();
             }
@@ -2551,6 +2778,17 @@ class DEXBot {
             // Run divergence check AFTER spread correction to detect structural issues
             // on the corrected grid state.
             // Only performed when pipeline is empty to prevent premature resizing from temporary surplus.
+
+            const shouldSkipDivergenceResize =
+                context === 'post-fill' && this._divergenceResizeCooldownCycles > 0;
+            if (shouldSkipDivergenceResize) {
+                this._divergenceResizeCooldownCycles--;
+                this._log(
+                    `[DIVERGENCE-GATE] Skipping divergence resize during ${context} (remaining cooldown=${this._divergenceResizeCooldownCycles})`,
+                    'warn'
+                );
+                return;
+            }
 
             const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager);
 
@@ -2567,6 +2805,7 @@ class DEXBot {
                         this.config.botKey,
                         this.updateOrdersOnChainBatch.bind(this)
                     );
+                    if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
                     this._log(`Grid corrections applied on-chain during ${context}`);
                 } catch (err) {
                     this._warn(`Error applying grid corrections during ${context}: ${err.message}`);
@@ -2591,6 +2830,7 @@ class DEXBot {
                                 this.config.botKey,
                                 this.updateOrdersOnChainBatch.bind(this)
                             );
+                            if (await this._abortFlowIfIllegalState(`${context} divergence recheck correction`)) return;
                             this._log(`Grid divergence corrections applied during ${context}`);
                         } catch (err) {
                             this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);

@@ -499,6 +499,33 @@ class Accountant {
         }
     }
 
+    _normalizeSideHint(sideHint) {
+        if (sideHint === ORDER_TYPES.BUY || sideHint === 'buy') return ORDER_TYPES.BUY;
+        if (sideHint === ORDER_TYPES.SELL || sideHint === 'sell') return ORDER_TYPES.SELL;
+        return null;
+    }
+
+    _resolveOrderSide(order, fallbackOrder = null, explicitSideHint = null) {
+        const fromHint = this._normalizeSideHint(explicitSideHint);
+        if (fromHint) return fromHint;
+
+        const candidates = [
+            order?.sideHint,
+            order?.committedSide,
+            order?.type,
+            fallbackOrder?.sideHint,
+            fallbackOrder?.committedSide,
+            fallbackOrder?.type
+        ];
+
+        for (const candidate of candidates) {
+            const normalized = this._normalizeSideHint(candidate);
+            if (normalized) return normalized;
+        }
+
+        return null;
+    }
+
     /**
      * Update optimistic balance during transitions.
      * @param {Object} oldOrder - Previous order state
@@ -522,13 +549,11 @@ class Accountant {
             const oldGridCommitted = oldIsActive ? oldSize : 0;
             const newGridCommitted = newIsActive ? newSize : 0;
             const commitmentDelta = newGridCommitted - oldGridCommitted;
+            const newSideType = this._resolveOrderSide(newOrder, oldOrder);
+            const oldSideType = this._resolveOrderSide(oldOrder, newOrder);
+            const sideForPrecision = newSideType || oldSideType;
 
             if (mgr.logger && mgr.logger.level === 'debug') {
-                const sideForPrecision =
-                    (newOrder.type === ORDER_TYPES.BUY || oldOrder.type === ORDER_TYPES.BUY) ? ORDER_TYPES.BUY
-                        : (newOrder.type === ORDER_TYPES.SELL || oldOrder.type === ORDER_TYPES.SELL) ? ORDER_TYPES.SELL
-                            : null;
-
                 mgr.logger.log(
                     `[ACCOUNTING] updateOptimisticFreeBalance: id=${newOrder.id}, type=${newOrder.type}, ` +
                     `state=${oldOrder.state}->${newOrder.state}, ` +
@@ -540,19 +565,39 @@ class Accountant {
 
             if (commitmentDelta > 0) {
                 // Lock capital: move from Free to Committed
-                const deducted = this.tryDeductFromChainFree(newOrder.type, commitmentDelta, `${context}`);
+                const commitmentSide = newSideType || newOrder.type;
+                const deducted = this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
                 if (!deducted) {
+                    const failure = {
+                        code: 'ACCOUNTING_COMMITMENT_FAILED',
+                        side: commitmentSide,
+                        amount: commitmentDelta,
+                        context,
+                        at: Date.now()
+                    };
+                    mgr._lastAccountingFailure = failure;
+
                     mgr.logger?.log?.(
-                        `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${newOrder.type} during ${context}. Scheduling recovery.`,
+                        `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Scheduling recovery.`,
                         'error'
                     );
+
+                    if (mgr._throwOnIllegalState) {
+                        const err = new Error(
+                            `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
+                        );
+                        err.code = 'ACCOUNTING_COMMITMENT_FAILED';
+                        throw err;
+                    }
+
                     this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure').catch(err => {
                         mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
                     });
                 }
             } else if (commitmentDelta < 0) {
                 // Release capital: move from Committed back to Free
-                this.addToChainFree(oldOrder.type, Math.abs(commitmentDelta), `${context}`);
+                const releaseSide = oldSideType || oldOrder.type;
+                this.addToChainFree(releaseSide, Math.abs(commitmentDelta), `${context}`);
             }
         }
 

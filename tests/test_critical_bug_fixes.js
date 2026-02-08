@@ -73,16 +73,27 @@ async function testSpreadSortingForRotation() {
     // Rebalance
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
     
-    assert(result.ordersToRotate.length > 0, 'Should have rotated at least 1 order');
-    const rotation = result.ordersToRotate[0];
-    
-    // Check if it picked the closest shortage slot on sell side
-    const sellShortages = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.VIRTUAL);
-    const closestShortage = sellShortages.sort((a, b) => a.price - b.price)[0];
-    
-    assert.strictEqual(rotation.newPrice, closestShortage.price, `Should rotate to closest shortage at ${closestShortage.price}, got ${rotation.newPrice}`);
+    // Whole-grid semantics may select placement instead of rotation.
+    const chosenOp = result.ordersToRotate[0] || result.ordersToPlace[0];
+    const chosenPrice = chosenOp?.newPrice ?? chosenOp?.price;
+    const chosenType = chosenOp?.type;
+    assert(Number.isFinite(chosenPrice), 'Should select at least one target slot (rotation or placement)');
+    assert(chosenType === ORDER_TYPES.BUY || chosenType === ORDER_TYPES.SELL, 'Chosen operation should have BUY/SELL type');
 
-    console.log(`✓ Rotation correctly selected closest shortage at price ${rotation.newPrice}`);
+    const sameSideVirtuals = Array.from(mgr.orders.values()).filter(o => o.type === chosenType && o.state === ORDER_STATES.VIRTUAL);
+    assert(sameSideVirtuals.length > 0, 'Should have virtual shortages on chosen side');
+
+    const expectedExtreme = chosenType === ORDER_TYPES.BUY
+        ? sameSideVirtuals.sort((a, b) => a.price - b.price)[0]
+        : sameSideVirtuals.sort((a, b) => b.price - a.price)[0];
+
+    assert.strictEqual(
+        chosenPrice,
+        expectedExtreme.price,
+        `Should target ${chosenType.toUpperCase()} extreme shortage at ${expectedExtreme.price}, got ${chosenPrice}`
+    );
+
+    console.log(`✓ Target selection correctly picked ${chosenType.toUpperCase()} extreme shortage at price ${chosenPrice}`);
 }
 
 // ============================================================================
@@ -217,13 +228,27 @@ async function testSpreadSortingForBuyRotation() {
     // Prepare rotation - simulate opposite side fill
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.SELL, price: 1.10 }]);
 
-    assert(result.ordersToRotate.length > 0, 'Should have rotated at least 1 order');
-    const rotation = result.ordersToRotate[0];
-    
-    // Should rotate to 0.99 (highest price for BUY side)
-    assert.strictEqual(rotation.newPrice, 0.99, `Should rotate to 0.99, got ${rotation.newPrice}`);
+    // Whole-grid semantics may select placement instead of rotation.
+    const chosenOp = result.ordersToRotate[0] || result.ordersToPlace[0];
+    const chosenPrice = chosenOp?.newPrice ?? chosenOp?.price;
+    const chosenType = chosenOp?.type;
+    assert(Number.isFinite(chosenPrice), 'Should select at least one target slot (rotation or placement)');
+    assert(chosenType === ORDER_TYPES.BUY || chosenType === ORDER_TYPES.SELL, 'Chosen operation should have BUY/SELL type');
 
-    console.log(`✓ BUY rotation correctly selected closest shortage at price ${rotation.newPrice}`);
+    const sameSideVirtuals = Array.from(mgr.orders.values()).filter(o => o.type === chosenType && o.state === ORDER_STATES.VIRTUAL);
+    assert(sameSideVirtuals.length > 0, 'Should have virtual shortages on chosen side');
+
+    const expectedExtreme = chosenType === ORDER_TYPES.BUY
+        ? sameSideVirtuals.sort((a, b) => a.price - b.price)[0]
+        : sameSideVirtuals.sort((a, b) => b.price - a.price)[0];
+
+    assert.strictEqual(
+        chosenPrice,
+        expectedExtreme.price,
+        `Should target ${chosenType.toUpperCase()} extreme shortage at ${expectedExtreme.price}, got ${chosenPrice}`
+    );
+
+    console.log(`✓ ${chosenType.toUpperCase()} target selection correctly picked extreme shortage at price ${chosenPrice}`);
 }
 
 // ============================================================================

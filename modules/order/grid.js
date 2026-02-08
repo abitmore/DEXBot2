@@ -106,7 +106,6 @@ const {
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
     getDoubleDustThreshold,
-    calculateAvailableFundsValue,
     calculateSpreadFromOrders,
     allocateFundsByWeights
 } = require('./utils/math');
@@ -115,7 +114,6 @@ const {
     checkSizesBeforeMinimum,
     checkSizeThreshold,
     resolveConfiguredPriceBound,
-    countOrdersByType,
     shouldFlagOutOfSpread,
     isOrderHealthy,
     isPhantomOrder,
@@ -770,12 +768,12 @@ class Grid {
 
         for (const s of sides) {
             if (s.grid <= 0) continue;
-            const avail = calculateAvailableFundsValue(s.name, manager.accountTotals, manager.funds, manager.config.assetA, manager.config.assetB, manager.config.activeOrders);
-            const totalPending = avail;
-            // Denominator: bot's total funds for this side (respects botFunds % allocation).
-            // Primary: allocated (botFunds-adjusted). Fallback: chainTotal (free + locked).
-            // Previous fallback (grid + pending) caused false-positive triggers when the
-            // grid allocation was small relative to total funds.
+            // Recalc trigger should follow real pending surplus (cacheFunds), not full side
+            // availability. Using availability causes startup false positives and no-op
+            // update churn when cacheFunds is zero.
+            const totalPending = Number(manager.funds?.cacheFunds?.[s.name] || 0);
+
+            // Denominator: side's allocated capital (or chain total fallback).
             const allocated = s.name === 'buy' ? chainSnap.allocatedBuy : chainSnap.allocatedSell;
             const chainTotal = s.name === 'buy' ? chainSnap.chainTotalBuy : chainSnap.chainTotalSell;
             const denominator = (allocated > 0) ? allocated : chainTotal;
@@ -827,9 +825,29 @@ class Grid {
 
         manager.pauseRecalcLogging();
         try {
+            const freeKey = isBuy ? 'buyFree' : 'sellFree';
+            let sideFreeAvailable = Number(manager.accountTotals?.[freeKey] || 0);
+
             // Apply new sizes to all slots on the side
             allSideSlots.forEach((slot, i) => {
-                const newSize = newSizes[i] || 0;
+                let newSize = newSizes[i] || 0;
+
+                // Safety cap: during grid-resize, active/partial orders must not increase
+                // beyond currently free side funds. This prevents post-fill resize explosions.
+                const isCommitted = slot.state === ORDER_STATES.ACTIVE || slot.state === ORDER_STATES.PARTIAL;
+                if (isCommitted) {
+                    const currentSize = Number(slot.size || 0);
+                    const delta = newSize - currentSize;
+                    if (delta > 0) {
+                        const affordableDelta = Math.min(delta, Math.max(0, sideFreeAvailable));
+                        if (affordableDelta < delta) {
+                            newSize = currentSize + affordableDelta;
+                        }
+                        sideFreeAvailable = Math.max(0, sideFreeAvailable - affordableDelta);
+                    } else if (delta < 0) {
+                        sideFreeAvailable += Math.abs(delta);
+                    }
+                }
                 
                 // Use integer comparison to avoid redundant updates from float noise
                 const currentSizeInt = floatToBlockchainInt(slot.size || 0, ctx.precision);
@@ -1021,8 +1039,10 @@ class Grid {
         const partialBuys = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL);
         const partialSells = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL);
 
-        const onChainBuys = [...activeBuys, ...partialBuys];
-        const onChainSells = [...activeSells, ...partialSells];
+        const onChainBuys = [...activeBuys, ...partialBuys]
+            .filter(o => o?.orderId && Number(o?.size || 0) > 0);
+        const onChainSells = [...activeSells, ...partialSells]
+            .filter(o => o?.orderId && Number(o?.size || 0) > 0);
 
         return calculateSpreadFromOrders(onChainBuys, onChainSells);
     }
@@ -1069,8 +1089,14 @@ class Grid {
             // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
             const toleranceSteps = 1 + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
 
-            const buyCount = countOrdersByType(ORDER_TYPES.BUY, manager.orders);
-            const sellCount = countOrdersByType(ORDER_TYPES.SELL, manager.orders);
+            const buyCount = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
+                .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL))
+                .filter(o => o?.orderId && Number(o?.size || 0) > 0)
+                .length;
+            const sellCount = manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE)
+                .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.PARTIAL))
+                .filter(o => o?.orderId && Number(o?.size || 0) > 0)
+                .length;
 
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
             if (manager.outOfSpread === 0) return false;
@@ -1207,9 +1233,16 @@ class Grid {
         const reqBuy = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.BUY);
         const reqSell = Grid.calculateGeometricSizeForSpreadCorrection(manager, ORDER_TYPES.SELL);
 
-        // Available funds already include fill proceeds (cacheFunds is part of chainFree)
-        const buyAvailable = (manager.funds?.available?.buy || 0);
-        const sellAvailable = (manager.funds?.available?.sell || 0);
+        // Available funds already include fill proceeds (cacheFunds is part of chainFree),
+        // but spread correction must never exceed optimistic chainFree.
+        const buyAvailable = Math.min(
+            Number(manager.funds?.available?.buy || 0),
+            Number(manager.accountTotals?.buyFree || 0)
+        );
+        const sellAvailable = Math.min(
+            Number(manager.funds?.available?.sell || 0),
+            Number(manager.accountTotals?.sellFree || 0)
+        );
 
         const buyRatio = reqBuy ? (buyAvailable / reqBuy) : 0;
         const sellRatio = reqSell ? (sellAvailable / reqSell) : 0;
@@ -1328,7 +1361,10 @@ class Grid {
 
         // Process the selected candidate
         const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
-        const availableFund = (manager.funds?.available?.[sideName] || 0);
+        const availableFund = Math.min(
+            Number(manager.funds?.available?.[sideName] || 0),
+            Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0
+        );
 
         if (idealSize) {
             // For partials, we only need to fund the difference, but the system treats "size" as the target total size.
@@ -1342,7 +1378,7 @@ class Grid {
             // More accurately: size = currentSize + min(idealSize - currentSize, available)
             
             let targetSize = idealSize;
-            const currentSize = candidate.size || 0;
+            const currentSize = candidate.state === ORDER_STATES.PARTIAL ? (candidate.size || 0) : 0;
 
             if (candidate.state === ORDER_STATES.PARTIAL) {
                  const needed = Math.max(0, idealSize - currentSize);

@@ -177,7 +177,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     if (side !== 'buy' && side !== 'sell') return 0;
 
     const chainFree = toFiniteNumber(side === 'buy' ? accountTotals?.buyFree : accountTotals?.sellFree);
-    const virtual = toFiniteNumber(side === 'buy' ? funds.virtual?.buy : funds.virtual?.sell);
+    const virtualReservation = toFiniteNumber(side === 'buy' ? funds.virtual?.buy : funds.virtual?.sell);
     const btsFeesOwed = toFiniteNumber(funds.btsFeesOwed);
     const btsSide = (assetA === 'BTS') ? 'sell' : (assetB === 'BTS') ? 'buy' : null;
 
@@ -198,7 +198,7 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     }
 
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
-    return Math.max(0, chainFree - virtual - currentFeesOwed - btsFeesReservation);
+    return Math.max(0, chainFree - virtualReservation - currentFeesOwed - btsFeesReservation);
 }
 
 function calculateSpreadFromOrders(activeBuys, activeSells) {

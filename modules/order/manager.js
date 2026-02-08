@@ -223,6 +223,9 @@ class OrderManager {
         this._pauseFundRecalcDepth = 0;
         this._recalcLoggingDepth = 0;
         this._isBroadcasting = false;
+        this._throwOnIllegalState = false;
+        this._lastIllegalState = null;
+        this._lastAccountingFailure = null;
         this._pipelineBlockedSince = null;  // Tracks when pipeline became blocked for timeout detection
 
         // Metrics for observability
@@ -231,6 +234,7 @@ class OrderManager {
             invariantViolations: { buy: 0, sell: 0 },
             lockAcquisitions: 0,
             lockContentionSkips: 0,
+            spreadRoleConversionBlocked: 0,
             lastSyncDurationMs: 0,
             metricsStartTime: Date.now()
         };
@@ -718,7 +722,7 @@ class OrderManager {
     _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0) {
         if (!order || !order.id) {
             this.logger.log('Refusing to update order: missing ID', 'error');
-            return;
+            return false;
         }
 
         const id = order.id;
@@ -735,18 +739,45 @@ class OrderManager {
 
         if (!VALID_ORDER_STATES.has(nextOrder.state)) {
             this.logger.log(`Refusing to update order ${id}: invalid state '${nextOrder.state}' (context: ${context})`, 'error');
-            return;
+            return false;
         }
 
         if (!VALID_ORDER_TYPES.has(nextOrder.type)) {
             this.logger.log(`Refusing to update order ${id}: invalid type '${nextOrder.type}' (context: ${context})`, 'error');
-            return;
+            return false;
+        }
+
+        // Invariant: SPREAD placeholders are always size 0.
+        if (nextOrder.type === ORDER_TYPES.SPREAD && Number(nextOrder.size || 0) !== 0) {
+            this.logger.log(
+                `[INVARIANT] Normalizing SPREAD order ${id} size ${nextOrder.size} -> 0 (context: ${context})`,
+                'warn'
+            );
+            nextOrder.size = 0;
         }
 
         // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
         if (nextOrder.type === ORDER_TYPES.SPREAD && isOrderOnChain(nextOrder)) {
-            this.logger.log(`ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${nextOrder.state}. SPREAD orders must remain VIRTUAL.`, 'error');
-            return;
+            const message = `ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${nextOrder.state}. SPREAD orders must remain VIRTUAL.`;
+            this.logger.log(message, 'error');
+            this._lastIllegalState = { id, context, message, at: Date.now() };
+            if (this._throwOnIllegalState) {
+                const err = new Error(message);
+                err.code = 'ILLEGAL_ORDER_STATE';
+                throw err;
+            }
+            return false;
+        }
+
+        // Preserve side intent across transitions that temporarily use SPREAD placeholders.
+        if (nextOrder.type === ORDER_TYPES.BUY || nextOrder.type === ORDER_TYPES.SELL) {
+            nextOrder.committedSide = nextOrder.type;
+        } else if (!nextOrder.committedSide) {
+            if (oldOrder?.committedSide) {
+                nextOrder.committedSide = oldOrder.committedSide;
+            } else if (oldOrder?.type === ORDER_TYPES.BUY || oldOrder?.type === ORDER_TYPES.SELL) {
+                nextOrder.committedSide = oldOrder.type;
+            }
         }
 
         // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
@@ -790,6 +821,20 @@ class OrderManager {
         if (this._pauseFundRecalcDepth === 0) {
             this.recalculateFunds();
         }
+
+        return true;
+    }
+
+    consumeIllegalStateSignal() {
+        const signal = this._lastIllegalState;
+        this._lastIllegalState = null;
+        return signal;
+    }
+
+    consumeAccountingFailureSignal() {
+        const signal = this._lastAccountingFailure;
+        this._lastAccountingFailure = null;
+        return signal;
     }
 
     /**
@@ -1013,10 +1058,22 @@ class OrderManager {
     /**
      * Check if the processing pipeline is empty (no pending fills, corrections, or grid updates).
      * Pure query method - does not modify state. Use clearStalePipelineOperations() to handle timeouts.
-     * @param {number} [incomingFillQueueLength=0] - Length of incoming fill queue (from dexbot)
+     * @param {number|Object} [pipelineSignals=0] - Queue length or pipeline signal object from dexbot
      * @returns {Object} { isEmpty: boolean, reasons: string[] }
      */
-    isPipelineEmpty(incomingFillQueueLength = 0) {
+    isPipelineEmpty(pipelineSignals = 0) {
+        const normalizedSignals = (typeof pipelineSignals === 'number')
+            ? { incomingFillQueueLength: pipelineSignals }
+            : (pipelineSignals || {});
+
+        const incomingFillQueueLength = Number(normalizedSignals.incomingFillQueueLength) || 0;
+        const shadowLocks = Number(normalizedSignals.shadowLocks) || 0;
+        const batchInFlight = !!normalizedSignals.batchInFlight;
+        const retryInFlight = !!normalizedSignals.retryInFlight;
+        const recoveryInFlight = !!normalizedSignals.recoveryInFlight;
+        const broadcasting = !!normalizedSignals.broadcasting;
+
+        this._cleanExpiredLocks();
         const reasons = [];
 
         if (incomingFillQueueLength > 0) {
@@ -1029,6 +1086,26 @@ class OrderManager {
 
         if (this._gridSidesUpdated && this._gridSidesUpdated.size > 0) {
             reasons.push('grid divergence corrections pending');
+        }
+
+        if (shadowLocks > 0) {
+            reasons.push(`${shadowLocks} shadow lock(s) active`);
+        }
+
+        if (batchInFlight) {
+            reasons.push('batch broadcast in-flight');
+        }
+
+        if (retryInFlight) {
+            reasons.push('batch retry in-flight');
+        }
+
+        if (recoveryInFlight) {
+            reasons.push('recovery sync in-flight');
+        }
+
+        if (broadcasting || this._isBroadcasting) {
+            reasons.push('broadcasting active orders');
         }
 
         // Update blocked timestamp tracking

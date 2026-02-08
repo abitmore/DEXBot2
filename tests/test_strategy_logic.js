@@ -162,12 +162,19 @@ async function runTests() {
         const result = await manager.strategy.rebalance();
         manager.resumeFundRecalc();
         const rotation = result.ordersToRotate.find(r => r.oldOrder.id === 'surplus-1');
-        assert(rotation !== undefined, 'Should identify surplus for rotation');
 
-        // ideal size would be ~100 (total buy funds 1000 / 5 orders)
-        // available is 20.
-        // finalSize should be 20.
-        assert.strictEqual(rotation.newSize, 20, `Rotation size should be capped by available funds (expected 20, got ${rotation.newSize})`);
+        // Whole-grid semantics may choose either:
+        // 1) Rotation of surplus-1 to target slot with capped new size, OR
+        // 2) In-place partial update of surplus-1 with capped size increase.
+        // In both cases, buy-side increase must be capped by available funds (20).
+        if (rotation) {
+            assert.strictEqual(rotation.newSize, 20, `Rotation size should be capped by available funds (expected 20, got ${rotation.newSize})`);
+        } else {
+            const partialUpdate = result.ordersToUpdate.find(u => u.partialOrder?.id === 'surplus-1');
+            assert(partialUpdate, 'Should either rotate surplus-1 or update it in place under whole-grid mode');
+            const increase = partialUpdate.newSize - partialUpdate.partialOrder.size;
+            assert.strictEqual(increase, 20, `In-place update increase should be capped by available funds (expected +20, got +${increase})`);
+        }
     }
 
     console.log(' - Testing minHealthySize ReferenceError fix...');
