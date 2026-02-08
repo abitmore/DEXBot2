@@ -14,6 +14,29 @@ assert.strictEqual(utils.parsePercentageString('50%'), 0.5, 'parsePercentageStri
 assert.strictEqual(utils.parsePercentageString(' 12.5% '), 0.125, 'parsePercentageString should handle spaces');
 assert.strictEqual(utils.parsePercentageString('not%'), null, 'parsePercentageString should return null for invalid');
 
+// resolveRelativePrice
+assert.strictEqual(utils.resolveRelativePrice('3x', 100, 'min'), 100 / 3, 'resolveRelativePrice should divide startPrice for min mode');
+assert.strictEqual(utils.resolveRelativePrice('3x', 100, 'max'), 300, 'resolveRelativePrice should multiply startPrice for max mode');
+assert.strictEqual(utils.resolveRelativePrice(' 1.5x ', 200, 'max'), 300, 'resolveRelativePrice should support decimals and spaces');
+assert.strictEqual(utils.resolveRelativePrice('bad', 100, 'max'), null, 'resolveRelativePrice should return null for invalid input');
+
+// resolveConfiguredPriceBound
+assert.strictEqual(
+    utils.resolveConfiguredPriceBound('15x', '3x', 100, 'max'),
+    1500,
+    'resolveConfiguredPriceBound should resolve maxPrice multipliers'
+);
+assert.strictEqual(
+    utils.resolveConfiguredPriceBound('15x', '3x', 100, 'min'),
+    100 / 15,
+    'resolveConfiguredPriceBound should resolve minPrice multipliers'
+);
+assert.strictEqual(
+    utils.resolveConfiguredPriceBound(null, '3x', 120, 'max'),
+    360,
+    'resolveConfiguredPriceBound should resolve fallback multipliers'
+);
+
 // blockchainToFloat
 assert.strictEqual(utils.blockchainToFloat(null, 3), 0, 'blockchainToFloat should return 0 for null');
 assert.strictEqual(utils.blockchainToFloat(1000, 3), 1.0, 'blockchainToFloat should divide by 10^precision');

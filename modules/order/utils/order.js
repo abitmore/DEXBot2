@@ -217,14 +217,17 @@ function getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) {
 }
 
 function resolveConfiguredPriceBound(value, fallback, startPrice, mode) {
-    if (value === null || value === undefined || value === '') {
-        return fallback;
+    const configuredValue = (value === null || value === undefined || value === '') ? fallback : value;
+
+    const relative = MathUtils.resolveRelativePrice(configuredValue, startPrice, mode);
+    if (Number.isFinite(relative)) {
+        return relative;
     }
 
-    const numeric = Number(value);
+    const numeric = Number(configuredValue);
     if (!Number.isFinite(numeric)) {
         const boundName = mode === 'min' ? 'minPrice' : mode === 'max' ? 'maxPrice' : 'price bound';
-        throw new Error(`Invalid ${boundName}: ${String(value)}. Expected a numeric value.`);
+        throw new Error(`Invalid ${boundName}: ${String(configuredValue)}. Expected a numeric value or multiplier like 3x.`);
     }
 
     return numeric;
