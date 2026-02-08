@@ -329,6 +329,29 @@ class DEXBot {
         return true;
     }
 
+    async _handleBatchHardAbort(err, phase = 'batch processing') {
+        const baseResult = { executed: false, hadRotation: false };
+
+        if (err?.code === 'ILLEGAL_ORDER_STATE') {
+            const illegalSignal = this.manager.consumeIllegalStateSignal?.();
+            await this._triggerStateRecoverySync(illegalSignal?.message || `illegal order state during ${phase}`);
+            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
+            return { ...baseResult, abortedForIllegalState: true };
+        }
+
+        if (err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
+            const accountingSignal = this.manager.consumeAccountingFailureSignal?.();
+            const reason = accountingSignal
+                ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
+                : `accounting commitment lock failure during ${phase}`;
+            await this._triggerStateRecoverySync(reason);
+            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
+            return { ...baseResult, abortedForAccountingFailure: true };
+        }
+
+        return null;
+    }
+
     /**
      * Initialize bot state from storage and blockchain.
      * Consolidates common initialization logic for start() and startWithPrivateKey().
@@ -1768,22 +1791,8 @@ class DEXBot {
         } catch (err) {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
 
-            if (err?.code === 'ILLEGAL_ORDER_STATE') {
-                const illegalSignal = this.manager.consumeIllegalStateSignal?.();
-                await this._triggerStateRecoverySync(illegalSignal?.message || 'illegal order state during batch processing');
-                this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
-                return { executed: false, hadRotation: false, abortedForIllegalState: true };
-            }
-
-            if (err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
-                const accountingSignal = this.manager.consumeAccountingFailureSignal?.();
-                const reason = accountingSignal
-                    ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
-                    : 'accounting commitment lock failure during batch processing';
-                await this._triggerStateRecoverySync(reason);
-                this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
-                return { executed: false, hadRotation: false, abortedForAccountingFailure: true };
-            }
+            const hardAbortResult = await this._handleBatchHardAbort(err, 'batch processing');
+            if (hardAbortResult) return hardAbortResult;
 
             // Check if failure is due to stale (non-existent) order references.
             // Match all stale order IDs — multiple formats possible across BitShares node versions.
@@ -1853,22 +1862,8 @@ class DEXBot {
                         this._batchRetryInFlight = false;
                         this.manager.logger.log(`Retry batch also failed: ${retryErr.message}`, 'error');
 
-                        if (retryErr?.code === 'ILLEGAL_ORDER_STATE') {
-                            const illegalSignal = this.manager.consumeIllegalStateSignal?.();
-                            await this._triggerStateRecoverySync(illegalSignal?.message || 'illegal order state during retry batch processing');
-                            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
-                            return { executed: false, hadRotation: false, abortedForIllegalState: true };
-                        }
-
-                        if (retryErr?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
-                            const accountingSignal = this.manager.consumeAccountingFailureSignal?.();
-                            const reason = accountingSignal
-                                ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
-                                : 'accounting commitment lock failure during retry batch processing';
-                            await this._triggerStateRecoverySync(reason);
-                            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
-                            return { executed: false, hadRotation: false, abortedForAccountingFailure: true };
-                        }
+                        const retryHardAbortResult = await this._handleBatchHardAbort(retryErr, 'retry batch processing');
+                        if (retryHardAbortResult) return retryHardAbortResult;
 
                         // Fall through to recovery sync below
                     }
