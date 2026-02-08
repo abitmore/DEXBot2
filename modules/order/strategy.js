@@ -544,14 +544,14 @@ class StrategyEngine {
             return false;
         });
 
-        // Prioritize PARTIAL orders for rotation, then sort by distance (furthest first)
-        // Prioritize PARTIAL orders for rotation, then sort by distance (INNER FIRST)
-        // This ensures OUTER surpluses are left over for cancellation
+        // Prioritize PARTIAL orders for rotation, then sort by distance (FURTHEST FIRST)
+        // This ensures INNER surpluses are left over for cancellation (maximizing surplus-fill potential)
+        // and uses stable outer orders for rotations (reducing rotation-race failures).
         surpluses.sort((a, b) => {
             if (a.state === ORDER_STATES.PARTIAL && b.state !== ORDER_STATES.PARTIAL) return -1;
             if (a.state !== ORDER_STATES.PARTIAL && b.state === ORDER_STATES.PARTIAL) return 1;
-            // Market-Closest first (Inner-to-Edge)
-            return type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price;
+            // Edge-First (Furthest from Market)
+            return type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price;
         });
 
         let budgetRemaining = reactionCap;
@@ -804,6 +804,13 @@ class StrategyEngine {
 
                 // Transition old order to VIRTUAL with size 0 (it's being replaced by the new order)
                 stateUpdates.push({ ...virtualizeOrder(currentSurplus), size: 0 });
+
+                // If the destination slot had an existing order (dust), we must cancel it
+                // because it's being replaced by this rotation.
+                if (hasOnChainId(shortageSlot)) {
+                    ordersToCancel.push({ ...shortageSlot });
+                    mgr.logger.log(`[ROTATION] Adding victim dust order ${shortageSlot.id} to cancel list (replaced by ${currentSurplus.id})`, 'info');
+                }
 
                 // New rotated order must stay VIRTUAL until blockchain confirms
                 stateUpdates.push({ ...shortageSlot, type: type, size: finalSize, state: ORDER_STATES.VIRTUAL, orderId: null });

@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.18] - 2026-02-08 - Batching Hardening, Accounting Precision & Telemetry Optimization
+
+This patch refines the adaptive fill batching introduced in patch 17, addressing regression gaps in cache accounting and deduplicating error recovery paths for better operational stability.
+
+### Fixed
+- **Cache Remainder Accuracy During Capped Resize** in `modules/order/grid.js` (commit 426455c)
+  - **Problem**: Cache remainder was computed from ideal sizes even when the grid resize was capped by available funds.
+  - **Impact**: Could lead to understated cache funds and skewed sizing decisions in subsequent cycles.
+  - **Solution**: Track per-slot applied sizes and derive cache remainder from the actual allocated values.
+
+- **Hard-Abort Cooldown Consistency** in `modules/dexbot_class.js` (commit 426455c)
+  - **Problem**: Batch abort paths (Illegal State/Accounting) could skip arming maintenance cooldowns.
+  - **Impact**: Maintenance could run prematurely immediately after a hard-abort recovery sync.
+  - **Solution**: Explicitly arm `_maintenanceCooldownCycles` in both primary and retry hard-abort handlers.
+
+- **Stale-Cancel Fast-Path for Single-Op Batches** in `modules/dexbot_class.js` (commit 426455c)
+  - **Problem**: Stale-order retry handling only executed for batches with more than one operation.
+  - **Impact**: Single-order cancel races unnecessarily triggered full state recovery syncs.
+  - **Solution**: Applied stale-order cleanup logic to all batch sizes, enabling fast-path recovery for single-op cancel races.
+
+- **Fill Reaction Cap Precision** in `modules/order/strategy.js` (commit 33eaecb)
+  - **Problem**: Malformed or unknown fill types were incorrectly incrementing the boundary shift counter before validation.
+  - **Impact**: Inflated reaction caps and unpredictable boundary crawl behavior.
+  - **Solution**: Moved counter increments after type validation.
+
+### Refactored
+- **Edge-First Surplus Sorting** in `modules/order/strategy.js`
+  - **Change**: Prioritize furthest-from-market surpluses (lowest Buy / highest Sell) for rotations.
+  - **Reason**: Improves execution robustness by using stable edge orders for rotations and leaving volatile inner surpluses to potentially catch "surplus fills" during grid shifts.
+
+- **Victim Cancel Safety Logic** in `modules/order/strategy.js`
+  - **Change**: Explicitly detect and cancel "victim" dust orders when a rotation targets an occupied slot.
+  - **Reason**: Maintains 1-to-1 mapping between grid slots and blockchain orders in the Edge-First system, preventing "ghost" capital on-chain.
+
+- **Deduplicated Batch Hard-Abort Handling** in `modules/dexbot_class.js` (commit 7b1bb38)
+  - Consolidated `ILLEGAL_ORDER_STATE` and `ACCOUNTING_COMMITMENT_FAILED` handling into a shared `_handleBatchHardAbort` helper.
+  - Ensures identical recovery behavior across both primary and retry batch execution paths.
+
+- **Strategy Scan Optimization** in `modules/order/strategy.js` (commit 33eaecb, refined in 016c316)
+  - Implemented an advancing scan pointer (`_priorityScanStart`) in `pickPriorityFreeSlot`.
+  - Pointer now advances past the selected slot, eliminating redundant linear scans across large grids within a single rebalance cycle.
+
+- **Cooldown Logic Consolidation** in `modules/dexbot_class.js` (commit 33eaecb)
+  - Merged separate cooldown blocks for partial and burst fills into a unified `[FILL-GATE]` mechanism.
+
+### Added
+- **Batch Size Telemetry** in `modules/dexbot_class.js` (commit 016c316)
+  - Hard-abort recovery logs now include the number of operations in the failed batch (e.g., "illegal state during batch processing with 12 ops").
+  - Improves diagnostic visibility into whether failures occur during large maintenance bursts or small retries.
+
+- **New Regression Tests** in `tests/test_patch17_invariants.js`:
+  - Added cache remainder parity check for capped grid resizes.
+  - Added abort-cooldown arming verification.
+  - Added single-stale-cancel fast-path verification.
+
+### Testing
+- All core test suites pass: `tests/test_strategy_logic.js`, `tests/test_patch17_invariants.js`, `tests/test_critical_bug_fixes.js`.
+- Verified batching simulation across queue depths (1..20) to ensure adaptive tiers and anti-singleton tail logic.
+
+---
+
 ## [0.6.0-patch.17] - 2026-02-07 - Adaptive Fill Batching, Periodic Recovery Retries & Orphan-Fill Double-Credit Prevention
 
 Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed three structural weaknesses in the fill processing pipeline that cascaded into a 4.5-hour trading halt. This patch addresses all three root causes.

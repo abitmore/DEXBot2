@@ -45,19 +45,13 @@ async function run() {
         5
     );
 
-    const selfRotations = result.ordersToRotate.filter(r => r.oldOrder?.id === r.newGridId);
-    assert.strictEqual(selfRotations.length, 0, 'Should not emit self-rotations');
-
-    const inPlaceUpdate = result.ordersToUpdate.find(u => u.partialOrder?.id === 's1');
-    assert(inPlaceUpdate, 'Self-rotation candidate should convert to in-place update');
+    const rotation = result.ordersToRotate.find(r => r.oldOrder?.id === 's0' && r.newGridId === 's1');
+    assert(rotation, 'Edge-First: Should rotate s0 (furthest) to s1 (shortage)');
 
     const canceledS1 = result.ordersToCancel.some(o => o.id === 's1');
-    assert.strictEqual(canceledS1, false, 'In-place-updated slot must not be canceled');
+    assert.strictEqual(canceledS1, true, 'Inner surplus s1 should be canceled after edge s0 consumed the shortage');
 
-    const virtualizedS1 = result.stateUpdates.some(u => u.id === 's1' && u.state === ORDER_STATES.VIRTUAL);
-    assert.strictEqual(virtualizedS1, false, 'In-place-updated slot must not be virtualized');
-
-    console.log('✓ Self-rotation converted to in-place update');
+    console.log('✓ Edge surplus used for rotation, inner surplus canceled (Edge-First)');
 }
 
 run().catch(err => {
