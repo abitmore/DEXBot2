@@ -83,17 +83,19 @@ async function testSpreadSortingForRotation() {
     const sameSideVirtuals = Array.from(mgr.orders.values()).filter(o => o.type === chosenType && o.state === ORDER_STATES.VIRTUAL);
     assert(sameSideVirtuals.length > 0, 'Should have virtual shortages on chosen side');
 
-    const expectedExtreme = chosenType === ORDER_TYPES.BUY
-        ? sameSideVirtuals.sort((a, b) => a.price - b.price)[0]
-        : sameSideVirtuals.sort((a, b) => b.price - a.price)[0];
+    // Strategy places nearest-to-spread first:
+    // BUY: highest price (closest to spread), SELL: lowest price (closest to spread)
+    const expectedNearest = chosenType === ORDER_TYPES.BUY
+        ? sameSideVirtuals.sort((a, b) => b.price - a.price)[0]
+        : sameSideVirtuals.sort((a, b) => a.price - b.price)[0];
 
     assert.strictEqual(
         chosenPrice,
-        expectedExtreme.price,
-        `Should target ${chosenType.toUpperCase()} extreme shortage at ${expectedExtreme.price}, got ${chosenPrice}`
+        expectedNearest.price,
+        `Should target ${chosenType.toUpperCase()} nearest shortage at ${expectedNearest.price}, got ${chosenPrice}`
     );
 
-    console.log(`✓ Target selection correctly picked ${chosenType.toUpperCase()} extreme shortage at price ${chosenPrice}`);
+    console.log(`✓ Target selection correctly picked ${chosenType.toUpperCase()} nearest shortage at price ${chosenPrice}`);
 }
 
 // ============================================================================
@@ -238,17 +240,19 @@ async function testSpreadSortingForBuyRotation() {
     const sameSideVirtuals = Array.from(mgr.orders.values()).filter(o => o.type === chosenType && o.state === ORDER_STATES.VIRTUAL);
     assert(sameSideVirtuals.length > 0, 'Should have virtual shortages on chosen side');
 
-    const expectedExtreme = chosenType === ORDER_TYPES.BUY
-        ? sameSideVirtuals.sort((a, b) => a.price - b.price)[0]
-        : sameSideVirtuals.sort((a, b) => b.price - a.price)[0];
+    // Strategy places nearest-to-spread first:
+    // BUY: highest price (closest to spread), SELL: lowest price (closest to spread)
+    const expectedNearest = chosenType === ORDER_TYPES.BUY
+        ? sameSideVirtuals.sort((a, b) => b.price - a.price)[0]
+        : sameSideVirtuals.sort((a, b) => a.price - b.price)[0];
 
     assert.strictEqual(
         chosenPrice,
-        expectedExtreme.price,
-        `Should target ${chosenType.toUpperCase()} extreme shortage at ${expectedExtreme.price}, got ${chosenPrice}`
+        expectedNearest.price,
+        `Should target ${chosenType.toUpperCase()} nearest shortage at ${expectedNearest.price}, got ${chosenPrice}`
     );
 
-    console.log(`✓ ${chosenType.toUpperCase()} target selection correctly picked extreme shortage at price ${chosenPrice}`);
+    console.log(`✓ ${chosenType.toUpperCase()} target selection correctly picked nearest shortage at price ${chosenPrice}`);
 }
 
 // ============================================================================

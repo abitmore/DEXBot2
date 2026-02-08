@@ -1057,36 +1057,26 @@ class DEXBot {
                         // After: Grid maintenance waits for isPipelineEmpty() before structural changes
                         // Also run when rotations failed (allFilledOrders > 0) so divergence/spread correction
                         // can attempt grid recovery even when fill-triggered rotations didn't complete.
+                        // Defer post-fill spread/divergence maintenance when transient
+                        // one-sided depletion is likely, to avoid false corrections.
+                        // Triggers: burst fills (2+) OR partial-only fills (no full fills).
                         const fullFillCount = allFilledOrders.filter(o =>
                             o && o.isPartial !== true
                         ).length;
                         const partialFillCount = allFilledOrders.filter(o =>
                             o && o.isPartial === true
                         ).length;
-                        const hadFullFill = fullFillCount > 0;
-                        const hadPartialFill = partialFillCount > 0;
-                        if (hadPartialFill && !hadFullFill) {
-                            this._spreadCorrectionCooldownCycles = Math.max(this._spreadCorrectionCooldownCycles, 1);
-                            this.manager.logger.log(
-                                '[SPREAD-GATE] Partial-only fill cycle detected. Deferring spread correction for one maintenance cycle.',
-                                'warn'
-                            );
-                        }
+                        const isBurst = allFilledOrders.length >= 2;
+                        const isPartialOnly = partialFillCount > 0 && fullFillCount === 0;
 
-                        // Defer post-fill maintenance only for burst fills (2+) where transient
-                        // one-sided depletion is common and false spread/divergence corrections occur.
-                        if (allFilledOrders.length >= 2) {
+                        if (isBurst || isPartialOnly) {
                             this._spreadCorrectionCooldownCycles = Math.max(this._spreadCorrectionCooldownCycles, 1);
-                            this.manager.logger.log(
-                                `[SPREAD-GATE] Burst fill cycle (${allFilledOrders.length} fills, full=${fullFillCount}, partial=${partialFillCount}) detected. Deferring spread correction for one maintenance cycle.`,
-                                'warn'
-                            );
-                        }
-
-                        if (allFilledOrders.length >= 2) {
                             this._divergenceResizeCooldownCycles = Math.max(this._divergenceResizeCooldownCycles, 1);
+                            const reason = isBurst
+                                ? `burst (${allFilledOrders.length} fills, full=${fullFillCount}, partial=${partialFillCount})`
+                                : `partial-only (${partialFillCount} partial, 0 full)`;
                             this.manager.logger.log(
-                                `[DIVERGENCE-GATE] Burst fill cycle (${allFilledOrders.length} fills, full=${fullFillCount}, partial=${partialFillCount}) detected. Deferring post-fill divergence resize for one maintenance cycle.`,
+                                `[FILL-GATE] ${reason} fill cycle detected. Deferring spread correction and divergence resize for one maintenance cycle.`,
                                 'warn'
                             );
                         }
@@ -1665,9 +1655,9 @@ class DEXBot {
         // Apply shadow locks to prevent concurrent selection of these orders
         // IMPORTANT: This is cooperative locking - rebalancing must respect these locks via exclusion sets
         this.manager.lockOrders(idsToLock);
-        this._batchInFlight = true;
 
         try {
+            this._batchInFlight = true;
             // Pre-filter cancel operations against fresh open orders to avoid poisoning mixed batches
             // with expected "order does not exist" races during fast fills.
             if (Array.isArray(ordersToCancel) && ordersToCancel.length > 0) {

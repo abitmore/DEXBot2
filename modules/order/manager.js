@@ -223,6 +223,10 @@ class OrderManager {
         this._pauseFundRecalcDepth = 0;
         this._recalcLoggingDepth = 0;
         this._isBroadcasting = false;
+        // SCOPE CONSTRAINT: _throwOnIllegalState must only be set to true inside the
+        // _fillProcessingLock critical section (i.e. within updateOrdersOnChainBatch and
+        // its retry path). Setting it outside that lock risks unexpected throws from
+        // concurrent async contexts (e.g. syncFromOpenOrders called by fill listeners).
         this._throwOnIllegalState = false;
         this._lastIllegalState = null;
         this._lastAccountingFailure = null;
@@ -1057,7 +1061,8 @@ class OrderManager {
 
     /**
      * Check if the processing pipeline is empty (no pending fills, corrections, or grid updates).
-     * Pure query method - does not modify state. Use clearStalePipelineOperations() to handle timeouts.
+     * Note: Has a minor side-effect — calls _cleanExpiredLocks() to garbage-collect stale shadow locks
+     * before evaluating pipeline status. Use clearStalePipelineOperations() for timeout handling.
      * @param {number|Object} [pipelineSignals=0] - Queue length or pipeline signal object from dexbot
      * @returns {Object} { isEmpty: boolean, reasons: string[] }
      */

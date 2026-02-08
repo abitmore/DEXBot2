@@ -834,6 +834,9 @@ class Grid {
 
                 // Safety cap: during grid-resize, active/partial orders must not increase
                 // beyond currently free side funds. This prevents post-fill resize explosions.
+                // NOTE: BTS update fees are paid from BTS balance (separate from asset balance),
+                // so they don't affect this asset-side size cap. Fee budgets are tracked in
+                // funds.btsFeesOwed and reserved separately via btsFeesReservation.
                 const isCommitted = slot.state === ORDER_STATES.ACTIVE || slot.state === ORDER_STATES.PARTIAL;
                 if (isCommitted) {
                     const currentSize = Number(slot.size || 0);

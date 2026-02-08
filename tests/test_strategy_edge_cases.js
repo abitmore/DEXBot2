@@ -95,21 +95,16 @@ async function callRebalanceSide(mgr, type, sideSlots, budget, excludeIds = new 
          const idxB = parseInt(b.id.split('-')[1]);
          return idxA - idxB;
     });
-    const direction = type === ORDER_TYPES.BUY ? -1 : 1;
-    const availablePool = budget; // Simplify for tests
     const reactionCap = 100;
-    const fills = [];
     
     return await mgr.strategy.rebalanceSideRobust(
         type, 
         allSlots, 
         sideSlots, 
-        direction, 
         budget, 
-        availablePool, 
+        budget, 
         excludeIds, 
-        reactionCap, 
-        fills
+        reactionCap
     );
 }
 

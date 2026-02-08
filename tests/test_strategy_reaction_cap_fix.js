@@ -100,10 +100,14 @@ async function run() {
 
     assert(buyCap, 'BUY cap should be captured');
     assert(sellCap, 'SELL cap should be captured');
-    assert.strictEqual(buyCap.reactionCap, 1, 'BUY reaction cap should only count valid SELL fills');
-    assert.strictEqual(sellCap.reactionCap, 1, 'SELL reaction cap should only count valid BUY fills');
+    // Boundary-shift semantics: each valid full fill shifts the boundary, requiring crawl
+    // budget on BOTH sides. 2 valid fills (1 SELL + 1 BUY) -> boundaryShiftCount = 2.
+    // Each side's direct count is 1, but both are floored to max(1, boundaryShiftCount) = 2.
+    // Malformed/missing types are excluded from boundary shift counting.
+    assert.strictEqual(buyCap.reactionCap, 2, 'BUY reaction cap: 1 direct (SELL fill) floored to 2 (boundary shift count)');
+    assert.strictEqual(sellCap.reactionCap, 2, 'SELL reaction cap: 1 direct (BUY fill) floored to 2 (boundary shift count)');
 
-    console.log('✓ Reaction cap ignores malformed fill types');
+    console.log('✓ Reaction cap ignores malformed fill types and respects boundary-shift floor');
 }
 
 run().catch(err => {

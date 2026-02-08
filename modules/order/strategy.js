@@ -337,11 +337,14 @@ class StrategyEngine {
             }
 
             const count = fill.isDoubleReplacementTrigger ? 2 : 1;
-            boundaryShiftCount += count;
             // A SELL fill triggers a BUY replacement
-            if (fill.type === ORDER_TYPES.SELL) reactionCapBuy += count;
-            else if (fill.type === ORDER_TYPES.BUY) reactionCapSell += count;
-            else {
+            if (fill.type === ORDER_TYPES.SELL) {
+                reactionCapBuy += count;
+                boundaryShiftCount += count;
+            } else if (fill.type === ORDER_TYPES.BUY) {
+                reactionCapSell += count;
+                boundaryShiftCount += count;
+            } else {
                 mgr.logger.log(`[REACTION-CAP] Skipping fill with unknown type: ${fill.type}. Expected BUY or SELL.`, 'warn');
             }
         }
@@ -561,14 +564,21 @@ class StrategyEngine {
             type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price
         );
 
+        // Advancing pointer: since reservedPlacementIds only grow, prior entries
+        // are either already reserved or non-free, so we skip past them on each call.
+        let _priorityScanStart = 0;
+
         const pickPriorityFreeSlot = (excludeSlotId = null) => {
-            for (const candidate of sidePrioritySlots) {
-                if (!candidate || !candidate.id || candidate.id === excludeSlotId) continue;
+            for (let i = _priorityScanStart; i < sidePrioritySlots.length; i++) {
+                const candidate = sidePrioritySlots[i];
+                if (!candidate || !candidate.id) continue;
                 if (reservedPlacementIds.has(candidate.id)) continue;
+                if (candidate.id === excludeSlotId) continue;
                 const current = mgr.orders.get(candidate.id);
                 if (!current) continue;
                 if (excludeIds.has(current.id) || (hasOnChainId(current) && excludeIds.has(current.orderId))) continue;
                 if (current.state === ORDER_STATES.VIRTUAL && !hasOnChainId(current)) {
+                    _priorityScanStart = i; // resume from here next call
                     return current;
                 }
             }
@@ -878,6 +888,11 @@ class StrategyEngine {
             if (isHardSurplus && !rotatedOldIds.has(surplus.id) && !inPlaceUpdatedIds.has(surplus.id)) {
                 ordersToCancel.push({ ...surplus });
                 stateUpdates.push(virtualizeOrder(surplus));
+            } else if (!isHardSurplus && !rotatedOldIds.has(surplus.id) && !inPlaceUpdatedIds.has(surplus.id)) {
+                mgr.logger.log(
+                    `[CANCEL-SKIP] Soft surplus ${surplus.id} (idx=${surplusIdx}, price=${surplus.price}) inside target set; deferring to later cycle`,
+                    'debug'
+                );
             }
         }
         // Handled partials are NOT cancelled - they're updated in-place (STEP 2.5)
