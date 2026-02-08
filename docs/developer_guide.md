@@ -21,16 +21,23 @@ Understand these fundamental concepts before diving into code:
 - **Fund Tracking**: Atomic accounting to prevent overdrafts
 - **Boundary Crawl**: Dynamic order rotation following price movement
 
-### 3. **Code Reading Roadmap** (30 minutes)
+### 3. **Code Reading Roadmap** (30-40 minutes)
 Follow this path through the codebase:
 
 ```
-1. modules/constants.js          (5 min)  - Configuration and tuning parameters
-2. modules/order/manager.js      (10 min) - Central coordinator, read constructor + _updateOrder()
-3. modules/order/accounting.js   (5 min)  - Fund tracking, read recalculateFunds()
-4. modules/order/strategy.js     (5 min)  - Rebalancing logic, read rebalance()
-5. modules/order/grid.js         (5 min)  - Grid creation, read createOrderGrid()
+1. modules/constants.js                    (5 min)   - Configuration and tuning parameters
+2. modules/order/manager.js                (10 min)  - Central coordinator, read constructor + _updateOrder()
+3. modules/order/accounting.js             (5 min)   - Fund tracking, read recalculateFunds() and resetRecoveryState()
+4. modules/order/strategy.js               (5 min)   - Rebalancing logic, read rebalance()
+5. modules/order/grid.js                   (5 min)   - Grid creation, read createOrderGrid()
+6. modules/dexbot_class.js::processFilledOrders (5-10 min) - Fill batch processing pipeline (Patch 17)
 ```
+
+**Additional Resources for Patch 17-18:**
+- `modules/constants.js::FILL_PROCESSING` - Batch configuration (MAX_FILL_BATCH_SIZE, BATCH_STRESS_TIERS)
+- `modules/constants.js::PIPELINE_TIMING` - Recovery configuration (RECOVERY_RETRY_INTERVAL_MS, MAX_RECOVERY_ATTEMPTS)
+- `modules/dexbot_class.js::_handleBatchHardAbort()` - Hard-abort recovery handler (Patch 18)
+- `modules/dexbot_class.js::_staleCleanedOrderIds` - Orphan-fill deduplication tracking (Patch 17)
 
 ---
 
@@ -49,13 +56,32 @@ Follow this path through the codebase:
 
 A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId`. This is an illegal state that corrupts fund tracking. The system implements a three-layer defense to prevent phantoms (see **Phantom Orders Prevention** section). If encountered, the order is automatically downgraded to VIRTUAL with error logging.
 
-### Pipeline Safety Features (Patch 12)
+### Pipeline Safety Features
+
+#### Patch 12: Pipeline Timeout & Health
 
 | Term | Meaning |
 |------|---------|
 | **Pipeline Timeout Safeguard** | 5-minute timeout preventing indefinite blocking on pipeline checks |
 | **Pipeline Health Diagnostics** | `getPipelineHealth()` method returning 8 diagnostic fields for monitoring |
 | **Stale Operation Clearing** | Non-destructive recovery clearing operation flags without touching orders |
+
+#### Patch 17: Fill Batching & Recovery Retries
+
+| Term | Meaning |
+|------|---------|
+| **Adaptive Batch Fill Processing** | Groups fills into stress-scaled batches (1-4 per broadcast based on queue depth) to reduce market divergence window from ~90s to ~24s for 29 fills |
+| **Batch Stress Tiers** | Configurable `BATCH_STRESS_TIERS` array mapping queue depth thresholds to batch sizes. Example: `[[0,1], [3,2], [8,3], [15,4]]` means 0-2 fills→batch 1, 3-7→batch 2, etc. |
+| **Recovery Retry System** | Count+time-based retry mechanism with periodic reset. Replaces one-shot `_recoveryAttempted` flag. Max 5 attempts per episode with 60s minimum interval between retries. |
+| **Orphan-Fill Deduplication** | Map+TTL-based tracking of stale-cleaned order IDs to prevent double-crediting. Delayed orphan fill events are still blocked by checking `_staleCleanedOrderIds`. |
+
+#### Patch 18: Batching Hardening
+
+| Term | Meaning |
+|------|---------|
+| **Cache Remainder Tracking** | Cache remainder now derived from actual allocated sizes during capped grid resizes (not ideal sizes). Ensures accurate cache fund availability for next rebalance cycle. |
+| **Stale-Order Fast-Path** | Stale-cancel logic applies to single-op batches for fast recovery without triggering full state syncs. Prevents unnecessary expensive resynchronization. |
+| **Hard-Abort Cooldown Consistency** | Both primary and retry batch hard-abort paths now explicitly arm `_maintenanceCooldownCycles` to prevent premature maintenance after recovery. |
 
 ### Fund Components
 
@@ -95,6 +121,10 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Atomic Check-and-Deduct** | Verify funds + deduct in single operation |
 | **Divergence Detection** | Comparing ideal grid vs. persisted grid |
 | **Invariant Verification** | Checking fund accounting consistency |
+| **Batch Processing** (Patch 17) | Grouping multiple fills into single rebalance cycle instead of one-at-a-time. Adaptive sizing (1-4 fills per broadcast) based on queue depth. |
+| **Adaptive Batch Sizing** (Patch 17) | Dynamic batch size calculation using stress tiers: low queue depth→batch 1, high queue depth→batch 4. Reduces fill processing from ~90s to ~24s for 29 fills. |
+| **Stale-Order Recovery** (Patch 18) | Fast-path recovery for single-operation batches that encounter stale orders on-chain. Executes cleanup without full state sync. |
+| **Orphan-Fill Prevention** (Patch 17) | Deduplication mechanism that prevents double-crediting fills from stale-cleaned orders using timestamp-based ID tracking (TTL pruning). |
 
 ### Price Orientation and Derivation
 

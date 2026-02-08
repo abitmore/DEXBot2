@@ -90,7 +90,183 @@ See [developer_guide.md#order-state-helper-functions-patch-11](developer_guide.m
 
 ---
 
-## 2. Grid Topology & Geometric Sizing
+## 1.4 Fill Batch Processing & Cache Fund Timeline (Patch 17)
+
+### Problem Solved
+
+Previously, fills were processed one-at-a-time (~3s per broadcast). A burst of 29 fills in the Feb 7 market crash took ~90 seconds, during which:
+- Market prices moved significantly
+- Orders became stale (filled on-chain but not yet synced)
+- Orphan fills were created (fill events for orders no longer on-chain)
+- Fund tracking diverged from blockchain reality
+
+**Impact**: The extended 90s window meant the bot couldn't react to market moves, creating a cascading failure.
+
+### Solution: Adaptive Batch Fill Processing
+
+**Mechanism** (`modules/dexbot_class.js::processFilledOrders`): Groups fills into stress-scaled batches before executing the full rebalance pipeline.
+
+**Batch Sizing Algorithm**:
+```javascript
+// Determine batch size based on queue depth using BATCH_STRESS_TIERS
+const batchSize = findBatchSize(queueDepth, BATCH_STRESS_TIERS);
+// Example tiers: [[0,1], [3,2], [8,3], [15,4]]
+// queueDepth=5 → batchSize=2
+// queueDepth=20 → batchSize=4
+```
+
+**Configuration** (`modules/constants.js`):
+```javascript
+FILL_PROCESSING: {
+  MAX_FILL_BATCH_SIZE: 4,           // Hard cap on batch size
+  BATCH_STRESS_TIERS: [             // Adaptive sizing
+    [0, 1],   // 0-2 fills awaiting: batch size 1 (legacy sequential)
+    [3, 2],   // 3-7 fills awaiting: batch size 2
+    [8, 3],   // 8-14 fills awaiting: batch size 3
+    [15, 4]   // 15+ fills awaiting: batch size 4
+  ]
+}
+```
+
+### Fill Batch Processing Timeline
+
+**Per-Batch Execution**:
+
+1. **Peek & Pop**: Check `_incomingFillQueue`, pop up to N fills (batch size)
+2. **Single Accounting Pass**: Call `processFillAccounting()` once for all N fills
+   - All proceeds credited to `cacheFunds` in one operation
+   - All proceeds immediately available to next rebalance cycle (not split across cycles)
+3. **Single Rebalance**: Call `rebalanceSideRobust()` once
+   - Sizes replacement orders using combined proceeds
+   - Applies rotations and boundary shifts
+4. **Batch Broadcast**: Call `updateOrdersOnChainBatch()` once
+   - All new orders + cancellations in single operation
+5. **Persist**: Call `persistGrid()` to save grid state
+6. **Loop**: Continue with next batch (or idle if queue empty)
+
+**Result**: 29 fills now processed in ~8 broadcasts (~24s) instead of 29 broadcasts (~90s).
+
+### Cache Fund Crediting (Critical Detail)
+
+All fill proceeds from a batch are credited to `cacheFunds` simultaneously:
+```
+cacheFunds += proceeds[fill1] + proceeds[fill2] + ... + proceeds[fillN]
+```
+
+This means:
+- ✅ **All proceeds available immediately** in the same rebalance cycle
+- ✅ **No "wait next cycle"** delays for fund availability
+- ✅ **Single rebalance uses combined capital** for sizing calculations
+- ✅ **Rotation surplus also uses combined pool** for optimal placement
+
+### Recovery Retry System (Patch 17)
+
+**Problem**: One-shot `_recoveryAttempted` boolean flag meant permanent lockup if recovery failed once.
+
+**New Behavior**: Count+time-based retry system with periodic reset.
+
+**State Machine**:
+```
+INITIAL (count=0, time=0)
+    ↓
+RECOVERY_FAILED (count++, time=now) ← Recovery attempted but failed
+    ↓ (wait 60s)
+READY_RETRY (count < 5 and time_elapsed ≥ 60s) ← Time passed, can retry
+    ↓
+RECOVERY_ATTEMPTED (increment count) ← Attempt retry
+    ↓ (on fail) ← Success not yet
+    ↓ ← Loops back to RECOVERY_FAILED
+    ↓ (on success)
+RESET via resetRecoveryState() ← Recovery succeeded, reset for next episode
+```
+
+**Configuration** (`modules/constants.js`):
+```javascript
+PIPELINE_TIMING: {
+  RECOVERY_RETRY_INTERVAL_MS: 60000,  // Min 60s between retry attempts
+  MAX_RECOVERY_ATTEMPTS: 5            // Max 5 retries per episode (0 = unlimited)
+}
+```
+
+**Reset Points** (Called by `resetRecoveryState()` in `modules/order/accounting.js`):
+1. **Fill-triggered**: Every fill in `processFilledOrders()` resets recovery state
+2. **Periodic**: Blockchain fetch loop resets state every 10 minutes (even if no fills)
+3. **Bootstrap completion**: After grid initialization
+
+**Impact**: 
+- ✅ If recovery fails, bot retries every 60s instead of requiring manual restart
+- ✅ Self-heals within minutes after market settles
+- ✅ No permanent lockup from single failure
+
+### Stale-Cleaned Order ID Tracking (Patch 17)
+
+**Problem**: During batch execution failure, cleanup freed slots. Then delayed orphan fill events credited proceeds AGAIN = double-count.
+
+**Solution**: Track stale-cleaned order IDs using timestamp-based TTL.
+
+**Data Structure** (`modules/dexbot_class.js`):
+```javascript
+_staleCleanedOrderIds = new Map();  // orderId → cleanupTimestamp
+```
+
+**Lifecycle**:
+1. Batch fails: "Limit order X does not exist" error
+2. Cleanup: Release slot, record `orderId + timestamp` in `_staleCleanedOrderIds`
+3. Delayed Orphan: Fill event arrives for cleaned order
+4. Guard Check: `_staleCleanedOrderIds.has(orderId)` → true
+5. Skip Credit: Orphan handler skips crediting proceeds
+
+**TTL Pruning**: Old entries pruned every 5 minutes to prevent unbounded map growth.
+
+**Impact**:
+- ✅ Eliminates double-counting root cause
+- ✅ Handles delayed orphan events
+- ✅ Prevents 47,842 BTS drift cascades
+
+---
+
+## 1.5 Cache Remainder Accuracy During Capped Resize (Patch 18)
+
+### Problem Fixed
+
+When grid resize was capped by available funds, the cache remainder was computed from ideal sizes instead of actual allocated sizes. This led to:
+- Understated cache funds in tracking
+- Skewed sizing decisions in subsequent cycles
+- Inaccurate available fund calculations
+
+### Solution: Per-Slot Tracking
+
+**Old Behavior** (Incorrect):
+```javascript
+// Compute cache remainder from ideal sizes
+const cacheRemainder = totalIdealSizes - totalAllocatedSizes;
+// Problem: If actual allocation capped at 80% due to insufficient funds,
+// this uses 100% ideal in calculation → cache overstated
+```
+
+**New Behavior** (Correct):
+```javascript
+// Track per-slot applied sizes
+const appliedSizes = [];
+for (const slot of slots) {
+    const appliedSize = min(idealSize[slot], availableFundsRemaining);
+    appliedSizes.push(appliedSize);
+    availableFundsRemaining -= appliedSize;
+}
+
+// Compute cache remainder from actual allocated values
+const cacheRemainder = totalIdealSizes - sum(appliedSizes);
+// Result: Reflects true remaining capacity for next cycle
+```
+
+**Impact**:
+- ✅ Cache remainder accurately reflects what was NOT allocated due to fund caps
+- ✅ Next rebalance cycle gets correct available fund picture
+- ✅ No skewed sizing decisions
+
+---
+
+
 
 The grid is a unified array ("Master Rail") of price levels, not separate Buy/Sell arrays.
 
@@ -143,11 +319,48 @@ When a fill occurs, the boundary shifts to "follow" the price.
 -   **SELL Fill:** Market moved up $\to$ `boundaryIdx++` (Shift Right).
 
 ### 3.2 Global Side Capping
+
 Budgets are dynamic. The bot calculates `TotalSideBudget` based on `ChainFree` + `Committed`.
 
 **Safety Check:**
 If the calculated ideal grid requires more capital than is available, the *increase* is capped.
 $$Increase_{capped} = \min(Ideal - Current, Available)$$
+
+#### Batch Sizing Impact (Patch 18)
+
+During fill batch rebalancing, the cache remainder (amount NOT allocated due to fund caps) affects available funds for the next cycle:
+
+**Cache Remainder Calculation**:
+- **Old (Patch 17)**: Computed from ideal sizes even when resize was capped
+- **New (Patch 18)**: Tracked per-slot, derived from actual allocated values
+
+**Effect on Side Capping Formula**:
+```javascript
+// In next rebalance cycle:
+availableFunds = chainFree - virtual - feesOwed - feesReservation
+sideIncrease = min(idealSide - currentSide, availableFunds)
+
+// When batch capping applied in previous cycle:
+// availableFunds now correctly reflects the unfulfilled allocation gap
+```
+
+**Example**:
+```
+Cycle N (Batch Processing):
+- Ideal grid total: 1000 BTS
+- Available funds: 600 BTS
+- Allocate: 600 BTS (per-slot tracking)
+- Cache remainder: 400 BTS (1000 - 600)
+
+Cycle N+1:
+- Cache remainder (400 BTS) available for next allocation
+- Prevents "stuck fund" situations where capital appeared allocated but wasn't
+```
+
+**Impact**:
+- ✅ Accurate cache fund availability for next rebalance
+- ✅ No overstated fund capping in subsequent cycles
+- ✅ Smooth rebalancing when market moves expand/contract positions
 
 ### 3.3 The Rotation Cycle
 Rotations move capital from "Surplus" (useless) to "Shortage" (needed).
@@ -165,6 +378,118 @@ Rotations move capital from "Surplus" (useless) to "Shortage" (needed).
     -   **Fund Calculation:**
         -   The released funds from $S$ are immediately added to `ChainFree`.
         -   The reserved funds for $T$ are immediately subtracted (added to `Virtual`).
+
+### 3.4 Edge-First Surplus Sorting (Patch 18)
+
+**Change**: Prioritize furthest-from-market surpluses (lowest Buy / highest Sell) for rotations.
+
+**Reason**: Improves execution robustness by using stable edge orders for rotations and leaving volatile inner surpluses to potentially catch "surplus fills" during grid shifts.
+
+**Impact**:
+- ✅ More stable rotation candidates (outer orders less likely to be filled mid-operation)
+- ✅ Inner surpluses remain available for spontaneous fill opportunities
+- ✅ Reduces unnecessary churn on volatile price action
+
+### 3.5 Victim Cancel Safety Logic (Patch 18)
+
+**Change**: Explicitly detect and cancel "victim" dust orders when a rotation targets an occupied slot.
+
+**Reason**: Maintains 1-to-1 mapping between grid slots and blockchain orders in the Edge-First system, preventing "ghost" capital on-chain.
+
+**Implementation**:
+```javascript
+// If rotation target slot has an order (victim), cancel it first
+if (targetSlot.orderId) {
+    scheduleCancel(targetSlot);
+    targetSlot.state = VIRTUAL;  // Prepare slot for new order
+}
+
+// Then place new order at target
+targetSlot.state = ACTIVE;
+targetSlot.orderId = newOrderId;
+```
+
+**Impact**:
+- ✅ Prevents "ghost" capital lingering on-chain
+- ✅ Ensures grid slot ↔ blockchain order 1-to-1 mapping
+- ✅ No orphaned capital in rotation operations
+
+---
+
+## 3.7 Orphan-Fill Deduplication & Double-Credit Prevention (Patch 17)
+
+**Location**: `modules/dexbot_class.js` (constructor, `_handleBatchHardAbort()`, batch failure handler)
+
+### Problem Solved
+
+During Feb 7 market crash, stale-order batch failures cascaded into double-crediting:
+
+**Scenario**:
+1. Batch operation scheduled with 12 orders
+2. Order X is on-chain, included in batch
+3. Between sync and broadcast, order X fills on market (stale order)
+4. Batch execution fails: "Limit order X does not exist"
+5. Error handler: Clean up grid slot X, release funds to `chainFree`
+6. Meanwhile, fill event arrives: "Order X was filled at price Y for amount Z"
+7. Orphan-fill handler: Credits proceeds to `cacheFunds` AGAIN
+8. **Result**: Double-credit of proceeds, inflated `trackedTotal`, fund drift
+
+**In Crash Numbers**: 7 orphan fills × ~700 BTS = ~4,600 BTS inflated → cascaded to 47,842 BTS total drift.
+
+### Solution: Stale-Cleaned Order ID Tracking with TTL
+
+**Mechanism**: Track which orders were cleaned up during batch failure recovery using timestamp retention.
+
+**Data Structure** (`modules/dexbot_class.js`):
+```javascript
+// Map of orderId → cleanupTimestamp
+_staleCleanedOrderIds = new Map();
+```
+
+**Cleanup Process** (When batch fails):
+```javascript
+// In _handleBatchHardAbort() or batch error handler:
+1. Parse error message for stale order IDs (e.g., "Limit order 12345 does not exist")
+2. For each stale ID:
+   - Find & clean grid slot (convert to SPREAD placeholder)
+   - Record: _staleCleanedOrderIds.set(orderId, Date.now())
+   - Log: "Cleaned stale order X from slot"
+3. Periodically prune entries > 5 minutes old
+```
+
+**Orphan-Fill Handler Check**:
+```javascript
+// In orphan-fill event processing:
+if (_staleCleanedOrderIds.has(orderId)) {
+    logger.info(`[ORPHAN-FILL] Skipping double-credit for stale-cleaned order ${orderId}`);
+    return;  // Don't credit proceeds
+}
+
+// Only credit if NOT in stale-cleaned map
+logger.info(`[ORPHAN-FILL] Processing orphan ${orderId}, crediting ${proceeds}`);
+cacheFunds += proceeds;
+```
+
+### Why This Works
+
+1. **Delayed Orphans**: Fill events can arrive minutes after batch failure (network latency)
+2. **TTL Pruning**: Map doesn't grow unbounded; entries removed after 5 minutes
+3. **ID-Based**: Works with any error format (different BitShares versions have different error messages)
+4. **Explicit Logging**: "Skipping double-credit" messages create audit trail
+
+### Double-Check: Cache Remainder
+
+The `cacheFunds` itself is protected by cache remainder tracking (see §1.5):
+- Cache proceeds are only released when allocated to orders
+- Stale-cleaned orders don't consume allocation funds
+- Next cycle sees correct remaining cache for sizing decisions
+
+### Impact
+
+- ✅ **Eliminates double-counting root cause** that fed 47,842 BTS drift
+- ✅ **Handles network-latent orphan events** (not just immediate fills)
+- ✅ **No fund corruption** from delayed fill events after batch failure
+- ✅ **Production stability** after market crashes and stale order cascades
 
 ---
 

@@ -201,12 +201,204 @@ npx jest tests/unit/ --no-coverage
 - All tests are async-safe and handle rebalance promises correctly
 - Tests clean up state in `beforeEach()` to ensure isolation
 
+---
+
+## Patch 17-18 Regression Tests (Feb 7-8, 2026)
+
+### Overview
+
+New regression test file `tests/test_patch17_invariants.js` validates fixes for the Feb 7 market crash post-mortem analysis. These tests ensure fill batching, recovery retry system, and orphan-fill deduplication remain robust.
+
+### Test Coverage
+
+**Patch 17 (Adaptive Fill Batching & Recovery Retries)**:
+
+| Test | File | Purpose |
+|------|------|---------|
+| `test_adaptive_batch_pipeline` | `test_patch17_invariants.js` | Verifies fills processed in adaptive batches (1-4 per broadcast) instead of one-at-a-time |
+| `test_recovery_retry_mechanism` | `test_patch17_invariants.js` | Validates count+time-based retry system with periodic reset (max 5 attempts, 60s interval) |
+| `test_orphan_fill_deduplication` | `test_patch17_invariants.js` | Ensures stale-cleaned order IDs prevent double-crediting of fills |
+
+**Patch 18 (Batching Hardening)**:
+
+| Test | File | Purpose |
+|------|------|---------|
+| `test_cache_remainder_parity` | `test_patch17_invariants.js` | Verifies cache remainder calculated from actual allocated sizes (not ideal sizes) during capped grid resizes |
+| `test_abort_cooldown_arming` | `test_patch17_invariants.js` | Ensures both primary and retry hard-abort paths arm `_maintenanceCooldownCycles` |
+| `test_single_stale_cancel_fast_path` | `test_patch17_invariants.js` | Validates single-op batch stale recovery doesn't trigger expensive full sync |
+
+### Running Patch 17-18 Tests
+
+```bash
+# Run patch 17-18 invariant tests
+npm test -- tests/test_patch17_invariants.js
+
+# Or with npm scripts (if configured)
+node tests/test_patch17_invariants.js
+```
+
+### Test Details
+
+#### Test 1: Adaptive Batch Pipeline
+
+**Scenario**: Simulate 29 fills arriving over 90 seconds of market crash
+
+**Validation**:
+- ✅ Queue depth measured correctly (uses BATCH_STRESS_TIERS)
+- ✅ Batches are sized adaptively (1-4 fills per broadcast)
+- ✅ All fills processed in ~8 broadcasts instead of 29
+- ✅ Processing time reduced from ~90s to ~24s
+- ✅ Single rebalance call per batch (not per-fill)
+- ✅ Cache funds credited once per batch
+
+**Configuration Tested**:
+```javascript
+BATCH_STRESS_TIERS: [[0,1], [3,2], [8,3], [15,4]]
+MAX_FILL_BATCH_SIZE: 4
+```
+
+#### Test 2: Recovery Retry Mechanism
+
+**Scenario**: Recovery fails once, should retry automatically
+
+**Validation**:
+- ✅ First recovery attempt fails, recorded in state
+- ✅ Retry counter increments (1/5)
+- ✅ Retry blocked before 60s interval elapses
+- ✅ After 60s, retry succeeds
+- ✅ State reset on success (count=0, time=0)
+- ✅ Periodic sync also triggers state reset
+
+**Configuration Tested**:
+```javascript
+RECOVERY_RETRY_INTERVAL_MS: 60000  // 60 second minimum
+MAX_RECOVERY_ATTEMPTS: 5            // Max 5 retries
+```
+
+#### Test 3: Orphan-Fill Deduplication
+
+**Scenario**: Batch fails (stale order), cleanup recorded, orphan fill arrives later
+
+**Validation**:
+- ✅ Stale order ID recorded with timestamp when batch fails
+- ✅ Orphan fill event arrives for same order ID
+- ✅ Guard check (`_staleCleanedOrderIds.has(orderId)`) returns true
+- ✅ Proceeds NOT credited (double-credit prevented)
+- ✅ Log shows `[ORPHAN-FILL] Skipping double-credit`
+- ✅ TTL pruning removes entries after 5 minutes
+
+#### Test 4: Cache Remainder Parity (Patch 18)
+
+**Scenario**: Grid resize capped by available funds
+
+**Validation**:
+- ✅ Ideal grid total: 1000 BTS
+- ✅ Available funds: 600 BTS
+- ✅ Allocated: 600 BTS (track per-slot applied sizes)
+- ✅ Cache remainder: 400 BTS (1000 - 600, not inflated)
+- ✅ Next cycle gets correct 400 BTS available for allocation
+- ✅ No "stuck fund" situations
+
+#### Test 5: Hard-Abort Cooldown Arming (Patch 18)
+
+**Scenario**: Batch execution fails with illegal state or accounting error
+
+**Validation**:
+- ✅ Primary hard-abort path arms cooldown (50 cycles)
+- ✅ Retry hard-abort path also arms cooldown
+- ✅ Maintenance doesn't run immediately after abort
+- ✅ Next maintenance cycle respects cooldown
+- ✅ Log shows `[COOLDOWN] Arming maintenance cooldown after hard-abort`
+
+#### Test 6: Single-Op Stale-Cancel Fast-Path (Patch 18)
+
+**Scenario**: Single order in batch becomes stale on-chain
+
+**Validation**:
+- ✅ Batch contains only 1 operation
+- ✅ Stale order detected during execution
+- ✅ Fast-path recovery applied (not full sync)
+- ✅ Cleanup performed locally (stale ID recorded)
+- ✅ No expensive `synchronizeWithChain()` call
+- ✅ Log shows `[STALE-CANCEL] Single-op batch stale recovery (fast-path)`
+
+### Test Statistics
+
+```
+Total Tests: 6
+Status: ✅ All passing
+Modules Tested:
+  - dexbot_class.js (batch processing, recovery, hard-abort, stale-cancel)
+  - accounting.js (recovery state management, resetRecoveryState)
+  - order/grid.js (cache remainder tracking)
+  - order/strategy.js (fill boundary shifts, reaction cap precision)
+
+Configuration Validated:
+  - FILL_PROCESSING.MAX_FILL_BATCH_SIZE
+  - FILL_PROCESSING.BATCH_STRESS_TIERS
+  - PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS
+  - PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS
+
+Coverage Targets:
+  ✅ Fill batch processing (1-4 fills per broadcast)
+  ✅ Adaptive batch sizing (queue depth → batch size)
+  ✅ Recovery retry system (count+time-based)
+  ✅ Orphan-fill double-credit prevention
+  ✅ Cache remainder accuracy (per-slot tracking)
+  ✅ Hard-abort cooldown consistency
+  ✅ Stale-order fast-path recovery
+```
+
+### Key Assertions in Tests
+
+1. **Batch Size Assertions**: Verify correct adaptive sizing based on queue depth
+2. **Recovery State Assertions**: Confirm count/time-based retry state machine
+3. **Stale ID Assertions**: Validate orphan deduplication map behavior
+4. **Cache Remainder Assertions**: Verify per-slot allocation tracking
+5. **Cooldown Assertions**: Confirm hard-abort arms maintenance cooldown
+6. **Fast-Path Assertions**: Verify single-op stale recovery doesn't trigger full sync
+
+### Integration with CI/CD
+
+Patch 17-18 tests are part of the main test suite:
+
+```bash
+# Full test suite (includes patch17_invariants)
+npm test
+
+# Only Patch 17-18 tests
+npm test -- test_patch17_invariants.js
+
+# With coverage reporting
+npm test -- --coverage test_patch17_invariants.js
+```
+
+### Regression Prevention
+
+These tests catch regressions in:
+- Fill batch processing logic (adaptive sizing)
+- Recovery retry state management (count+time system)
+- Orphan-fill deduplication guards (stale ID tracking)
+- Cache remainder calculation (per-slot accuracy)
+- Hard-abort cooldown arming (both paths)
+- Stale-order fast-path recovery (single-op optimization)
+
+### Related Documentation
+
+See complete technical details in:
+- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 1.4](FUND_MOVEMENT_AND_ACCOUNTING.md#14-fill-batch-processing--cache-fund-timeline-patch-17) - Fill batch processing
+- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 3.7](FUND_MOVEMENT_AND_ACCOUNTING.md#37-orphan-fill-deduplication--double-credit-prevention-patch-17) - Orphan-fill prevention
+- [docs/architecture.md - Fill Processing Pipeline](architecture.md#fill-processing-pipeline-patch-17--18) - Architecture & diagrams
+
+---
+
 ## Future Maintenance
 
 When adding new bugfixes:
 1. Create a test that would have caught the bug
-2. Add it to the appropriate test file (strategy.test.js or accounting.test.js)
+2. Add it to the appropriate test file (strategy.test.js, accounting.test.js, or test_patch*.js)
 3. Reference the commit hash in a comment
 4. Update this summary document
+5. Ensure test covers both success and failure paths
 
 This ensures continuous regression detection and documents the evolution of the test suite.

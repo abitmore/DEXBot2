@@ -5,7 +5,9 @@ A sophisticated market making bot for the BitShares Decentralized Exchange (DEX)
 ## 🚀 Features
 
 - **Adaptive Geometric Grids**: Dynamic order scaling with configurable weight distribution and automated recalculation based on market volatility.
+- **Adaptive Fill Batching** (Patch 17): Groups fills into stress-scaled batches (1-4 per broadcast) reducing processing time from ~90s to ~24s for 29 fills. Prevents stale orders and orphan fills during market surges.
 - **Atomic Execution & Recovery**: Instant state sync for partial fills and automatic detection of orders filled while offline to ensure capital efficiency.
+- **Self-Healing Recovery** (Patch 17): Periodic recovery retries (max 5 attempts, 60s interval) with automatic state reset prevent permanent lockup after single failures.
 - **Persistent State Management**: Caches grid configurations and price levels across restarts to ensure continuity and minimize blockchain queries.
 - **Enterprise-Grade Security**: AES-encrypted key storage with RAM-only password handling—sensitive data is never written to disk.
 - **Production-Ready Orchestration**: Native PM2 integration for multi-bot management with built-in auto-updates and real-time monitoring.
@@ -470,6 +472,7 @@ Below is a short summary of the modules in this repository and what they provide
 - `dexbot.js`: Main CLI entry point. Handles single-bot mode (start, drystart, reset, disable) and management commands (keys, bots, export, --cli-examples). Includes full DEXBot2 class with grid management, fill processing, and account operations.
 - `pm2.js`: Unified PM2 launcher. Orchestrates BitShares connection, PM2 check/install, ecosystem config generation from `profiles/bots.json`, credential daemon startup with interactive master password prompt (keeps keys in RAM), and bot startup with automatic restart policies.
 - `bot.js`: PM2-friendly per-bot entry point. Loads bot config by name from `profiles/bots.json`, authenticates via master password (from environment or interactive prompt), initializes DEXBot instance, and runs the trading loop.
+- `unlock-start.js`: Single-prompt startup without PM2. Launches credential daemon with interactive master password prompt, then runs the main bot loop. Simpler alternative to `pm2.js` for development and single-bot setups.
 
 ### 🧩 Core Modules
 
@@ -498,7 +501,10 @@ Core order generation, management, and grid algorithms:
 - `modules/order/sync_engine.js`: `SyncEngine` — Blockchain synchronization and reconciliation. Detects filled orders, processes history events, fetches account balances, and keeps grid state in sync with chain.
 - `modules/order/grid.js`: Grid generation algorithms, order sizing, weight distribution, and minimum size validation. Persistence operations are async with proper await handling.
 - `modules/order/runner.js`: Standalone calculator runner for multi-pass grid calculations and dry-runs without blockchain interaction. Useful for testing grid logic and debugging price/size calculations. Runs via environment variables `BOT_NAME`, `CALC_CYCLES`, `CALC_DELAY_MS`.
-- `modules/order/utils.js`: Utility functions (percent parsing, multiplier parsing, blockchain float/int conversion, market price helpers). Includes grid utility functions (filter, sum, precision handling, fee calculation), price correction utilities, and fill deduplication.
+- `modules/order/utils/`: Utility functions organized into specialized modules:
+  - `math.js`: Precision and quantization utilities (`quantizeFloat()`, `normalizeInt()`), float/blockchain int conversions
+  - `order.js`: Order state helpers (`isOrderOnChain()`, `isOrderPlaced()`, `isPhantomOrder()`), order validation, and pattern matching
+  - `system.js`: System utilities (percent parsing, multiplier parsing, market price derivation, fill deduplication)
 - `modules/order/startup_reconcile.js`: Startup grid reconciliation and synchronization. Compares persisted grid state with on-chain open orders to detect offline fills, process pending state changes, and decide recovery strategy (reload vs. continue). Ensures grid state matches blockchain reality on startup before trading resumes.
 - `modules/order/format.js`: Numeric formatting utilities for consistent decimal precision display across logs and output.
 - `modules/order/export.js`: QTradeX export module. Parses PM2 log files to extract trading fills and fees, generates CSV export compatible with QTradeX backtesting system, and exports sanitized bot settings (without private keys).

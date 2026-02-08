@@ -224,6 +224,65 @@ Each category can be enabled/disabled independently:
 | **errorWarnings** | warn/error | enabled | All errors/warnings | Critical issues and warnings only |
 | **edgeCases** | warn/error | enabled | Edge condition handling | Unusual conditions that don't cause errors |
 
+### New Categories: Batch Processing & Recovery (Patch 17-18)
+
+**Patch 17-18 adds new log messages for fill batching and recovery system:**
+
+| Log Type | Module | Example | Purpose |
+|----------|--------|---------|---------|
+| **[FILL-BATCH]** | `dexbot_class.js` | `[FILL-BATCH] Popping 3 fills (queue depth: 8)` | Diagnostic visibility into batch sizing decisions |
+| **[FILL-BATCH]** | `dexbot_class.js` | `[FILL-BATCH] Processing batch with 3 fills...` | Tracks batch start before rebalance pipeline |
+| **[RECOVERY]** | `accounting.js` | `[RECOVERY] Attempting recovery (attempt 2/5)` | Monitors recovery retry system (count+time-based) |
+| **[RECOVERY]** | `accounting.js` | `[RECOVERY] Recovery succeeded, resetting state` | Confirms successful recovery and reset |
+| **[RECOVERY-RESET]** | `accounting.js` | `[RECOVERY-RESET] Periodic 10min sync, resetting retry counter` | Shows periodic reset points |
+| **[ORPHAN-FILL]** | `dexbot_class.js` | `[ORPHAN-FILL] Skipping double-credit for stale-cleaned order 12345` | Orphan-fill deduplication guard |
+| **[HARD-ABORT]** | `dexbot_class.js` | `[HARD-ABORT] Illegal state during batch processing with 12 ops` | Batch hard-abort with operation count telemetry (Patch 18) |
+| **[COOLDOWN]** | `dexbot_class.js` | `[COOLDOWN] Arming maintenance cooldown after hard-abort` | Confirms cooldown consistency (Patch 18) |
+| **[STALE-CANCEL]** | `dexbot_class.js` | `[STALE-CANCEL] Single-op batch stale recovery (fast-path)` | Fast-path recovery for single operations (Patch 18) |
+| **[CACHE-REMAINDER]** | `grid.js` | `[CACHE-REMAINDER] Tracking per-slot allocations (actual: 450/500)` | Cache remainder accuracy tracking (Patch 18) |
+
+### Configuration for Batch Processing Logs
+
+Enable batch processing diagnostics (useful during development/troubleshooting):
+
+```json
+{
+  "LOG_LEVEL": "debug",
+  "LOGGING_CONFIG": {
+    "categories": {
+      "fillEvents": { "enabled": true },
+      "errorWarnings": { "enabled": true }
+    }
+  }
+}
+```
+
+**Batch Processing Log Examples**:
+
+```
+[FILL-BATCH] Measuring queue depth: 8 fills awaiting
+[FILL-BATCH] Stress tier: [8,3] → batch size 3
+[FILL-BATCH] Popping 3 fills from queue (5 remaining)
+[FILL-BATCH] Processing batch: fill1@100.5, fill2@100.6, fill3@100.7
+[FILL-BATCH] Crediting 45000 BTS to cacheFunds (batched proceeds)
+[FILL-BATCH] Rebalance: placed 4 orders, rotated 2 orders
+[FILL-BATCH] Batch broadcast completed, persisting grid
+
+[RECOVERY] Recovery attempt 1/5 triggered
+[RECOVERY] Retrying with 60s minimum interval
+[RECOVERY] Recovery succeeded, resetting state
+[RECOVERY-RESET] Periodic 10min sync reset recovery counter
+
+[ORPHAN-FILL] Received fill for order 12345
+[ORPHAN-FILL] Checking stale-cleaned map...
+[ORPHAN-FILL] Skipping double-credit for stale-cleaned order 12345
+
+[HARD-ABORT] Batch execution failed: "Limit order 999 does not exist"
+[HARD-ABORT] Cleaning up stale order 999
+[HARD-ABORT] Illegal state during batch processing with 12 ops
+[HARD-ABORT] Arming maintenance cooldown (50 cycles)
+```
+
 ### Configuration Example
 
 Disable verbose fund logs but keep everything else:

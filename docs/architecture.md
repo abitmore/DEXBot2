@@ -93,10 +93,105 @@ The `OrderManager` is the central hub that coordinates all order operations. It 
 
 | Engine | File | Responsibility |
 |--------|------|----------------|
-| **Accountant** | `accounting.js` | **Single Source of Truth**. Centralized fund tracking via `recalculateFunds()`, fee management, invariant verification |
-| **StrategyEngine** | `strategy.js` | Grid rebalancing, order rotation, partial order handling |
-| **SyncEngine** | `sync_engine.js` | Blockchain synchronization, fill detection |
-| **Grid** | `grid.js` | Grid creation, sizing, divergence detection |
+| **Accountant** | `accounting.js` | **Single Source of Truth**. Centralized fund tracking via `recalculateFunds()`, fee management, invariant verification, **recovery retry state management** (Patch 17: `resetRecoveryState()`) |
+| **StrategyEngine** | `strategy.js` | Grid rebalancing, order rotation, partial order handling, **fill boundary shifts** (Patch 17), **cache remainder tracking** (Patch 18) |
+| **SyncEngine** | `sync_engine.js` | Blockchain synchronization, fill detection, **stale-order cleanup**, **type-mismatch handling** |
+| **Grid** | `grid.js` | Grid creation, sizing, divergence detection, **cache remainder accuracy during capped resize** (Patch 18) |
+
+---
+
+## Fill Processing Pipeline (Patch 17 & 18)
+
+The fill pipeline handles incoming filled orders efficiently through adaptive batching instead of one-at-a-time processing.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Fill Event (Blockchain)                   │
+│                  (Order filled at price X)                   │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│              _incomingFillQueue (FIFO Queue)                 │
+│          (Accumulates fills from blockchain)                 │
+│  Queue: [fill1, fill2, fill3, fill4, fill5, ...]           │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│         processFilledOrders() - Entry Point                  │
+│  Measure queue depth → Determine adaptive batch size         │
+│  Rules: [[0,1], [3,2], [8,3], [15,4]] stress tiers         │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│         Pop Batch (up to MAX_FILL_BATCH_SIZE)               │
+│    Takes N fills from queue head (N = 1-4)                  │
+│  Example: pops [fill1, fill2, fill3] for batch processing  │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│     processFillAccounting() - Single Call                    │
+│  All fills credited to cacheFunds in ONE operation         │
+│  cacheFunds += proceeds[fill1] + proceeds[fill2] + ...     │
+│  Proceeds immediately available (same rebalance cycle)     │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│    rebalanceSideRobust() - Single Call                       │
+│  Size replacement orders using combined proceeds           │
+│  Apply rotations and boundary shifts                       │
+│  Use cache remainder for next allocation opportunities     │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│   updateOrdersOnChainBatch() - Single Broadcast            │
+│  All new orders + cancellations in single operation        │
+│  Result: Atomic state update on blockchain                 │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│              persistGrid()                                   │
+│         Save grid state to disk/storage                     │
+└─────────────────────┬───────────────────────────────────────┘
+                      ↓
+                  Loop to next batch
+                (or idle if queue empty)
+```
+
+### Key Properties
+
+- **Adaptive Batch Sizing** (Patch 17): Batch size scales with queue depth (1-4 fills)
+  - 0-2 awaiting: batch 1 (legacy sequential, low throughput)
+  - 3-7 awaiting: batch 2 (moderate stress)
+  - 8-14 awaiting: batch 3 (high stress)
+  - 15+ awaiting: batch 4 (extreme stress, maximum batching)
+
+- **Single Rebalance Cycle**: All fills in batch processed in ONE rebalance
+  - No "split across cycles" delays
+  - Combined proceeds immediately available
+  - Single cache fund update
+
+- **Recovery Retries** (Patch 17): Periodic retry system replaces one-shot flag
+  - Max 5 attempts per episode
+  - 60s minimum interval between retries
+  - Reset on fill arrival or periodic sync (10 minutes)
+  - `resetRecoveryState()` called by Accountant
+
+- **Stale-Cleaned Order Tracking** (Patch 17): Prevents orphan double-credit
+  - Batch failure → cleanup stale order IDs
+  - Delayed orphan event → check if ID in stale-cleaned map
+  - Skip credit if already cleaned
+  - TTL pruning (5 minute retention)
+
+### Impact vs. Legacy Sequential Processing
+
+| Metric | Legacy (1-at-a-time) | Adaptive Batching | Improvement |
+|--------|---------------------|-------------------|-------------|
+| **29 Fills** | ~90 seconds | ~24 seconds | **73% faster** |
+| **Market Divergence** | High (90s window) | Low (24s window) | **Safer** |
+| **Stale Orders** | Frequent | Rare | **More reliable** |
+| **Recovery** | One-shot (brick) | Periodic (self-heal) | **Production-ready** |
 
 ---
 
