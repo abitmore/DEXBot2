@@ -329,12 +329,13 @@ class DEXBot {
         return true;
     }
 
-    async _handleBatchHardAbort(err, phase = 'batch processing') {
+    async _handleBatchHardAbort(err, phase = 'batch processing', opsCount = 0) {
         const baseResult = { executed: false, hadRotation: false };
+        const opsInfo = opsCount > 0 ? ` with ${opsCount} ops` : '';
 
         if (err?.code === 'ILLEGAL_ORDER_STATE') {
             const illegalSignal = this.manager.consumeIllegalStateSignal?.();
-            await this._triggerStateRecoverySync(illegalSignal?.message || `illegal order state during ${phase}`);
+            await this._triggerStateRecoverySync(illegalSignal?.message || `illegal order state during ${phase}${opsInfo}`);
             this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
             return { ...baseResult, abortedForIllegalState: true };
         }
@@ -343,7 +344,7 @@ class DEXBot {
             const accountingSignal = this.manager.consumeAccountingFailureSignal?.();
             const reason = accountingSignal
                 ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
-                : `accounting commitment lock failure during ${phase}`;
+                : `accounting commitment lock failure during ${phase}${opsInfo}`;
             await this._triggerStateRecoverySync(reason);
             this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
             return { ...baseResult, abortedForAccountingFailure: true };
@@ -1791,7 +1792,7 @@ class DEXBot {
         } catch (err) {
             this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
 
-            const hardAbortResult = await this._handleBatchHardAbort(err, 'batch processing');
+            const hardAbortResult = await this._handleBatchHardAbort(err, 'batch processing', operations.length);
             if (hardAbortResult) return hardAbortResult;
 
             // Check if failure is due to stale (non-existent) order references.
@@ -1862,7 +1863,7 @@ class DEXBot {
                         this._batchRetryInFlight = false;
                         this.manager.logger.log(`Retry batch also failed: ${retryErr.message}`, 'error');
 
-                        const retryHardAbortResult = await this._handleBatchHardAbort(retryErr, 'retry batch processing');
+                        const retryHardAbortResult = await this._handleBatchHardAbort(retryErr, 'retry batch processing', filteredOps.length);
                         if (retryHardAbortResult) return retryHardAbortResult;
 
                         // Fall through to recovery sync below

@@ -578,7 +578,7 @@ class StrategyEngine {
                 if (!current) continue;
                 if (excludeIds.has(current.id) || (hasOnChainId(current) && excludeIds.has(current.orderId))) continue;
                 if (current.state === ORDER_STATES.VIRTUAL && !hasOnChainId(current)) {
-                    _priorityScanStart = i; // resume from here next call
+                    _priorityScanStart = i + 1; // resume from next slot on next call
                     return current;
                 }
             }
