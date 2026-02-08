@@ -118,7 +118,9 @@ const {
     isOrderHealthy,
     isPhantomOrder,
     isSlotAvailable,
-    getPartialsByType
+    getPartialsByType,
+    calculateIdealBoundary,
+    assignGridRoles
 } = require('./utils/order');
 const { derivePrice } = require('./utils/system');
 
@@ -359,14 +361,7 @@ class Grid {
         }
 
         // ================================================================================
-        // STEP 2: FIND SPLIT INDEX (First slot at or above startPrice)
-        // ================================================================================
-        // The split index is used to center the spread gap around market price.
-        // Pivot concept (slot closest to startPrice) was previously used but is now
-        // calculated separately in strategy.js as part of role assignment logic.
-
-        // ================================================================================
-        // STEP 3: CALCULATE SPREAD GAP SIZE
+        // STEP 2: CALCULATE SPREAD GAP SIZE
         // ================================================================================
         // Determine how many slots should be in the spread zone.
         // See formula documentation in JSDoc above.
@@ -374,64 +369,28 @@ class Grid {
         const gapSlots = Grid.calculateGapSlots(incrementPercent, config.targetSpreadPercent);
 
         // ================================================================================
-        // STEP 4: ROLE ASSIGNMENT (BUY / SPREAD / SELL)
+        // STEP 3: FIND SPLIT INDEX & ROLE ASSIGNMENT
         // ================================================================================
-        // Assign each price level to a role based on its position relative to startPrice.
+        // Determine the boundary and assign roles (BUY/SPREAD/SELL) to each slot.
         //
         // STRATEGY: Center the spread gap around startPrice
-        // - Find the first slot >= startPrice (splitIdx)
-        // - Place half the gap below splitIdx (buySpread)
-        // - Place remaining gap above splitIdx (sellSpread)
-        //
-        // RESULT:
-        // [0 ... buyEndIdx] = BUY zone (prices < spread)
-        // [buyEndIdx+1 ... sellStartIdx-1] = SPREAD zone (empty buffer)
-        // [sellStartIdx ... N] = SELL zone (prices > spread)
-
-        // Find the first slot at or above startPrice
-        let splitIdx = priceLevels.findIndex(p => p >= startPrice);
-        if (splitIdx === -1) splitIdx = priceLevels.length;
-
-        // Distribute gap slots: Half below startPrice, half above
-        const buySpread = Math.floor(gapSlots / 2);
-        const sellSpread = gapSlots - buySpread;
-
-        // Calculate zone boundaries
-        // FIX: Document subtle boundary calculation to prevent off-by-one errors
-        // buyEndIdx is the last index where buy orders exist (exclude spread zone)
-        // sellStartIdx is the first index where sell orders exist (exclude spread zone)
-        // Spread zone is [buyEndIdx + 1, sellStartIdx - 1] (empty buffer around market)
-        // Example: splitIdx=5, buySpread=2 => buyEndIdx=2, sellStartIdx=7
-        //   BUY: [0,1,2], SPREAD: [3,4,5,6], SELL: [7,8,...]
-        const buyEndIdx = splitIdx - buySpread - 1;
-        const sellStartIdx = splitIdx + sellSpread;
+        
+        const boundaryIdx = calculateIdealBoundary(priceLevels.map(p => ({ price: p })), startPrice, gapSlots);
 
         // ================================================================================
-        // STEP 5: CREATE ORDER OBJECTS
+        // STEP 4: CREATE ORDER OBJECTS
         // ================================================================================
         // Convert price levels to order objects with assigned roles.
 
-        const orders = priceLevels.map((price, i) => {
-            // Determine order type based on position relative to spread zone
-            let type;
-            if (i <= buyEndIdx) {
-                type = ORDER_TYPES.BUY;
-            } else if (i >= sellStartIdx) {
-                type = ORDER_TYPES.SELL;
-            } else {
-                type = ORDER_TYPES.SPREAD;
-            }
+        const orders = priceLevels.map((price, i) => ({
+            id: `slot-${i}`,
+            price,
+            type: null, // assigned below
+            state: ORDER_STATES.VIRTUAL,
+            size: 0
+        }));
 
-            const order = {
-                id: `slot-${i}`,
-                price,
-                type,
-                state: ORDER_STATES.VIRTUAL,
-                size: 0
-            };
-
-            return order;
-        });
+        assignGridRoles(orders, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES);
 
         const buyCount = orders.filter(o => o.type === ORDER_TYPES.BUY).length;
         const sellCount = orders.filter(o => o.type === ORDER_TYPES.SELL).length;
@@ -444,11 +403,11 @@ class Grid {
         }
 
         const initialSpreadCount = {
-            buy: buySpread,
-            sell: sellSpread
+            buy: Math.floor(gapSlots / 2),
+            sell: gapSlots - Math.floor(gapSlots / 2)
         };
 
-        return { orders, boundaryIdx: buyEndIdx, initialSpreadCount };
+        return { orders, boundaryIdx, initialSpreadCount };
     }
 
     /**

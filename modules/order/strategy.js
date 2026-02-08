@@ -88,7 +88,9 @@ const {
     convertToSpreadPlaceholder,
     hasOnChainId,
     isOrderPlaced,
-    getPartialsByType
+    getPartialsByType,
+    calculateIdealBoundary,
+    assignGridRoles
 } = require("./utils/order");
 const Format = require('./format');
 
@@ -191,14 +193,7 @@ class StrategyEngine {
             } else {
                 // 2. Fallback to startPrice-based initialization (Initial or Recovery)
                 mgr.logger.log(`[BOUNDARY] Initializing boundaryIdx from startPrice: ${referencePrice}`, "info");
-
-                // Find the first slot at or above startPrice (this becomes the spread zone)
-                let splitIdx = allSlots.findIndex(s => s.price >= referencePrice);
-                if (splitIdx === -1) splitIdx = allSlots.length;
-
-                // Position boundary so spread gap is centered around startPrice
-                const buySpread = Math.floor(gapSlots / 2);
-                mgr.boundaryIdx = Math.max(0, splitIdx - buySpread - 1);
+                mgr.boundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
             }
         }
 
@@ -245,34 +240,25 @@ class StrategyEngine {
         // [boundaryIdx+1 ... boundaryIdx+gapSlots] = SPREAD zone (empty buffer)
         // [boundaryIdx+gapSlots+1 ... N] = SELL zone
 
-        const buyEndIdx = boundaryIdx;
-        const sellStartIdx = boundaryIdx + gapSlots + 1;
-
-        // Partition slots into role-based arrays
-        const buySlots = allSlots.slice(0, buyEndIdx + 1);
-        const sellSlots = allSlots.slice(sellStartIdx);
-        const spreadSlots = allSlots.slice(buyEndIdx + 1, sellStartIdx);
-
         // PHASE 1: Apply type changes immediately (before rebalancing logic runs)
         // This ensures rebalanceSideRobust sees updated types, not old types
         // Fund accounting is safe because no-op changes (same size, same state) don't move funds
         mgr.pauseFundRecalc();
 
-        buySlots.forEach(s => {
-            if (s.type !== ORDER_TYPES.BUY) {
-                mgr._updateOrder({ ...s, type: ORDER_TYPES.BUY }, 'role-assignment', false, 0);
-            }
-        });
+        assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES);
 
-        sellSlots.forEach(s => {
-            if (s.type !== ORDER_TYPES.SELL) {
-                mgr._updateOrder({ ...s, type: ORDER_TYPES.SELL }, 'role-assignment', false, 0);
-            }
-        });
+        // Partition slots into role-based arrays for rebalancing logic
+        const buyEndIdx = boundaryIdx;
+        const sellStartIdx = boundaryIdx + gapSlots + 1;
+        const buySlots = allSlots.slice(0, buyEndIdx + 1);
+        const sellSlots = allSlots.slice(sellStartIdx);
+        const spreadSlots = allSlots.slice(buyEndIdx + 1, sellStartIdx);
 
-        spreadSlots.forEach(s => {
-            if (s.type !== ORDER_TYPES.SPREAD) {
-                if (isOrderPlaced(s)) {
+        // Notify manager of actual updates for synchronization
+        allSlots.forEach(s => {
+            const original = mgr.orders.get(s.id);
+            if (original && original.type !== s.type) {
+                if (s.type === ORDER_TYPES.SPREAD && isOrderPlaced(s)) {
                     if (mgr?._metrics) {
                         mgr._metrics.spreadRoleConversionBlocked = (mgr._metrics.spreadRoleConversionBlocked || 0) + 1;
                     }
@@ -280,9 +266,11 @@ class StrategyEngine {
                         `[ROLE-ASSIGNMENT] BLOCKED SPREAD conversion for ${s.id}: type=${s.type}, state=${s.state}, orderId=${s.orderId || 'none'}`,
                         'warn'
                     );
+                    // Revert type if blocked
+                    s.type = original.type;
                     return;
                 }
-                mgr._updateOrder(convertToSpreadPlaceholder(s), 'role-assignment', false, 0);
+                mgr._updateOrder(s, 'role-assignment', false, 0);
             }
         });
 

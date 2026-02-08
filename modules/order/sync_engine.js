@@ -93,6 +93,7 @@ const {
     calculatePriceTolerance
 } = require('./utils/math');
 const {
+    parseChainOrder,
     findMatchingGridOrderByOpenOrder,
     applyChainSizeToGridOrder,
     convertToSpreadPlaceholder,
@@ -277,44 +278,12 @@ class SyncEngine {
         const rawChainOrders = new Map();
 
         for (const order of chainOrders) {
-            // Validate order structure before processing
-            if (!order || !order.id || !order.sell_price || order.for_sale === undefined || order.for_sale === null) {
-                mgr.logger?.log?.(`Warning: Skipping malformed chain order missing required fields`, 'warn');
-                continue;
-            }
-
             try {
-                const sellAssetId = order.sell_price.base?.asset_id;
-                const receiveAssetId = order.sell_price.quote?.asset_id;
-
-                if (!sellAssetId || !receiveAssetId) {
-                    mgr.logger?.log?.(`Warning: Chain order ${order.id} missing asset IDs`, 'warn');
-                    continue;
-                }
-
-                const isSellPair = sellAssetId === assetAId && receiveAssetId === assetBId;
-                const isBuyPair = sellAssetId === assetBId && receiveAssetId === assetAId;
-                if (!isSellPair && !isBuyPair) {
-                    mgr.logger?.log?.(`Skipping non-grid pair order ${order.id} (${sellAssetId} -> ${receiveAssetId})`, 'debug');
-                    continue;
-                }
-
-                const baseAmount = Number(order.sell_price.base?.amount);
-                const quoteAmount = Number(order.sell_price.quote?.amount);
-                if (!Number.isFinite(baseAmount) || !Number.isFinite(quoteAmount) || baseAmount <= 0 || quoteAmount <= 0) {
-                    mgr.logger?.log?.(`Warning: Chain order ${order.id} has invalid sell_price amounts`, 'warn');
-                    continue;
-                }
-
-                const type = isSellPair ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
-                const precision = (type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
-                const size = blockchainToFloat(order.for_sale, precision);
-                const price = (type === ORDER_TYPES.SELL)
-                    ? (quoteAmount / baseAmount) * Math.pow(10, assetAPrecision - assetBPrecision)
-                    : (baseAmount / quoteAmount) * Math.pow(10, assetAPrecision - assetBPrecision);
+                const parsed = parseChainOrder(order, mgr.assets);
+                if (!parsed) continue;
 
                 // Store parsed (converted) data in parsedChainOrders
-                parsedChainOrders.set(order.id, { id: order.id, type, size, price });
+                parsedChainOrders.set(order.id, parsed);
                 // Store raw blockchain data in separate map - clean separation of concerns
                 rawChainOrders.set(order.id, order);
             } catch (e) {

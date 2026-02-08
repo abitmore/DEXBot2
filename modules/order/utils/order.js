@@ -184,7 +184,8 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
             const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
             results.push({ ...correctionInfo, result });
             if (result && result.success) corrected++; else failed++;
-            await new Promise(resolve => setTimeout(resolve, TIMING.SYNC_DELAY_MS));
+            const { sleep } = require('./system');
+            await sleep(TIMING.SYNC_DELAY_MS);
         }
         return { corrected, failed, results };
     });

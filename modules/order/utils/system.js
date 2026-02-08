@@ -441,6 +441,15 @@ function ensureProfilesDirectory(profilesDir) {
     return false;
 }
 
+/**
+ * Pause execution for a specified duration.
+ * @param {number} ms - Milliseconds to sleep
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function readInput(prompt, options = {}) {
     return new Promise((resolve) => {
         const stdin = process.stdin; const stdout = process.stdout;
@@ -472,7 +481,7 @@ async function withRetry(fn, options = {}) {
             if (attempt === maxAttempts) throw err;
             const delay = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
             logger?.log?.(`${operationName} attempt ${attempt} failed. Retrying in ${delay}ms...`, 'warn');
-            await new Promise(r => setTimeout(r, delay));
+            await sleep(delay);
         }
     }
 }
@@ -509,6 +518,7 @@ module.exports = {
     applyGridDivergenceCorrections,
     syncBoundaryToFunds,
     ensureProfilesDirectory,
+    sleep,
     readInput,
     readPassword,
     withRetry,

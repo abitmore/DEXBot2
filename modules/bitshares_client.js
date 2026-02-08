@@ -45,6 +45,7 @@ require('./btsdex_event_patch');
 const { TIMING, NODE_MANAGEMENT } = require('./constants');
 const NodeManager = require('./node_manager');
 const { readGeneralSettings } = require('./general_settings');
+const { sleep } = require('./order/utils/system');
 
 // Shared connection state for the process. Modules should use waitForConnected()
 // to ensure the shared BitShares client is connected before making DB calls.
@@ -127,7 +128,7 @@ async function waitForConnected(timeoutMs = TIMING.CONNECTION_TIMEOUT_MS) {
         if (Date.now() - start > timeoutMs) {
             throw new Error(`Timed out waiting for BitShares connection after ${timeoutMs}ms`);
         }
-        await new Promise(resolve => setTimeout(resolve, TIMING.CHECK_INTERVAL_MS));
+        await sleep(TIMING.CHECK_INTERVAL_MS);
     }
 }
 

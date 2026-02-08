@@ -63,6 +63,7 @@ const fs = require('fs');
 const path = require('path');
 const { ORDER_TYPES, ORDER_STATES } = require('./constants');
 const AsyncLock = require('./order/async_lock');
+const { isPhantomOrder } = require('./order/utils/order');
 
 /**
  * Ensures that the directory for the given file path exists.
@@ -808,15 +809,11 @@ class AccountOrders {
     // Downgrade to VIRTUAL to prevent persisting phantom active orders.
     // This fixes the root cause of "Active No ID" state in JSON files.
     let state = order.state || null;
-    let orderId = '';
+    let orderId = order.orderId || '';
     
-    if (state === ORDER_STATES.ACTIVE || state === ORDER_STATES.PARTIAL) {
-        if (order.orderId) {
-            orderId = order.orderId;
-        } else {
-            // Corrupted state: ACTIVE but no ID. Revert to VIRTUAL.
-            state = ORDER_STATES.VIRTUAL;
-        }
+    if (isPhantomOrder(order)) {
+        state = ORDER_STATES.VIRTUAL;
+        orderId = '';
     }
 
     const serialized = {

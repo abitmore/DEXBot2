@@ -183,18 +183,10 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
 
     let btsFeesReservation = 0;
     if (btsSide === side && activeOrders) {
-        try {
-            const targetBuy = Math.max(0, toFiniteNumber(activeOrders?.buy, 1));
-            const targetSell = Math.max(0, toFiniteNumber(activeOrders?.sell, 1));
-            const totalTargetOrders = targetBuy + targetSell;
-
-            if (totalTargetOrders > 0) {
-                const btsFeeData = getAssetFees('BTS');
-                btsFeesReservation = btsFeeData.createFee * totalTargetOrders * FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER;
-            }
-        } catch (err) {
-            btsFeesReservation = FEE_PARAMETERS.BTS_FALLBACK_FEE;
-        }
+        const targetBuy = Math.max(0, toFiniteNumber(activeOrders?.buy, 1));
+        const targetSell = Math.max(0, toFiniteNumber(activeOrders?.sell, 1));
+        const totalTargetOrders = targetBuy + targetSell;
+        btsFeesReservation = calculateOrderCreationFees(assetA, assetB, totalTargetOrders, FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER);
     }
 
     const currentFeesOwed = (btsSide === side) ? btsFeesOwed : 0;
