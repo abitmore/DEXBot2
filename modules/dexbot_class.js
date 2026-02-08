@@ -102,7 +102,7 @@ const {
     convertToSpreadPlaceholder
 } = require('./order/utils/order');
 const { validateOrderSize } = require('./order/utils/math');
-const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS } = require('./constants');
+const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS, FILL_PROCESSING } = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
 const { parseJsonWithComments } = require('./account_bots');
@@ -782,7 +782,7 @@ class DEXBot {
 
                     // 2. Filter and Deduplicate (Standard Logic)
                     for (const fill of allFills) {
-                        if (fill && fill.op && fill.op[0] === 4) {
+                        if (fill && fill.op && fill.op[0] === FILL_PROCESSING.OPERATION_TYPE) {
                             const fillOp = fill.op[1];
 
                             // ACCOUNT VALIDATION: Verify the filled order belongs to this bot's account/grid
@@ -918,9 +918,8 @@ class DEXBot {
                     // - 2..MAX_FILL_BATCH_SIZE fills: unified full-set planning (no mini-batch churn)
                     // - larger bursts: adaptive chunking with anti-singleton tail balancing
                     if (allFilledOrders.length > 0) {
-                        const { FILL_PROCESSING: FP } = require('./constants');
-                        const stressTiers = FP.BATCH_STRESS_TIERS || [[0, 1]];
-                        const maxBatch = Math.max(1, FP.MAX_FILL_BATCH_SIZE || 1);
+                        const stressTiers = FILL_PROCESSING.BATCH_STRESS_TIERS || [[0, 1]];
+                        const maxBatch = Math.max(1, FILL_PROCESSING.MAX_FILL_BATCH_SIZE || 1);
                         const totalFills = allFilledOrders.length;
 
                         let adaptiveBatchSize = 1;
@@ -1772,6 +1771,7 @@ class DEXBot {
             if (err?.code === 'ILLEGAL_ORDER_STATE') {
                 const illegalSignal = this.manager.consumeIllegalStateSignal?.();
                 await this._triggerStateRecoverySync(illegalSignal?.message || 'illegal order state during batch processing');
+                this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
                 return { executed: false, hadRotation: false, abortedForIllegalState: true };
             }
 
@@ -1781,6 +1781,7 @@ class DEXBot {
                     ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
                     : 'accounting commitment lock failure during batch processing';
                 await this._triggerStateRecoverySync(reason);
+                this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
                 return { executed: false, hadRotation: false, abortedForAccountingFailure: true };
             }
 
@@ -1799,7 +1800,7 @@ class DEXBot {
                 }
             }
 
-            if (staleOrderIds.size > 0 && operations.length > 1) {
+            if (staleOrderIds.size > 0) {
                 this.manager.logger.log(`Stale order(s) ${[...staleOrderIds].join(', ')} detected in failed batch. Cleaning up and retrying.`, 'warn');
 
                 // Clean up grid slot(s) referencing stale orderIds.
@@ -1855,6 +1856,7 @@ class DEXBot {
                         if (retryErr?.code === 'ILLEGAL_ORDER_STATE') {
                             const illegalSignal = this.manager.consumeIllegalStateSignal?.();
                             await this._triggerStateRecoverySync(illegalSignal?.message || 'illegal order state during retry batch processing');
+                            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
                             return { executed: false, hadRotation: false, abortedForIllegalState: true };
                         }
 
@@ -1864,6 +1866,7 @@ class DEXBot {
                                 ? `accounting lock failure (${accountingSignal.side} ${Format.formatAmount8(accountingSignal.amount)}) during ${accountingSignal.context}`
                                 : 'accounting commitment lock failure during retry batch processing';
                             await this._triggerStateRecoverySync(reason);
+                            this._maintenanceCooldownCycles = Math.max(this._maintenanceCooldownCycles, 1);
                             return { executed: false, hadRotation: false, abortedForAccountingFailure: true };
                         }
 

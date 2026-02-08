@@ -1,5 +1,7 @@
 const assert = require('assert');
 const DEXBot = require('../modules/dexbot_class');
+const Grid = require('../modules/order/grid');
+const chainOrders = require('../modules/chain_orders');
 const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 const bsModule = require('../modules/bitshares_client');
@@ -23,6 +25,29 @@ function createManager() {
     mgr.setAccountTotals({ buy: 10000, sell: 1000, buyFree: 10000, sellFree: 1000 });
     mgr.resetFunds();
     return mgr;
+}
+
+function createBatchManagerStub(overrides = {}) {
+    return {
+        assets: {
+            assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' },
+            assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' }
+        },
+        lockOrders: () => {},
+        unlockOrders: () => {},
+        pauseFundRecalc: () => {},
+        resumeFundRecalc: () => {},
+        consumeIllegalStateSignal: () => null,
+        consumeAccountingFailureSignal: () => null,
+        orders: new Map(),
+        _updateOrder: () => {},
+        _throwOnIllegalState: false,
+        logger: {
+            log: () => {},
+            logFundsStatus: () => {}
+        },
+        ...overrides
+    };
 }
 
 async function testExtremePlacementOrdering() {
@@ -194,12 +219,161 @@ async function testRoleAssignmentBlocksOnChainSpreadConversion() {
     );
 }
 
+async function testGridResizeCacheTracksAppliedSizesAfterCap() {
+    const mgr = createManager();
+    mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1, sellFree: 1000 });
+    mgr.resetFunds();
+
+    const slots = [
+        { id: 'b0', type: ORDER_TYPES.BUY, price: 99, state: ORDER_STATES.ACTIVE, orderId: '1.7.1', size: 0.5 },
+        { id: 'b1', type: ORDER_TYPES.BUY, price: 98, state: ORDER_STATES.ACTIVE, orderId: '1.7.2', size: 0.5 },
+        { id: 'b2', type: ORDER_TYPES.BUY, price: 97, state: ORDER_STATES.VIRTUAL, size: 0 },
+        { id: 'b3', type: ORDER_TYPES.BUY, price: 96, state: ORDER_STATES.VIRTUAL, size: 0 },
+        { id: 's0', type: ORDER_TYPES.SELL, price: 101, state: ORDER_STATES.VIRTUAL, size: 0 },
+        { id: 's1', type: ORDER_TYPES.SELL, price: 102, state: ORDER_STATES.VIRTUAL, size: 0 }
+    ];
+
+    mgr.pauseFundRecalc();
+    slots.forEach(slot => mgr._updateOrder(slot, 'seed', true, 0));
+    mgr.resumeFundRecalc();
+
+    await Grid._recalculateGridOrderSizesFromBlockchain(mgr, ORDER_TYPES.BUY);
+
+    const buyOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
+    const allocatedBuy = buyOrders.reduce((sum, o) => sum + Number(o.size || 0), 0);
+    const buyCtx = Grid._getSizingContext(mgr, 'buy');
+    const expectedCache = Math.max(0, Number(buyCtx?.budget || 0) - allocatedBuy);
+    const actualCache = Number(mgr.funds?.cacheFunds?.buy || 0);
+
+    assert(
+        Math.abs(actualCache - expectedCache) < 1e-5,
+        `BUY cache remainder should match post-cap allocated sizes (expected ${expectedCache}, got ${actualCache})`
+    );
+}
+
+async function testIllegalBatchAbortArmsMaintenanceCooldown() {
+    const bot = new DEXBot({
+        botKey: 'test_patch17_batch_abort_cooldown',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'TEST',
+        assetB: 'BTS',
+        incrementPercent: 0.5
+    });
+
+    let recoverySyncCalls = 0;
+    bot._triggerStateRecoverySync = async () => {
+        recoverySyncCalls++;
+    };
+
+    bot.manager = createBatchManagerStub({
+        consumeIllegalStateSignal: () => ({ message: 'simulated illegal state from test' })
+    });
+
+    bot._buildCancelOps = async () => {};
+    bot._buildCreateOps = async (_ordersToPlace, _assetA, _assetB, operations, opContexts) => {
+        operations.push({ op_data: { amount_to_sell: { asset_id: '1.3.1', amount: 1 }, min_to_receive: { asset_id: '1.3.0', amount: 1 } } });
+        opContexts.push({ kind: 'create', order: { id: 'slot-new' } });
+    };
+    bot._buildSizeUpdateOps = async () => {};
+    bot._buildRotationOps = async () => [];
+    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
+
+    const originalExecuteBatch = chainOrders.executeBatch;
+    try {
+        chainOrders.executeBatch = async () => {
+            const err = new Error('simulated illegal state');
+            err.code = 'ILLEGAL_ORDER_STATE';
+            throw err;
+        };
+
+        const result = await bot.updateOrdersOnChainBatch({
+            ordersToPlace: [{ id: 'slot-new', type: ORDER_TYPES.BUY, size: 1, price: 99 }],
+            ordersToRotate: [],
+            ordersToUpdate: [],
+            ordersToCancel: []
+        });
+
+        assert.strictEqual(result?.abortedForIllegalState, true, 'Batch should abort with ILLEGAL_ORDER_STATE signal');
+        assert.strictEqual(recoverySyncCalls, 1, 'Illegal-state abort should trigger one immediate recovery sync');
+        assert.strictEqual(bot._maintenanceCooldownCycles, 1, 'Illegal-state batch abort must arm maintenance cooldown');
+    } finally {
+        chainOrders.executeBatch = originalExecuteBatch;
+    }
+}
+
+async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
+    const bot = new DEXBot({
+        botKey: 'test_patch17_single_stale_cancel',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'TEST',
+        assetB: 'BTS',
+        incrementPercent: 0.5
+    });
+
+    let staleCleanupUpdates = 0;
+    let recoverySyncCalls = 0;
+    bot._triggerStateRecoverySync = async () => {
+        recoverySyncCalls++;
+    };
+
+    bot.manager = createBatchManagerStub({
+        orders: new Map([
+            ['slot-stale', {
+                id: 'slot-stale',
+                type: ORDER_TYPES.BUY,
+                state: ORDER_STATES.ACTIVE,
+                size: 1,
+                price: 99,
+                orderId: '1.7.999'
+            }]
+        ]),
+        _updateOrder: () => {
+            staleCleanupUpdates++;
+        }
+    });
+
+    bot._buildCancelOps = async (_ordersToCancel, operations, opContexts) => {
+        operations.push({ op_data: { order: '1.7.999' } });
+        opContexts.push({ kind: 'cancel', order: { id: 'slot-stale', orderId: '1.7.999' } });
+    };
+    bot._buildCreateOps = async () => {};
+    bot._buildSizeUpdateOps = async () => {};
+    bot._buildRotationOps = async () => [];
+    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
+
+    const originalExecuteBatch = chainOrders.executeBatch;
+    try {
+        chainOrders.executeBatch = async () => {
+            throw new Error('Limit order 1.7.999 does not exist');
+        };
+
+        const result = await bot.updateOrdersOnChainBatch({
+            ordersToPlace: [],
+            ordersToRotate: [],
+            ordersToUpdate: [],
+            ordersToCancel: []
+        });
+
+        assert.strictEqual(result?.staleOnly, true, 'Single stale cancel batch should exit via stale-only fast path');
+        assert.strictEqual(recoverySyncCalls, 0, 'Stale-only cancel race should not trigger recovery sync');
+        assert.strictEqual(staleCleanupUpdates > 0, true, 'Stale grid reference should still be cleaned up');
+        assert.strictEqual(bot._staleCleanedOrderIds.has('1.7.999'), true, 'Stale order id should be tracked to avoid double-credit');
+    } finally {
+        chainOrders.executeBatch = originalExecuteBatch;
+    }
+}
+
 async function runTests() {
     console.log('Running Patch17 Invariant Tests...');
     await testExtremePlacementOrdering();
     await testPipelineInFlightDefersMaintenance();
     await testIllegalStateAbortResyncAndCooldown();
     await testRoleAssignmentBlocksOnChainSpreadConversion();
+    await testGridResizeCacheTracksAppliedSizesAfterCap();
+    await testIllegalBatchAbortArmsMaintenanceCooldown();
+    await testSingleStaleCancelBatchUsesStaleOnlyFastPath();
     console.log('✓ Patch17 invariant tests passed!');
 }
 

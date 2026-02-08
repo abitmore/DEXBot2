@@ -823,6 +823,8 @@ class Grid {
             ctx.precision
         );
 
+        const appliedSizes = [];
+
         manager.pauseRecalcLogging();
         try {
             const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -861,6 +863,8 @@ class Grid {
                     // CRITICAL: Set skipAccounting=false to ensure delta is consumed/released from ChainFree
                     manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', false, 0);
                 }
+
+                appliedSizes[i] = newSize;
             });
 
             manager.recalculateFunds();
@@ -871,7 +875,7 @@ class Grid {
         // Calculate remaining cache for this side only
         const totalInputInt = floatToBlockchainInt(ctx.budget, ctx.precision);
         let totalAllocatedInt = 0;
-        newSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, ctx.precision));
+        appliedSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, ctx.precision));
 
         const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, ctx.precision);
         await Grid._updateCacheFundsAtomic(manager, sideName, newCacheValue);
