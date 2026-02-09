@@ -726,7 +726,7 @@ class StrategyEngine {
                     mgr.logger.log(`[PARTIAL] Dust resize using cache funds (${Format.formatSizeByOrderType(dustResizeBudget, type, mgr.assets)}) for ${partial.id}`, 'debug');
                 }
 
-                if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize) {
+                if (idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize && cappedIncrease > 0) {
                     mgr.logger.log(`[PARTIAL] Dust partial at ${partial.id} (size=${Format.formatSizeByOrderType(partial.size, type, mgr.assets)}, target=${Format.formatSizeByOrderType(idealSize, type, mgr.assets)}). Updating to ${Format.formatSizeByOrderType(finalSize, type, mgr.assets)} and flagging side as doubled.`, 'info');
 
                     if (type === ORDER_TYPES.BUY) mgr.buySideIsDoubled = true;

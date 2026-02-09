@@ -67,6 +67,25 @@ async function runTests() {
         assert(dustUpdate.newSize > 5, 'Should increase size from dust');
     }
 
+    console.log(' - Testing dust no-op does not consume reaction cap...');
+    {
+        const manager = createManager();
+        manager.setAccountTotals({ buy: 600, sell: 100, buyFree: 600, sellFree: 100 });
+        manager.resetFunds();
+
+        manager._updateOrder({ id: 'p-d-noop', type: ORDER_TYPES.BUY, price: 99, size: 5, state: ORDER_STATES.PARTIAL, orderId: 'c-noop' });
+        manager._updateOrder({ id: 'v-b-presized', type: ORDER_TYPES.BUY, price: 98, size: 500, state: ORDER_STATES.VIRTUAL });
+        manager._updateOrder({ id: 'v-s-presized', type: ORDER_TYPES.SELL, price: 101, size: 50, state: ORDER_STATES.VIRTUAL });
+
+        const result = await manager.strategy.rebalance();
+        const dustUpdate = result.ordersToUpdate.find(u => u.partialOrder?.id === 'p-d-noop');
+        const buyPlacement = result.ordersToPlace.find(o => o.id === 'v-b-presized');
+
+        assert.strictEqual(dustUpdate, undefined, 'Dust partial should be skipped when no affordable increase exists');
+        assert(buyPlacement, 'Pre-sized virtual BUY should still be placed when dust update is a no-op');
+        assert(buyPlacement.size >= 500, 'Pre-sized virtual BUY placement should preserve pre-allocated size');
+    }
+
     console.log(' - Testing Boundary Index Persistence (d17ece6)...');
     {
         const manager = createManager();
