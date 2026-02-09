@@ -181,6 +181,8 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
     // Surplus/type-mismatch entries need cancellation, not a price update
     if (isSurplus) {
         try {
+            const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
+            manager.logger?.log?.(`[CORRECTION] Cancelling surplus/mismatched ${sideLabel} order ${chainOrderId} for slot ${gridOrder?.id || 'unknown'}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
             manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
             if (gridOrder && manager._updateOrder) {

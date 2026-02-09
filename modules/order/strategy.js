@@ -967,11 +967,12 @@ class StrategyEngine {
             const surplusIdx = slotIndexMap.get(surplus.id);
             const isHardSurplus = surplusIdx !== undefined && !targetSet.has(surplusIdx);
             if (isHardSurplus && !rotatedOldIds.has(surplus.id) && !inPlaceUpdatedIds.has(surplus.id)) {
+                mgr.logger.log(`[CANCEL] Hard surplus at ${surplus.id} (idx=${surplusIdx}, price=${Format.formatPrice6(surplus.price)}) is outside target window. Queuing for cancellation.`, 'info');
                 ordersToCancel.push({ ...surplus });
                 stateUpdates.push(virtualizeOrder(surplus));
             } else if (!isHardSurplus && !rotatedOldIds.has(surplus.id) && !inPlaceUpdatedIds.has(surplus.id)) {
                 mgr.logger.log(
-                    `[CANCEL-SKIP] Soft surplus ${surplus.id} (idx=${surplusIdx}, price=${surplus.price}) inside target set; deferring to later cycle`,
+                    `[CANCEL-SKIP] Soft surplus ${surplus.id} (idx=${surplusIdx}, price=${Format.formatPrice6(surplus.price)}) inside target set; deferring to later cycle`,
                     'debug'
                 );
             }

@@ -446,8 +446,8 @@ class SyncEngine {
                 // so the divergence correction system will cancel this stale chain order.
                 if (gridOrder.type !== chainOrder.type) {
                     mgr.logger?.log?.(
-                        `Type mismatch for ${gridOrder.id}: grid=${gridOrder.type}, chain=${chainOrder.type}. ` +
-                        `Queuing stale chain order for cancellation.`,
+                        `[SYNC] Type mismatch for ${gridOrder.id}: grid=${gridOrder.type}, chain=${chainOrder.type}. ` +
+                        `Queuing stale chain order ${gridOrder.orderId} for cancellation to prevent fund tracking corruption.`,
                         'warn'
                     );
                     queueCorrection({
@@ -518,6 +518,8 @@ class SyncEngine {
                 // The previous check only caught orders WITH IDs that were no longer on chain.
                 if (!currentGridOrder?.orderId || !parsedChainOrders.has(currentGridOrder.orderId)) {
                     const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
+                    const reason = currentGridOrder?.orderId ? `order ${currentGridOrder.orderId} no longer on chain` : 'phantom state (missing orderId)';
+                    mgr.logger?.log?.(`[SYNC] Cleaning up slot ${gridOrder.id}: ${reason}. Transitioning to SPREAD.`, 'debug');
                     mgr._updateOrder(spreadOrder, 'sync-cleanup-phantom', options?.skipAccounting || false, 0);
 
                     // Only trigger fill processing for GENUINE fills (had orderId but no longer on chain)

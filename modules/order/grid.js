@@ -534,6 +534,7 @@ class Grid {
         }
 
         const mpRaw = manager.config.startPrice;
+        manager.logger?.log?.(`[DIAGNOSTIC] initializeGrid: mpRaw type=${typeof mpRaw}, value=${mpRaw}`, 'debug');
 
         // Auto-derive price if not a fixed numeric value (e.g. "pool", "market", or undefined)
         if (typeof mpRaw !== 'number' || isNaN(mpRaw)) {
@@ -541,6 +542,7 @@ class Grid {
                 const { BitShares } = require('../bitshares_client');
                 const derived = await derivePrice(BitShares, manager.config.assetA, manager.config.assetB, manager.config.priceMode || 'auto');
                 if (derived) {
+                    manager.logger?.log?.(`[DIAGNOSTIC] initializeGrid: Derived new startPrice=${derived.toFixed(8)} (mode=${manager.config.priceMode || 'auto'})`, 'info');
                     manager.config.startPrice = Number(derived);
                 } else {
                     throw new Error(`Price derivation returned no result for ${manager.config.assetA}/${manager.config.assetB}`);

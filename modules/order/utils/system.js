@@ -92,19 +92,22 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
             } catch (err) {}
         }
 
-        // BitShares get_order_book(A, B) returns prices in A/B format (base/quote).
-        // We want B/A orientation (how much B per 1 A), so invert.
-        return (mid !== null && mid !== 0) ? 1 / mid : null;
+        // Return B/A orientation to match market price format
+        const finalPrice = (mid !== null && mid !== 0) ? 1 / mid : null;
+        if (finalPrice) {
+            console.log(`[DIAGNOSTIC] deriveMarketPrice: ${symA}/${symB} rawMid=${mid?.toFixed(8)} -> finalPrice(B/A)=${finalPrice.toFixed(8)}`);
+        }
+        return finalPrice;
     } catch (err) {
+        console.warn(`[DIAGNOSTIC] deriveMarketPrice failed for ${symA}/${symB}:`, err.message);
         return null;
     }
 };
 
 /**
- * Derive price from BitShares liquidity pool.
+ * Derive price from BitShares Liquidity Pool (AMM).
  * Returns price in B/A format (units of asset B per 1 unit of asset A).
- * Finds pool matching both assets, using cache for repeated lookups.
- * Handles asset ID ordering logic for pool balance interpretation.
+ * Handles internal BitShares ID-based asset ordering (asset_a/asset_b).
  * 
  * @param {Object} BitShares - BitShares client instance
  * @param {string} symA - First asset symbol
@@ -226,8 +229,13 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
         const floatB = MathUtils.blockchainToFloat(amtB, bMeta.precision);
 
         // Return B/A orientation to match market price format
-        return floatB > 0 ? floatB / floatA : null;
+        const finalPrice = floatB > 0 ? floatB / floatA : null;
+        if (finalPrice) {
+            console.log(`[DIAGNOSTIC] derivePoolPrice: ${symA}/${symB} pool=${chosen.id} amtA=${amtA}(prec=${aMeta.precision}) amtB=${amtB}(prec=${bMeta.precision}) -> finalPrice(B/A)=${finalPrice.toFixed(8)}`);
+        }
+        return finalPrice;
     } catch (err) {
+        console.warn(`[DIAGNOSTIC] derivePoolPrice failed for ${symA}/${symB}:`, err.message);
         return null;
     }
 };
@@ -437,9 +445,11 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                             newGridId: (active.id !== slot.id) ? slot.id : null
                         });
                     } else {
+                        manager.logger.log(`[DIVERGENCE] Marking surplus for cancellation: slot ${active.id} (chain id ${active.orderId}) has size 0.`, 'info');
                         manager.ordersNeedingPriceCorrection.push({ gridOrder: { ...active }, chainOrderId: active.orderId, isSurplus: true, sideUpdated: sideName });
                     }
                 } else {
+                    manager.logger.log(`[DIVERGENCE] Marking surplus for cancellation: slot ${active.id} (chain id ${active.orderId}) is outside target count.`, 'info');
                     manager.ordersNeedingPriceCorrection.push({ gridOrder: { ...active }, chainOrderId: active.orderId, isSurplus: true, sideUpdated: sideName });
                 }
             }
