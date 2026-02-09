@@ -94,10 +94,10 @@ const { BitShares, createAccountClient, waitForConnected } = require('./bitshare
 const { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } = require('./order/utils/math');
 const { FILL_PROCESSING, TIMING } = require('./constants');
 const AsyncLock = require('./order/async_lock');
+const { readInput } = require('./order/utils/system');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const readlineSync = require('readline-sync');
 const chainKeys = require('./chain_keys');
 
 // Key/auth helpers provided by modules/chain_keys.js
@@ -317,7 +317,8 @@ async function selectAccount() {
         console.log(`${index + 1}. ${name}`);
     });
 
-    const choice = readlineSync.questionInt('Select account number: ') - 1;
+    const choiceStr = await readInput('Select account number: ');
+    const choice = parseInt(choiceStr, 10) - 1;
     if (choice < 0 || choice >= accountNames.length) {
         throw new Error('Invalid account selection.');
     }

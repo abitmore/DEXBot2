@@ -79,7 +79,6 @@
 const { BitShares, waitForConnected, setSuppressConnectionLog } = require('./modules/bitshares_client');
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline-sync');
 const chainKeys = require('./modules/chain_keys');
 const { initializeFeeCache, ensureProfilesDirectory } = require('./modules/order/utils/system');
 const accountBots = require('./modules/account_bots');
