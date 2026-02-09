@@ -346,13 +346,98 @@ async function selectAccount() {
 }
 
 /**
+ * Fetch all open limit orders for an account from the blockchain using pagination.
+ * This is more robust than get_full_accounts which can truncate order lists on large accounts.
+ * @param {string} accId - Account ID to query
+ * @param {number} limit - Batch size per page (default 100)
+ * @returns {Promise<Array>} Combined array of all open orders
+ * @private
+ */
+/**
+ * Fetch all limit orders in a specific market for an account.
+ * This is the most reliable way to find orders when get_full_accounts is truncated.
+ * @param {string} accountId - Account ID
+ * @param {string} assetAId - First asset ID
+ * @param {string} assetBId - Second asset ID
+ * @param {number} limit - Depth to fetch (default 300)
+ * @returns {Promise<Array>} Filtered orders
+ * @private
+ */
+async function _readMarketOrders(accountId, assetAId, assetBId, limit = 300) {
+    try {
+        // Fetch both sides of the book
+        const [side1, side2] = await Promise.all([
+            BitShares.db.get_limit_orders(assetAId, assetBId, limit),
+            BitShares.db.get_limit_orders(assetBId, assetAId, limit)
+        ]);
+        
+        const combined = [...(side1 || []), ...(side2 || [])];
+        return combined.filter(o => o && o.seller === accountId);
+    } catch (err) {
+        console.warn(`[chain_orders] Market order fetch failed: ${err.message}`);
+        return [];
+    }
+}
+
+async function _readOpenOrdersPaginated(accId, limit = 100) {
+    const allOrdersMap = new Map();
+    let lastId = "1.7.0";
+    let hasMore = true;
+
+    while (hasMore) {
+        try {
+            // Note: some nodes require the 3rd argument (start_order_id)
+            // If it fails with "too few arguments", we fall back to get_full_accounts in the catch block
+            const batch = await BitShares.db.get_account_limit_orders(accId, limit, lastId);
+            
+            if (!batch || batch.length === 0) {
+                hasMore = false;
+            } else {
+                let addedInThisBatch = 0;
+                for (const order of batch) {
+                    if (!allOrdersMap.has(order.id)) {
+                        allOrdersMap.set(order.id, order);
+                        addedInThisBatch++;
+                    }
+                }
+
+                if (batch.length < limit || addedInThisBatch === 0) {
+                    hasMore = false;
+                } else {
+                    const newLastId = batch[batch.length - 1].id;
+                    if (newLastId === lastId) {
+                        hasMore = false;
+                    } else {
+                        lastId = newLastId;
+                    }
+                }
+            }
+        } catch (err) {
+            // If the node doesn't support get_account_limit_orders or has weird argument requirements,
+            // fall back to get_full_accounts which is standard (but might be truncated)
+            if (allOrdersMap.size === 0) {
+                console.warn(`[chain_orders] Paginated order fetch failed: ${err.message}. Falling back to get_full_accounts (may be truncated).`);
+                const fullAccount = await BitShares.db.get_full_accounts([accId], false);
+                return fullAccount[0][1].limit_orders || [];
+            }
+            // If we already got some orders but then it failed, return what we have
+            hasMore = false;
+        }
+    }
+    return Array.from(allOrdersMap.values());
+}
+
+/**
  * Fetch all open limit orders for an account from the blockchain.
  * Uses AsyncLock to safely access preferredAccountId (fixes Issue #2).
+ * Uses pagination to ensure all orders are retrieved (fixes Issue #8).
  * @param {string|null} accountId - Account ID to query (uses preferred if null)
  * @param {number} timeoutMs - Connection timeout in milliseconds
+ * @param {boolean} suppress_log - Whether to suppress the log
+ * @param {Object} [marketAssets] - Optional asset IDs {assetAId, assetBId} for deep market scan
  * @returns {Promise<Array>} Array of raw order objects from chain
  */
-async function readOpenOrders(accountId = null, timeoutMs = TIMING.CONNECTION_TIMEOUT_MS, suppress_log = true) {
+async function readOpenOrders(accountId = null, timeoutMs = TIMING.CONNECTION_TIMEOUT_MS, suppress_log = true, marketAssets = null) {
     await waitForConnected(timeoutMs);
     try {
         let accId = accountId;
@@ -363,8 +448,31 @@ async function readOpenOrders(accountId = null, timeoutMs = TIMING.CONNECTION_TI
         if (!accId) {
             throw new Error('No account selected. Please call selectAccount() first or pass an account id');
         }
-        const fullAccount = await BitShares.db.get_full_accounts([accId], false);
-        const orders = fullAccount[0][1].limit_orders || [];
+
+        // 1. Get orders from standard (paginated or fallback) account query
+        const orders = await _readOpenOrdersPaginated(accId);
+
+        // 2. If market assets provided, perform a deep scan of that specific market
+        // This bypasses account-level truncation for the market we actually care about.
+        if (marketAssets && marketAssets.assetAId && marketAssets.assetBId) {
+            const marketOrders = await _readMarketOrders(accId, marketAssets.assetAId, marketAssets.assetBId);
+            
+            // Merge results to ensure we have every order found in either source
+            const orderMap = new Map();
+            orders.forEach(o => orderMap.set(o.id, o));
+            marketOrders.forEach(o => {
+                if (!orderMap.has(o.id)) {
+                    if (!suppress_log) console.log(`[chain_orders] Deep scan found hidden market order: ${o.id}`);
+                    orderMap.set(o.id, o);
+                }
+            });
+            
+            const finalOrders = Array.from(orderMap.values());
+            if (!suppress_log) {
+                console.log(`Found ${finalOrders.length} total orders (Account Scan: ${orders.length}, Deep Market Scan: ${marketOrders.length})`);
+            }
+            return finalOrders;
+        }
 
         if (!suppress_log) {
             console.log(`Found ${orders.length} open orders for account ${accId}`);
@@ -881,7 +989,14 @@ async function executeBatch(accountName, privateKey, operations) {
  * @param {Array<String>} assets - array of asset ids or symbols to query (e.g. ['1.3.0','IOB.XRP'])
  * @returns {Object} mapping assetRef -> { assetId, symbol, precision, freeRaw, lockedRaw, free, locked, total }
  */
-async function getOnChainAssetBalances(accountRef, assets) {
+/**
+ * Fetch account asset balances, including both free and locked portions.
+ * @param {string} accountRef - Account ID or Name
+ * @param {Array<string>} [assets] - Optional list of asset IDs or Symbols to fetch
+ * @param {Object} [marketAssets] - Optional market IDs {assetAId, assetBId} for deep market scan
+ * @returns {Promise<Object>} Map of asset details: { assetId, symbol, precision, free, locked, total }
+ */
+async function getOnChainAssetBalances(accountRef, assets = [], marketAssets = null) {
     if (!accountRef) return {};
     try {
         await waitForConnected();
@@ -892,12 +1007,24 @@ async function getOnChainAssetBalances(accountRef, assets) {
             if (Array.isArray(full) && full[0] && full[0][0]) accountId = full[0][0];
         }
 
-        // Fetch full account data so we have balances and limit_orders
+        // Fetch account data (may be truncated)
         const full = await BitShares.db.get_full_accounts([accountId], false);
         if (!Array.isArray(full) || !full[0] || !full[0][1]) return {};
         const accountData = full[0][1] || {};
         const balances = accountData.balances || [];
-        const limitOrders = accountData.limit_orders || [];
+        let limitOrders = accountData.limit_orders || [];
+
+        // IMPROVEMENT: If marketAssets provided, perform deep scan to ensure locked funds
+        // in our primary market are fully accounted for, even if get_full_accounts truncated them.
+        if (marketAssets && marketAssets.assetAId && marketAssets.assetBId) {
+            const deepScanOrders = await _readMarketOrders(accountId, marketAssets.assetAId, marketAssets.assetBId);
+            if (deepScanOrders.length > 0) {
+                const orderMap = new Map();
+                limitOrders.forEach(o => orderMap.set(o.id, o));
+                deepScanOrders.forEach(o => orderMap.set(o.id, o));
+                limitOrders = Array.from(orderMap.values());
+            }
+        }
 
         // Build free balances map by asset id
         const freeInt = new Map();

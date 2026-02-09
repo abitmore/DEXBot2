@@ -347,9 +347,16 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         const logger = manager && manager.logger;
         logger?.log?.(`[_createOrderFromGrid] CRITICAL: createOrder succeeded but chainOrderId extraction failed`, 'error');
         try {
+            const marketAssets = (manager.assets?.assetA?.id && manager.assets?.assetB?.id) ? {
+                assetAId: manager.assets.assetA.id,
+                assetBId: manager.assets.assetB.id
+            } : null;
+
             const freshChainOrders = await chainOrders.readOpenOrders(
                 resolveAccountRef(manager, account),
-                TIMING.CONNECTION_TIMEOUT_MS
+                TIMING.CONNECTION_TIMEOUT_MS,
+                true,
+                marketAssets
             );
             // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
             // Orphan order requires fund deduction to prevent phantom capital
@@ -395,9 +402,16 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
 async function _recoverStartupSyncFailure({ chainOrders, manager, account, logger, triggerMessage, source }) {
     try {
         logger?.log?.(triggerMessage, 'warn');
+        const marketAssets = (manager.assets?.assetA?.id && manager.assets?.assetB?.id) ? {
+            assetAId: manager.assets.assetA.id,
+            assetBId: manager.assets.assetB.id
+        } : null;
+
         const freshChainOrders = await chainOrders.readOpenOrders(
             resolveAccountRef(manager, account),
-            TIMING.CONNECTION_TIMEOUT_MS
+            TIMING.CONNECTION_TIMEOUT_MS,
+            true,
+            marketAssets
         );
         await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source });
     } catch (syncErr) {
