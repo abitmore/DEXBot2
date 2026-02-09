@@ -16,7 +16,7 @@
  * - Persist grid snapshots for crash recovery
  *
  * ===============================================================================
- * TABLE OF CONTENTS - OrderManager Class (40+ methods)
+ * TABLE OF CONTENTS - OrderManager Class (55 methods)
  * ===============================================================================
  *
  * INITIALIZATION & LIFECYCLE (4 methods)
@@ -25,68 +25,86 @@
  *   3. finishBootstrap() - Mark bootstrap phase complete
  *   4. resetFunds() - Reset funds structure to zeroed values
  *
- * FUND MANAGEMENT (9 methods)
- *   5. recalculateFunds() - Master recalculation of all fund values
- *   6. _deductFromChainFree(orderType, size, operation) - Deduct from free balance (internal)
- *   7. _addToChainFree(orderType, size, operation) - Add to free balance (internal)
- *   8. _getCacheFunds(side) - Get cache funds for side
- *   9. _getGridTotal(side) - Get total grid allocation
- *   10. getChainFundsSnapshot() - Get snapshot of fund state
- *   11. applyBotFundsAllocation() - Apply fund allocation percentages
- *   12. setAccountTotals(totals) - Set blockchain account totals
- *   13. getMetrics() - Get performance metrics
+ * FUND MANAGEMENT (10 methods)
+ *   5. _deductFromChainFree(orderType, size, operation) - Deduct from free balance (internal)
+ *   6. _addToChainFree(orderType, size, operation) - Add to free balance (internal)
+ *   7. _getCacheFunds(side) - Get cache funds for side
+ *   8. _getGridTotal(side) - Get total grid allocation
+ *   9. modifyCacheFunds(side, delta, op) - Modify cache funds (async)
+ *   10. recalculateFunds() - Master recalculation of all fund values
+ *   11. getChainFundsSnapshot() - Get snapshot of fund state
+ *   12. applyBotFundsAllocation() - Apply fund allocation percentages
+ *   13. setAccountTotals(totals) - Set blockchain account totals
+ *   14. getMetrics() - Get performance metrics
  *
- * BLOCKCHAIN SYNCHRONIZATION (6 methods - async)
- *   14. fetchAccountTotals(accountId) - Fetch account balances from blockchain
- *   15. waitForAccountTotals(timeoutMs) - Wait for account totals to be set
- *   16. syncFromOpenOrders(orders, info) - Sync grid from open orders (delegate)
- *   17. syncFromFillHistory(fill) - Sync from fill event (delegate)
- *   18. synchronizeWithChain(data, src) - Full chain synchronization (delegate, async)
- *   19. _initializeAssets() - Initialize asset metadata (internal, async, delegate)
+ * ACCOUNT TOTALS & SYNCHRONIZATION (6 methods - async)
+ *   15. waitForAccountTotals(timeoutMs) - Wait for account totals to be set (async)
+ *   16. fetchAccountTotals(accountId) - Fetch account balances from blockchain (async)
+ *   17. syncFromOpenOrders(orders, info) - Sync grid from open orders (delegate)
+ *   18. syncFromFillHistory(fill) - Sync from fill event (delegate)
+ *   19. synchronizeWithChain(data, src) - Full chain synchronization (delegate, async)
+ *   20. _fetchAccountBalancesAndSetTotals() - Fetch totals and trigger recalc (internal, async)
  *
- * BROADCASTING & TIMING (2 methods)
- *   20. startBroadcasting() - Start order broadcast operations
- *   21. stopBroadcasting() - Stop order broadcast operations
+ * BLOCKCHAIN SETUP (1 method - async)
+ *   21. _initializeAssets() - Initialize asset metadata (internal, async)
  *
- * ORDER MANAGEMENT (8 methods)
- *   22. _updateOrder(order, context, skipAccounting, fee) - Update order state internally
- *   23. getOrdersByTypeAndState(type, state) - Query orders by type and state
- *   24. getInitialOrdersToActivate() - Get orders ready for activation
- *   25. getPartialOrdersOnSide(type) - Get partial orders on side
- *   26. processFilledOrders(orders, excl) - Process filled orders (delegate, async)
+ * BROADCASTING (2 methods)
+ *   22. startBroadcasting() - Start order broadcast operations
+ *   23. stopBroadcasting() - Stop order broadcast operations
+ *
+ * ORDER OPERATIONS (2 methods)
+ *   24. _updateOrder(order, context, skipAccounting, fee) - Update order state internally
+ *   25. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
+ *
+ * STRATEGY DELEGATION (3 methods)
+ *   26. processFilledOrders(orders, excl, options) - Process filled orders (delegate, async)
  *   27. completeOrderRotation(oldInfo) - Complete order rotation (delegate)
- *   28. isPipelineEmpty(incomingFillQueueLength) - Check if operation pipeline is empty
+ *   28. _verifyFundInvariants(chainFreeBuy, chainFreeSell, chainBuy, chainSell) - Verify fund invariants
+ *
+ * ORDER QUERIES (3 methods)
+ *   29. getInitialOrdersToActivate() - Get orders ready for activation
+ *   30. getOrdersByTypeAndState(type, state) - Query orders by type and state
+ *   31. getPartialOrdersOnSide(type) - Get partial orders on side
  *
  * ORDER LOCKING (4 methods)
- *   30. lockOrders(orderIds) - Lock orders to prevent concurrent modification
- *   31. unlockOrders(orderIds) - Unlock orders
- *   32. isOrderLocked(id) - Check if order is locked
- *   33. _cleanExpiredLocks() - Clean expired lock entries (internal)
+ *   32. lockOrders(orderIds) - Lock orders to prevent concurrent modification
+ *   33. unlockOrders(orderIds) - Unlock orders
+ *   34. isOrderLocked(id) - Check if order is locked
+ *   35. _cleanExpiredLocks() - Clean expired lock entries (internal)
  *
  * INDEX MANAGEMENT (3 methods)
- *   34. validateIndices() - Validate index consistency with orders
- *   35. assertIndexConsistency() - Assert indices match orders (throws on mismatch)
- *   36. _repairIndices() - Repair corrupted indices (internal)
+ *   36. validateIndices() - Validate index consistency with orders
+ *   37. assertIndexConsistency() - Assert indices match orders (throws on mismatch)
+ *   38. _repairIndices() - Repair corrupted indices (internal)
  *
- * CONFIGURATION & RESOLUTION (3 methods)
- *   37. _resolveConfigValue(value, total) - Resolve config value with defaults
- *   38. _triggerAccountTotalsFetchIfNeeded() - Fetch totals if stale
- *   39. applyBotFundsAllocation() - Apply fund allocation logic
+ * CONFIGURATION & RESOLUTION (2 methods)
+ *   39. _resolveConfigValue(value, total) - Resolve config value with defaults
+ *   40. _triggerAccountTotalsFetchIfNeeded() - Fetch totals if stale
  *
- * FUND RECALC CONTROL (4 methods)
- *   40. pauseFundRecalc() - Pause automatic fund recalculation
- *   41. resumeFundRecalc() - Resume fund recalculation
- *   42. pauseRecalcLogging() - Pause recalculation logging
- *   43. resumeRecalcLogging() - Resume recalculation logging
+ * RECALC CONTROL (4 methods)
+ *   41. pauseFundRecalc() - Pause automatic fund recalculation
+ *   42. resumeFundRecalc() - Resume fund recalculation
+ *   43. pauseRecalcLogging() - Pause recalculation logging
+ *   44. resumeRecalcLogging() - Resume recalculation logging
  *
- * GRID HEALTH & SPREAD (4 methods)
- *   44. checkSpreadCondition(BitShares, batchCb) - Check spread condition (async)
- *   45. checkGridHealth(batchCb) - Check grid health (async)
- *   46. calculateCurrentSpread() - Calculate current bid-ask spread
- *   47. validateGridStateForPersistence() - Validate grid before persistence
+ * SIGNAL HANDLING (2 methods)
+ *   45. consumeIllegalStateSignal() - Consume and reset illegal state signal
+ *   46. consumeAccountingFailureSignal() - Consume and reset accounting failure signal
  *
- * PERSISTENCE (2 methods - async)
- *   48. persistGrid() - Persist grid snapshot to storage
+ * GRID HEALTH & DIAGNOSTICS (4 methods - async)
+ *   47. checkSpreadCondition(BitShares, batchCb) - Check and flag spread condition (async)
+ *   48. checkGridHealth(batchCb) - Monitor grid health (async)
+ *   49. calculateCurrentSpread() - Calculate current bid-ask spread
+ *   50. checkFundDriftAfterFills() - Check fund drift tracking
+ *
+ * PIPELINE MANAGEMENT (3 methods)
+ *   51. isPipelineEmpty(incomingFillQueueLength) - Check if operation pipeline is empty
+ *   52. clearStalePipelineOperations() - Clear stale pipeline operations
+ *   53. getPipelineHealth() - Get pipeline health metrics
+ *
+ * PERSISTENCE & VALIDATION (2 methods - async)
+ *   54. validateGridStateForPersistence() - Validate grid before persistence
+ *   55. persistGrid() - Persist grid snapshot to storage (async)
  *
  * ===============================================================================
  *

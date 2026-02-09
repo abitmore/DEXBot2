@@ -468,30 +468,53 @@ class StrategyEngine {
             slotIndexMap.set(allSlots[idx].id, idx);
         }
 
-        // ================================================================================
-        // STEP 1: CALCULATE IDEAL STATE
-        // ================================================================================
-        const sortedSideSlots = [...sideSlots].sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-        const targetIndices = [];
-        for (let i = 0; i < Math.min(finalTargetCount, sortedSideSlots.length); i++) {
-            const idx = slotIndexMap.get(sortedSideSlots[i].id);
-            if (idx !== undefined) targetIndices.push(idx);
-        }
-        const targetSet = new Set(targetIndices);
-        const weightDist = mgr.config.weightDistribution || { sell: 0.5, buy: 0.5 };
-        const sideWeight = weightDist[side];
-        const precision = getPrecisionForSide(mgr.assets, side);
+         // ================================================================================
+         // STEP 1: CALCULATE IDEAL STATE
+         // ================================================================================
+         // SORTING FOR TARGET WINDOW SELECTION:
+         // Sort all side slots by price to identify the "closest to market" orders.
+         // These closest orders form the target window where we want to maintain liquidity.
+         // - BUY side: descending (highest first) = closest to market at top
+         // - SELL side: ascending (lowest first) = closest to market at top
+         // This enables picking the top finalTargetCount slots as our active window.
+         const sortedSideSlots = [...sideSlots].sort((a, b) => type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
+         
+         // SELECT TARGET INDICES:
+         // Pick the market-closest N slots (where N = finalTargetCount = activeOrders config).
+         // These slots define our "maintained window" — orders here should be active,
+         // orders outside should be rotated away or cancelled.
+         const targetIndices = [];
+         for (let i = 0; i < Math.min(finalTargetCount, sortedSideSlots.length); i++) {
+             const idx = slotIndexMap.get(sortedSideSlots[i].id);
+             if (idx !== undefined) targetIndices.push(idx);
+         }
+         const targetSet = new Set(targetIndices);  // Fast O(1) lookup: "is this slot in target window?"
+         
+         // WEIGHT DISTRIBUTION & SIZING:
+         // Weight distribution determines how funds are allocated across the grid.
+         // 0.5 = linear (same amount per slot)
+         // > 0.5 = more weight to market-close slots (exponential growth outward)
+         const weightDist = mgr.config.weightDistribution || { sell: 0.5, buy: 0.5 };
+         const sideWeight = weightDist[side];
+         const precision = getPrecisionForSide(mgr.assets, side);
 
-        // NOTE: BTS fees are already deducted from totalSideBudget in rebalance().
-        // Do NOT subtract them again here - that was causing double fee deduction.
+         // NOTE: BTS fees are already deducted from totalSideBudget in rebalance().
+         // Do NOT subtract them again here - that was causing double fee deduction.
 
-        // CRITICAL: Sort order differs between sides:
-        // - BUY: descending (b.price - a.price) = highest price first = EDGE to MARKET (reversed)
-        // - SELL: ascending (a.price - b.price) = lowest price first = MARKET to EDGE (normal)
-        // Use reverse=true for BUY to flip weight distribution so market (index n-1) gets max weight.
-        // Use reverse=false for SELL so market (index 0) gets max weight.
-        const reverse = (type === ORDER_TYPES.BUY);
-        const sideIdealSizes = allocateFundsByWeights(totalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
+         // CRITICAL SORT ORDER EXPLANATION:
+         // The sort order passed to allocateFundsByWeights must match the fund allocation direction.
+         // - For sorted slots [closest, ..., furthest], we calculate sizes [s0, s1, ..., sn]
+         // - Weight distribution applies exponentially from index 0 onwards
+         // - Result: If weight > 0.5, s0 > s1 > ... > sn (exponential decay outward)
+         //
+         // However, grid.js stores orders internally as [lowest price, ..., highest price] (always ASC).
+         // So we need to account for this inversion:
+         // - BUY: closest-to-market is highest price (index n-1 in grid array)
+         //   → reverse=true flips weight distribution so grid[n-1] gets max weight
+         // - SELL: closest-to-market is lowest price (index 0 in grid array)
+         //   → reverse=false keeps normal order, grid[0] gets max weight
+         const reverse = (type === ORDER_TYPES.BUY);
+         const sideIdealSizes = allocateFundsByWeights(totalSideBudget, sideSlots.length, sideWeight, mgr.config.incrementPercent / 100, reverse, 0, precision);
 
         const finalIdealSizes = new Array(allSlots.length).fill(0);
         sideSlots.forEach((slot, i) => {
@@ -500,68 +523,124 @@ class StrategyEngine {
             if (slotIdx !== undefined) finalIdealSizes[slotIdx] = size;
         });
 
-        // ================================================================================
-        // STEP 2: IDENTIFY SHORTAGES AND SURPLUSES
-        // ================================================================================
-        const activeOnChain = allSlots.filter(s => isOrderPlaced(s) && !(excludeIds.has(s.id) || (hasOnChainId(s) && excludeIds.has(s.orderId))));
-        const activeThisSide = activeOnChain.filter(s => s.type === type);
+         // ================================================================================
+         // STEP 2: IDENTIFY SHORTAGES AND SURPLUSES
+         // ================================================================================
+         // FILTER 1: ACTIVE ON-CHAIN ORDERS
+         // Select only orders that are placed on blockchain (have orderId).
+         // Exclude orders that are explicitly blocked (in excludeIds set).
+         const activeOnChain = allSlots.filter(s => 
+             isOrderPlaced(s) && 
+             !(excludeIds.has(s.id) || (hasOnChainId(s) && excludeIds.has(s.orderId)))
+         );
+         
+         // FILTER 2: ACTIVE THIS SIDE
+         // From on-chain orders, keep only those on the current side (BUY or SELL).
+         // Excludes SPREAD orders (which can be either side but are handled separately).
+         const activeThisSide = activeOnChain.filter(s => s.type === type);
 
-        const shortages = targetIndices.filter(idx => {
-            const slot = allSlots[idx];
-            if (excludeIds.has(slot.id) || (hasOnChainId(slot) && excludeIds.has(slot.orderId))) return false;
-            if (!hasOnChainId(slot) && finalIdealSizes[idx] > 0) return true;
+         // SHORTAGE DETECTION:
+         // A slot is a shortage if it's in the target window but lacks an active order.
+         // Two subcases:
+         // 1. No on-chain order (VIRTUAL or unplaced): needs to be filled
+         // 2. Has tiny order (dust): needs to be refilled/updated to proper size
+         // Shortages will be addressed by:
+         //   - Creating new orders (placements) for empty slots
+         //   - Rotating dust orders (cancel + place larger replacement)
+         const shortages = targetIndices.filter(idx => {
+             const slot = allSlots[idx];
+             if (excludeIds.has(slot.id) || (hasOnChainId(slot) && excludeIds.has(slot.orderId))) return false;
+             
+             // Case 1: No on-chain order = definitely a shortage
+             if (!hasOnChainId(slot) && finalIdealSizes[idx] > 0) return true;
 
-            // Dust detection: Treat slot as shortage if it has a dust order
-            // This allows the strategy to "refill" it (either by rotation or update)
-            if (hasOnChainId(slot) && finalIdealSizes[idx] > 0) {
-                const threshold = getSingleDustThreshold(finalIdealSizes[idx]);
-                if (slot.size < threshold) return true;
-            }
-            return false;
-        });
+             // Case 2: Dust detection
+             // Even if an order exists on-chain, if it's too small relative to ideal size,
+             // treat it as a shortage (rotate to proper size)
+             if (hasOnChainId(slot) && finalIdealSizes[idx] > 0) {
+                 const threshold = getSingleDustThreshold(finalIdealSizes[idx]);
+                 if (slot.size < threshold) return true;
+             }
+             return false;
+         });
 
-        // SURPLUSES include TWO categories:
-        // 1. Hard Surpluses: Orders outside the target window (need to be cancelled or rotated)
-        // 2. Dust Surpluses: Orders inside window but with dust-sized positions (need to be updated or rotated)
-        // NOTE: After STEP 2.5, PARTIAL orders in-window are handled separately and filtered out
-        // so they don't get rotated away. See filteredSurpluses below.
-        const surpluses = activeThisSide.filter(s => {
-            const idx = slotIndexMap.get(s.id);
-            if (idx === undefined) return false;
-            // Hard Surplus: Outside window
-            if (!targetSet.has(idx)) return true;
+         // SURPLUS DETECTION:
+         // A surplus is an order that shouldn't be there (outside target window) or is
+         // undersized within the window. Two mechanisms handle surpluses:
+         // 1. ROTATION: Move surplus to better price (if funds available and opportunity exists)
+         // 2. CANCELLATION: Cancel if rotation not possible
+         //
+         // Surpluses include TWO categories:
+         // 1. Hard Surpluses: Orders outside the target window
+         //    → These are far from market and should be rotated to closer slots
+         // 2. Dust Surpluses: Orders inside target window but undersized
+         //    → These are in the right location but too small; rotate or update
+         // 
+         // NOTE: PARTIAL orders in-window are handled separately (see STEP 3) and
+         // filtered from surpluses to prevent unwanted rotation during updates.
+         const surpluses = activeThisSide.filter(s => {
+             const idx = slotIndexMap.get(s.id);
+             if (idx === undefined) return false;
+             
+             // Case 1: Hard Surplus — Outside target window
+             // These orders are beyond our maintained spread and should be rotated to better prices.
+             if (!targetSet.has(idx)) return true;
 
-            // Dust Surplus: Inside window but dust (needs to be moved/updated)
-            const idealSize = finalIdealSizes[idx];
-            const threshold = getSingleDustThreshold(idealSize);
-            if (s.size < threshold) return true;
+             // Case 2: Dust Surplus — Inside window but undersized
+             // Order is in right location but too small; rotate/update to ideal size.
+             const idealSize = finalIdealSizes[idx];
+             const threshold = getSingleDustThreshold(idealSize);
+             if (s.size < threshold) return true;
 
-            return false;
-        });
+             return false;
+         });
 
-        // Prioritize PARTIAL orders for rotation, then sort by distance (FURTHEST FIRST)
-        // This ensures INNER surpluses are left over for cancellation (maximizing surplus-fill potential)
-        // and uses stable outer orders for rotations (reducing rotation-race failures).
-        surpluses.sort((a, b) => {
-            if (a.state === ORDER_STATES.PARTIAL && b.state !== ORDER_STATES.PARTIAL) return -1;
-            if (a.state !== ORDER_STATES.PARTIAL && b.state === ORDER_STATES.PARTIAL) return 1;
-            // Edge-First (Furthest from Market)
-            return type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price;
-        });
+         // SURPLUS SORTING STRATEGY:
+         // Determines which surpluses to rotate first when budget is limited.
+         // 1. State Priority: PARTIAL orders first (they may be filling soon, worth waiting for)
+         // 2. Distance Priority (Edge-First): After state, sort by distance from market
+         //    → Rotate far orders first (outer grid orders are more stable, less locking conflicts)
+         //    → Leave inner orders for cancellation (inner orders have best fill potential)
+         //
+         // Rationale:
+         // - PARTIAL orders: Prioritize for rotation because they're in mid-fill state
+         //   and waiting for them to complete uses less capital than placing new orders
+         // - Edge-First: Outer grid orders are more stable (price less likely to move through them),
+         //   so they're safer for rotation operations. Inner orders get cancelled only if
+         //   space is needed, maximizing fill opportunities.
+         surpluses.sort((a, b) => {
+             // TIEBREAKER 1: PARTIAL state (partial orders move first)
+             if (a.state === ORDER_STATES.PARTIAL && b.state !== ORDER_STATES.PARTIAL) return -1;
+             if (a.state !== ORDER_STATES.PARTIAL && b.state === ORDER_STATES.PARTIAL) return 1;
+             
+             // TIEBREAKER 2: Distance from market (Edge-First = further from market comes first)
+             // BUY: lower prices first (edge direction)
+             // SELL: higher prices first (edge direction)
+             return type === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price;
+         });
 
-        let budgetRemaining = reactionCap;
-        const reservedPlacementIds = new Set();
+         let budgetRemaining = reactionCap;
+         const reservedPlacementIds = new Set();
 
-        // Placement priority is market-nearest free slot first.
-        // BUY: highest price first (closest to spread)
-        // SELL: lowest price first (closest to spread)
-        const sidePrioritySlots = [...sideSlots].sort((a, b) =>
-            type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price
-        );
+         // PLACEMENT PRIORITY SLOTS:
+         // Identify slots closest to market (in target window, not yet placed).
+         // These are the slots where we want to place new orders when budget allows.
+         // Ordering: Market-nearest first (same as target window selection above)
+         // - BUY: highest price first (closest to spread/market)
+         // - SELL: lowest price first (closest to spread/market)
+         // 
+         // We maintain sidePrioritySlots as a pre-sorted list and pickPriorityFreeSlot()
+         // walks through it in order, reserving slots as they're committed to placements.
+         const sidePrioritySlots = [...sideSlots].sort((a, b) =>
+             type === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price
+         );
 
-        // Advancing pointer: since reservedPlacementIds only grow, prior entries
-        // are either already reserved or non-free, so we skip past them on each call.
-        let _priorityScanStart = 0;
+         // ADVANCING POINTER OPTIMIZATION:
+         // Since reservedPlacementIds only grows during this cycle,
+         // prior entries are either already reserved or non-free.
+         // Instead of rescanning from index 0, we advance the pointer past already-checked slots.
+         // This is O(n) total across all pickPriorityFreeSlot() calls instead of O(n²).
+         let _priorityScanStart = 0;
 
         const pickPriorityFreeSlot = (excludeSlotId = null) => {
             for (let i = _priorityScanStart; i < sidePrioritySlots.length; i++) {

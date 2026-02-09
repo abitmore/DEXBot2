@@ -365,6 +365,52 @@ class SyncEngine {
     _performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
         chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection, options) {
 
+        /**
+         * TWO-PASS RECONCILIATION ALGORITHM:
+         * ==================================
+         *
+         * This method performs two passes over order data:
+         * 1. PASS 1 (Grid → Chain): Match grid orders to blockchain
+         * 2. PASS 2 (Chain → Grid): Match unmatched chain orders to grid
+         *
+         * PASS 1: GRID → CHAIN RECONCILIATION
+         * ===================================
+         * For each grid order that has an orderId (known on-chain order):
+         * - Look up the corresponding chain order in parsedChainOrders
+         * - If found:
+         *   * Verify type match (detect reassignments like sell→buy)
+         *   * Check if price drifted beyond tolerance (queue for correction)
+         *   * Check if size changed (partial fills, precision changes)
+         *   * Mark as matched and update grid state
+         * - If not found:
+         *   * Mark as VIRTUAL (order no longer exists on-chain)
+         *   * Add to filledOrders if it previously had an orderId
+         *
+         * PASS 2: CHAIN → GRID RECONCILIATION
+         * ===================================
+         * For each chain order not yet matched (orphan orders):
+         * - Use fuzzy matching (price ± tolerance, type, size range) to find best grid match
+         * - If match found:
+         *   * Assign orderId to grid slot
+         *   * Mark as ACTIVE or PARTIAL based on size changes
+         *   * Track matching to prevent double-assignment
+         * - If no match:
+         *   * Log as orphan (chain order not in grid; rare edge case)
+         *
+         * STATE TRANSITIONS:
+         * ==================
+         * Grid Order → ACTIVE: On-chain with full size
+         * Grid Order → PARTIAL: On-chain with reduced size (filled)
+         * Grid Order → VIRTUAL: Was on-chain but no longer found
+         * Chain Order → Grid: Unmatched chain order assigned to VIRTUAL grid slot
+         *
+         * CRITICAL INVARIANTS:
+         * - Each grid order matches AT MOST one chain order
+         * - Each chain order matches AT MOST one grid order
+         * - If mismatch (chain matched to wrong grid), use price tolerance to avoid assigning
+         * - Filled orders trigger rebalancing (new orders to maintain spread)
+         */
+
         const queueCorrection = (entry) => {
             ordersNeedingCorrection.push(entry);
             if (!Array.isArray(mgr.ordersNeedingPriceCorrection)) return;
@@ -383,6 +429,9 @@ class SyncEngine {
             }
         };
 
+        // ====================================================================
+        // PASS 1: GRID → CHAIN - Match grid orders to blockchain
+        // ====================================================================
         for (const gridOrder of mgr.orders.values()) {
 
             if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) {
@@ -478,10 +527,13 @@ class SyncEngine {
                     }
                 }
             }
-        }
+         }
 
-        for (const [chainOrderId, chainOrder] of parsedChainOrders) {
-            if (chainOrderIdsOnGrid.has(chainOrderId)) continue;
+         // ====================================================================
+         // PASS 2: CHAIN → GRID - Match unmatched chain orders to grid
+         // ====================================================================
+         for (const [chainOrderId, chainOrder] of parsedChainOrders) {
+             if (chainOrderIdsOnGrid.has(chainOrderId)) continue;  // Already matched in PASS 1
 
             let match = findMatchingGridOrderByOpenOrder(
                 { orderId: chainOrderId, type: chainOrder.type, price: chainOrder.price, size: chainOrder.size },

@@ -182,44 +182,86 @@ let TIMING = {
 
 // Grid limits and scaling constants
 let GRID_LIMITS = {
-    // Minimum spread factor: Ensures spread is at least (incrementPercent × MIN_SPREAD_FACTOR)
-    // Prevents spread from being too narrow relative to grid spacing
-    // Default: 2.1 (ensures 3-gap minimum stays below Target + Increment limit)
+    // MIN_SPREAD_FACTOR: Ensures spread is at least (incrementPercent × MIN_SPREAD_FACTOR) slots wide.
+    // Rationale: Spread must be sufficiently wide to:
+    //   1. Avoid order collision (orders too close get rejected by blockchain)
+    //   2. Allow bid-ask arbitrage room (market makers profit from the spread)
+    //   3. Scale proportionally to grid spacing (tighter increments need tighter spread buffer)
+    //
+    // Example Calculation (incrementPercent = 0.5%, targetSpread = 2%):
+    //   - MIN_SPREAD_FACTOR = 2.1 → minSpread = 0.5% × 2.1 = 1.05%
+    //   - But target is 2%, so final spread = max(1.05%, 2%) = 2% (target wins)
+    //   - This ensures spread is at least (0.5% × 2.1) but respects user's targetSpread
+    //
+    // Default: 2.1 ensures 3-slot minimum gap even with tight increment (see grid.js::SPREAD_GAP_FORMULA)
     MIN_SPREAD_FACTOR: 2.1,
 
-    // Minimum order size safety factor: Multiplied by blockchain minimum to ensure orders are well above limits
-    // Prevents orders from being rejected due to rounding or fee deductions
-    // Default: 50 (orders must be 50× the blockchain minimum)
+    // MIN_ORDER_SIZE_FACTOR: Minimum order size = blockchain_minimum × this factor.
+    // Rationale: Orders smaller than blockchain minimum are rejected.
+    //   - Blockchain minimum ≈ 1 satoshi (10^-8 per unit)
+    //   - Float arithmetic and fee deductions can round amounts down
+    //   - Safety factor = 50× ensures orders survive rounding
+    // Example: If blockchainMin = 1 BTS, then minSize = 50 BTS (very conservative for mainnet)
+    // This trades off efficiency (larger minimum) for reliability (never hits rounding floor)
     MIN_ORDER_SIZE_FACTOR: 50,
 
-    // Grid regeneration threshold (percentage)
-    // When (cacheFunds / total.grid) * 100 >= this percentage on one side, trigger Grid.updateGridOrderSizes() for that side
-    // Checked independently for buy and sell sides
-    // Default: 3% (was 2%) — more conservative by default to reduce unnecessary churn
-    // Example: If cacheFunds.buy = 100 and total.grid.buy = 1000, ratio = 10%
-    // If threshold = 5%, then 10% >= 5% triggers update for buy side only
+    // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
+    // Formula: IF (cacheFunds / total.grid) × 100 ≥ threshold → regenerate
+    // Rationale: After fills, proceeds accumulate in cacheFunds (surplus capital).
+    //   - 3% = regen triggered when cache represents ≥3% of committed grid size
+    //   - This allows gradual accumulation while preventing lag during high-fill periods
+    //   - If threshold too low: constant regeneration (churn, fees)
+    //   - If threshold too high: capital trapped in cache, grid undersized
+    // Example: 20 active orders × 100 BTS each = 2000 BTS grid
+    //   - cacheFunds ≥ 60 BTS → (60/2000 = 3%) triggers regeneration
+    //   - Allows ~3 fill-proceeds before resize (reduces churn)
+    // Checked independently per side, allowing asymmetric fill patterns.
     GRID_REGENERATION_PERCENTAGE: 3,
 
-    // Threshold for considering a partial order as "dust" relative to ideal size
-    // If (partial.size / idealSize) * 100 < PARTIAL_DUST_THRESHOLD_PERCENTAGE, it may trigger rebalancing
-    // Default: 5 (5% - partials below 5% of ideal size are considered dust)
+    // PARTIAL_DUST_THRESHOLD_PERCENTAGE: Threshold for treating partially-filled orders as "dust".
+    // Formula: IF (actualSize / idealSize) × 100 < threshold → dust
+    // Rationale: Partially-filled orders become progressively smaller.
+    //   - 5% = orders below 5% of ideal size are rotated (to restore grid symmetry)
+    //   - Dust orders waste grid slots (they should be closed or brought back to ideal size)
+    //   - Rotation replaces dust order with a fresh one at proper size
+    //   - Detects both accidental low fills and normal fill-chain truncation
+    // Example: idealSize = 100 BTS, but actual = 3 BTS → (3/100 = 3%) < 5% → dust
+    //   - This order would be rotated to free the slot
     PARTIAL_DUST_THRESHOLD_PERCENTAGE: 5,
 
-    // Tolerance for fund invariant checks (percentage)
-    // Discrepancies below this threshold will not trigger a warning
-    // Accounts for rounding errors and blockchain precision limits
-    // Default: 0.1 (0.1%)
+    // FUND_INVARIANT_PERCENT_TOLERANCE: Allowed percentage drift in fund tracking before triggering recovery.
+    // Formula: tolerance = max(precisionSlack, balance × percentTolerance)
+    // Rationale: Fund tracking can drift due to:
+    //   1. Float arithmetic rounding (resolved by precisionSlack, ~10^-precision)
+    //   2. In-flight blockchain transactions (resolved by percentTolerance)
+    //   3. Fee accumulation from multiple operations
+    // Default: 0.1% (0.1%) means for 1000 BTS balance, drift up to 1 BTS is tolerated
+    //   - Accounts for ~5 fill-fee events before recovery triggered
+    //   - Too low: false positives (recoveries on healthy operations)
+    //   - Too high: undetected drift (fund leaks)
+    // Drifts larger than this tolerance trigger immediate recovery (re-sync from blockchain).
     FUND_INVARIANT_PERCENT_TOLERANCE: 0.1,
 
-    // Minimum number of spread slots to maintain proper spread zone
-    // Ensures at least this many empty slots between best buy and best sell
-    // Default: 2 (minimum 2 slots in spread zone)
+    // MIN_SPREAD_ORDERS: Minimum number of empty slots in spread zone (between best buy and best sell).
+    // Rationale: Spread must be sufficiently wide to:
+    //   1. Prevent order collision (blockchain rejects orders with identical price)
+    //   2. Ensure market makers profit from the bid-ask difference
+    //   3. Allow price movement without orders crossing each other
+    // Default: 2 (at least 2 empty slots between buy and sell sides)
+    // Example: Buy @ 99.9, empty, empty, Sell @ 100.1 → 2-slot spread (acceptable)
+    //         Buy @ 99.9, empty, Sell @ 100.0 → 1-slot spread (too tight, rebalance triggered)
     MIN_SPREAD_ORDERS: 2,
 
-    // Maximum order size factor: limits new orders during validation and grid expansion
-    // Prevents creating orders larger than (largest_existing_order × MAX_ORDER_FACTOR)
-    // During grid regeneration: ensures gradual expansion when funds increase
-    // Default: 1.1 (new orders can't exceed largest order × 1.1)
+    // MAX_ORDER_FACTOR: Growth limit during grid expansion; new orders ≤ (largest_existing × this factor).
+    // Rationale: Gradual grid expansion prevents sudden explosive growth.
+    //   - 1.1 = new orders can't exceed 110% of the largest existing order
+    //   - When funds increase (fills, deposits), grid expands gradually over multiple cycles
+    //   - This prevents "resize explosion" where 1 fill suddenly expands all orders
+    //   - Gradual expansion is safer: prices move smoothly, less slippage on fills
+    // Example: Largest order = 100 BTS → new orders can be at most 110 BTS
+    //   - Next cycle: if still growing, can place up to 121 BTS (1.1 × 110)
+    //   - Exponential growth at 10% per cycle eventually reaches budget limit
+    // Applied during grid.createOrderGrid() to validate order sizes.
     MAX_ORDER_FACTOR: 1.1,
 
     // Grid comparison metrics
@@ -265,15 +307,44 @@ let INCREMENT_BOUNDS = {
 
 // Fee-related parameters for order operations
 let FEE_PARAMETERS = {
-    // Multiplier for BTS fee reservation (multiplied by totalTargetOrders)
+    // BTS_RESERVATION_MULTIPLIER: Factor applied to totalTargetOrders to reserve BTS fee budget.
+    // Formula: BTS reserved = totalTargetOrders × BTS_RESERVATION_MULTIPLIER
+    // Rationale: Each order can be updated/cancelled during rebalancing, and each operation incurs a fee.
+    //   - Conservative estimate: each order may be touched ~5 times during its lifetime
+    //   - Orders get: created (1 fee), rotated (2 fees: cancel + place), updated (1 fee), cancelled (1 fee)
+    //   - So ~5 fees per order is safe buffer to prevent fee starvation
+    // Example: 20 active orders → 20 × 5 = 100 BTS reserved for fee operations
+    // Set to 0 to disable fee reservation (not recommended for production).
     BTS_RESERVATION_MULTIPLIER: 5,
-    // Fallback BTS fee when fee data calculation fails
+    
+    // Fallback BTS fee (satoshis) when dynamic fee calculation fails.
+    // Rationale: During startup or when fee API is unavailable, use this conservative estimate.
+    //   - 100 satoshis = 0.00000100 BTS (typical limit order fee is 1-2 BTS on mainnet)
+    //   - Using satoshi precision prevents integer division errors
+    //   - Actual fees are calculated and deducted once fee API responds
     BTS_FALLBACK_FEE: 100,
-    // Maker fee percentage of full order creation fee (10% of fee)
+    
+    // MAKER_FEE_PERCENT: Percentage of base fee charged for maker orders (orders that rest in book).
+    // Rationale: BitShares incentivizes providing liquidity (making orders) with lower fees.
+    //   - 0.1 = 10% of the base order creation fee
+    //   - Typical: 2 BTS base fee × 0.1 = 0.2 BTS charged (maker)
+    //   - vs. 2 BTS for taker orders (taker: 100% of base fee)
+    //   - This 10× discount encourages grid bots (primarily makers) to place orders
     MAKER_FEE_PERCENT: 0.1,
-    // Maker refund percentage (90% refund on fee)
+    
+    // MAKER_REFUND_PERCENT: Percentage of maker fee refunded after order execution/cancellation.
+    // Rationale: BitShares refunds unused maker fees when order is cancelled or fills.
+    //   - 0.9 = 90% refund of the maker fee paid
+    //   - Typical: Paid 0.2 BTS, get 0.18 BTS refund, net cost 0.02 BTS
+    //   - Refund arrives in a separate transaction after cancellation
+    //   - This incentive structure encourages taker participation (market efficiency)
     MAKER_REFUND_PERCENT: 0.9,
-    // Taker fee percentage of full order creation fee (100% of fee)
+    
+    // TAKER_FEE_PERCENT: Percentage of base fee charged for taker orders (orders that cross spread).
+    // Rationale: Takers (who immediately fill) pay full fee; they consume liquidity.
+    //   - 1.0 = 100% of the base order creation fee
+    //   - Typical: 2 BTS base fee × 1.0 = 2 BTS charged (no refund)
+    //   - Full fee covers order broadcast and execution costs
     TAKER_FEE_PERCENT: 1.0
 };
 
@@ -355,23 +426,51 @@ let NODE_MANAGEMENT = {
 
 // Pipeline timeout configuration
 let PIPELINE_TIMING = {
-    // Force maintenance if pipeline stuck for this long (5 minutes)
+    // TIMEOUT_MS: Maximum duration for pipeline operations before forcing maintenance.
+    // Rationale: If pipeline hangs (stuck in lock, slow blockchain, etc), force a maintenance cycle.
+    //   - 300000 ms = 5 minutes
+    //   - Prevents infinite hangs; ensures bot recovers or logs the problem
+    //   - Typical pipeline cycle completes in <100ms (unless blockchain is slow)
+    //   - 5 minute timeout allows for slow network periods while still being responsive
+    // When timeout is exceeded, pipeline triggers maintenance (logs, cleanup, state check).
     TIMEOUT_MS: 300000,
 
-    // Fund recovery retry configuration.
-    // When a fund invariant violation is detected, the bot attempts self-healing recovery.
-    // In patch15, recovery was one-shot: if the first attempt failed, the bot was bricked
-    // until the next processFilledOrders() call (which might never come if no fills arrive).
-    // These settings allow periodic retries with a maximum attempt cap.
+    // RECOVERY_RETRY_INTERVAL_MS: Minimum cooldown time between fund invariant recovery attempts.
+    // Rationale: When a fund tracking invariant violation is detected:
+    //   - First attempt: immediate (no wait) — try to fix quickly
+    //   - Subsequent attempts: wait at least this duration — prevent tight retry loops
+    //   - Prevents blockchain query spam while allowing eventual convergence
     //
-    // RECOVERY_RETRY_INTERVAL_MS: Minimum time between recovery attempts (default: 60s).
-    //   After a failed recovery, the bot waits at least this long before trying again.
-    //   This prevents tight retry loops while allowing eventual convergence.
+    // Backoff Timeline Example (defaults):
+    //   - T=0s: Violation detected → immediate recovery attempt #1
+    //   - T=45s: Next violation check → still in cooldown, skip retry
+    //   - T=65s: Next violation check → cooldown expired, attempt #2
+    //   - T=125s: Attempt #3 (another 60s)
+    //   - T=180s: Attempt #4
+    //   - T=240s: Attempt #5 (max reached)
+    //   - T=300s: Fill arrives → counter resets, ready for new recovery episode
+    //
+    // Default: 60000 ms (60 seconds) balances responsiveness with resource efficiency.
+    //   - Too low (e.g., 5s): constant recovery attempts, high blockchain load
+    //   - Too high (e.g., 600s): slow detection of new invariant drift, bad UX
     RECOVERY_RETRY_INTERVAL_MS: 60000,
+
+    // MAX_RECOVERY_ATTEMPTS: Maximum recovery retry attempts before giving up.
+    // Rationale: Limit total recovery effort to prevent runaway loop.
+    //   - After N failed attempts, bot stops recovery until next fill/sync
+    //   - This allows bot to stabilize when recovery is impossible
+    //   - Example: if funds are impossible to recover, don't keep trying indefinitely
     //
-    // MAX_RECOVERY_ATTEMPTS: Maximum recovery attempts per invariant violation episode (default: 5).
-    //   After this many failed attempts, the bot stops retrying until the next fill or
-    //   periodic blockchain fetch resets the counter. Set to 0 for unlimited retries.
+    // Retry Lifecycle (defaults, MAX = 5):
+    //   - Attempts 1-5: Each spaced RECOVERY_RETRY_INTERVAL_MS apart (~60s each)
+    //   - Attempt 5 fails: stop retrying
+    //   - Next fill or blockchain fetch (after ~1 minute): counter resets, new episode starts
+    //   - Total time blocked per episode: ~5 × 60s = 5 minutes before giving up
+    //
+    // Special Cases:
+    //   - Set to 0: unlimited retries (not recommended; can cause infinite recovery loops)
+    //   - Set to 1: one-shot only (minimal recovery effort; original patch15 behavior)
+    //   - Set to 5: balanced (typical value; ~5 min of effort)
     MAX_RECOVERY_ATTEMPTS: 5
 };
 

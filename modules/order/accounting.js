@@ -6,7 +6,7 @@
  * Exports a single Accountant class that manages all fund accounting operations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Accountant Class (13 methods)
+ * TABLE OF CONTENTS - Accountant Class (16 methods)
  * ===============================================================================
  *
  * CORE INITIALIZATION & RECALCULATION (2 methods)
@@ -19,23 +19,26 @@
  *
  * VERIFICATION & RECOVERY (3 methods - async, internal)
  *   4. _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) - Verify fund tracking invariants
- *   5. _performStateRecovery(mgr) - Centralized state recovery (fetch + sync + validate)
- *   6. _attemptFundRecovery(mgr, violationType) - Attempt immediate recovery from invariant violations
+ *   5. _performStateRecovery(mgr) - Centralized state recovery (fetch + sync + validate) (async, internal)
+ *   6. _attemptFundRecovery(mgr, violationType) - Attempt immediate recovery from invariant violations (async, internal)
  *
- * CHAINFREEE BALANCE MANAGEMENT (2 methods)
+ * CHAINFREE BALANCE MANAGEMENT (2 methods)
  *   7. tryDeductFromChainFree(orderType, size, operation) - Atomically deduct from FREE portion
  *   8. addToChainFree(orderType, size, operation) - Add amount back to optimistic chainFree balance
  *
- * BALANCE ADJUSTMENTS (2 methods)
+ * BALANCE ADJUSTMENTS (4 methods)
  *   9. adjustTotalBalance(orderType, delta, operation, totalOnly) - Adjust total and free balances
- *   10. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
+ *   10. _normalizeSideHint(sideHint) - Normalize side hint to standard key (internal)
+ *   11. _resolveOrderSide(order, fallbackOrder, explicitSideHint) - Resolve order side (internal)
+ *   12. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
  *
- * FEE MANAGEMENT (2 methods)
- *   11. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy
- *   12. modifyCacheFunds(side, delta, operation) - Modify cache funds (rotation surplus + fill proceeds)
+ * FEE MANAGEMENT (3 methods)
+ *   13. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy (async)
+ *   14. _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) - Deduct fees from fill proceeds (internal)
+ *   15. modifyCacheFunds(side, delta, operation) - Modify cache funds (rotation surplus + fill proceeds)
  *
  * FILL PROCESSING (1 method)
- *   13. processFillAccounting(fillOp) - Process fund impact of order fill (atomically updates accountTotals)
+ *   16. processFillAccounting(fillOp) - Process fund impact of order fill (atomically updates accountTotals)
  *
  * ===============================================================================
  * FUND STRUCTURE (managed by Accountant)
@@ -126,6 +129,30 @@ class Accountant {
      * This is THE MASTER FUND CALCULATION and must be called after any state change.
      * Called automatically by _updateOrder(), but can be manually triggered to verify consistency.
      *
+     * PSEUDOCODE ALGORITHM:
+     * =====================
+     * 1. Initialize accumulators (gridBuy, gridSell, chainBuy, chainSell, virtualBuy, virtualSell)
+     * 2. Classify each order's state (ACTIVE/PARTIAL = on-chain committed, VIRTUAL = pending)
+     * 3. Determine side from order.type, or derive from SPREAD price vs startPrice threshold
+     * 4. Aggregate sizes by side and state:
+     *    - ACTIVE/PARTIAL orders → committed.grid and committed.chain
+     *    - VIRTUAL orders → virtual pool
+     *    - Skip zero-sized orders
+     * 5. Calculate blockchain totals:
+     *    - chainTotalBuy = chainFreeBuy (from accountTotals) + chainBuy (committed on-chain)
+     *    - chainTotalSell = chainFreeSell + chainSell
+     * 6. Calculate available funds by subtracting committed amounts from blockchain totals
+     *    - available.buy = chainTotalBuy - committed.chain.buy (after grid allocation)
+     *    - available.sell = chainTotalSell - committed.chain.sell (after grid allocation)
+     * 7. Apply percentage-based fund allocations (botFunds) if configured
+     * 8. Verify fund invariants (total = free + committed) to detect tracking drift
+     *
+     * CRITICAL INVARIANTS MAINTAINED:
+     * - Total on-chain balance = Free portion + Committed portion
+     * - Virtual orders don't reduce blockchain-tracked free balance
+     * - Grid totals = committed amounts + virtual amounts (pending placements)
+     * - Available funds represent true spending power (after commitment deductions)
+     *
      * @returns {void}
      */
     recalculateFunds() {
@@ -140,40 +167,51 @@ class Accountant {
         // AUTO-SYNC SPREAD COUNT
         mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
 
+        // STEP 1-4: Iterate all orders, classify, and aggregate by state
         for (const order of Array.from(mgr.orders.values())) {
             const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
             const isVirtual = (order.state === ORDER_STATES.VIRTUAL);
             const size = Number(order.size) || 0;
             if (size <= 0) continue;
 
-            // For explicit BUY/SELL orders, use their type; for SPREAD, determine by price
+            // SIDE DETERMINATION:
+            // - Explicit BUY/SELL: use order.type directly
+            // - SPREAD type: derive from price relation to startPrice (market midpoint)
+            //   * price < startPrice → BUY side (lower prices are bids)
+            //   * price >= startPrice → SELL side (higher prices are asks)
             const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.startPrice);
             const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.startPrice);
 
             if (isBuy) {
-                if (isActive) gridBuy += size;
-                if (isActive) chainBuy += size;
-                if (isVirtual) virtualBuy += size;
+                if (isActive) gridBuy += size;           // On-chain BUY commitment
+                if (isActive) chainBuy += size;          // Same as gridBuy for this accounting method
+                if (isVirtual) virtualBuy += size;       // Pending virtual BUY order
             } else if (isSell) {
-                if (isActive) gridSell += size;
-                if (isActive) chainSell += size;
-                if (isVirtual) virtualSell += size;
+                if (isActive) gridSell += size;          // On-chain SELL commitment
+                if (isActive) chainSell += size;         // Same as gridSell
+                if (isVirtual) virtualSell += size;      // Pending virtual SELL order
             }
         }
 
+        // STEP 5: Fetch blockchain free balances and compute totals
         const chainFreeBuy = mgr.accountTotals?.buyFree || 0;
         const chainFreeSell = mgr.accountTotals?.sellFree || 0;
 
+        // Store committed amounts (on-chain and in-memory grid)
         mgr.funds.committed.grid = { buy: gridBuy, sell: gridSell };
         mgr.funds.committed.chain = { buy: chainBuy, sell: chainSell };
         mgr.funds.virtual = { buy: virtualBuy, sell: virtualSell };
 
+        // STEP 5: Compute total balances (free + committed)
+        // These represent ALL funds we have, regardless of state
         const chainTotalBuy = chainFreeBuy + chainBuy;
         const chainTotalSell = chainFreeSell + chainSell;
 
         mgr.funds.total.chain = { buy: chainTotalBuy, sell: chainTotalSell };
         mgr.funds.total.grid = { buy: gridBuy + virtualBuy, sell: gridSell + virtualSell };
 
+        // STEP 6: Calculate available funds (what we can spend right now)
+        // Uses utils::calculateAvailableFundsValue which deducts committe amounts
         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
 
@@ -224,27 +262,55 @@ class Accountant {
         }
     }
 
-    /**
-     * Verify critical fund tracking invariants.
-     * Now async to support immediate recovery attempts without blocking.
-     */
-     async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
-         const buyPrecision = mgr.assets?.assetB?.precision;
-         const sellPrecision = mgr.assets?.assetA?.precision;
-         if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
-             return;  // Skip invariant check if precision not available
-         }
-        const precisionSlackBuy = getPrecisionSlack(buyPrecision);
-        const precisionSlackSell = getPrecisionSlack(sellPrecision);
-        const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
+     /**
+      * Verify critical fund tracking invariants.
+      * Now async to support immediate recovery attempts without blocking.
+      *
+      * TOLERANCE CALCULATION STRATEGY:
+      * ===============================
+      * Two tolerance sources are combined using MAX() for conservative checking:
+      * 1. PRECISION SLACK: Accounts for blockchain float<→int rounding errors at asset decimals
+      *    - Formula: 10^(-precision) (e.g., BTS @ 8 decimals = 0.00000001)
+      *    - Reason: Float arithmetic can round amounts by ±1 satoshi (smallest unit)
+      *    - Typical: 0.00000001 BTS, 0.0001 USD
+      * 
+      * 2. PERCENTAGE TOLERANCE: Accounts for timing-dependent balance changes (in-flight txs)
+      *    - Formula: balance * (configured percentage / 100)
+      *    - Configured: FUND_INVARIANT_PERCENT_TOLERANCE (default: 0.1 = 0.1%)
+      *    - Reason: Small balance changes from fills/fees may propagate slowly on-chain
+      *    - Scales with balance size (larger balances tolerate larger absolute diffs)
+      * 
+      * Combined tolerance = MAX(precisionSlack, balance * percentTolerance)
+      * This prevents both:
+      *   - False positives from rounding noise on small amounts
+      *   - Undetected drift on large amounts
+      *
+      * INVARIANTS CHECKED:
+      * 1. Total Balance Drift: accountTotals.buy/sell vs (chainFree + committed)
+      *    - Detects: Fees deducted twice, missing fills, blockchain state desync
+      * 2. Surplus Over-estimation: cacheFunds > chainFree balance
+      *    - Detects: Over-counting fill proceeds, double-crediting cache
+      */
+      async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
+          const buyPrecision = mgr.assets?.assetB?.precision;
+          const sellPrecision = mgr.assets?.assetA?.precision;
+          if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
+              return;  // Skip invariant check if precision not available
+          }
+         const precisionSlackBuy = getPrecisionSlack(buyPrecision);
+         const precisionSlackSell = getPrecisionSlack(sellPrecision);
+         const PERCENT_TOLERANCE = (GRID_LIMITS.FUND_INVARIANT_PERCENT_TOLERANCE || 0.1) / 100;
 
-        let hasViolation = false;
+         let hasViolation = false;
 
-        // INVARIANT 1: Drift detection
-        const expectedBuy = chainFreeBuy + chainBuy;
-        const actualBuy = mgr.accountTotals?.buy;
-        const diffBuy = Math.abs((actualBuy ?? expectedBuy) - expectedBuy);
-        const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * PERCENT_TOLERANCE);
+         // INVARIANT 1: Drift detection
+         // FORMULA: expectedBuy = chainFreeBuy + chainBuy (what we think we have)
+         //          actualBuy = mgr.accountTotals.buy (what blockchain says)
+         //          If |actualBuy - expectedBuy| > tolerance → fund tracking corruption detected
+         const expectedBuy = chainFreeBuy + chainBuy;
+         const actualBuy = mgr.accountTotals?.buy;
+         const diffBuy = Math.abs((actualBuy ?? expectedBuy) - expectedBuy);
+         const allowedBuyTolerance = Math.max(precisionSlackBuy, (actualBuy || expectedBuy) * PERCENT_TOLERANCE);
 
         if (actualBuy !== null && actualBuy !== undefined && diffBuy > allowedBuyTolerance) {
             hasViolation = true;
@@ -313,68 +379,102 @@ class Accountant {
         return mgr.validateGridStateForPersistence();
     }
 
-    /**
-     * Attempt immediate recovery from fund invariant violations.
-     * Runs asynchronously in background without blocking operations.
-     * Only runs if stabilization gate hasn't already attempted recovery this cycle.
-     *
-     * @param {Object} mgr - Manager instance
-     * @param {string} violationType - Description of the violation for logging
-     * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
-     */
-    /**
-     * Reset the periodic recovery retry state.
-     * Called at the start of each fill processing cycle and by periodic blockchain fetch
-     * to allow fresh recovery attempts when new data arrives.
-     */
-    resetRecoveryState() {
-        this._recoveryAttemptCount = 0;
-        this._lastRecoveryAttemptTime = 0;
-        // Also reset the legacy flag for backward compat with strategy.js stabilization gate
-        if (this.manager) this.manager._recoveryAttempted = false;
-    }
+     /**
+      * Attempt immediate recovery from fund invariant violations.
+      * Runs asynchronously in background without blocking operations.
+      * Only runs if stabilization gate hasn't already attempted recovery this cycle.
+      *
+      * RETRY BACKOFF STRATEGY:
+      * ======================
+      * Goal: Allow finite retry attempts with cooling period between them.
+      * Prevents tight loops while allowing eventual convergence when state stabilizes.
+      * Configurable via PIPELINE_TIMING constants in constants.js.
+      *
+      * Parameters (from constants.js):
+      * - RECOVERY_RETRY_INTERVAL_MS: Minimum time between attempts (default: 60s)
+      * - MAX_RECOVERY_ATTEMPTS: Maximum retry attempts (default: 5, set to 0 for unlimited)
+      *
+      * State Machine:
+      * 1. First violation → immediately attempt recovery (no wait)
+      * 2. Failed attempt → set _lastRecoveryAttemptTime, start cooldown period
+      * 3. Before retry → check if retryInterval has elapsed since last attempt
+      * 4. After max attempts → set mgr._recoveryAttempted = true to block further retries
+      * 5. Reset → on next fill or periodic sync, resetRecoveryState() clears counters
+      *
+      * Backoff Example (with defaults):
+      * - T=0s:   Violation detected → recovery attempt 1 (no wait)
+      * - T=45s:  Recalc detects violation → BLOCKED (waiting, only 45s elapsed of 60s)
+      * - T=65s:  Recalc detects violation → recovery attempt 2 (60s+ elapsed)
+      * - T=125s: Recovery attempt 3 (another 60s)
+      * - T=180s: Max attempts (5) reached → block further attempts
+      * - T=200s: Fill arrives → resetRecoveryState() clears attempts, ready for new episode
+      *
+      * This prevents:
+      * - Runaway recovery loops under sustained fund drift
+      * - Excessive blockchain queries from repeated recovery
+      * - Bot starvation from blocking operations
+      *
+      * @param {Object} mgr - Manager instance
+      * @param {string} violationType - Description of the violation for logging
+      * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
+      */
+     /**
+      * Reset the periodic recovery retry state.
+      * Called at the start of each fill processing cycle and by periodic blockchain fetch
+      * to allow fresh recovery attempts when new data arrives.
+      */
+     resetRecoveryState() {
+         this._recoveryAttemptCount = 0;
+         this._lastRecoveryAttemptTime = 0;
+         // Also reset the legacy flag for backward compat with strategy.js stabilization gate
+         if (this.manager) this.manager._recoveryAttempted = false;
+     }
 
-    async _attemptFundRecovery(mgr, violationType) {
-        // Prevent nested recovery attempts
-        if (this._isRecovering) {
-            mgr.logger?.log?.(`[RECOVERY] Recovery already in progress, skipping nested attempt`, 'debug');
-            return false;
-        }
+     async _attemptFundRecovery(mgr, violationType) {
+         // Prevent nested recovery attempts
+         if (this._isRecovering) {
+             mgr.logger?.log?.(`[RECOVERY] Recovery already in progress, skipping nested attempt`, 'debug');
+             return false;
+         }
 
-        const configuredRetryInterval = Number(PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS);
-        const retryInterval = Number.isFinite(configuredRetryInterval) && configuredRetryInterval >= 0
-            ? configuredRetryInterval
-            : 60000;
-        const configuredMaxAttempts = Number(PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS);
-        const maxAttempts = Number.isFinite(configuredMaxAttempts) && configuredMaxAttempts >= 0
-            ? configuredMaxAttempts
-            : 5;
-        const now = Date.now();
-        const elapsed = now - this._lastRecoveryAttemptTime;
+         const configuredRetryInterval = Number(PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS);
+         const retryInterval = Number.isFinite(configuredRetryInterval) && configuredRetryInterval >= 0
+             ? configuredRetryInterval
+             : 60000;
+         const configuredMaxAttempts = Number(PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS);
+         const maxAttempts = Number.isFinite(configuredMaxAttempts) && configuredMaxAttempts >= 0
+             ? configuredMaxAttempts
+             : 5;
+         const now = Date.now();
+         const elapsed = now - this._lastRecoveryAttemptTime;
 
-        // Check if we've exhausted max attempts (0 = unlimited)
-        if (maxAttempts > 0 && this._recoveryAttemptCount >= maxAttempts) {
-            mgr.logger?.log?.(
-                `[IMMEDIATE-RECOVERY] Max recovery attempts (${maxAttempts}) exhausted. ` +
-                `Waiting for next fill or periodic sync to reset.`,
-                'warn'
-            );
-            mgr._recoveryAttempted = true;
-            return false;
-        }
+         // GATE 1: Check if we've exhausted max attempts (0 = unlimited)
+         // When exhausted, set mgr._recoveryAttempted to signal to stabilization gate
+         // that recovery was already attempted this episode
+         if (maxAttempts > 0 && this._recoveryAttemptCount >= maxAttempts) {
+             mgr.logger?.log?.(
+                 `[IMMEDIATE-RECOVERY] Max recovery attempts (${maxAttempts}) exhausted. ` +
+                 `Waiting for next fill or periodic sync to reset.`,
+                 'warn'
+             );
+             mgr._recoveryAttempted = true;
+             return false;
+         }
 
-        // Enforce minimum retry interval (skip if too soon since last attempt)
-        if (retryInterval > 0 && this._recoveryAttemptCount > 0 && elapsed < retryInterval) {
-            // Silent skip — don't spam logs. Only log periodically.
-            if (elapsed > retryInterval / 2) {
-                mgr.logger?.log?.(
-                    `[IMMEDIATE-RECOVERY] Retry cooldown: ${Math.ceil((retryInterval - elapsed) / 1000)}s remaining ` +
-                    `(attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'})`,
-                    'debug'
-                );
-            }
-            return false;
-        }
+         // GATE 2: Enforce minimum retry interval (skip if too soon since last attempt)
+         // This prevents tight loops but still allows retry after cooling period.
+         // Silent skip if less than halfway through interval, verbose at 50% to show progress.
+         if (retryInterval > 0 && this._recoveryAttemptCount > 0 && elapsed < retryInterval) {
+             // Silent skip — don't spam logs. Only log periodically.
+             if (elapsed > retryInterval / 2) {
+                 mgr.logger?.log?.(
+                     `[IMMEDIATE-RECOVERY] Retry cooldown: ${Math.ceil((retryInterval - elapsed) / 1000)}s remaining ` +
+                     `(attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'})`,
+                     'debug'
+                 );
+             }
+             return false;
+         }
 
         this._isRecovering = true;
         this._recoveryAttemptCount++;

@@ -12,55 +12,60 @@
  * - Detects and flags out-of-spread conditions
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Grid Class (20 static methods)
+ * TABLE OF CONTENTS - Grid Class (23 static methods)
  * ===============================================================================
  *
+ * CONFIGURATION & CALCULATION (2 methods)
+ *   1. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
+ *   2. getSizingContext(manager, side) - Get budget and sizing parameters (public wrapper)
+ *
  * GRID SIZING & CONTEXT (2 methods)
- *   1. _getSizingContext(manager, side) - Get budget and sizing parameters (internal, static)
+ *   3. _getSizingContext(manager, side) - Get budget and sizing parameters (internal)
  *      Determines budget from allocated funds, deducts BTS fees if needed
- *   2. _ensureCacheFundsInitialized(manager) - Ensure cache funds structure exists (internal, static)
+ *   4. _ensureCacheFundsInitialized(manager) - Ensure cache funds structure exists (internal)
  *
  * CACHE FUND MANAGEMENT (1 method)
- *   3. _updateCacheFundsAtomic(manager, sideName, newValue) - Update cache funds atomically (async, internal, static)
+ *   5. _updateCacheFundsAtomic(manager, sideName, newValue) - Update cache funds atomically (async, internal)
  *
  * GRID CREATION (1 method)
- *   4. createOrderGrid(config) - Create geometric price grid (static)
+ *   6. createOrderGrid(config) - Create geometric price grid
  *      Returns price levels from minPrice to maxPrice with increment spacing
  *
  * ORDER CACHE MANAGEMENT (2 methods - async, internal)
- *   5. _clearOrderCachesAtomic(manager) - Clear order caches (_ordersByType, _ordersByState)
- *   6. _updateOrderAtomic(manager, order, context, skipAccounting, fee) - Update order atomically with caches
+ *   7. _clearOrderCachesAtomic(manager) - Clear order caches (_ordersByType, _ordersByState)
+ *   8. _updateOrderAtomic(manager, order, context, skipAccounting, fee) - Update order atomically with caches
  *
  * GRID LOADING & INITIALIZATION (2 methods - async)
- *   7. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
- *   8. initializeGrid(manager) - Full grid initialization from config
+ *   9. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
+ *   10. initializeGrid(manager) - Full grid initialization from config
  *
  * GRID RECALCULATION (1 method - async)
- *   9. recalculateGrid(manager, opts) - Recalculate grid based on current state
+ *   11. recalculateGrid(manager, opts) - Recalculate grid based on current state
  *
  * GRID STATE CHECKING (1 method)
- *   10. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
+ *   12. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
  *
  * BLOCKCHAIN SYNCHRONIZATION (2 methods - async)
- *   11. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
- *   12. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
+ *   13. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
+ *   14. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
  *
  * GRID COMPARISON (1 method - async)
- *   13. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
+ *   15. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
  *       Validates grid structure and reports divergence metrics
  *
  * SPREAD MANAGEMENT (2 methods - async)
- *   14. calculateCurrentSpread(manager) - Calculate current bid-ask spread
- *   15. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
+ *   16. calculateCurrentSpread(manager) - Calculate current bid-ask spread
+ *   17. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
  *
- * GRID HEALTH MONITORING (3 methods)
- *   16. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
- *   17. _hasAnyDust(manager, partials, type) - Check for dust orders (internal, static)
- *   18. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ * GRID HEALTH MONITORING (4 methods)
+ *   18. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
+ *   19. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
+ *   20. hasAnyDust(manager, partials, side) - Check for dust orders (public)
+ *   21. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
  * SPREAD CORRECTION (2 methods)
- *   19. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
- *   20. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ *   22. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
+ *   23. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
  *
  * ===============================================================================
  *
@@ -751,6 +756,52 @@ class Grid {
     /**
      * Standardize grid sizes using blockchain total context.
      * RC-1: Made async to support atomic cacheFunds updates
+     *
+     * FUND CAPPING STRATEGY:
+     * =====================
+     * During grid regeneration (e.g., after fills increase available funds),
+     * this method recalculates all order sizes using geometric weighting.
+     * However, ACTIVE/PARTIAL orders must not grow larger than currently available funds.
+     *
+     * Rationale for capping:
+     * 1. POST-FILL EXPANSION PREVENTION: After a large fill, funds become available.
+     *    A naive size recalculation might expand orders, consuming all new capital.
+     *    Capping prevents this "resize explosion" by limiting growth to available free balance.
+     * 2. VIRTUAL ORDER PROTECTION: Virtual orders (not yet placed) are uncapped,
+     *    allowing natural expansion when their slot comes up for placement.
+     * 3. BLOCKCHAIN-BACKED CONSTRAINT: sideFreeAvailable tracks exactly what we can spend,
+     *    decreasing as commitments grow (proportional to realized delta).
+     *
+     * Fund Capping Algorithm:
+     * ========================
+     * For each ACTIVE/PARTIAL order slot:
+     *   1. Calculate new size from geometric series
+     *   2. If delta > 0 (growth):
+     *      - affordableDelta = min(delta, sideFreeAvailable)
+     *      - Cap growth to what we actually have: newSize = currentSize + affordableDelta
+     *      - Deduct from sideFreeAvailable (this spending is now committed)
+     *   3. If delta < 0 (shrinkage):
+     *      - Release the freed capital back to sideFreeAvailable
+     *      - Allows later slots to grow into this freed capacity
+     *   4. For VIRTUAL orders (not on-chain):
+     *      - Apply new size directly (no capping)
+     *      - They will be constrained when actually placed
+     *
+     * Example (2 slots, buy side, budget=1000, simplify to linear):
+     * ========================================================
+     * Initial: slot[0]=400 (ACTIVE), slot[1]=0 (VIRTUAL), sideFree=600
+     * Recalc:  newSizes=[500, 500]
+     *
+     *   Process slot[0]:
+     *     - Type: ACTIVE, current=400, new=500, delta=+100
+     *     - affordableDelta = min(100, 600) = 100
+     *     - Apply: size=500 (full growth), sideFree=500
+     *
+     *   Process slot[1]:
+     *     - Type: VIRTUAL (not capped), current=0, new=500, delta=+500
+     *     - Apply: size=500 (no cap check)
+     *     - Result: slot[1] ready for placement, will consume from sideFree when placed
+     *
      * @private
      */
     static async _recalculateGridOrderSizesFromBlockchain(manager, orderType) {
@@ -793,8 +844,10 @@ class Grid {
             allSideSlots.forEach((slot, i) => {
                 let newSize = newSizes[i] || 0;
 
-                // Safety cap: during grid-resize, active/partial orders must not increase
-                // beyond currently free side funds. This prevents post-fill resize explosions.
+                // FUND CAPPING FOR COMMITTED (ON-CHAIN) ORDERS:
+                // Only ACTIVE/PARTIAL orders are constrained by available funds.
+                // Virtual orders (not yet placed) will be constrained when they are actually placed.
+                // 
                 // NOTE: BTS update fees are paid from BTS balance (separate from asset balance),
                 // so they don't affect this asset-side size cap. Fee budgets are tracked in
                 // funds.btsFeesOwed and reserved separately via btsFeesReservation.
@@ -803,12 +856,16 @@ class Grid {
                     const currentSize = Number(slot.size || 0);
                     const delta = newSize - currentSize;
                     if (delta > 0) {
+                        // GROWTH: Cap to available free balance
+                        // This prevents aggressive expansion after fills
                         const affordableDelta = Math.min(delta, Math.max(0, sideFreeAvailable));
                         if (affordableDelta < delta) {
+                            // Cannot afford full growth; cap to what's available
                             newSize = currentSize + affordableDelta;
                         }
                         sideFreeAvailable = Math.max(0, sideFreeAvailable - affordableDelta);
                     } else if (delta < 0) {
+                        // SHRINKAGE: Release freed capital back for other slots
                         sideFreeAvailable += Math.abs(delta);
                     }
                 }
