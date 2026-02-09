@@ -18,6 +18,15 @@ const OrderUtils = require('./order');
 
 const poolIdCache = new Map();
 
+/**
+ * @private Lookup asset by symbol from BitShares blockchain.
+ * Tries cached assets first, then falls back to lookup API methods.
+ * 
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} s - Asset symbol to lookup
+ * @returns {Promise<Object>} Asset metadata with id, symbol, precision
+ * @throws {Error} If asset cannot be found on blockchain
+ */
 const lookupAsset = async (BitShares, s) => {
     if (!BitShares) return null;
     const sym = s.toLowerCase();
@@ -45,6 +54,16 @@ const lookupAsset = async (BitShares, s) => {
     throw new Error(`CRITICAL: Cannot fetch asset precision for '${s}'`);
 };
 
+/**
+ * Derive price from BitShares DEX order book.
+ * Returns price in B/A format (units of asset B per 1 unit of asset A).
+ * Uses best bid and ask from order book, with fallback to ticker.
+ * 
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - First asset symbol
+ * @param {string} symB - Second asset symbol
+ * @returns {Promise<number|null>} Derived market price or null if unavailable
+ */
 const deriveMarketPrice = async (BitShares, symA, symB) => {
     try {
         const [aMeta, bMeta] = await Promise.all([
@@ -81,6 +100,17 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
     }
 };
 
+/**
+ * Derive price from BitShares liquidity pool.
+ * Returns price in B/A format (units of asset B per 1 unit of asset A).
+ * Finds pool matching both assets, using cache for repeated lookups.
+ * Handles asset ID ordering logic for pool balance interpretation.
+ * 
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - First asset symbol
+ * @param {string} symB - Second asset symbol
+ * @returns {Promise<number|null>} Derived pool price or null if unavailable
+ */
 const derivePoolPrice = async (BitShares, symA, symB) => {
     try {
         const [aMeta, bMeta] = await Promise.all([
@@ -202,6 +232,16 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
     }
 };
 
+/**
+ * Derive price from blockchain using specified mode.
+ * Attempts pool or market derivation based on mode, with fallback chain.
+ * 
+ * @param {Object} BitShares - BitShares client instance
+ * @param {string} symA - First asset symbol
+ * @param {string} symB - Second asset symbol
+ * @param {string} [mode='auto'] - Derivation mode: "pool", "market", or "auto" (pool → market)
+ * @returns {Promise<number|null>} Derived price or null if all methods fail
+ */
 const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
     mode = String(mode).toLowerCase();
     const validModes = new Set(['pool', 'market', 'auto']);
@@ -233,6 +273,15 @@ const derivePrice = async (BitShares, symA, symB, mode = 'auto') => {
 // SECTION 6: FEE MANAGEMENT (INIT)
 // ================================================================================
 
+/**
+ * Initialize fee cache from blockchain.
+ * Fetches BTS operation fees and asset market fees for all unique assets in config.
+ * Populates internal fee cache used by math.js::getAssetFees.
+ * 
+ * @param {Array<Object>} botsConfig - Array of bot configurations
+ * @param {Object} BitShares - BitShares client instance
+ * @returns {Promise<Object>} Fee cache object keyed by asset symbol
+ */
 async function initializeFeeCache(botsConfig, BitShares) {
     const uniqueAssets = new Set(['BTS']);
     for (const bot of botsConfig) {
@@ -287,6 +336,15 @@ async function initializeFeeCache(botsConfig, BitShares) {
 // SECTION 7: GRID STATE MANAGEMENT
 // ================================================================================
 
+/**
+ * Persist current grid state to storage.
+ * Saves all orders, cache funds, fees, boundary index, and asset info.
+ * 
+ * @param {Object} manager - OrderManager instance
+ * @param {Object} accountOrders - AccountOrders data accessor
+ * @param {string} botKey - Bot identifier for storage
+ * @returns {Promise<boolean>} True if persistence succeeded, false on error
+ */
 async function persistGridSnapshot(manager, accountOrders, botKey) {
     if (!manager || !accountOrders || !botKey) return false;
     try {
@@ -305,6 +363,13 @@ async function persistGridSnapshot(manager, accountOrders, botKey) {
     }
 }
 
+/**
+ * Retry grid persistence if previous attempt failed.
+ * Clears persistence warning flag if successful.
+ * 
+ * @param {Object} manager - OrderManager instance
+ * @returns {Promise<boolean>} True if persisted successfully or no warning, false on error
+ */
 async function retryPersistenceIfNeeded(manager) {
     if (!manager || !manager._persistenceWarning) return true;
     const warning = manager._persistenceWarning;
@@ -315,6 +380,17 @@ async function retryPersistenceIfNeeded(manager) {
     } catch (e) { return false; }
 }
 
+/**
+ * Apply grid corrections for divergence between calculated and active orders.
+ * Synchronizes grid with blockchain, adjusts boundary, and corrects prices if needed.
+ * Executes rotations, placements, and cancellations atomically.
+ * 
+ * @param {Object} manager - OrderManager instance
+ * @param {Object} accountOrders - AccountOrders data accessor
+ * @param {string} botKey - Bot identifier for persistence
+ * @param {Function} updateOrdersOnChainBatchFn - Batch update function for blockchain operations
+ * @returns {Promise<void>}
+ */
 async function applyGridDivergenceCorrections(manager, accountOrders, botKey, updateOrdersOnChainBatchFn) {
     if (!manager._correctionsLock) return;
     const Grid = require('../grid');
@@ -418,6 +494,13 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
     });
 }
 
+/**
+ * Synchronize grid boundary position based on available funds.
+ * Recalculates boundary index to match fund ratio and reassigns grid roles if changed.
+ * 
+ * @param {Object} manager - OrderManager instance
+ * @returns {boolean} True if boundary changed, false otherwise
+ */
 function syncBoundaryToFunds(manager) {
     const availA = (manager.funds?.available?.sell || 0);
     const availB = (manager.funds?.available?.buy || 0);
@@ -436,6 +519,12 @@ function syncBoundaryToFunds(manager) {
 // SECTION 11: UI & INTERACTIVE UTILITIES
 // ================================================================================
 
+/**
+ * Ensure profiles directory exists, creating if necessary.
+ * 
+ * @param {string} profilesDir - Path to profiles directory
+ * @returns {boolean} True if directory was created, false if it already existed
+ */
 function ensureProfilesDirectory(profilesDir) {
     if (!fs.existsSync(profilesDir)) { fs.mkdirSync(profilesDir, { recursive: true }); return true; }
     return false;
@@ -450,6 +539,17 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Read user input from stdin with optional masking.
+ * Handles raw terminal mode for interactive prompts.
+ * Supports password masking and backspace handling.
+ * 
+ * @param {string} prompt - Prompt text to display
+ * @param {Object} [options={}] - Input options
+ * @param {boolean} [options.hideEchoBack=false] - Hide input echo (for passwords)
+ * @param {string} [options.mask=''] - Character to display instead of input
+ * @returns {Promise<string>} Trimmed user input
+ */
 function readInput(prompt, options = {}) {
     return new Promise((resolve) => {
         const stdin = process.stdin; const stdout = process.stdout;
@@ -472,8 +572,28 @@ function readInput(prompt, options = {}) {
     });
 }
 
+/**
+ * Read password input from user with masked echo.
+ * 
+ * @param {string} prompt - Prompt text to display
+ * @returns {Promise<string>} User-entered password
+ */
 async function readPassword(prompt) { return readInput(prompt, { mask: '*', hideEchoBack: false }); }
 
+/**
+ * Execute async function with exponential backoff retry logic.
+ * Retries on failure with increasing delays up to maxDelayMs.
+ * 
+ * @param {Function} fn - Async function to retry
+ * @param {Object} [options={}] - Retry options
+ * @param {number} [options.maxAttempts=3] - Maximum retry attempts (default 3)
+ * @param {number} [options.baseDelayMs=1000] - Base delay in milliseconds (default 1000)
+ * @param {number} [options.maxDelayMs=10000] - Maximum delay in milliseconds (default 10000)
+ * @param {Object} [options.logger=null] - Optional logger for retry messages
+ * @param {string} [options.operationName='operation'] - Name for log messages (default 'operation')
+ * @returns {Promise<*>} Result of function execution
+ * @throws {Error} If all attempts fail, throws the final error
+ */
 async function withRetry(fn, options = {}) {
     const { maxAttempts = 3, baseDelayMs = 1000, maxDelayMs = 10000, logger = null, operationName = 'operation' } = options;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {

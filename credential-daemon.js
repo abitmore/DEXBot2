@@ -134,7 +134,10 @@ async function initialize() {
 }
 
 /**
- * Handle incoming client connection
+ * Handle incoming client connection to daemon.
+ * Reads newline-delimited JSON requests and processes credential requests.
+ * 
+ * @param {net.Socket} socket - Connected client socket
  */
 function handleConnection(socket) {
     let buffer = '';
@@ -167,7 +170,12 @@ function handleConnection(socket) {
 }
 
 /**
- * Process credential request
+ * Process incoming credential request from client.
+ * Validates request format and retrieves private key if valid.
+ * Sends success or error response back to client.
+ * 
+ * @param {string} requestStr - JSON string with {type, accountName}
+ * @param {net.Socket} socket - Client socket to send response
  */
 function processRequest(requestStr, socket) {
     try {
@@ -201,7 +209,10 @@ function processRequest(requestStr, socket) {
 }
 
 /**
- * Send successful response
+ * Send successful credential response to client.
+ * 
+ * @param {net.Socket} socket - Client socket
+ * @param {Object} data - Response data (e.g., {privateKey: "5K..."})
  */
 function sendSuccess(socket, data) {
     const response = JSON.stringify({
@@ -212,7 +223,10 @@ function sendSuccess(socket, data) {
 }
 
 /**
- * Send error response
+ * Send error response to client.
+ * 
+ * @param {net.Socket} socket - Client socket
+ * @param {string} message - Error message
  */
 function sendError(socket, message) {
     const response = JSON.stringify({
@@ -223,7 +237,8 @@ function sendError(socket, message) {
 }
 
 /**
- * Graceful shutdown
+ * Gracefully shutdown daemon.
+ * Clears master password from memory and closes server.
  */
 function shutdown() {
     // Clear master password from memory

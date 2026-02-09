@@ -15,20 +15,49 @@ const MIN_INT64 = -9223372036854775808;
 // SECTION 1: PARSING & VALIDATION
 // ================================================================================
 
+/**
+ * Check if a value can be converted to a number.
+ * Accepts numbers and numeric strings that are not empty or NaN.
+ * 
+ * @param {*} val - Value to test
+ * @returns {boolean} True if val is a number or can be parsed as one
+ */
 function isNumeric(val) {
     return typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
 }
 
+/**
+ * Check if a value is a percentage string (ends with '%').
+ * 
+ * @param {*} v - Value to test
+ * @returns {boolean} True if v is a string ending with '%'
+ */
 function isPercentageString(v) {
     return typeof v === 'string' && v.trim().endsWith('%');
 }
 
+/**
+ * Parse a percentage string to decimal form.
+ * Extracts numeric value before '%' and divides by 100.
+ * 
+ * @param {string} v - Percentage string (e.g., "50%")
+ * @returns {number|null} Decimal form (e.g., 0.5) or null if invalid
+ */
 function parsePercentageString(v) {
     if (!isPercentageString(v)) return null;
     const num = parseFloat(v.trim().slice(0, -1));
     return Number.isNaN(num) ? null : num / 100.0;
 }
 
+/**
+ * Resolve a relative price expression (multiplier format) to absolute price.
+ * Supports expressions like "3x" to mean 3 times the reference price.
+ * 
+ * @param {*} value - Value to resolve (e.g., "3x" or "0.5x")
+ * @param {number} startPrice - Reference price for multiplier calculation
+ * @param {string} [mode='min'] - "min" divides (price/multiplier), "max" multiplies (price*multiplier)
+ * @returns {number|null} Resolved price or null if value is not a relative expression
+ */
 function resolveRelativePrice(value, startPrice, mode = 'min') {
     if (typeof value === 'string') {
         if (/^[\s]*[0-9]+(?:\.[0-9]+)?x[\s]*$/i.test(value)) {
@@ -45,6 +74,15 @@ function resolveRelativePrice(value, startPrice, mode = 'min') {
 // SECTION 2: FUND CALCULATIONS
 // ================================================================================
 
+/**
+ * Calculate chain fund totals from account balances and committed orders.
+ * Reconciles free/locked balances with committed capital to produce fund summary.
+ * 
+ * @param {Object} accountTotals - Account balance snapshot with buyFree, sellFree, buy, sell properties
+ * @param {Object} committedChain - Committed capital with buy and sell properties
+ * @returns {Object} Summary object with chainFreeBuy, chainFreeSell, committedChainBuy, 
+ *                   committedChainSell, freePlusLockedBuy, freePlusLockedSell, chainTotalBuy, chainTotalSell
+ */
 function computeChainFundTotals(accountTotals, committedChain) {
     const chainFreeBuy = toFiniteNumber(accountTotals?.buyFree);
     const chainFreeSell = toFiniteNumber(accountTotals?.sellFree);
@@ -110,9 +148,30 @@ function normalizeInt(value, precision) {
  */
 let feeCache = {};
 
+/**
+ * @private Set the fee cache (called by system.js::initializeFeeCache).
+ * 
+ * @param {Object} cache - Fee cache object keyed by asset symbol
+ */
 function _setFeeCache(cache) { feeCache = cache; }
+
+/**
+ * @private Get the current fee cache.
+ * 
+ * @returns {Object} Current fee cache
+ */
 function _getFeeCache() { return feeCache; }
 
+/**
+ * Get fee information for an asset.
+ * Returns fee structure or net proceeds calculation if asset amount provided.
+ * 
+ * @param {string} assetSymbol - Asset symbol (e.g., "BTS", "USD")
+ * @param {number} [assetAmount=null] - Asset amount to calculate net proceeds
+ * @param {boolean} [isMaker=true] - Whether this is a maker or taker (affects BTS fees)
+ * @returns {Object} Fee structure with create/update/net fees or net proceeds if amount provided
+ * @throws {Error} If fees not cached (call initializeFeeCache first)
+ */
 function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
     const cachedFees = feeCache[assetSymbol];
     if (!cachedFees) {
@@ -173,6 +232,18 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
     };
 }
 
+/**
+ * Calculate available funds for a specific side (buy or sell).
+ * Deducts virtual reservations, BTS fees owed, and BTS fee reservation from chain-free balance.
+ * 
+ * @param {string} side - Trading side: "buy" or "sell"
+ * @param {Object} accountTotals - Account balance snapshot
+ * @param {Object} funds - Fund allocation object with virtual, btsFeesOwed properties
+ * @param {string} assetA - First asset symbol
+ * @param {string} assetB - Second asset symbol
+ * @param {Object} [activeOrders=null] - Active order counts {buy, sell} for BTS reservation calculation
+ * @returns {number} Available funds for the side (0 if side invalid or insufficient funds)
+ */
 function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB, activeOrders = null) {
     if (side !== 'buy' && side !== 'sell') return 0;
 
@@ -193,6 +264,14 @@ function calculateAvailableFundsValue(side, accountTotals, funds, assetA, assetB
     return Math.max(0, chainFree - virtualReservation - currentFeesOwed - btsFeesReservation);
 }
 
+/**
+ * Calculate bid-ask spread percentage from active buy and sell orders.
+ * Spread = (bestSell / bestBuy - 1) * 100 (percentage).
+ * 
+ * @param {Array<Object>} activeBuys - Active buy orders with price property
+ * @param {Array<Object>} activeSells - Active sell orders with price property
+ * @returns {number} Spread percentage or 0 if insufficient data
+ */
 function calculateSpreadFromOrders(activeBuys, activeSells) {
     const bestBuy = activeBuys.length > 0 ? Math.max(...activeBuys.map(o => o.price)) : null;
     const bestSell = activeSells.length > 0 ? Math.min(...activeSells.map(o => o.price)) : null;
@@ -201,6 +280,14 @@ function calculateSpreadFromOrders(activeBuys, activeSells) {
     return ((bestSell / bestBuy) - 1) * 100;
 }
 
+/**
+ * Resolve a config value to a numeric amount.
+ * Interprets percentage strings, numeric strings, or direct numbers.
+ * 
+ * @param {*} value - Value to resolve (string, number, or percentage)
+ * @param {number} total - Total amount for percentage calculations
+ * @returns {number} Resolved numeric value or 0 if uninterpretable
+ */
 function resolveConfigValue(value, total) {
     if (typeof value === 'number') return value;
     if (typeof value === 'string') {
@@ -215,6 +302,13 @@ function resolveConfigValue(value, total) {
     return 0;
 }
 
+/**
+ * Check if account totals contain valid buy/sell balance data.
+ * 
+ * @param {Object} accountTotals - Account total balances object
+ * @param {boolean} [checkFree=true] - Check free balances if true, else check total balances
+ * @returns {boolean} True if both buy and sell values are valid finite numbers
+ */
 function hasValidAccountTotals(accountTotals, checkFree = true) {
     if (!accountTotals) return false;
     const buyKey = checkFree ? 'buyFree' : 'buy';
@@ -226,6 +320,15 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
 // SECTION 3: BLOCKCHAIN CONVERSIONS & PRECISION
 // ================================================================================
 
+/**
+ * Convert blockchain integer to float using asset precision.
+ * Divides by 10^precision to convert satoshi-level units to human-readable float.
+ * 
+ * @param {number} intValue - Integer value from blockchain
+ * @param {number} precision - Asset precision (satoshis, typically 5 or 8)
+ * @returns {number} Float representation
+ * @throws {Error} If precision is invalid
+ */
 function blockchainToFloat(intValue, precision) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for blockchainToFloat: ${precision}`);
@@ -233,6 +336,16 @@ function blockchainToFloat(intValue, precision) {
     return toFiniteNumber(intValue) / Math.pow(10, Number(precision));
 }
 
+/**
+ * Convert float to blockchain integer using asset precision.
+ * Multiplies by 10^precision and rounds to satoshi-level units.
+ * Clamps to MAX_INT64/MIN_INT64 to prevent overflow.
+ * 
+ * @param {number} floatValue - Float value to convert
+ * @param {number} precision - Asset precision (satoshis, typically 5 or 8)
+ * @returns {number} Blockchain integer representation
+ * @throws {Error} If precision is invalid
+ */
 function floatToBlockchainInt(floatValue, precision) {
     if (!isValidNumber(precision)) {
         throw new Error(`Invalid precision for floatToBlockchainInt: ${precision}`);
@@ -249,6 +362,15 @@ function floatToBlockchainInt(floatValue, precision) {
     return scaled;
 }
 
+/**
+ * Get asset precision for a specific order type (BUY or SELL).
+ * BUY orders size in assetB, SELL orders size in assetA.
+ * 
+ * @param {Object} assets - Asset metadata with assetA and assetB
+ * @param {string} orderType - Order type (ORDER_TYPES.BUY or ORDER_TYPES.SELL)
+ * @returns {number} Asset precision
+ * @throws {Error} If precision missing for the required asset
+ */
 function getPrecisionByOrderType(assets, orderType) {
     const asset = orderType === ORDER_TYPES.SELL ? assets?.assetA : assets?.assetB;
     const side = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
@@ -262,6 +384,14 @@ function getPrecisionByOrderType(assets, orderType) {
     return asset.precision;
 }
 
+/**
+ * Get asset precision for a specific trading side.
+ * 
+ * @param {Object} assets - Asset metadata with assetA and assetB
+ * @param {string} side - Side ("buy" or "sell")
+ * @returns {number} Asset precision for the side
+ * @throws {Error} If precision missing
+ */
 function getPrecisionForSide(assets, side) {
     const asset = side === 'buy' ? assets?.assetB : assets?.assetA;
     const sideUpper = side === 'buy' ? 'BUY' : 'SELL';
@@ -275,6 +405,13 @@ function getPrecisionForSide(assets, side) {
     return asset.precision;
 }
 
+/**
+ * Get asset precisions for both assetA and assetB.
+ * 
+ * @param {Object} assets - Asset metadata with assetA and assetB
+ * @returns {Object} Object with A and B precision properties
+ * @throws {Error} If precision missing for either asset
+ */
 function getPrecisionsForManager(assets) {
     if (typeof assets?.assetA?.precision !== 'number') {
         const errorMsg = `CRITICAL: Asset precision missing for assetA (${assets?.assetA?.symbol || '(unknown)'}). Cannot determine blockchain precision.`;
@@ -294,6 +431,14 @@ function getPrecisionsForManager(assets) {
     };
 }
 
+/**
+ * Calculate precision slack (rounding tolerance) for a given precision level.
+ * Used for safe comparison of blockchain values that may differ by rounding.
+ * 
+ * @param {number} precision - Asset precision level
+ * @param {number} [factor=2] - Multiplier for slack (default 2)
+ * @returns {number} Tolerance value (e.g., 2 * 10^-8 for 8-decimal precision)
+ */
 function getPrecisionSlack(precision, factor = 2) {
     return factor * Math.pow(10, -precision);
 }
@@ -302,6 +447,18 @@ function getPrecisionSlack(precision, factor = 2) {
 // SECTION 4: PRICE OPERATIONS (PART 1 - Tolerance)
 // ================================================================================
 
+/**
+ * Calculate price tolerance for order matching on-chain.
+ * Accounts for precision limits of both assets to determine acceptable price deviation.
+ * Used when matching grid orders to blockchain orders.
+ * 
+ * @param {number} gridPrice - Grid order price
+ * @param {number} orderSize - Order size on primary side
+ * @param {string} orderType - Order type ("buy" or "sell")
+ * @param {Object} [assets=null] - Asset metadata with precision (required)
+ * @returns {number|null} Price tolerance value or null if invalid inputs
+ * @throws {Error} If assets missing or precisions invalid
+ */
 function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null) {
     if (!isValidNumber(gridPrice) || !isValidNumber(orderSize)) return null;
     if (!assets) throw new Error("CRITICAL: Assets object required for calculatePriceTolerance");
@@ -329,6 +486,16 @@ function calculatePriceTolerance(gridPrice, orderSize, orderType, assets = null)
     return (termA + termB) * gridPrice;
 }
 
+/**
+ * Validate order amounts are within blockchain limits (0 < INT64_MAX).
+ * Converts floats to blockchain integers and checks they fit in signed 64-bit integers.
+ * 
+ * @param {number} amountToSell - Amount to sell (float)
+ * @param {number} minToReceive - Minimum amount to receive (float)
+ * @param {number} sellPrecision - Precision of sell asset
+ * @param {number} receivePrecision - Precision of receive asset
+ * @returns {boolean} True if both amounts are valid and within limits
+ */
 function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecision, receivePrecision) {
     const sellPrecFloat = Math.pow(10, toFiniteNumber(sellPrecision));
     const receivePrecFloat = Math.pow(10, toFiniteNumber(receivePrecision));
@@ -349,6 +516,16 @@ function validateOrderAmountsWithinLimits(amountToSell, minToReceive, sellPrecis
 // SECTION 5: DUST THRESHOLD & SIZE VALIDATION
 // ================================================================================
 
+/**
+ * Calculate minimum absolute order size for an order type.
+ * Returns factor * 10^-precision (e.g., 50 * 10^-8 for 8-decimal asset).
+ * 
+ * @param {string} orderType - Order type (BUY or SELL)
+ * @param {Object} assets - Asset metadata with assetA and assetB precisions
+ * @param {number} [factor=50] - Minimum size factor (default 50)
+ * @returns {number} Minimum order size in asset units
+ * @throws {Error} If precision cannot be determined
+ */
 function getMinOrderSize(orderType, assets, factor = 50) {
     const f = Number(factor);
     if (!f || !Number.isFinite(f) || f <= 0) return 0;
@@ -366,24 +543,67 @@ function getMinOrderSize(orderType, assets, factor = 50) {
     return Number(f) * Math.pow(10, -precision);
 }
 
+/**
+ * Calculate dust threshold factor as decimal fraction.
+ * 
+ * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
+ * @returns {number} Dust factor (e.g., 0.05 for 5%)
+ */
 function getDustThresholdFactor(dustThresholdPercent = 5) {
     return (dustThresholdPercent / 100) || 0.05;
 }
 
+/**
+ * Calculate single dust threshold for an ideal order size.
+ * Returns idealSize * (dustThresholdPercent / 100).
+ * 
+ * @param {number} idealSize - Ideal/reference order size
+ * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
+ * @returns {number} Single dust threshold (0 if idealSize invalid)
+ */
 function getSingleDustThreshold(idealSize, dustThresholdPercent = 5) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent);
 }
 
+/**
+ * Calculate double dust threshold for an ideal order size.
+ * Returns idealSize * (dustThresholdPercent / 100) * 2.
+ * Used to filter very small orders that would be uneconomical.
+ * 
+ * @param {number} idealSize - Ideal/reference order size
+ * @param {number} [dustThresholdPercent=5] - Threshold percentage (default 5%)
+ * @returns {number} Double dust threshold (0 if idealSize invalid)
+ */
 function getDoubleDustThreshold(idealSize, dustThresholdPercent = 5) {
     if (!idealSize || idealSize <= 0) return 0;
     return idealSize * getDustThresholdFactor(dustThresholdPercent) * 2;
 }
 
+/**
+ * Calculate minimum absolute order size (wrapper for getMinOrderSize with default factor).
+ * 
+ * @param {string} orderType - Order type (BUY or SELL)
+ * @param {Object} assets - Asset metadata
+ * @param {number} [minFactor=50] - Minimum size factor (default 50)
+ * @returns {number} Minimum order size in asset units
+ */
 function getMinAbsoluteOrderSize(orderType, assets, minFactor = 50) {
     return getMinOrderSize(orderType, assets, minFactor || 50);
 }
 
+/**
+ * Validate an order size against minimum absolute and dust thresholds.
+ * Returns detailed validation result with reasons if invalid.
+ * 
+ * @param {number} orderSize - Order size to validate
+ * @param {string} orderType - Order type (BUY or SELL)
+ * @param {Object} assets - Asset metadata with precisions
+ * @param {number} [minFactor=50] - Minimum size factor (default 50)
+ * @param {number} [idealSize=null] - Ideal size for dust calculations
+ * @param {number} [dustThresholdPercent=5] - Dust threshold percentage (default 5%)
+ * @returns {Object} Validation result {isValid, reason, minAbsoluteSize, minDustSize}
+ */
 function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSize = null, dustThresholdPercent = 5) {
      const orderSizeFloat = toFiniteNumber(orderSize);
      const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, assets, minFactor);
@@ -407,19 +627,33 @@ function validateOrderSize(orderSize, orderType, assets, minFactor = 50, idealSi
          }
      }
 
-    if (typeof precision === 'number') {
-        if (floatToBlockchainInt(orderSizeFloat, precision) <= 0) {
-            return { isValid: false, reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain`, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
-        }
-    }
+     if (typeof precision === 'number') {
+         if (floatToBlockchainInt(orderSizeFloat, precision) <= 0) {
+             return { isValid: false, reason: `Order size (${orderSizeFloat}) rounds to 0 on blockchain`, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
+         }
+     }
 
-    return { isValid: true, reason: null, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
+     return { isValid: true, reason: null, minAbsoluteSize, minDustSize: idealSize ? getDoubleDustThreshold(idealSize, dustThresholdPercent) : null };
 }
 
 // ================================================================================
 // SECTION 9: ORDER SIZING & ALLOCATION
 // ================================================================================
 
+/**
+ * Allocate total funds across n orders using exponential weight distribution.
+ * Optionally enforces precision quantization to match blockchain constraints.
+ * If precision provided, adjusts the largest order to compensate for rounding errors.
+ * 
+ * @param {number} totalFunds - Total funds to allocate
+ * @param {number} n - Number of orders to create allocations for
+ * @param {number} weight - Weight factor (0-1) controlling distribution steepness
+ * @param {number} incrementFactor - Increment factor (typically 0.01 for 1% grid spacing)
+ * @param {boolean} [reverse=false] - If true, allocate larger sizes to higher indices
+ * @param {number} [minSize=0] - Minimum size for each allocation (currently unused, for future validation)
+ * @param {number} [precision=null] - Asset precision; if provided, quantize to blockchain integers
+ * @returns {Array<number>} Array of n allocation sizes
+ */
 function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse = false, minSize = 0, precision = null) {
     if (n <= 0) return [];
     if (!Number.isFinite(totalFunds) || totalFunds <= 0) return new Array(n).fill(0);
@@ -458,6 +692,21 @@ function allocateFundsByWeights(totalFunds, n, weight, incrementFactor, reverse 
     return sizes;
 }
 
+/**
+ * Calculate order sizes for a list of orders using weighted fund allocation.
+ * Allocates buy and sell funds separately using weight distribution from config.
+ * Preserves order sequence while adding size property to each order.
+ * 
+ * @param {Array<Object>} orders - Array of order objects with type property
+ * @param {Object} config - Configuration with incrementPercent and weightDistribution
+ * @param {number} sellFunds - Total funds available for SELL orders
+ * @param {number} buyFunds - Total funds available for BUY orders
+ * @param {number} [minSellSize=0] - Minimum size for sell allocations
+ * @param {number} [minBuySize=0] - Minimum size for buy allocations
+ * @param {number} [precisionA=null] - Precision for assetA (SELL asset)
+ * @param {number} [precisionB=null] - Precision for assetB (BUY asset)
+ * @returns {Array<Object>} Orders array with size property added to each
+ */
 function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 0, minBuySize = 0, precisionA = null, precisionB = null) {
     const { incrementPercent, weightDistribution: { sell: sellWeight, buy: buyWeight } } = config;
     const incrementFactor = incrementPercent / 100;
@@ -479,6 +728,20 @@ function calculateOrderSizes(orders, config, sellFunds, buyFunds, minSellSize = 
     });
 }
 
+/**
+ * Calculate order sizes for rotation operations.
+ * Combines available funds with existing grid allocation for sizing.
+ * Used during order refreshes when rotating orders to new positions.
+ * 
+ * @param {number} availableFunds - Free funds not yet allocated
+ * @param {number} totalGridAllocation - Sum of all existing grid order sizes
+ * @param {number} orderCount - Number of orders to size
+ * @param {string} orderType - Order type (BUY or SELL)
+ * @param {Object} config - Configuration with incrementPercent and weightDistribution
+ * @param {number} [minSize=0] - Minimum size for each allocation
+ * @param {number} [precision=null] - Asset precision for quantization
+ * @returns {Array<number>} Array of order sizes
+ */
 function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderCount, orderType, config, minSize = 0, precision = null) {
     if (orderCount <= 0) return [];
     const totalFunds = availableFunds + totalGridAllocation;
@@ -492,6 +755,16 @@ function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderC
     return allocateFundsByWeights(totalFunds, orderCount, weight, incrementFactor, reverse, minSize, precision);
 }
 
+/**
+ * Calculate RMS (Root Mean Square) divergence between calculated and persisted grids.
+ * Measures how much the current grid differs from the calculated ideal.
+ * Used to determine if grid recalculation is needed.
+ * 
+ * @param {Array<Object>} calculatedOrders - Ideal/calculated order grid
+ * @param {Array<Object>} persistedOrders - Current/persisted order grid
+ * @param {string} [sideName='unknown'] - Side name for logging (buy/sell)
+ * @returns {number} RMS divergence metric (0 = perfect match, higher = more divergence)
+ */
 function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, sideName = 'unknown') {
     if (!Array.isArray(calculatedOrders) || !Array.isArray(persistedOrders)) return 0;
     if (calculatedOrders.length === 0 && persistedOrders.length === 0) return 0;
@@ -535,6 +808,16 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
 // SECTION 10: VALIDATION HELPERS
 // ================================================================================
 
+/**
+ * Calculate estimated BTS order creation fees for a number of orders.
+ * Only applies if BTS is involved in the trading pair.
+ * 
+ * @param {string} assetA - First asset symbol
+ * @param {string} assetB - Second asset symbol
+ * @param {number} totalOrders - Number of orders to create
+ * @param {number} [feeMultiplier=BTS_RESERVATION_MULTIPLIER] - Multiplier for reservation (typically 1.5x)
+ * @returns {number} Total fee amount (0 if BTS not involved, fallback if fee lookup fails)
+ */
 function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier = FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER) {
     if (assetA !== 'BTS' && assetB !== 'BTS') return 0;
     try {
@@ -546,6 +829,17 @@ function calculateOrderCreationFees(assetA, assetB, totalOrders, feeMultiplier =
     return 0;
 }
 
+/**
+ * Deduct order fees from available buy/sell funds.
+ * If BTS is the buy asset, deducts from buyFunds; if sell asset, deducts from sellFunds.
+ * 
+ * @param {number} buyFunds - Available buy-side funds
+ * @param {number} sellFunds - Available sell-side funds
+ * @param {number} fees - Fee amount to deduct
+ * @param {Object} config - Configuration with assetA and assetB
+ * @param {Object} [logger=null] - Optional logger for logging deductions
+ * @returns {Object} Updated funds object {buyFunds, sellFunds}
+ */
 function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = null) {
     let finalBuy = buyFunds;
     let finalSell = sellFunds;
