@@ -25,6 +25,8 @@ const colors = {
   reset: '\x1b[0m',
   buy: '\x1b[32m',    // green
   sell: '\x1b[31m',   // red
+  buyDark: '\x1b[38;5;22m',  // even darker green
+  sellDark: '\x1b[38;5;52m', // even darker red
   spread: '\x1b[33m', // yellow
   cyan: '\x1b[36m',   // cyan
   gray: '\x1b[90m'    // gray
@@ -190,6 +192,11 @@ function analyzeOrder(botData, config) {
   const sellSlots = grid.filter((s, i) => i > boundaryIdx && s.type === 'sell');
   const spreadSlots = grid.filter(s => s.type === 'spread');
 
+  const activeBuySlots = buySlots.filter(s => s.state === 'active');
+  const virtualBuySlots = buySlots.filter(s => s.state === 'virtual');
+  const activeSellSlots = sellSlots.filter(s => s.state === 'active');
+  const virtualSellSlots = sellSlots.filter(s => s.state === 'virtual');
+
   /**
    * Best Prices Identification
    * bestBuySlot: Highest buy price (at boundary, closest to market)
@@ -241,6 +248,8 @@ function analyzeOrder(botData, config) {
 
   // Calculate total funds committed to buy and sell sides
   const gridFunds = calculateGridFunds(buySlots, sellSlots, bestBuySlot, bestSellSlot);
+  const activeGridFunds = calculateGridFunds(activeBuySlots, activeSellSlots, bestBuySlot, bestSellSlot);
+  const virtualGridFunds = calculateGridFunds(virtualBuySlots, virtualSellSlots, bestBuySlot, bestSellSlot);
 
   // Analyze how funds are distributed across slots
   const distribution = analyzeDistribution(buySlots, sellSlots, bestBuySlot, bestSellSlot);
@@ -277,19 +286,27 @@ function analyzeOrder(botData, config) {
     increment: incrementCheck,
     // Fund allocation breakdown
     funds: gridFunds,
+    activeFunds: activeGridFunds,
+    virtualFunds: virtualGridFunds,
     // Slot vs fund distribution analysis
     distribution: distribution,
     // Slot counts for structure overview
     slots: {
       buy: buySlots.length,
       sell: sellSlots.length,
-      spread: spreadSlots.length
+      spread: spreadSlots.length,
+      activeBuy: activeBuySlots.length,
+      virtualBuy: virtualBuySlots.length,
+      activeSell: activeSellSlots.length,
+      virtualSell: virtualSellSlots.length
     },
     // Slot data for weight visualization
     slotData: {
       buy: buySlots,
       sell: sellSlots
-    }
+    },
+    // Target active orders from config
+    activeOrdersTarget: config ? config.activeOrders : null
   };
 }
 
@@ -436,40 +453,52 @@ function getDeltaColor(deltaValue) {
 
 /**
  * createDistributionBar: Create a horizontal bar chart showing BUY/SELL/spread distribution
- * @param {number} buySlots - Percentage of buy slots
- * @param {number} spreadSlots - Percentage of spread slots
- * @param {number} sellSlots - Percentage of sell slots
+ * Differentiates between active (dark) and virtual (light) slots
+ * @param {Object} counts - Object containing activeBuy, virtualBuy, activeSell, virtualSell, spread
  * @returns {string} Colored bar visualization
  */
-function createDistributionBar(buySlots, spreadSlots, sellSlots) {
+function createDistributionBar(counts) {
   const barWidth = BAR_WIDTH; // total width in characters
-  const total = buySlots + spreadSlots + sellSlots;
+  const total = counts.activeBuy + counts.virtualBuy + counts.spread + counts.activeSell + counts.virtualSell;
+
+  if (total === 0) return ' '.repeat(barWidth);
 
   // Calculate widths proportionally
-  let buyWidth = Math.round((buySlots / total) * barWidth);
-  let spreadWidth = Math.round((spreadSlots / total) * barWidth);
-  let sellWidth = Math.round((sellSlots / total) * barWidth);
+  let activeBuyWidth = Math.round((counts.activeBuy / total) * barWidth);
+  let virtualBuyWidth = Math.round((counts.virtualBuy / total) * barWidth);
+  let spreadWidth = Math.round((counts.spread / total) * barWidth);
+  let activeSellWidth = Math.round((counts.activeSell / total) * barWidth);
+  let virtualSellWidth = Math.round((counts.virtualSell / total) * barWidth);
 
   // Ensure spread is visible if it exists
-  if (spreadSlots > 0 && spreadWidth === 0) {
+  if (counts.spread > 0 && spreadWidth === 0) {
     spreadWidth = 1;
-    if (sellWidth > 0) {
-      sellWidth -= 1;
-    } else if (buyWidth > 0) {
-      buyWidth -= 1;
+    // Borrow from largest other section
+    const widths = [
+      { name: 'activeBuy', val: activeBuyWidth },
+      { name: 'virtualBuy', val: virtualBuyWidth },
+      { name: 'activeSell', val: activeSellWidth },
+      { name: 'virtualSell', val: virtualSellWidth }
+    ].sort((a, b) => b.val - a.val);
+    if (widths[0].val > 0) {
+      if (widths[0].name === 'activeBuy') activeBuyWidth--;
+      else if (widths[0].name === 'virtualBuy') virtualBuyWidth--;
+      else if (widths[0].name === 'activeSell') activeSellWidth--;
+      else if (widths[0].name === 'virtualSell') virtualSellWidth--;
     }
   }
 
   // Adjust to ensure total is exactly barWidth
-  const sum = buyWidth + spreadWidth + sellWidth;
+  const sum = activeBuyWidth + virtualBuyWidth + spreadWidth + activeSellWidth + virtualSellWidth;
   if (sum !== barWidth) {
     const diff = barWidth - sum;
-    sellWidth += diff;
+    // Adjust virtual sell as it's the last one
+    virtualSellWidth += diff;
   }
 
-  const buyBar = colors.buy + '█'.repeat(buyWidth) + colors.reset;
+  const buyBar = colors.buy + '█'.repeat(virtualBuyWidth) + colors.buyDark + '█'.repeat(activeBuyWidth) + colors.reset;
   const spreadBar = '\x1b[97m' + '█'.repeat(spreadWidth) + colors.reset; // white
-  const sellBar = colors.sell + '█'.repeat(sellWidth) + colors.reset;
+  const sellBar = colors.sellDark + '█'.repeat(activeSellWidth) + colors.sell + '█'.repeat(virtualSellWidth) + colors.reset;
 
   return `${buyBar}${spreadBar}${sellBar}`;
 }
@@ -518,10 +547,10 @@ function createWeightFactorBar(buyOrders, sellOrders, barWidth = BAR_WIDTH, mark
   }
 
   // Create buy side with independent scaling (max on buy side = 100%)
-  const buyBar = createWeightSide(buyOrders, colors.buy, buyWidth);
+  const buyBar = createWeightSide(buyOrders, colors.buyDark, colors.buy, buyWidth);
 
   // Create sell side with independent scaling (max on sell side = 100%)
-  const sellBar = createWeightSide(sellOrders, colors.sell, sellWidth);
+  const sellBar = createWeightSide(sellOrders, colors.sellDark, colors.sell, sellWidth);
 
   return `${buyBar}${sellBar}`;
 }
@@ -530,12 +559,13 @@ function createWeightFactorBar(buyOrders, sellOrders, barWidth = BAR_WIDTH, mark
  * Helper: Create weight visualization for one side with independent scaling
  * Distributes orders evenly across bar width, ensuring all bars are filled
  * @param {Array} orders - Orders on this side
- * @param {string} sideColor - Color for this side
+ * @param {string} activeColor - Color for active orders
+ * @param {string} virtualColor - Color for virtual orders
  * @param {number} sideWidth - Width allocated to this side
  */
-function createWeightSide(orders, sideColor, sideWidth) {
+function createWeightSide(orders, activeColor, virtualColor, sideWidth) {
   if (!orders || orders.length === 0 || sideWidth === 0) {
-    return sideColor + ' '.repeat(sideWidth) + colors.reset;
+    return virtualColor + ' '.repeat(sideWidth) + colors.reset;
   }
 
   // Get sizes and find max for THIS SIDE only (independent scaling)
@@ -543,7 +573,7 @@ function createWeightSide(orders, sideColor, sideWidth) {
   const maxSize = Math.max(...sizes);
 
   if (maxSize === 0) {
-    return sideColor + '░'.repeat(sideWidth) + colors.reset;
+    return virtualColor + '░'.repeat(sideWidth) + colors.reset;
   }
 
   const compressedWeights = [];
@@ -559,14 +589,15 @@ function createWeightSide(orders, sideColor, sideWidth) {
     // Get all orders that fall within this bar's range
     const startIdx = Math.floor(startPos);
     const endIdx = Math.ceil(endPos);
-    const groupSizes = sizes.slice(startIdx, endIdx);
+    const groupOrders = orders.slice(startIdx, endIdx);
 
-    if (groupSizes.length === 0) {
+    if (groupOrders.length === 0) {
       // Fallback: if no orders in range, find nearest order
       const nearestIdx = Math.round(startPos);
-      groupSizes.push(sizes[Math.min(nearestIdx, sizes.length - 1)]);
+      groupOrders.push(orders[Math.min(nearestIdx, orders.length - 1)]);
     }
 
+    const groupSizes = groupOrders.map(o => o.size || 0);
     // Calculate arithmetic average of sizes in this group
     const avgSize = groupSizes.reduce((a, b) => a + b, 0) / groupSizes.length;
 
@@ -574,7 +605,11 @@ function createWeightSide(orders, sideColor, sideWidth) {
     const ratio = avgSize / maxSize;
     const blockHeight = Math.max(1, Math.round(ratio * 8));
 
-    compressedWeights.push(sideColor + partialBlocks[blockHeight] + colors.reset);
+    // Determine color based on whether any order in group is active
+    const hasActive = groupOrders.some(o => o.state === 'active');
+    const color = hasActive ? activeColor : virtualColor;
+
+    compressedWeights.push(color + partialBlocks[blockHeight] + colors.reset);
   }
 
   return compressedWeights.join('');
@@ -743,6 +778,16 @@ function formatAnalysis(analysis) {
     lines.push(`   Incr.: ${formatPercent(analysis.increment.avg).padStart(6)}`);
   }
 
+  // Active orders comparison
+  if (analysis.hasConfig && analysis.activeOrdersTarget) {
+    const buyTarget = analysis.activeOrdersTarget.buy;
+    const sellTarget = analysis.activeOrdersTarget.sell;
+    const buyActual = analysis.slots.activeBuy;
+    const sellActual = analysis.slots.activeSell;
+    
+    lines.push(`   Active: ${buyActual}/${buyTarget} buy  |  ${sellActual}/${sellTarget} sell`);
+  }
+
   // Calculate bar positioning based on slot distribution
   const totalSlots = analysis.slots.buy + analysis.slots.sell + analysis.slots.spread;
   const buyBarWidth = totalSlots > 0 ? Math.floor((analysis.slots.buy / totalSlots) * BAR_WIDTH) : 0;
@@ -836,8 +881,13 @@ function formatAnalysis(analysis) {
   const buySlotPctWithSpread = totalSlots > 0 ? ((analysis.slots.buy / totalSlots) * 100).toFixed(1) : '0.0';
   const sellSlotPctWithSpread = totalSlots > 0 ? ((analysis.slots.sell / totalSlots) * 100).toFixed(1) : '0.0';
 
-  const slotDistBar = createDistributionBar(parseFloat(buySlotPctWithSpread), parseFloat(spreadSlotPct), parseFloat(sellSlotPctWithSpread));
-  const fundDistBar = createDistributionBar(parseFloat(buyFundPct), 0, parseFloat(sellFundPct));
+  const slotDistBar = createDistributionBar({
+    activeBuy: analysis.slots.activeBuy,
+    virtualBuy: analysis.slots.virtualBuy,
+    spread: analysis.slots.spread,
+    activeSell: analysis.slots.activeSell,
+    virtualSell: analysis.slots.virtualSell
+  });
 
   // Weight factor visualization (funds distribution across all orders)
   const barWidth = BAR_WIDTH; // Match the width of other bars
@@ -867,10 +917,10 @@ function formatAnalysis(analysis) {
   );
 
   // Funds breakdown: BUY on left, SELL on right (right-aligned within its column)
-  const buyValueStr = `${buyBTS} ${bSymbol}`;
-  const sellValueStr = `${sellXRP} ${aSymbol}`;
-  const buyEquivStr = `≈ ${buyXRP} ${aSymbol}`;
-  const sellEquivStr = `≈ ${sellBTS} ${bSymbol}`;
+  const buyValueStr = `${formatCurrency(analysis.funds.buy.bts)} ${bSymbol}`;
+  const sellValueStr = `${analysis.funds.sell.xrp.toFixed(4)} ${aSymbol}`;
+  const buyEquivStr = `≈ ${analysis.funds.buy.xrp.toFixed(4)} ${aSymbol}`;
+  const sellEquivStr = `≈ ${formatCurrency(analysis.funds.sell.bts)} ${bSymbol}`;
 
   // Right column width is the maximum of sell value or sell equivalent
   const rightColWidth = Math.max(sellValueStr.length, sellEquivStr.length);
@@ -896,6 +946,7 @@ function formatAnalysis(analysis) {
 
   lines.push(`${prefix1}${colors.buy}${buyValueStr}${colors.reset}${' '.repeat(spacing1)}${colors.sell}${sellValueRight}${colors.reset}`);
   lines.push(`${prefix2}${buyEquivStr}${' '.repeat(spacing2)}${sellEquivRight}`);
+
 
   return lines.join('\n');
 }
