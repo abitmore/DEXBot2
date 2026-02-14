@@ -8,7 +8,7 @@ console.log('Testing Critical Bug Fixes');
 console.log('='.repeat(80));
 
 // Helper to setup a manager
-function setupManager() {
+async function setupManager() {
     const cfg = {
         assetA: 'BTS',
         assetB: 'USD',
@@ -33,7 +33,7 @@ function setupManager() {
         assetB: { id: '1.3.121', precision: 5 }
     };
 
-    mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
 
     return mgr;
 }
@@ -45,15 +45,15 @@ async function testSpreadSortingForRotation() {
     console.log('\n[Test 1] Spread sorting prioritizes rotation to closest market price');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await await setupManager();
     const { orders, boundaryIdx } = Grid.createOrderGrid(mgr.config);
     
     // Sort and index
     orders.sort((a, b) => a.price - b.price);
-    orders.forEach(o => {
+    for (const o of orders) {
         mgr.orders.set(o.id, o);
-        mgr._updateOrder(o);
-    });
+        await mgr._updateOrder(o);
+    }
 
     // Fix boundary
     mgr.boundaryIdx = boundaryIdx;
@@ -65,7 +65,7 @@ async function testSpreadSortingForRotation() {
     surplusOrder.type = ORDER_TYPES.SELL;
     surplusOrder.size = 100;
     surplusOrder.orderId = 'chain-surplus';
-    mgr._updateOrder(surplusOrder);
+    await mgr._updateOrder(surplusOrder);
 
     // Target count 1 ensures furthest is surplus
     mgr.config.activeOrders.sell = 1;
@@ -105,7 +105,7 @@ async function testOrderStateTransitionStability() {
     console.log('\n[Test 2] Order state transition stays ACTIVE when size >= 100%');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Create an order with size = idealSize * 1.02 (102% of ideal)
     const activeOrder = {
@@ -118,7 +118,7 @@ async function testOrderStateTransitionStability() {
     };
 
     mgr.orders.set(activeOrder.id, activeOrder);
-    mgr._updateOrder(activeOrder);
+    await mgr._updateOrder(activeOrder);
 
     // Verify it's in ACTIVE state
     const before = mgr.orders.get('test-sell');
@@ -127,7 +127,7 @@ async function testOrderStateTransitionStability() {
     // Simulate some fills and state transitions
     // The state should remain ACTIVE as long as size >= 100% (10.0)
     const updatedOrder = { ...activeOrder, size: 10.0, state: ORDER_STATES.ACTIVE };
-    mgr._updateOrder(updatedOrder);
+    await mgr._updateOrder(updatedOrder);
 
     const after = mgr.orders.get('test-sell');
     assert(after.state === ORDER_STATES.ACTIVE, `Should remain ACTIVE when size=100%, got ${after.state}`);
@@ -135,7 +135,7 @@ async function testOrderStateTransitionStability() {
 
     // Now test transition to PARTIAL when size < 100%
     const partialOrder = { ...activeOrder, size: 5.0, state: ORDER_STATES.PARTIAL };
-    mgr._updateOrder(partialOrder);
+    await mgr._updateOrder(partialOrder);
 
     const final = mgr.orders.get('test-sell');
     assert(final.state === ORDER_STATES.PARTIAL, `Should transition to PARTIAL when size < 100%, got ${final.state}`);
@@ -150,7 +150,7 @@ async function testGhostVirtualTargetSizingAccuracy() {
     console.log('\n[Test 3] Ghost virtualization ensures accurate target sizing');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Create a grid with specific ideal sizes
     const grid = [
@@ -161,7 +161,7 @@ async function testGhostVirtualTargetSizingAccuracy() {
 
     for (const order of grid) {
         mgr.orders.set(order.id, order);
-        mgr._updateOrder(order);
+        await mgr._updateOrder(order);
     }
 
     // Create 2 ghost-virtualized partials
@@ -183,8 +183,8 @@ async function testGhostVirtualTargetSizingAccuracy() {
         state: ORDER_STATES.PARTIAL
     };
 
-    mgr._updateOrder(partial1);
-    mgr._updateOrder(partial2);
+    await mgr._updateOrder(partial1);
+    await mgr._updateOrder(partial2);
 
     // Before rebalance: verify original sizes
     assert(mgr.orders.get('sell-1.10').size === 4, 'Partial 1 should start at size 4');
@@ -210,7 +210,7 @@ async function testSpreadSortingForBuyRotation() {
     console.log('\n[Test 4] BUY spread sorting prioritizes highest price (closest to market)');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Create a grid of SPREAD slots around startPrice (1.0)
     const spreads = [
@@ -222,7 +222,7 @@ async function testSpreadSortingForBuyRotation() {
 
     for (const spread of spreads) {
         mgr.orders.set(spread.id, spread);
-        mgr._updateOrder(spread);
+        await mgr._updateOrder(spread);
     }
 
     mgr.config.activeOrders.buy = 1;
@@ -262,7 +262,7 @@ async function testPartialStateTransitionBelow100() {
     console.log('\n[Test 5] Order state transitions correctly based on size vs ideal');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Create an order that will transition from ACTIVE to PARTIAL
     const order = {
@@ -275,7 +275,7 @@ async function testPartialStateTransitionBelow100() {
     };
 
     mgr.orders.set(order.id, order);
-    mgr._updateOrder(order);
+    await mgr._updateOrder(order);
 
     // Verify initial state
     let current = mgr.orders.get('test-order');
@@ -283,7 +283,7 @@ async function testPartialStateTransitionBelow100() {
 
     // Simulate partial fill: reduce to 99% of ideal
     const afterFill = { ...order, size: 9.9, state: ORDER_STATES.PARTIAL };
-    mgr._updateOrder(afterFill);
+    await mgr._updateOrder(afterFill);
 
     current = mgr.orders.get('test-order');
     assert(current.state === ORDER_STATES.PARTIAL, `Should be PARTIAL when size < ideal, got ${current.state}`);
@@ -291,7 +291,7 @@ async function testPartialStateTransitionBelow100() {
 
     // Refill back to 100%
     const restored = { ...order, size: 10.0, state: ORDER_STATES.ACTIVE };
-    mgr._updateOrder(restored);
+    await mgr._updateOrder(restored);
 
     current = mgr.orders.get('test-order');
     assert(current.state === ORDER_STATES.ACTIVE, `Should return to ACTIVE when size = ideal, got ${current.state}`);
@@ -306,7 +306,7 @@ async function testGhostVirtualizationRestoresStates() {
     console.log('\n[Test 6] Ghost virtualization properly restores original order states');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
     mgr.config.targetSpreadPercent = 0;
 
     const grid = [
@@ -316,16 +316,16 @@ async function testGhostVirtualizationRestoresStates() {
 
     for (const order of grid) {
         mgr.orders.set(order.id, order);
-        mgr._updateOrder(order);
+        await mgr._updateOrder(order);
     }
 
     const buyAnchor = { id: 'buy-a', price: 1.0, size: 10, type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: 'anchor' };
     mgr.orders.set(buyAnchor.id, buyAnchor);
-    mgr._updateOrder(buyAnchor);
+    await mgr._updateOrder(buyAnchor);
     mgr.boundaryIdx = Array.from(mgr.orders.values()).sort((a,b)=>a.price-b.price).findIndex(o=>o.id==='buy-a');
 
-    mgr._updateOrder({ id: 'sell-0', orderId: 'p1', type: ORDER_TYPES.SELL, price: 1.10, size: 4, state: ORDER_STATES.PARTIAL });
-    mgr._updateOrder({ id: 'sell-1', orderId: 'p2', type: ORDER_TYPES.SELL, price: 1.15, size: 4, state: ORDER_STATES.PARTIAL });
+    await mgr._updateOrder({ id: 'sell-0', orderId: 'p1', type: ORDER_TYPES.SELL, price: 1.10, size: 4, state: ORDER_STATES.PARTIAL });
+    await mgr._updateOrder({ id: 'sell-1', orderId: 'p2', type: ORDER_TYPES.SELL, price: 1.15, size: 4, state: ORDER_STATES.PARTIAL });
 
     assert(mgr.orders.get('sell-0').state === ORDER_STATES.PARTIAL, 'P1 should start PARTIAL');
 

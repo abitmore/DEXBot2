@@ -124,24 +124,25 @@ async function runTests() {
             assetA: { id: '1.3.1', symbol: 'TESTA', precision: 5 },
             assetB: { id: '1.3.2', symbol: 'TESTB', precision: 5 }
         };
-        manager.setAccountTotals({ buy: 300, sell: 300, buyFree: 300, sellFree: 300 });
+        await manager.setAccountTotals({ buy: 300, sell: 300, buyFree: 300, sellFree: 300 });
 
         const buyPrices = [98, 99, 100, 101, 102, 103];
-        buyPrices.forEach((price, i) => {
-            manager._updateOrder({
+        for (const price of buyPrices) {
+            const i = buyPrices.indexOf(price);
+            await manager._updateOrder({
                 id: `b${i}`,
                 type: ORDER_TYPES.BUY,
                 state: ORDER_STATES.VIRTUAL,
                 size: 1,
                 price
             });
-        });
+        }
 
         const partialId = 'b5';
         const sideSlots = Array.from(manager.orders.values())
             .filter(o => o.type === ORDER_TYPES.BUY)
             .sort((a, b) => a.price - b.price);
-        const ctx = Grid.getSizingContext(manager, 'buy');
+        const ctx = await Grid.getSizingContext(manager, 'buy');
         const idealSizes = allocateFundsByWeights(
             ctx.budget,
             sideSlots.length,
@@ -155,7 +156,7 @@ async function runTests() {
         const threshold = getSingleDustThreshold(idealSizes[partialIdx]);
         const partialSize = threshold * 0.95;
 
-        manager._updateOrder({
+        await manager._updateOrder({
             ...manager.orders.get(partialId),
             state: ORDER_STATES.PARTIAL,
             size: partialSize,
@@ -163,7 +164,7 @@ async function runTests() {
         });
 
         const partial = manager.orders.get(partialId);
-        assert.strictEqual(Grid.hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
+        assert.strictEqual(await Grid.hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
     }
 
     console.log('✓ Grid logic tests passed!');

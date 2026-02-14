@@ -96,13 +96,8 @@ class Accountant {
      */
     constructor(manager) {
         this.manager = manager;
-        this._isRecovering = false;  // Prevents nested recovery attempts
         this._isVerifyingInvariants = false;  // Prevents overlapping invariant checks
         this._pendingInvariantSnapshot = null;  // Coalesces latest request while one is running
-
-        // Periodic recovery retry state (replaces one-shot _recoveryAttempted flag)
-        this._recoveryAttemptCount = 0;  // Number of recovery attempts in current episode
-        this._lastRecoveryAttemptTime = 0;  // Timestamp of last recovery attempt (ms)
     }
 
     /**
@@ -155,81 +150,87 @@ class Accountant {
      *
      * @returns {void}
      */
-    recalculateFunds() {
-        const mgr = this.manager;
-        if (mgr._pauseFundRecalcDepth > 0) return;
-        if (!mgr.funds) this.resetFunds();
+    async recalculateFunds() {
+         const mgr = this.manager;
+         if (mgr._pauseFundRecalc) return;
+         if (!mgr.funds) this.resetFunds();
 
-        let gridBuy = 0, gridSell = 0;
-        let chainBuy = 0, chainSell = 0;
-        let virtualBuy = 0, virtualSell = 0;
+         // CRITICAL: Acquire lock to get consistent snapshot of orders (Race Condition #3)
+         // Otherwise _updateOrder() could change mgr.orders while we're iterating,
+         // causing us to miss newly added orders or include stale ones.
+         // No lock needed for read-only access to frozen orders
+         const orderSnapshot = Array.from(mgr.orders.values());
 
-        // AUTO-SYNC SPREAD COUNT
-        mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
+         let gridBuy = 0, gridSell = 0;
+         let chainBuy = 0, chainSell = 0;
+         let virtualBuy = 0, virtualSell = 0;
 
-        // STEP 1-4: Iterate all orders, classify, and aggregate by state
-        for (const order of Array.from(mgr.orders.values())) {
-            const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
-            const isVirtual = (order.state === ORDER_STATES.VIRTUAL);
-            const size = Number(order.size) || 0;
-            if (size <= 0) continue;
+         // AUTO-SYNC SPREAD COUNT
+         mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
 
-            // SIDE DETERMINATION:
-            // - Explicit BUY/SELL: use order.type directly
-            // - SPREAD type: derive from price relation to startPrice (market midpoint)
-            //   * price < startPrice → BUY side (lower prices are bids)
-            //   * price >= startPrice → SELL side (higher prices are asks)
-            const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.startPrice);
-            const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.startPrice);
+         // STEP 1-4: Iterate all orders, classify, and aggregate by state
+         for (const order of orderSnapshot) {
+             const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
+             const isVirtual = (order.state === ORDER_STATES.VIRTUAL);
+             const size = Number(order.size) || 0;
+             if (size <= 0) continue;
 
-            if (isBuy) {
-                if (isActive) gridBuy += size;           // On-chain BUY commitment
-                if (isActive) chainBuy += size;          // Same as gridBuy for this accounting method
-                if (isVirtual) virtualBuy += size;       // Pending virtual BUY order
-            } else if (isSell) {
-                if (isActive) gridSell += size;          // On-chain SELL commitment
-                if (isActive) chainSell += size;         // Same as gridSell
-                if (isVirtual) virtualSell += size;      // Pending virtual SELL order
-            }
-        }
+             // SIDE DETERMINATION:
+             // - Explicit BUY/SELL: use order.type directly
+             // - SPREAD type: derive from price relation to startPrice (market midpoint)
+             //   * price < startPrice → BUY side (lower prices are bids)
+             //   * price >= startPrice → SELL side (higher prices are asks)
+             const isBuy = order.type === ORDER_TYPES.BUY || (order.type === ORDER_TYPES.SPREAD && order.price < mgr.startPrice);
+             const isSell = order.type === ORDER_TYPES.SELL || (order.type === ORDER_TYPES.SPREAD && order.price >= mgr.startPrice);
 
-        // STEP 5: Fetch blockchain free balances and compute totals
-        const chainFreeBuy = mgr.accountTotals?.buyFree || 0;
-        const chainFreeSell = mgr.accountTotals?.sellFree || 0;
+             if (isBuy) {
+                 if (isActive) gridBuy += size;           // On-chain BUY commitment
+                 if (isActive) chainBuy += size;          // Same as gridBuy for this accounting method
+                 if (isVirtual) virtualBuy += size;       // Pending virtual BUY order
+             } else if (isSell) {
+                 if (isActive) gridSell += size;          // On-chain SELL commitment
+                 if (isActive) chainSell += size;         // Same as gridSell
+                 if (isVirtual) virtualSell += size;      // Pending virtual SELL order
+             }
+         }
 
-        // Store committed amounts (on-chain and in-memory grid)
-        mgr.funds.committed.grid = { buy: gridBuy, sell: gridSell };
-        mgr.funds.committed.chain = { buy: chainBuy, sell: chainSell };
-        mgr.funds.virtual = { buy: virtualBuy, sell: virtualSell };
+         // STEP 5: Fetch blockchain free balances and compute totals
+         const chainFreeBuy = mgr.accountTotals?.buyFree || 0;
+         const chainFreeSell = mgr.accountTotals?.sellFree || 0;
 
-        // STEP 5: Compute total balances (free + committed)
-        // These represent ALL funds we have, regardless of state
-        const chainTotalBuy = chainFreeBuy + chainBuy;
-        const chainTotalSell = chainFreeSell + chainSell;
+         // Store committed amounts (on-chain and in-memory grid)
+         mgr.funds.committed.grid = { buy: gridBuy, sell: gridSell };
+         mgr.funds.committed.chain = { buy: chainBuy, sell: chainSell };
+         mgr.funds.virtual = { buy: virtualBuy, sell: virtualSell };
 
-        mgr.funds.total.chain = { buy: chainTotalBuy, sell: chainTotalSell };
-        mgr.funds.total.grid = { buy: gridBuy + virtualBuy, sell: gridSell + virtualSell };
+         // STEP 5: Compute total balances (free + committed)
+         // These represent ALL funds we have, regardless of state
+         const chainTotalBuy = chainFreeBuy + chainBuy;
+         const chainTotalSell = chainFreeSell + chainSell;
 
-        // STEP 6: Calculate available funds (what we can spend right now)
-        // Uses utils::calculateAvailableFundsValue which deducts committe amounts
-        mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
-        mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
+         mgr.funds.total.chain = { buy: chainTotalBuy, sell: chainTotalSell };
+         mgr.funds.total.grid = { buy: gridBuy + virtualBuy, sell: gridSell + virtualSell };
 
-        // Ensure percentage-based allocations are applied to the newly calculated totals
-        if (typeof mgr.applyBotFundsAllocation === 'function') {
-            mgr.applyBotFundsAllocation();
-        }
+         // STEP 6: Calculate available funds (what we can spend right now)
+         // Uses utils::calculateAvailableFundsValue which deducts committe amounts
+         mgr.funds.available.buy = calculateAvailableFundsValue('buy', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
+         mgr.funds.available.sell = calculateAvailableFundsValue('sell', mgr.accountTotals, mgr.funds, mgr.config.assetA, mgr.config.assetB, mgr.config.activeOrders);
 
-         if (mgr.logger && mgr.logger.level === 'debug' && mgr._pauseFundRecalcDepth === 0 && mgr._recalcLoggingDepth === 0) {
-             const buyPrecision = mgr.config?.assetB?.precision;
-             const sellPrecision = mgr.config?.assetA?.precision;
+         // Ensure percentage-based allocations are applied to the newly calculated totals
+         if (typeof mgr.applyBotFundsAllocation === 'function') {
+             mgr.applyBotFundsAllocation();
+         }
+
+          if (mgr.logger && mgr.logger.level === 'debug' && !mgr._pauseFundRecalc && !mgr._pauseRecalcLogging) {
+              const buyPrecision = mgr.config?.assetB?.precision;
+              const sellPrecision = mgr.config?.assetA?.precision;
              if (Number.isFinite(buyPrecision) && Number.isFinite(sellPrecision)) {
                  mgr.logger.log(`[RECALC] BUY: Total=${Format.formatAmountByPrecision(chainTotalBuy, buyPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)}, Grid=${Format.formatAmountByPrecision(gridBuy, buyPrecision)})`, 'debug');
                  mgr.logger.log(`[RECALC] SELL: Total=${Format.formatAmountByPrecision(chainTotalSell, sellPrecision)} (Free=${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)}, Grid=${Format.formatAmountByPrecision(gridSell, sellPrecision)})`, 'debug');
              }
          }
 
-        if (mgr._pauseFundRecalcDepth === 0 && !mgr.isBootstrapping && !mgr._isBroadcasting) {
+        if (!mgr._pauseFundRecalc && !mgr.isBootstrapping && !mgr._isBroadcasting) {
             const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell };
 
             const runVerification = (nextSnapshot) => {
@@ -379,190 +380,318 @@ class Accountant {
         return mgr.validateGridStateForPersistence();
     }
 
-     /**
-      * Attempt immediate recovery from fund invariant violations.
-      * Runs asynchronously in background without blocking operations.
-      * Only runs if stabilization gate hasn't already attempted recovery this cycle.
-      *
-      * RETRY BACKOFF STRATEGY:
-      * ======================
-      * Goal: Allow finite retry attempts with cooling period between them.
-      * Prevents tight loops while allowing eventual convergence when state stabilizes.
-      * Configurable via PIPELINE_TIMING constants in constants.js.
-      *
-      * Parameters (from constants.js):
-      * - RECOVERY_RETRY_INTERVAL_MS: Minimum time between attempts (default: 60s)
-      * - MAX_RECOVERY_ATTEMPTS: Maximum retry attempts (default: 5, set to 0 for unlimited)
-      *
-      * State Machine:
-      * 1. First violation → immediately attempt recovery (no wait)
-      * 2. Failed attempt → set _lastRecoveryAttemptTime, start cooldown period
-      * 3. Before retry → check if retryInterval has elapsed since last attempt
-      * 4. After max attempts → set mgr._recoveryAttempted = true to block further retries
-      * 5. Reset → on next fill or periodic sync, resetRecoveryState() clears counters
-      *
-      * Backoff Example (with defaults):
-      * - T=0s:   Violation detected → recovery attempt 1 (no wait)
-      * - T=45s:  Recalc detects violation → BLOCKED (waiting, only 45s elapsed of 60s)
-      * - T=65s:  Recalc detects violation → recovery attempt 2 (60s+ elapsed)
-      * - T=125s: Recovery attempt 3 (another 60s)
-      * - T=180s: Max attempts (5) reached → block further attempts
-      * - T=200s: Fill arrives → resetRecoveryState() clears attempts, ready for new episode
-      *
-      * This prevents:
-      * - Runaway recovery loops under sustained fund drift
-      * - Excessive blockchain queries from repeated recovery
-      * - Bot starvation from blocking operations
-      *
-      * @param {Object} mgr - Manager instance
-      * @param {string} violationType - Description of the violation for logging
-      * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
-      */
-     /**
-      * Reset the periodic recovery retry state.
-      * Called at the start of each fill processing cycle and by periodic blockchain fetch
-      * to allow fresh recovery attempts when new data arrives.
-      */
-     resetRecoveryState() {
-         this._recoveryAttemptCount = 0;
-         this._lastRecoveryAttemptTime = 0;
-         // Also reset the legacy flag for backward compat with strategy.js stabilization gate
-         if (this.manager) this.manager._recoveryAttempted = false;
-     }
+      /**
+       * Attempt immediate recovery from fund invariant violations.
+       * Runs once per cycle - subsequent violations in same cycle are skipped.
+       *
+       * @param {Object} mgr - Manager instance
+       * @param {string} violationType - Description of the violation for logging
+       * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
+       */
+      async _attemptFundRecovery(mgr, violationType) {
+          // Prevent duplicate recovery attempts in the same cycle
+          if (mgr._recoveryAttempted) {
+              return false;
+          }
 
-     async _attemptFundRecovery(mgr, violationType) {
-         // Prevent nested recovery attempts
-         if (this._isRecovering) {
-             mgr.logger?.log?.(`[RECOVERY] Recovery already in progress, skipping nested attempt`, 'debug');
-             return false;
-         }
+          mgr._recoveryAttempted = true;
+          mgr.logger?.log?.(`[RECOVERY] ${violationType} - attempting state recovery...`, 'warn');
 
-         const configuredRetryInterval = Number(PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS);
-         const retryInterval = Number.isFinite(configuredRetryInterval) && configuredRetryInterval >= 0
-             ? configuredRetryInterval
-             : 60000;
-         const configuredMaxAttempts = Number(PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS);
-         const maxAttempts = Number.isFinite(configuredMaxAttempts) && configuredMaxAttempts >= 0
-             ? configuredMaxAttempts
-             : 5;
-         const now = Date.now();
-         const elapsed = now - this._lastRecoveryAttemptTime;
+          try {
+              const validation = await this._performStateRecovery(mgr);
 
-         // GATE 1: Check if we've exhausted max attempts (0 = unlimited)
-         // When exhausted, set mgr._recoveryAttempted to signal to stabilization gate
-         // that recovery was already attempted this episode
-         if (maxAttempts > 0 && this._recoveryAttemptCount >= maxAttempts) {
-             mgr.logger?.log?.(
-                 `[IMMEDIATE-RECOVERY] Max recovery attempts (${maxAttempts}) exhausted. ` +
-                 `Waiting for next fill or periodic sync to reset.`,
-                 'warn'
-             );
-             mgr._recoveryAttempted = true;
-             return false;
-         }
+              if (validation.isValid) {
+                  mgr.logger?.log?.('[RECOVERY] State recovery succeeded', 'info');
+                  return true;
+              } else {
+                  mgr.logger?.log?.(`[RECOVERY] State recovery failed: ${validation.reason}`, 'error');
+                  return false;
+              }
+          } catch (err) {
+              mgr.logger?.log?.(`[RECOVERY] State recovery error: ${err.message}`, 'error');
+              return false;
+          }
+      }
 
-         // GATE 2: Enforce minimum retry interval (skip if too soon since last attempt)
-         // This prevents tight loops but still allows retry after cooling period.
-         // Silent skip if less than halfway through interval, verbose at 50% to show progress.
-         if (retryInterval > 0 && this._recoveryAttemptCount > 0 && elapsed < retryInterval) {
-             // Silent skip — don't spam logs. Only log periodically.
-             if (elapsed > retryInterval / 2) {
-                 mgr.logger?.log?.(
-                     `[IMMEDIATE-RECOVERY] Retry cooldown: ${Math.ceil((retryInterval - elapsed) / 1000)}s remaining ` +
-                     `(attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'})`,
-                     'debug'
-                 );
-             }
-             return false;
-         }
-
-        this._isRecovering = true;
-        this._recoveryAttemptCount++;
-        this._lastRecoveryAttemptTime = now;
-
-        mgr.logger?.log?.(
-            `[IMMEDIATE-RECOVERY] ${violationType} detected. Attempting recovery ` +
-            `(attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'})...`,
-            'warn'
-        );
-
-        try {
-            const validation = await this._performStateRecovery(mgr);
-
-            if (validation.isValid) {
-                mgr.logger?.log?.(
-                    `[IMMEDIATE-RECOVERY] Recovery succeeded (attempt ${this._recoveryAttemptCount})`,
-                    'info'
-                );
-                // Reset on success so subsequent violations get fresh attempts
-                this._recoveryAttemptCount = 0;
-                this._lastRecoveryAttemptTime = 0;
-                mgr._recoveryAttempted = true;
-                return true;
-            } else {
-                mgr.logger?.log?.(
-                    `[IMMEDIATE-RECOVERY] Recovery failed (attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'}): ` +
-                    `${validation.reason}. Will retry in ${retryInterval / 1000}s.`,
-                    'error'
-                );
-                mgr._recoveryAttempted = true;
-                return false;
-            }
-        } catch (err) {
-            mgr.logger?.log?.(
-                `[IMMEDIATE-RECOVERY] Recovery exception (attempt ${this._recoveryAttemptCount}/${maxAttempts || '∞'}): ` +
-                `${err.message}. Will retry in ${retryInterval / 1000}s.`,
-                'error'
-            );
-            mgr._recoveryAttempted = true;
-            return false;
-        } finally {
-            this._isRecovering = false;
-        }
-    }
+      /**
+       * Reset the recovery attempt flag.
+       * Called at the start of each fill processing cycle to allow fresh recovery attempts.
+       */
+       resetRecoveryState() {
+           if (this.manager) this.manager._recoveryAttempted = false;
+       }
 
     /**
      * Check if sufficient funds exist AND atomically deduct (FREE portion only).
+     * PRIVATE: Must be called while holding _fundLock.
      */
-    tryDeductFromChainFree(orderType, size, operation = 'move') {
-        const mgr = this.manager;
-        const isBuy = orderType === ORDER_TYPES.BUY;
-        const key = isBuy ? 'buyFree' : 'sellFree';
+    async tryDeductFromChainFree(orderType, size, operation = 'move') {
+         const mgr = this.manager;
+         const isBuy = orderType === ORDER_TYPES.BUY;
+         const key = isBuy ? 'buyFree' : 'sellFree';
 
-        if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
+         if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
 
-        const current = Number(mgr.accountTotals[key]) || 0;
-        if (current < size) {
-            mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
-            return false;
-        }
+         const current = Number(mgr.accountTotals[key]) || 0;
+         if (current < size) {
+             mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
+             return false;
+         }
 
-        const oldValue = mgr.accountTotals[key];
-        mgr.accountTotals[key] = Math.max(0, current - size);
+         const oldValue = mgr.accountTotals[key];
+         mgr.accountTotals[key] = Math.max(0, current - size);
 
-        if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[ACCOUNTING] ${key} -${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldValue)})`, 'debug');
-        }
-        return true;
+         if (mgr.logger && mgr.logger.level === 'debug') {
+             mgr.logger.log(`[ACCOUNTING] ${key} -${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldValue)})`, 'debug');
+         }
+         return true;
     }
 
     /**
      * Add an amount back to the optimistic chainFree balance (FREE portion only).
+     * PRIVATE: Must be called while holding _fundLock.
      */
-    addToChainFree(orderType, size, operation = 'release') {
+    async addToChainFree(orderType, size, operation = 'release') {
+         const mgr = this.manager;
+         const isBuy = orderType === ORDER_TYPES.BUY;
+         const key = isBuy ? 'buyFree' : 'sellFree';
+
+         if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
+
+         const oldFree = Number(mgr.accountTotals[key]) || 0;
+         mgr.accountTotals[key] = oldFree + size;
+
+         if (mgr.logger && mgr.logger.level === 'debug') {
+             mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldFree)})`, 'debug');
+          }
+          return true;
+    }
+
+    /**
+     * Adjust both total and free balances (for fills, fees, deposits).
+     * PRIVATE: Must be called while holding _fundLock.
+     */
+    adjustTotalBalance(orderType, delta, context = 'fill') {
         const mgr = this.manager;
         const isBuy = orderType === ORDER_TYPES.BUY;
-        const key = isBuy ? 'buyFree' : 'sellFree';
+        const freeKey = isBuy ? 'buyFree' : 'sellFree';
+        const totalKey = isBuy ? 'buy' : 'sell';
 
-        if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
+        if (!mgr.accountTotals || mgr.accountTotals[totalKey] === undefined) return;
 
-        const oldFree = Number(mgr.accountTotals[key]) || 0;
-        mgr.accountTotals[key] = oldFree + size;
+        const oldTotal = Number(mgr.accountTotals[totalKey]) || 0;
+        const oldFree = Number(mgr.accountTotals[freeKey]) || 0;
+
+        mgr.accountTotals[totalKey] = Math.max(0, oldTotal + delta);
+        mgr.accountTotals[freeKey] = Math.max(0, oldFree + delta);
 
         if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[ACCOUNTING] ${key} +${Format.formatAmount8(size)} (${operation}) -> ${Format.formatAmount8(mgr.accountTotals[key])} (was ${Format.formatAmount8(oldFree)})`, 'debug');
+            mgr.logger.log(`[ACCOUNTING] ${totalKey}Total ${delta > 0 ? '+' : ''}${Format.formatAmount8(delta)} (${context}) -> ${Format.formatAmount8(mgr.accountTotals[totalKey])} (was ${Format.formatAmount8(oldTotal)})`, 'debug');
         }
-        return true;
+    }
+
+    /**
+     * Update optimistic balance tracked by the accountant.
+     * PUBLIC API: Acquires _fundLock.
+     */
+    async updateOptimisticFreeBalance(oldOrder, nextOrder, context = 'update', fee = 0, skipAssetAccounting = false) {
+        return await this.manager._fundLock.acquire(async () => {
+            return await this._applyOptimisticBalanceUpdate(oldOrder, nextOrder, context, fee, skipAssetAccounting);
+        });
+    }
+
+    /**
+     * Internal logic for updating optimistic balance.
+     * PRIVATE: Must be called while holding _fundLock.
+     */
+    async _applyOptimisticBalanceUpdate(oldOrder, nextOrder, context = 'update', fee = 0, skipAssetAccounting = false) {
+        const mgr = this.manager;
+
+        // 1. Asset Commitment Changes (Optimistic lock/unlock of capital)
+        if (!skipAssetAccounting) {
+            const oldStateOnChain = isOrderOnChain(oldOrder);
+            const nextStateOnChain = isOrderOnChain(nextOrder);
+            const oldSize = Number(oldOrder?.size) || 0;
+            const nextSize = Number(nextOrder?.size) || 0;
+            const oldSideType = oldOrder?.type;
+
+            // ... (rest of the logic stays the same but uses the private helpers)
+            let commitmentDelta = 0;
+            let commitmentSide = null;
+
+            if (!oldStateOnChain && nextStateOnChain) {
+                // LOCK: Order moving from Virtual -> On-chain
+                commitmentDelta = nextSize;
+                commitmentSide = nextOrder.type;
+            } else if (oldStateOnChain && !nextStateOnChain) {
+                // UNLOCK: Order moving from On-chain -> Virtual/Spread
+                commitmentDelta = -oldSize;
+                commitmentSide = oldSideType || oldOrder.type;
+            } else if (oldStateOnChain && nextStateOnChain) {
+                // ADJUST: Size changed while on-chain
+                commitmentDelta = nextSize - oldSize;
+                commitmentSide = nextOrder.type;
+            }
+
+            if (commitmentDelta > 0) {
+                // Acquire capital: move from Free to Committed
+                const success = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
+                if (!success) {
+                    mgr._lastAccountingFailure = { side: commitmentSide, amount: commitmentDelta, context, at: Date.now() };
+
+                    mgr.logger?.log?.(
+                        `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Scheduling recovery.`,
+                        'error'
+                    );
+
+                    if (mgr._throwOnIllegalState) {
+                        const err = new Error(
+                            `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
+                        );
+                        err.code = 'ACCOUNTING_COMMITMENT_FAILED';
+                        throw err;
+                    }
+
+                    this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure').catch(err => {
+                        mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
+                    });
+                }
+            } else if (commitmentDelta < 0) {
+                // Release capital: move from Committed back to Free
+                const releaseSide = oldSideType || oldOrder.type;
+                await this.addToChainFree(releaseSide, Math.abs(commitmentDelta), `${context}`);
+            }
+        }
+
+        // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
+        const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
+        if (fee > 0 && btsSide) {
+            const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+            this.adjustTotalBalance(btsOrderType, -fee, `${context}-fee`);
+        }
+    }
+
+    /**
+     * Deduct BTS fees using adjustTotalBalance.
+     * PUBLIC API: Acquires _fundLock.
+     */
+    async deductBtsFees(requestedSide = null) {
+        return await this.manager._fundLock.acquire(async () => {
+            return await this._applyBtsFeeDeduction(requestedSide);
+        });
+    }
+
+    /**
+     * Internal logic for BTS fee deduction.
+     * PRIVATE: Must be called while holding _fundLock.
+     */
+    async _applyBtsFeeDeduction(requestedSide) {
+        const mgr = this.manager;
+
+        // Early returns for no work needed
+        if (!mgr.funds || !mgr.funds.btsFeesOwed || mgr.funds.btsFeesOwed <= 0) return;
+        if (!mgr.accountTotals) return;
+
+        const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
+        const normalizedRequestedSide = (requestedSide === 'buy' || requestedSide === 'sell') ? requestedSide : null;
+        let side = btsSide || normalizedRequestedSide;
+
+        if (normalizedRequestedSide && btsSide && normalizedRequestedSide !== btsSide) {
+            mgr.logger?.log?.(
+                `[BTS-FEE] Ignoring requested side '${normalizedRequestedSide}' (configured BTS side is '${btsSide}').`,
+                'warn'
+            );
+            side = btsSide;
+        }
+
+        if (!side) return;
+
+        const fees = mgr.funds.btsFeesOwed;
+        const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+        const freeKey = (side === 'buy') ? 'buyFree' : 'sellFree';
+        const chainFree = mgr.accountTotals[freeKey] || 0;
+
+        // SUFFICIENCY CHECK: Defer if insufficient funds
+        if (chainFree < fees) {
+            if (mgr.logger && mgr.logger.level === 'debug') {
+                mgr.logger.log(`[BTS-FEE] Deferring settlement: need ${Format.formatAmount8(fees)}, have ${Format.formatAmount8(chainFree)}`, 'debug');
+            }
+            return;
+        }
+
+        // SETTLEMENT: Deduct from cache first, then base capital
+        const cache = mgr.funds.cacheFunds?.[side] || 0;
+         const cacheDeduction = Math.min(fees, cache);
+
+         if (cacheDeduction > 0) {
+             await this._modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
+         }
+
+        // FULL DEDUCTION from chainFree (cache is part of chainFree, so always deduct full amount)
+        this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
+
+        if (mgr.logger && mgr.logger.level === 'debug') {
+            const baseCapitalDeduction = fees - cacheDeduction;
+            mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS (${Format.formatAmount8(cacheDeduction)} from cache, ${Format.formatAmount8(baseCapitalDeduction)} from base capital)`, 'debug');
+        }
+
+        // Reset fees after successful settlement
+        mgr.funds.btsFeesOwed = 0;
+
+        // Recalculate funds to update all tracking metrics
+        await mgr._recalculateFunds();
+    }
+
+    /**
+     * Record a fill in the optimistic total balances.
+     * PUBLIC API: Acquires _fundLock.
+     */
+    async recordFillBalances(paysAsset, paysAmount, receivesAsset, receivesAmount, context = 'fill') {
+        return await this.manager._fundLock.acquire(async () => {
+            const mgr = this.manager;
+            const assetA = mgr.config.assetA;
+            const assetB = mgr.config.assetB;
+
+            // Determine orientation
+            if (paysAsset === assetA) {
+                // Bot paid assetA (Selling assetA, buying assetB)
+                this.adjustTotalBalance(ORDER_TYPES.SELL, -paysAmount, `${context}-pays`);
+                this.adjustTotalBalance(ORDER_TYPES.BUY, receivesAmount, `${context}-receives`);
+                await this._modifyCacheFunds('buy', receivesAmount, `${context}-proceeds`);
+            } else {
+                // Bot paid assetB (Buying assetA, selling assetB)
+                this.adjustTotalBalance(ORDER_TYPES.BUY, -paysAmount, `${context}-pays`);
+                this.adjustTotalBalance(ORDER_TYPES.SELL, receivesAmount, `${context}-receives`);
+                await this._modifyCacheFunds('sell', receivesAmount, `${context}-proceeds`);
+            }
+        });
+    }
+
+    /**
+     * Directly modify cached proceeds funds.
+     * PUBLIC API: Acquires _fundLock.
+     */
+    async modifyCacheFunds(side, delta, operation = 'update') {
+         return await this.manager._fundLock.acquire(async () => {
+             return await this._modifyCacheFunds(side, delta, operation);
+         });
+    }
+
+    /**
+     * Internal logic for modifying cache funds.
+     * PRIVATE: Must be called while holding _fundLock.
+     */
+    async _modifyCacheFunds(side, delta, operation = 'update') {
+         const mgr = this.manager;
+         
+         if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
+         const oldValue = mgr.funds.cacheFunds[side] || 0;
+         const newValue = Math.max(0, oldValue + delta);
+         mgr.funds.cacheFunds[side] = newValue;
+
+         if (mgr.logger && mgr.logger.level === 'debug') {
+             mgr.logger.log(`[CACHEFUNDS] ${side} ${delta > 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
+         }
     }
 
     /**
@@ -634,7 +763,7 @@ class Accountant {
      * @param {number} fee - Blockchain fee to deduct
      * @param {boolean} skipAssetAccounting - If true, skip capital commitment changes (asset amounts) but still process fees
      */
-    updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0, skipAssetAccounting = false) {
+    async updateOptimisticFreeBalance(oldOrder, newOrder, context, fee = 0, skipAssetAccounting = false) {
         const mgr = this.manager;
         if (!oldOrder || !newOrder) return;
 
@@ -666,7 +795,7 @@ class Accountant {
             if (commitmentDelta > 0) {
                 // Lock capital: move from Free to Committed
                 const commitmentSide = newSideType || newOrder.type;
-                const deducted = this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
+                const deducted = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
                 if (!deducted) {
                     const failure = {
                         code: 'ACCOUNTING_COMMITMENT_FAILED',
@@ -697,7 +826,7 @@ class Accountant {
             } else if (commitmentDelta < 0) {
                 // Release capital: move from Committed back to Free
                 const releaseSide = oldSideType || oldOrder.type;
-                this.addToChainFree(releaseSide, Math.abs(commitmentDelta), `${context}`);
+                await this.addToChainFree(releaseSide, Math.abs(commitmentDelta), `${context}`);
             }
         }
 
@@ -755,11 +884,11 @@ class Accountant {
 
         // SETTLEMENT: Deduct from cache first, then base capital
         const cache = mgr.funds.cacheFunds?.[side] || 0;
-        const cacheDeduction = Math.min(fees, cache);
+         const cacheDeduction = Math.min(fees, cache);
 
-        if (cacheDeduction > 0) {
-            this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
-        }
+         if (cacheDeduction > 0) {
+             await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
+         }
 
         // FULL DEDUCTION from chainFree (cache is part of chainFree, so always deduct full amount)
         this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
@@ -773,19 +902,89 @@ class Accountant {
         mgr.funds.btsFeesOwed = 0;
 
         // Recalculate funds to update all tracking metrics
-        mgr.recalculateFunds();
+        await mgr.recalculateFunds();
     }
 
-    modifyCacheFunds(side, delta, operation = 'update') {
-        const mgr = this.manager;
-        if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
-        const oldValue = mgr.funds.cacheFunds[side] || 0;
-        const newValue = Math.max(0, oldValue + delta);
-        mgr.funds.cacheFunds[side] = newValue;
-        if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[CACHEFUNDS] ${side} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
+    /**
+     * Validate that a proposed Target Grid fits within the account's total available funds.
+     * Prevents over-commitment before orders are broadcast.
+     * 
+     * @param {Map} targetGrid - Proposed grid (price -> {size, type})
+     * @returns {Object} { isValid, shortfall, details }
+     */
+    validateTargetGrid(targetGrid) {
+        if (!targetGrid || typeof targetGrid.values !== 'function') {
+            return { isValid: false, shortfall: { buy: 0, sell: 0 }, details: { error: 'Invalid targetGrid' } };
         }
-        return newValue;
+        const mgr = this.manager;
+        let requiredBuy = 0;
+        let requiredSell = 0;
+
+        // 1. Sum up requirements for the new grid
+        for (const order of targetGrid.values()) {
+            const size = Number(order.size) || 0;
+            if (size <= 0) continue;
+
+            if (order.type === ORDER_TYPES.BUY) {
+                // Buy order uses Asset B (Quote)
+                requiredBuy += size;
+            } else if (order.type === ORDER_TYPES.SELL) {
+                // Sell order uses Asset A (Base)
+                requiredSell += size;
+            }
+        }
+
+        // 2. Add Estimated BTS Fees (if BTS is one of the pairs)
+        // Fees reduce the "Free" balance, so they compete with Order Capital
+        const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
+        if (btsSide && mgr.funds.btsFeesOwed > 0) {
+            if (btsSide === 'buy') requiredBuy += mgr.funds.btsFeesOwed;
+            else requiredSell += mgr.funds.btsFeesOwed;
+        }
+
+        // 3. Compare against Total Account Balance (Free + Committed)
+        // Note: We use the *current* totals from the manager, which includes
+        // money locked in current orders. Since the new grid *replaces* the old one,
+        // we can essentially "re-spend" the money from old orders.
+        const totalBuy = (mgr.accountTotals?.buy || 0);
+        const totalSell = (mgr.accountTotals?.sell || 0);
+
+        // Add slack for precision rounding errors
+        const slackBuy = getPrecisionSlack(mgr.assets?.assetB?.precision || 8);
+        const slackSell = getPrecisionSlack(mgr.assets?.assetA?.precision || 8);
+
+        const buyShortfall = Math.max(0, requiredBuy - (totalBuy + slackBuy));
+        const sellShortfall = Math.max(0, requiredSell - (totalSell + slackSell));
+
+        const isValid = buyShortfall === 0 && sellShortfall === 0;
+
+        if (!isValid) {
+            mgr.logger.log(
+                `[ACCOUNTING] Target Grid validation failed. Shortfall: Buy=${Format.formatAmount8(buyShortfall)}, Sell=${Format.formatAmount8(sellShortfall)}`,
+                'warn'
+            );
+        }
+
+        return {
+            isValid,
+            shortfall: { buy: buyShortfall, sell: sellShortfall },
+            details: { requiredBuy, requiredSell, totalBuy, totalSell }
+        };
+     }
+
+    async modifyCacheFunds(side, delta, operation = 'update') {
+         const mgr = this.manager;
+         
+         return await mgr._fundLock.acquire(async () => {
+             if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
+             const oldValue = mgr.funds.cacheFunds[side] || 0;
+             const newValue = Math.max(0, oldValue + delta);
+             mgr.funds.cacheFunds[side] = newValue;
+             if (mgr.logger && mgr.logger.level === 'debug') {
+                 mgr.logger.log(`[CACHEFUNDS] ${side} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
+             }
+             return newValue;
+         });
     }
 
     /**
@@ -828,18 +1027,19 @@ class Accountant {
         }
     }
 
-    /**
-     * Process the fund impact of an order fill.
-     * Atomically updates accountTotals to keep internal state in sync with blockchain.
-     * CRITICAL: Called within fill processing lock context to prevent race conditions.
-     */
-    processFillAccounting(fillOp) {
-        const mgr = this.manager;
-        const pays = fillOp?.pays;
-        const receives = fillOp?.receives;
-        if (!pays || !receives) return;
+     /**
+      * Process the fund impact of an order fill.
+      * Atomically updates accountTotals to keep internal state in sync with blockchain.
+      * CRITICAL: Called within fill processing lock context to prevent race conditions.
+      * NOTE: Now async due to modifyCacheFunds() being async (Race Condition #4).
+      */
+    async processFillAccounting(fillOp) {
+         const mgr = this.manager;
+         const pays = fillOp?.pays;
+         const receives = fillOp?.receives;
+         if (!pays || !receives) return;
 
-        // Default to maker (not taker) because:
+         // Default to maker (not taker) because:
         // 1. This bot primarily places orders (maker orders, not taker)
         // 2. Maker fees are CHEAPER: 10% of fee vs 100% for taker
         // 3. When is_maker is missing, it's safer to assume maker (the normal case)
@@ -875,14 +1075,14 @@ class Accountant {
             const rawAmount = blockchainToFloat(receives.amount, assetAPrecision, true);
             const netAmount = this._deductFeesFromProceeds(assetASymbol, rawAmount, isMaker);
 
-            this.adjustTotalBalance(ORDER_TYPES.SELL, netAmount, 'fill-receives');
-            this.modifyCacheFunds('sell', netAmount, 'fill-proceeds');
-        } else if (receives.asset_id === assetBId) {
-            const rawAmount = blockchainToFloat(receives.amount, assetBPrecision, true);
-            const netAmount = this._deductFeesFromProceeds(assetBSymbol, rawAmount, isMaker);
+             this.adjustTotalBalance(ORDER_TYPES.SELL, netAmount, 'fill-receives');
+             await this.modifyCacheFunds('sell', netAmount, 'fill-proceeds');
+         } else if (receives.asset_id === assetBId) {
+             const rawAmount = blockchainToFloat(receives.amount, assetBPrecision, true);
+             const netAmount = this._deductFeesFromProceeds(assetBSymbol, rawAmount, isMaker);
 
-            this.adjustTotalBalance(ORDER_TYPES.BUY, netAmount, 'fill-receives');
-            this.modifyCacheFunds('buy', netAmount, 'fill-proceeds');
+             this.adjustTotalBalance(ORDER_TYPES.BUY, netAmount, 'fill-receives');
+             await this.modifyCacheFunds('buy', netAmount, 'fill-proceeds');
         }
     }
 }

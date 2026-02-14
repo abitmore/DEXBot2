@@ -28,7 +28,8 @@ function makeBotContext(logs) {
             logger: {
                 log: (message, level) => logs.push({ message, level })
             }
-        }
+        },
+        _getMarketAssets: () => ({ assetAId: '1.3.1', assetBId: '1.3.0' })
     };
 }
 

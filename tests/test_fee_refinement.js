@@ -40,7 +40,7 @@ async function testFees() {
     // Initialize account context
     mgr.accountId = '1.2.12345';
     mgr.account = '1.2.12345';
-    mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
     mgr.funds.btsFeesOwed = 0;
 
     // Simulate 1 full fill and 2 partial fills

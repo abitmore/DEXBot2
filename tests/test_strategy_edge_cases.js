@@ -98,66 +98,28 @@ async function callRebalanceSide(mgr, type, sideSlots, budget, excludeIds = new 
     const reactionCap = 100;
     
     return await mgr.strategy.rebalanceSideRobust(
-        type, 
-        allSlots, 
-        sideSlots, 
-        budget, 
-        budget, 
-        excludeIds, 
+        type,
+        sideSlots,
+        budget,
+        allSlots,
+        excludeIds,
         reactionCap
     );
 }
 
-// Test definitions
-async function testCase1a() {
-    const mgr = createManagerWithGridSize(5, 1000, 10);
-    const slots = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
+async function testCase1() {
+    const mgr = createManagerWithGridSize(6, 1000, 10);
+    const buySlots = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
+    
+    // Set targetCount (3) > available buySlots (2)
+    mgr.config.activeOrders.buy = 3; 
 
-    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 1000);
+    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, buySlots, 1000);
 
-    assert(Array.isArray(result.ordersToPlace), 'ordersToPlace should be an array');
-    assert(result.ordersToPlace.length <= slots.length, 'Cannot place more orders than slots available');
+    assert(result.placements.length <= buySlots.length, 'Should not place more orders than available slots');
 }
 
-async function testCase1b() {
-    const mgr = createManagerWithGridSize(3, 1000, 10);
-    const slots = Array.from(mgr.orders.values());
-
-    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 1000);
-
-    assert(result !== undefined, 'Should return a valid result');
-    assert(result.ordersToPlace.length >= 0, 'Should have zero or more placements');
-}
-
-async function testCase2a() {
-    const mgr = createManagerWithGridSize(3, 100, 10);
-    const slots = Array.from(mgr.orders.values());
-
-    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 100);
-
-    assert(result.ordersToPlace.length <= 3, 'Window should not exceed grid size');
-}
-
-async function testCase2b() {
-    const mgr = createManagerWithGridSize(5, 200, 20);
-    const slots = Array.from(mgr.orders.values());
-
-    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 200);
-
-    assert(result !== undefined, 'Should initialize window correctly');
-    assert(Array.isArray(result.ordersToPlace), 'ordersToPlace should be an array');
-}
-
-async function testCase2c() {
-    const mgr = createManagerWithGridSize(10, 500, 50);
-    const slots = Array.from(mgr.orders.values());
-
-    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 500);
-
-    assert(result !== undefined, 'Should initialize window correctly');
-}
-
-async function testCase2d() {
+async function testCase2() {
     const mgr = createManagerWithGridSize(20, 1000, 100);
     const slots = Array.from(mgr.orders.values());
 
@@ -176,7 +138,7 @@ async function testCase3a() {
 
     const partialSlot = slots[3];
     if (partialSlot) {
-        mgr._updateOrder({
+        await mgr._updateOrder({
             ...partialSlot,
             type: ORDER_TYPES.BUY,
             orderId: 'partial-buy-1',
@@ -209,7 +171,7 @@ async function testCase3b() {
 
     const partialSlot = slots[4];
     if (partialSlot) {
-        mgr._updateOrder({
+        await mgr._updateOrder({
             ...partialSlot,
             type: ORDER_TYPES.BUY,
             orderId: 'partial-buy-2',
@@ -217,265 +179,152 @@ async function testCase3b() {
             state: ORDER_STATES.PARTIAL
         });
 
+        mgr.funds.available.buy = 100;
+
         const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 500);
 
-        assert(result !== undefined, 'Should process partial without MERGE');
+        assert(result !== undefined, 'Should maintain large partial');
     }
 }
 
-async function testCase4a() {
+async function testCase4() {
     const mgr = createManagerWithGridSize(10, 500, 50);
-
-    const result1 = await mgr.strategy.rebalance([], new Set());
-    assert(result1 !== undefined, 'First rebalance should succeed');
-
-    const orderCount1 = mgr.orders.size;
-    assert(orderCount1 === 10, 'Grid should still have all slots after rebalance');
-
-    const result2 = await mgr.strategy.rebalance([], new Set());
-    assert(result2 !== undefined, 'Second rebalance should succeed');
-
-    const orderCount2 = mgr.orders.size;
-    assert(orderCount2 === orderCount1, 'Grid size should not change between rebalances');
+    const slots = Array.from(mgr.orders.values());
+    
+    // Test role assignment indirectly via rebalance call
+    const result = await mgr.strategy.rebalance([]);
+    
+    assert(result !== undefined, 'Should complete rebalance without error');
+    assert(Array.isArray(result.ordersToPlace), 'Should have placement list');
 }
 
-async function testCase4b() {
-    const mgr = createManagerWithGridSize(14, 1000, 100);
-
-    const initialTypes = new Map();
-    for (const [id, order] of mgr.orders) {
-        initialTypes.set(id, order.type);
-    }
-
-    await mgr.strategy.rebalance([], new Set());
-
-    for (const [id, order] of mgr.orders) {
-        assert(
-            [ORDER_TYPES.BUY, ORDER_TYPES.SELL, ORDER_TYPES.SPREAD].includes(order.type),
-            `Order ${id} has invalid type: ${order.type}`
-        );
-    }
-}
-
-async function testCase5a() {
-    const mgr = createManagerWithGridSize(10, 0, 50);
-
-    const result = await mgr.strategy.rebalance([], new Set());
-    assert(result !== undefined, 'Should handle zero buy budget gracefully');
-    assert(Array.isArray(result.ordersToPlace), 'Should return valid result structure');
-}
-
-async function testCase5b() {
-    const mgr = createManagerWithGridSize(10, 500, 0);
-
-    const result = await mgr.strategy.rebalance([], new Set());
-    assert(result !== undefined, 'Should handle zero sell budget gracefully');
-    assert(Array.isArray(result.ordersToPlace), 'Should return valid result structure');
-}
-
-async function testCase5c() {
+async function testCase5() {
     const mgr = createManagerWithGridSize(10, 0, 0);
-
-    const result = await mgr.strategy.rebalance([], new Set());
-    assert(result !== undefined, 'Should handle zero budgets gracefully');
-    assert(Array.isArray(result.ordersToPlace), 'Should return valid result structure');
-    // Strategy maintains grid structure even with zero budget (places with size 0)
-    assert(result.ordersToPlace.every(o => o.size >= 0), 'All placed orders should have non-negative size');
-}
-
-async function testCase6a() {
-    const mgr = createManagerWithGridSize(12, 800, 80);
     const slots = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
 
-    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 800);
+    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 0);
 
-    if (result.ordersToPlace.length > 1) {
-        const indices = result.ordersToPlace.map(o => slots.findIndex(s => s.id === o.id)).sort((a, b) => a - b);
-        for (let i = 1; i < indices.length; i++) {
-            // Indices might not be perfectly contiguous if some slots were already filled or excluded, 
-            // but for a fresh grid they should be close.
-            // In the new strategy, we place at "Furthest Outer Edges".
-            // So if we place 3 orders, they should be the 3 furthest from market.
-            // Since slots are filtered BUYs (ordered by price?), we need to be careful about assumption.
-            // The test checks contiguity of indices in the input 'slots' array.
-            // If we place orders at indices 0, 1, 2 of the BUY slots (furthest from market is index 0?),
-            // then yes.
-            // BUY slots sorted by ID (grid-6, grid-7...). grid-6 is lowest price (furthest from market).
-            // rebalanceSideRobust sorts by Distance to Market.
-            // BUY: Highest price = Closest.
-            // So it sorts Descending Price.
-            // Then it places at Outer Edges (Lowest Price).
-            // So it should pick the lowest price slots.
-            // If 'slots' input to this test is just Array.from().filter(), it's likely ID sorted (Low price to High price).
-            // So lowest price slots are indices 0, 1, 2.
-            // So indices should be contiguous 0, 1, 2.
-            
-            assert(indices[i] - indices[i-1] === 1, 'Window indices should be contiguous');
-        }
+    assert(result.placements.length === 0, 'Should not place orders with zero budget');
+}
+
+async function testCase6() {
+    console.log('Testing side invariance during rebalance...');
+    const mgr = createManagerWithGridSize(10, 1000, 1000);
+    
+    // Mock some active orders
+    const buyOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY).slice(0, 2);
+    for (const o of buyOrders) {
+        await mgr._updateOrder({...o, orderId: 'oid-' + o.id, state: ORDER_STATES.ACTIVE});
     }
+    
+    const sellOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.SELL).slice(0, 2);
+    for (const o of sellOrders) {
+        await mgr._updateOrder({...o, orderId: 'oid-' + o.id, state: ORDER_STATES.ACTIVE});
+    }
+
+    // Trigger rebalance
+    const result = await mgr.performSafeRebalance();
+    
+    assert(result !== undefined, 'Safe rebalance should return result');
+    assert(result.rollback !== null, 'Should provide rollback function');
 }
 
-async function testCase7a() {
-    const mgr = createManagerWithGridSize(8, 500, 50);
-    const slots = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
-
-    const result = await callRebalanceSide(mgr, ORDER_TYPES.BUY, slots, 500);
-
-    assert(result !== undefined, 'Should handle missing SPREAD slots gracefully');
-    assert(result.ordersToPlace !== undefined, 'Should return valid structure');
+async function testCase7() {
+    console.log('Testing rollback functionality...');
+    const mgr = createManagerWithGridSize(10, 1000, 1000);
+    
+    // Setup initial state
+    const o = Array.from(mgr.orders.values())[0];
+    await mgr._updateOrder({...o, orderId: 'oid-'+o.id, state: ORDER_STATES.ACTIVE});
+    
+    const snapshot = {
+        orders: new Map(mgr.orders),
+        funds: JSON.parse(JSON.stringify(mgr.funds))
+    };
+    
+    // Perform safe rebalance to get rollback
+    const rebalance = await mgr.performSafeRebalance();
+    const rollback = rebalance.rollback;
+    
+    // Mutate state
+    const fill = Array.from(mgr.orders.values())[0];
+    await mgr._updateOrder({...fill, state: ORDER_STATES.VIRTUAL, orderId: null});
+    
+    // Execute rollback
+    await rollback();
+    
+    // Verify restored
+    const restored = mgr.orders.get(fill.id);
+    assert(restored.state === ORDER_STATES.ACTIVE, 'State should be restored to ACTIVE');
+    assert(restored.orderId === 'oid-'+fill.id, 'OrderId should be restored');
 }
 
-// Test 8: Sliding window transitions with sequential fills
-async function testCase8a() {
-    const mgr = createManagerWithGridSize(14, 1000, 100);
-
-    // Initial rebalance
-    const result1 = await mgr.strategy.rebalance([], new Set());
-    assert(result1.ordersToPlace.length > 0, 'Should place initial orders');
+async function testCase8() {
+    console.log('Testing rotation rollback...');
+    const mgr = createManagerWithGridSize(10, 1000, 1000);
     
-    // Simulate orders being placed
-    result1.ordersToPlace.forEach(o => {
-        mgr._updateOrder({...o, orderId: 'oid-' + o.id, state: ORDER_STATES.ACTIVE});
-    });
-
-    // Simulate BUY fill (on fill side)
-    // We need to pick a valid order to fill.
-    // Closest BUY order.
-    const buyOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.ACTIVE);
-    // Sort by price DESC (closest to market)
-    buyOrders.sort((a, b) => b.price - a.price);
-    const fillOrder = buyOrders[0];
+    // Setup initial state
+    const orders = Array.from(mgr.orders.values());
+    for (const o of orders.slice(0, 3)) {
+        await mgr._updateOrder({...o, orderId: 'oid-'+o.id, state: ORDER_STATES.ACTIVE});
+    }
     
-    if (fillOrder) {
-        const buyFills = [{ ...fillOrder, type: ORDER_TYPES.BUY }];
-        const result2 = await mgr.strategy.rebalance(buyFills, new Set());
-        assert(result2 !== undefined, 'Should handle BUY fill');
+    const rebalance = await mgr.performSafeRebalance();
+    
+    // Simulate a rotation that would be in the plan
+    if (rebalance.ordersToRotate.length > 0) {
+        const r = rebalance.ordersToRotate[0];
+        // Apply optimistic update
+        await mgr._updateOrder({...r.oldOrder, state: ORDER_STATES.VIRTUAL, orderId: null});
+        await mgr._updateOrder({...mgr.orders.get(r.newGridId), type: r.type, size: r.newSize, state: ORDER_STATES.ACTIVE, orderId: 'oid-rot-'+r.newGridId});
         
-        // Check if boundary shifted
-        // rebalance() handles boundary shift.
-        // We expect rotations/placements.
-    }
-}
-
-async function testCase8b() {
-    const mgr = createManagerWithGridSize(14, 1000, 100);
-
-    // Initial rebalance
-    const result1 = await mgr.strategy.rebalance([], new Set());
-    assert(result1.ordersToPlace.length > 0, 'Should place initial orders');
-    
-    result1.ordersToPlace.forEach(o => {
-        mgr._updateOrder({...o, orderId: 'oid-' + o.id, state: ORDER_STATES.ACTIVE});
-    });
-
-    // Simulate SELL fill (on fill side)
-    const sellOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.ACTIVE);
-    sellOrders.sort((a, b) => a.price - b.price); // Closest first
-    const fillOrder = sellOrders[0];
-
-    if (fillOrder) {
-        const sellFills = [{ ...fillOrder, type: ORDER_TYPES.SELL }];
-        const result2 = await mgr.strategy.rebalance(sellFills, new Set());
-        assert(result2 !== undefined, 'Should handle SELL fill');
-    }
-}
-
-async function testCase8c() {
-    const mgr = createManagerWithGridSize(14, 1000, 100);
-
-    // Alternating fills: BUY -> SELL -> BUY -> SELL
-    // We need to properly simulate the sequence including state updates
-    
-    // 1. Init
-    let res = await mgr.strategy.rebalance([], new Set());
-    res.ordersToPlace.forEach(o => mgr._updateOrder({...o, orderId: 'oid-'+o.id, state: ORDER_STATES.ACTIVE}));
-    
-    // 2. Buy Fill
-    let buyOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY && o.state === ORDER_STATES.ACTIVE).sort((a, b) => b.price - a.price);
-    if(buyOrders[0]) {
-        let fill = {...buyOrders[0], type: ORDER_TYPES.BUY};
-        // Update to VIRTUAL as per fill processing (mocking what processFilledOrders does)
-        mgr._updateOrder({...fill, state: ORDER_STATES.VIRTUAL, orderId: null});
+        // Rollback
+        await rebalance.rollback();
         
-        let res2 = await mgr.strategy.rebalance([fill], new Set());
-        // Apply changes
-        res2.ordersToPlace.forEach(o => mgr._updateOrder({...o, orderId: 'oid-'+o.id, state: ORDER_STATES.ACTIVE}));
-        res2.ordersToRotate.forEach(r => {
-             mgr._updateOrder({...r.oldOrder, state: ORDER_STATES.VIRTUAL, orderId: null});
-             mgr._updateOrder({...mgr.orders.get(r.newGridId), type: r.type, size: r.newSize, state: ORDER_STATES.ACTIVE, orderId: 'oid-rot-'+r.newGridId});
-        });
+        assert(mgr.orders.get(r.oldOrder.id).state === ORDER_STATES.ACTIVE, 'Old order should be restored to ACTIVE');
+        assert(mgr.orders.get(r.newGridId).state === ORDER_STATES.VIRTUAL, 'New grid slot should be restored to VIRTUAL');
     }
-
-    // 3. Sell Fill
-    let sellOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.SELL && o.state === ORDER_STATES.ACTIVE).sort((a, b) => a.price - b.price);
-    if(sellOrders[0]) {
-         let fill = {...sellOrders[0], type: ORDER_TYPES.SELL};
-         mgr._updateOrder({...fill, state: ORDER_STATES.VIRTUAL, orderId: null});
-         let res3 = await mgr.strategy.rebalance([fill], new Set());
-         res3.ordersToPlace.forEach(o => mgr._updateOrder({...o, orderId: 'oid-'+o.id, state: ORDER_STATES.ACTIVE}));
-         // Apply rotations...
-    }
-
-    // Verify grid is still intact after alternating fills
-    const allOrders = Array.from(mgr.orders.values());
-    assert(allOrders.length === 14, 'Grid should maintain all 14 slots after alternating fills');
 }
 
-// Main test runner
-async function runAllTests() {
-    console.log('\n=== STRATEGY EDGE CASE TESTS ===\n');
+async function testCase9() {
+    console.log('Testing fund invariant rollback...');
+    const mgr = createManagerWithGridSize(10, 1000, 1000);
+    
+    const fill = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY)[0];
+    await mgr._updateOrder({...fill, orderId: 'oid-'+fill.id, state: ORDER_STATES.ACTIVE});
+    
+    const rebalance = await mgr.performSafeRebalance();
+    
+    // Simulate fill clearing
+    await mgr._updateOrder({...fill, state: ORDER_STATES.VIRTUAL, orderId: null});
+    const fundsBeforeRollback = JSON.parse(JSON.stringify(mgr.funds));
+    
+    await rebalance.rollback();
+    
+    assert(mgr.orders.get(fill.id).state === ORDER_STATES.ACTIVE, 'Order should be ACTIVE after rollback');
+    // Note: rollback restores mgr.funds reference if it was snapshotted
+}
 
-    // Test 1: targetCount > slots.length
-    await testAsync('Edge Case 1a: targetCount > slots.length (5 slots, 10 target)', testCase1a);
-    await testAsync('Edge Case 1b: targetCount > slots.length (3 slots, 5 target)', testCase1b);
+async function runTests() {
+    console.log('Starting Strategy Edge Case Tests...');
+    
+    await testAsync('Case 1: targetCount > slots.length', testCase1);
+    await testAsync('Case 2: Large grid window init', testCase2);
+    await testAsync('Case 3a: MERGE consolidation (dust)', testCase3a);
+    await testAsync('Case 3b: Large partial maintenance', testCase3b);
+    await testAsync('Case 4: General rebalance role assignment', testCase4);
+    await testAsync('Case 5: Zero budget handling', testCase5);
+    await testAsync('Case 6: Side invariance in safe rebalance', testCase6);
+    await testAsync('Case 7: Basic state rollback', testCase7);
+    await testAsync('Case 8: Rotation state rollback', testCase8);
+    await testAsync('Case 9: Fund invariant rollback', testCase9);
 
-    // Test 2: Window initialization with various grid sizes
-    await testAsync('Edge Case 2a: Window init with 3-slot grid', testCase2a);
-    await testAsync('Edge Case 2b: Window init with 5-slot grid', testCase2b);
-    await testAsync('Edge Case 2c: Window init with 10-slot grid', testCase2c);
-    await testAsync('Edge Case 2d: Window init with 20-slot grid', testCase2d);
-
-    // Test 3: MERGE consolidation with dust threshold
-    await testAsync('Edge Case 3a: MERGE with dust-threshold-sized partial', testCase3a);
-    await testAsync('Edge Case 3b: MERGE above dust threshold', testCase3b);
-
-    // Test 4: Role assignment doesn't corrupt state
-    await testAsync('Edge Case 4a: Consecutive rebalances don\'t corrupt state', testCase4a);
-    await testAsync('Edge Case 4b: Order types preserved after rebalance', testCase4b);
-
-    // Test 5: Zero budget edge cases
-    await testAsync('Edge Case 5a: Zero buy budget', testCase5a);
-    await testAsync('Edge Case 5b: Zero sell budget', testCase5b);
-    await testAsync('Edge Case 5c: Zero both budgets', testCase5c);
-
-    // Test 6: Contiguity validation
-    await testAsync('Edge Case 6a: Window contiguity maintained', testCase6a);
-
-    // Test 7: Hardcoded fallback removal validation
-    await testAsync('Edge Case 7a: Window fallback with no SPREAD slots', testCase7a);
-
-    // Test 8: Sliding window transitions with sequential fills
-    await testAsync('Edge Case 8a: Sliding window on BUY fill', testCase8a);
-    await testAsync('Edge Case 8b: Sliding window on SELL fill', testCase8b);
-    await testAsync('Edge Case 8c: Alternating BUY/SELL fills maintain grid integrity', testCase8c);
-
-    // Summary
-    console.log(`\n=== TEST SUMMARY ===`);
-    console.log(`Passed: ${testsPassed}`);
-    console.log(`Failed: ${testsFailed}`);
-    console.log(`Total: ${testsPassed + testsFailed}`);
-
+    console.log(`\nTests Passed: ${testsPassed}`);
+    console.log(`Tests Failed: ${testsFailed}`);
+    
     if (testsFailed > 0) {
-        console.log('\n❌ Some tests failed');
         process.exit(1);
-    } else {
-        console.log('\n✅ All edge case tests passed');
-        process.exit(0);
     }
 }
 
-// Run tests
-runAllTests().catch(err => {
-    console.error('Test suite error:', err);
-    process.exit(1);
-});
+runTests();

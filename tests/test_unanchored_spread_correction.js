@@ -37,16 +37,16 @@ async function testUnanchoredSpreadCorrection() {
     console.log('  Scenario 1: Initial setup at 100');
     for(let i=0; i<20; i++) {
         const price = 90 + i; // Prices from 90 to 110
-        mgr._updateOrder({ id: `slot-${i}`, price, state: ORDER_STATES.VIRTUAL, size: 0 });
+        await mgr._updateOrder({ id: `slot-${i}`, price, state: ORDER_STATES.VIRTUAL, size: 0 });
     }
-    // Center at 100 (splitIdx should be around 10)
-    mgr.boundaryIdx = 8; // BUY slots 0-8 (up to 98), SPREAD 9-10 (99-100), SELL 11+ (101+)
-    
-    mgr.setAccountTotals({
-        buy: 10000, sell: 100, // Ratio ~100:1 favoring BUY
-        buyFree: 10000, sellFree: 100
-    });
-    mgr.recalculateFunds();
+     // Center at 100 (splitIdx should be around 10)
+     mgr.boundaryIdx = 8; // BUY slots 0-8 (up to 98), SPREAD 9-10 (99-100), SELL 11+ (101+)
+     
+     await mgr.setAccountTotals({
+         buy: 10000, sell: 100, // Ratio ~100:1 favoring BUY
+         buyFree: 10000, sellFree: 100
+     });
+     await mgr.recalculateFunds();
 
     // 2. Set outOfSpread > 0
     mgr.outOfSpread = 2;
@@ -69,12 +69,12 @@ async function testUnanchoredSpreadCorrection() {
     // ValBuy = 10000. ValSell = 100 * 100 = 10000.
     // Ratio = 10000 / 20000 = 0.5. Boundary stays at 50%.
     
-    // Let's make it 100% BUY to see clear movement.
-    mgr.setAccountTotals({ buy: 10000, sell: 0, buyFree: 10000, sellFree: 0 });
-    mgr.recalculateFunds();
-    mgr.outOfSpread = 2;
-    mgr._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
-    await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
+     // Let's make it 100% BUY to see clear movement.
+     await mgr.setAccountTotals({ buy: 10000, sell: 0, buyFree: 10000, sellFree: 0 });
+     await mgr.recalculateFunds();
+     mgr.outOfSpread = 2;
+     mgr._gridSidesUpdated = new Set([ORDER_TYPES.BUY]);
+     await applyGridDivergenceCorrections(mgr, mockAccountOrders, 'bot-key', mockUpdateFn);
 
     console.log(`  Updated boundaryIdx (100% BUY): ${mgr.boundaryIdx}`);
     

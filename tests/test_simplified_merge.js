@@ -41,26 +41,26 @@ async function testSimplifiedMergeStrategy() {
     };
 
     // Set account totals so availBuy/availSell are correctly calculated
-    mgr.setAccountTotals({
+    await mgr.setAccountTotals({
         buy: 1000, sell: 1000,
         buyFree: 1000, sellFree: 1000
     });
 
     // 1. Setup Grid with a dust partial on BUY side
     // Ideal size for 2 orders with 1000 budget is ~500 each.
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL,
         price: 0.99, size: 5, orderId: 'chain-buy-0'
     });
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE,
         price: 0.98, size: 500, orderId: 'chain-buy-1'
     });
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-0', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE,
         price: 1.01, size: 500, orderId: 'chain-sell-0'
     });
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-1', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE,
         price: 1.02, size: 500, orderId: 'chain-sell-1'
     });
@@ -119,11 +119,11 @@ async function testSimplifiedMergeStrategy() {
     
     // Setup budget to allow placements
     mgr.accountTotals.sellFree = 2000;
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
 
     // Add virtual slots for SELL side so we have shortages to fill
-    mgr._updateOrder({ id: 'sell-2', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 1.03, size: 0 });
-    mgr._updateOrder({ id: 'sell-3', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 1.04, size: 0 });
+    await mgr._updateOrder({ id: 'sell-2', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 1.03, size: 0 });
+    await mgr._updateOrder({ id: 'sell-3', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 1.04, size: 0 });
     mgr.config.activeOrders.sell = 4; // Increase target so we have shortages
 
     const result2 = await mgr.strategy.rebalance(syncResult2.filledOrders);

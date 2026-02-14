@@ -23,7 +23,7 @@ OrderUtils.getAssetFees = (asset) => {
 async function runTests() {
     console.log('Running OrderManager Logic Tests...');
 
-    const createManager = () => {
+    const createManager = async () => {
         const mgr = new OrderManager({
             market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS',
             activeOrders: { buy: 5, sell: 5 }
@@ -34,24 +34,24 @@ async function runTests() {
 
     console.log(' - Testing Index Consistency...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         const order = { id: 't-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 100 };
-        manager._updateOrder(order);
+        await manager._updateOrder(order);
 
         assert(manager._ordersByState[ORDER_STATES.VIRTUAL].has('t-1'));
         assert(manager._ordersByType[ORDER_TYPES.BUY].has('t-1'));
         assert(manager.orders.has('t-1'));
 
         // Transition
-        manager._updateOrder({ id: 't-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY, size: 100, orderId: 'c-1' });
+        await manager._updateOrder({ id: 't-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY, size: 100, orderId: 'c-1' });
         assert(!manager._ordersByState[ORDER_STATES.VIRTUAL].has('t-1'));
         assert(manager._ordersByState[ORDER_STATES.ACTIVE].has('t-1'));
     }
 
     console.log(' - Testing Index Repair...');
     {
-        const manager = createManager();
-        manager._updateOrder({ id: 'r-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 100 });
+        const manager = await createManager();
+        await manager._updateOrder({ id: 'r-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 100 });
         manager._ordersByState[ORDER_STATES.VIRTUAL].clear(); // Corrupt
 
         assert(!manager.validateIndices());
@@ -61,13 +61,13 @@ async function runTests() {
 
     console.log(' - Testing SPREAD state restriction...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         let loggedError = false;
         const originalLog = manager.logger.log;
         manager.logger.log = (msg, level) => { if (level === 'error' && msg.includes('SPREAD')) loggedError = true; };
 
-        manager._updateOrder({ id: 's-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SPREAD, size: 0 });
-        manager._updateOrder({ id: 's-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SPREAD, size: 0 });
+        await manager._updateOrder({ id: 's-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SPREAD, size: 0 });
+        await manager._updateOrder({ id: 's-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SPREAD, size: 0 });
 
         manager.logger.log = originalLog;
         assert(loggedError, 'Should log error when trying to move SPREAD to ACTIVE');
@@ -75,7 +75,7 @@ async function runTests() {
 
     console.log(' - Testing Order Locking...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         const id = 'l-1';
         assert(!manager.isOrderLocked(id));
         manager.lockOrders([id]);
@@ -86,16 +86,16 @@ async function runTests() {
 
     console.log(' - Testing Fund Recalc Pausing...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         let recalcCount = 0;
         const originalRecalc = manager.accountant.recalculateFunds;
         manager.accountant.recalculateFunds = () => { recalcCount++; };
 
         manager.pauseFundRecalc();
-        manager._updateOrder({ id: 'p-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 100 });
+        await manager._updateOrder({ id: 'p-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 100 });
         assert.strictEqual(recalcCount, 0);
 
-        manager.resumeFundRecalc();
+        await manager.resumeFundRecalc();
         assert(recalcCount > 0);
         manager.accountant.recalculateFunds = originalRecalc;
     }

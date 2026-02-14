@@ -400,10 +400,10 @@ async function retryPersistenceIfNeeded(manager) {
  * @returns {Promise<void>}
  */
 async function applyGridDivergenceCorrections(manager, accountOrders, botKey, updateOrdersOnChainBatchFn) {
-    if (!manager._correctionsLock) return;
+    if (!manager._gridLock) return;
     const Grid = require('../grid');
 
-    await manager._correctionsLock.acquire(async () => {
+    await manager._gridLock.acquire(async () => {
         if (!manager._gridSidesUpdated || manager._gridSidesUpdated.size === 0) return;
 
         if (manager.outOfSpread > 0) {
@@ -515,7 +515,8 @@ function syncBoundaryToFunds(manager) {
     const availA = (manager.funds?.available?.sell || 0);
     const availB = (manager.funds?.available?.buy || 0);
     const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
-    const gapSlots = (typeof manager.calculateGapSlots === 'function') ? manager.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent) : (manager.targetSpreadCount || 2);
+    const Grid = require('../grid');
+    const gapSlots = Grid.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent);
     const newIdx = OrderUtils.calculateFundDrivenBoundary(allSlots, availA, availB, manager.config.startPrice, gapSlots);
     if (newIdx !== manager.boundaryIdx) {
         manager.boundaryIdx = newIdx;
@@ -637,6 +638,34 @@ function resolveAccountRef(manager, account) {
     return null;
 }
 
+/**
+ * Recursively freezes an object to ensure immutability.
+ * @param {Object} obj 
+ * @returns {Object}
+ */
+function deepFreeze(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    Object.freeze(obj);
+    Object.getOwnPropertyNames(obj).forEach(prop => {
+        if (Object.prototype.hasOwnProperty.call(obj, prop) &&
+            obj[prop] !== null &&
+            (typeof obj[prop] === 'object' || typeof obj[prop] === 'function') &&
+            !Object.isFrozen(obj[prop])) {
+            deepFreeze(obj[prop]);
+        }
+    });
+    return obj;
+}
+
+/**
+ * Creates a shallow clone of a Map.
+ * @param {Map} map 
+ * @returns {Map}
+ */
+function cloneMap(map) {
+    return new Map(map);
+}
+
 module.exports = {
     lookupAsset,
     deriveMarketPrice,
@@ -652,5 +681,7 @@ module.exports = {
     readInput,
     readPassword,
     withRetry,
-    resolveAccountRef
+    resolveAccountRef,
+    deepFreeze,
+    cloneMap
 };

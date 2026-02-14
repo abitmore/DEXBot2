@@ -25,13 +25,13 @@ async function runTest() {
         assetA: { id: '1.3.0', symbol: 'TEST', precision: 8 },
         assetB: { id: '1.3.1', symbol: 'BTS', precision: 5 }
     };
-    mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+    await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
 
     // ============================================================================
     // TEST 1: Direct phantom creation attempt is blocked
     // ============================================================================
     console.log(' - Test 1: Attempt to create phantom order (ACTIVE with no orderId)');
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'slot-1',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.ACTIVE, // Attempt phantom active
@@ -40,7 +40,7 @@ async function runTest() {
         orderId: '' // No ID
     });
 
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
     const order1 = mgr.orders.get('slot-1');
 
     // Order should be downgraded to VIRTUAL by defense-in-depth
@@ -54,7 +54,7 @@ async function runTest() {
     console.log(' - Test 2: Order resizing preserves VIRTUAL state');
 
     // Create a VIRTUAL order and resize it
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'slot-2',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.VIRTUAL,
@@ -101,7 +101,7 @@ async function runTest() {
     // TEST 4: Valid ACTIVE order with orderId is preserved
     // ============================================================================
     console.log(' - Test 4: Valid ACTIVE order with orderId is preserved');
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'slot-4',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.ACTIVE,
@@ -110,7 +110,7 @@ async function runTest() {
         orderId: '1.7.12345' // Valid orderId
     });
 
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
     const validOrder = mgr.orders.get('slot-4');
     assert.strictEqual(validOrder.state, ORDER_STATES.ACTIVE, 'Valid ACTIVE order should remain ACTIVE');
     assert.strictEqual(validOrder.orderId, '1.7.12345', 'orderId should be preserved');

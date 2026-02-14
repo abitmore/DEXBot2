@@ -56,6 +56,11 @@
  *   3. Execute callback (guaranteed alone)
  *   4. Set _locked = false and process next queued item
  *
+ * REENTRANCY WARNING:
+ * This lock is NOT reentrant. If a function holding the lock attempts to
+ * acquire it again (nested call), it will DEADLOCK as the second request
+ * will wait forever in the queue for the first one to release it.
+ *
  * CRITICAL INVARIANTS:
  * - _locked = true ONLY if callback is currently executing
  * - At most one callback in "await callback()" at any time
@@ -68,25 +73,57 @@
  */
 
 class AsyncLock {
-    constructor() {
+    constructor(options = {}) {
         this._queue = [];
         this._locked = false;
+        this._defaultTimeout = options.timeout || null;
     }
 
     /**
      * Acquire the lock and execute callback exclusively
      * @param {Function} callback - Async function to execute exclusively
      * @param {Object} [options] - Optional settings
+     * @param {number} [options.timeout] - Optional timeout in ms for waiting in queue
      * @param {Object} [options.cancelToken] - Optional object with 'isCancelled' property
      * @returns {Promise} Result of callback execution
      */
     async acquire(callback, options = {}) {
+        const timeout = options.timeout || this._defaultTimeout;
         const cancelToken = options.cancelToken;
-        return new Promise((resolve, reject) => {
-            // Queue the callback with resolve/reject handlers
-            this._queue.push({ callback, resolve, reject, cancelToken });
 
-            // Try to process queue (will only run if not locked)
+        return new Promise((resolve, reject) => {
+            let timer;
+
+            const item = {
+                callback,
+                cancelToken,
+                resolve: (val) => {
+                    if (timer) {
+                        clearTimeout(timer);
+                        timer = null;
+                    }
+                    resolve(val);
+                },
+                reject: (err) => {
+                    if (timer) {
+                        clearTimeout(timer);
+                        timer = null;
+                    }
+                    reject(err);
+                }
+            };
+
+            if (timeout) {
+                timer = setTimeout(() => {
+                    const index = this._queue.indexOf(item);
+                    if (index !== -1) {
+                        this._queue.splice(index, 1);
+                        item.reject(new Error(`Lock acquisition timeout after ${timeout}ms`));
+                    }
+                }, timeout);
+            }
+
+            this._queue.push(item);
             this._processQueue();
         });
     }

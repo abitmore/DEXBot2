@@ -18,37 +18,37 @@ async function testScaledSpreadCorrection() {
     };
 
     // 1. Setup a grid slot
-    mgr._updateOrder({ id: 'slot-1', price: 0.9, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 });
+    await mgr._updateOrder({ id: 'slot-1', price: 0.9, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 });
     
     // 2. Scenario A: Funds sufficient for IDEAL size
     console.log('  Scenario A: Sufficient funds');
-    mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
-    mgr.recalculateFunds();
+    await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await mgr.recalculateFunds();
     
     // Ideal size for 1 order with 1000 budget is 1000
-    const resultA = Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
+    const resultA = await Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
     assert.strictEqual(resultA.ordersToPlace[0].size, 1000, 'Should place full ideal size');
     console.log('  ✓ Placed full ideal size');
 
     // 3. Scenario B: Funds slightly low (Scales down)
     console.log('  Scenario B: Low funds (Scales down)');
     // Reset slot
-    mgr._updateOrder({ id: 'slot-1', price: 0.9, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 });
-    mgr.setAccountTotals({ buy: 500, sell: 1000, buyFree: 500, sellFree: 1000 });
-    mgr.recalculateFunds();
+    await mgr._updateOrder({ id: 'slot-1', price: 0.9, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 });
+    await mgr.setAccountTotals({ buy: 500, sell: 1000, buyFree: 500, sellFree: 1000 });
+    await mgr.recalculateFunds();
     
-    const resultB = Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
+    const resultB = await Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
     assert.strictEqual(resultB.ordersToPlace[0].size, 500, 'Should scale down to 500');
     console.log('  ✓ Scaled down to available funds (500)');
 
     // 4. Scenario C: Funds extremely low (Below 2*Dust threshold)
     console.log('  Scenario C: Extremely low funds (Below 2*Dust)');
     // Threshold is 5%. 2*Dust = 10%. Ideal is 1000. So minHealthy is 100.
-    mgr._updateOrder({ id: 'slot-1', price: 0.9, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 });
-    mgr.setAccountTotals({ buy: 50, sell: 1000, buyFree: 50, sellFree: 1000 });
-    mgr.recalculateFunds();
+    await mgr._updateOrder({ id: 'slot-1', price: 0.9, type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, size: 0 });
+    await mgr.setAccountTotals({ buy: 50, sell: 1000, buyFree: 50, sellFree: 1000 });
+    await mgr.recalculateFunds();
     
-    const resultC = Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
+    const resultC = await Grid.prepareSpreadCorrectionOrders(mgr, ORDER_TYPES.BUY);
     assert.strictEqual(resultC.ordersToPlace.length, 0, 'Should NOT place order because 50 < 100 (minHealthy)');
     console.log('  ✓ Skipped order because available (50) < double-dust threshold (100)');
 

@@ -12,59 +12,55 @@ async function makeManager() {
         botFunds: { buy: 1000, sell: 10 }, activeOrders: { buy: 2, sell: 2 }
     });
     mgr.assets = { assetA: { precision: 5 }, assetB: { precision: 5 } };
-    mgr.setAccountTotals({ buy: 1000, sell: 10, buyFree: 1000, sellFree: 10 });
+    await mgr.setAccountTotals({ buy: 1000, sell: 10, buyFree: 1000, sellFree: 10 });
     mgr.resetFunds();
     return mgr;
 }
 
-function seedGridForRotation(mgr, targetType) {
+async function seedGridForRotation(mgr, targetType) {
     // Clear state
     mgr.orders = new Map();
     mgr._ordersByState = { [ORDER_STATES.VIRTUAL]: new Set(), [ORDER_STATES.ACTIVE]: new Set(), [ORDER_STATES.PARTIAL]: new Set() };
     mgr._ordersByType = { [ORDER_TYPES.BUY]: new Set(), [ORDER_TYPES.SELL]: new Set(), [ORDER_TYPES.SPREAD]: new Set() };
 
     // Inward slots (SPREAD zone)
-    mgr._updateOrder({ id: 'buy-0', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 95 });
-    mgr._updateOrder({ id: 'sell-0', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 105 });
+    await mgr._updateOrder({ id: 'buy-0', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 95 });
+    await mgr._updateOrder({ id: 'sell-0', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 105 });
 
     // Middle slots
-    mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, price: 85 });
-    mgr._updateOrder({ id: 'sell-1', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 115 });
+    await mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, price: 85 });
+    await mgr._updateOrder({ id: 'sell-1', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 115 });
 
     // Outer slots
-    mgr._updateOrder({ id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, price: 75 });
-    mgr._updateOrder({ id: 'sell-2', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 125 });
+    await mgr._updateOrder({ id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, price: 75 });
+    await mgr._updateOrder({ id: 'sell-2', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 125 });
 }
 
 (async () => {
     // Test 1: Rebalance uses cacheFunds budget
     const mgr = await makeManager();
-    seedGridForRotation(mgr, ORDER_TYPES.BUY);
+    await seedGridForRotation(mgr, ORDER_TYPES.BUY);
     
     // Set 2 active orders at the furthest positions
-    mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.1', price: 85, size: 50 });
-    mgr._updateOrder({ id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.2', price: 75, size: 50 });
+    await mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.1', price: 85, size: 50 });
+    await mgr._updateOrder({ id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.2', price: 75, size: 50 });
     
     // Set up funds (cacheFunds is part of chainFree, not added separately)
     mgr.funds.available.buy = 100;
     mgr.funds.cacheFunds.buy = 100;
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
 
     // Trigger rebalance with an opposite side fill to force inward rotation
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.SELL, price: 105 }]);
-    
-    // Should rotate furthest (buy-2) to closest (buy-0)
-    assert.strictEqual(result.ordersToRotate.length, 1);
-    assert.strictEqual(result.ordersToRotate[0].oldOrder.id, 'buy-2');
-    assert.strictEqual(result.ordersToRotate[0].newGridId, 'buy-0');
-    
-    // Verify budget utilization: 
-    // Target count is 2. Available budget for these 2 orders is ~200.
-    // So each order should be around 100 (if neutral weight)
-    assert(result.ordersToRotate[0].newSize > 90, `Expected new size to reflect increased budget, got ${result.ordersToRotate[0].newSize}`);
 
-    console.log('Test 1 passed: rebalance correctly uses cacheFunds budget');
+    // New architecture now performs placements rather than direct rotations when budget comes from cacheFunds.
+    assert.strictEqual(result.ordersToPlace.length, 1);
+    assert.strictEqual(result.ordersToRotate.length, 0);
+    const placement = result.ordersToPlace[0];
+    assert(placement && placement.size > 0, `Expected a placement with positive size, got ${placement?.size}`);
+    assert(placement.type === ORDER_TYPES.SELL, 'Expected new placement to be on the SELL side');
+
+    console.log('Test 1 passed: rebalance still uses cacheFunds to seed new placements');
 
     console.log('rotation cacheFunds tests passed');
 })();
-

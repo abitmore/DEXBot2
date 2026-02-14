@@ -145,26 +145,26 @@ async function testFullOrderLifecycle() {
     // PHASE 5: Fill Processing and Remaining Calculation
     // =========================================================================
     console.log('\n🔍 PHASE 5: Fill Processing with Precision Awareness');
-    console.log('─'.repeat(80));
+     console.log('─'.repeat(80));
 
-    const result = mgr.syncFromFillHistory({
-        op: [4, {
-            order_id: '1.7.569640154',
-            pays: {
-                amount: filledInt,
-                asset_id: mgr.assets.assetB.id
-            },
-            receives: {
-                amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
-                asset_id: mgr.assets.assetA.id
-            },
-            is_maker: true
-        }],
-        block_num: 12345,
-        id: '1.11.12345'
-    });
+     const result = await mgr.syncFromFillHistory({
+         op: [4, {
+             order_id: '1.7.569640154',
+             pays: {
+                 amount: filledInt,
+                 asset_id: mgr.assets.assetB.id
+             },
+             receives: {
+                 amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
+                 asset_id: mgr.assets.assetA.id
+             },
+             is_maker: true
+         }],
+         block_num: 12345,
+         id: '1.11.12345'
+     });
 
-    console.log(`  Fill processed by manager:`);
+     console.log(`  Fill processed by manager:`);
     console.log(`    Filled orders:  ${result.filledOrders.length}`);
     console.log(`    Updated orders: ${result.updatedOrders.length}`);
 

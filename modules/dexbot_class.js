@@ -504,21 +504,21 @@ class DEXBot {
                             if (!gridOrder) {
                                 // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
                                 // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
-                                this._log(`[POST-RESET] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
-                                try {
-                                    this.manager.accountant.processFillAccounting(fillOp);
-                                } catch (accErr) {
-                                    this._log(`[POST-RESET] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                                 this._log(`[POST-RESET] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
+                                 try {
+                                     await this.manager.accountant.processFillAccounting(fillOp);
+                                 } catch (accErr) {
+                                     this._log(`[POST-RESET] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
                                 }
                                 continue;
                             }
 
                             this._log(`[POST-RESET] Processing fill for ${gridOrder.type} order ${gridOrder.id} at price ${gridOrder.price}`);
 
-                            try {
-                                this.manager.accountant.processFillAccounting(fillOp);
-                            } catch (accErr) {
-                                this._log(`[POST-RESET] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                             try {
+                                 await this.manager.accountant.processFillAccounting(fillOp);
+                             } catch (accErr) {
+                                 this._log(`[POST-RESET] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
                             }
 
                             // Process this fill through the full rebalance pipeline
@@ -547,7 +547,7 @@ class DEXBot {
                     }
 
                     // STEP 2: Spread check AFTER fills are processed
-                    this.manager.recalculateFunds();
+                    await this.manager.recalculateFunds();
                     const spreadResult = await this.manager.checkSpreadCondition(
                         BitShares,
                         this.updateOrdersOnChainBatch.bind(this)
@@ -846,11 +846,11 @@ class DEXBot {
 
                                 // Legitimate orphan fill: order was virtualized during sequential processing
                                 // but a fill arrived afterward. Credit proceeds to maintain fund tracking.
-                                this.manager.logger.log(`[ORPHAN-FILL] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
-                                try {
-                                    this.manager.accountant.processFillAccounting(fillOp);
-                                } catch (accErr) {
-                                    this.manager.logger.log(`[ORPHAN-FILL] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                                 this.manager.logger.log(`[ORPHAN-FILL] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
+                                 try {
+                                     await this.manager.accountant.processFillAccounting(fillOp);
+                                 } catch (accErr) {
+                                     this.manager.logger.log(`[ORPHAN-FILL] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
                                 }
                                 // Don't add to validFills - we can't do rebalancing without a grid slot
                                 // But the funds are now credited, preventing fund invariant violation
@@ -916,7 +916,7 @@ class DEXBot {
                         if (fillMode === 'history') {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (history mode)`, 'info');
                             for (const fill of fillsToSync) {
-                                const resultHistory = this.manager.syncFromFillHistory(fill);
+                                const resultHistory = await this.manager.syncFromFillHistory(fill);
                                 if (resultHistory.filledOrders) resolvedOrders.push(...resultHistory.filledOrders);
                             }
                         } else {
@@ -942,8 +942,8 @@ class DEXBot {
                         }
 
                     } finally {
-                        this.manager.recalculateFunds();
-                        this.manager.resumeFundRecalc();
+                        await this.manager.recalculateFunds();
+                        await this.manager.resumeFundRecalc();
                     }
 
                     // 5. Hybrid Fill Rebalance
@@ -1040,9 +1040,9 @@ class DEXBot {
                                 }
                                 await this.manager.persistGrid();
                             }
-                        } finally {
-                            this.manager.resumeFundRecalc();
-                        }
+                         } finally {
+                             await this.manager.resumeFundRecalc();
+                         }
 
                         // 6. Rebalance Recovery Loop (Sequential Extensions)
                         // DISABLED FOR SEQUENTIAL: Each sequential fill already triggers a full rebalance with proper
@@ -1060,7 +1060,7 @@ class DEXBot {
                         // Spread correction runs in the main loop instead.
                         if (!abortedFillCycle && (anyRotations || allFilledOrders.length > 0)) {
                             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications
-                            this.manager.recalculateFunds();
+                            await this.manager.recalculateFunds();
 
                             // Check grid health only if pipeline is empty (no pending fills, no pending operations)
                             const pipelineStatus = this.manager.isPipelineEmpty(this._getPipelineSignals());
@@ -1240,11 +1240,11 @@ class DEXBot {
             if (!gridOrder) {
                 // CRITICAL FIX: Even if order not in grid, we must still credit the fill proceeds
                 // This can happen when fills arrive after an order was marked VIRTUAL during sequential processing
-                this.manager.logger.log(`[BOOTSTRAP] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
-                try {
-                    this.manager.accountant.processFillAccounting(fillOp);
-                } catch (accErr) {
-                    this.manager.logger.log(`[BOOTSTRAP] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
+                 this.manager.logger.log(`[BOOTSTRAP] Processing funds for unknown order ${fillOp.order_id} (not in grid but crediting proceeds)`, 'warn');
+                 try {
+                     await this.manager.accountant.processFillAccounting(fillOp);
+                 } catch (accErr) {
+                     this.manager.logger.log(`[BOOTSTRAP] Failed to process accounting for ${fillOp.order_id}: ${accErr.message}`, 'error');
                 }
                 continue;
             }
@@ -1258,9 +1258,9 @@ class DEXBot {
             const fillType = gridOrder.type === ORDER_TYPES.BUY ? 'BUY' : 'SELL';
             this._log(`[BOOTSTRAP] Fill detected: ${fillType} order (${fillOp.is_maker ? 'maker' : 'taker'})`);
 
-            // Optimistically update account totals for bootstrap fills
-            this.manager.accountant.processFillAccounting(fillOp);
-        }
+             // Optimistically update account totals for bootstrap fills
+             await this.manager.accountant.processFillAccounting(fillOp);
+         }
 
         if (validFills.length === 0) return;
 
@@ -1276,7 +1276,7 @@ class DEXBot {
                 const oppositeType = filledType === ORDER_TYPES.BUY ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
 
                 // Mark filled slot as VIRTUAL (released)
-                this.manager._updateOrder({ ...virtualizeOrder(filledOrder), size: 0 }, 'bootstrap-fill', false, 0);
+                await this.manager._updateOrder({ ...virtualizeOrder(filledOrder), size: 0 }, 'bootstrap-fill', false, 0);
 
                 // Find highest active order on opposite side (closest to market)
                 const allOrders = Array.from(this.manager.orders.values());
@@ -1323,7 +1323,7 @@ class DEXBot {
                 this._log(`[BOOTSTRAP] Rotating ${surplusOrder.id} → ${targetSlot.id} (${oppositeType} ${Format.formatAmount8(rotationSize)})`, 'info');
 
                 // Mark surplus as released
-                this.manager._updateOrder({ ...virtualizeOrder(surplusOrder), size: 0 }, 'bootstrap-rotate', false, 0);
+                await this.manager._updateOrder({ ...virtualizeOrder(surplusOrder), size: 0 }, 'bootstrap-rotate', false, 0);
 
                 // Create rotation order with pre-calculated size
                 ordersToPlace.push({
@@ -1631,18 +1631,76 @@ class DEXBot {
     }
 
     /**
-     * Executes a batch of order operations on the blockchain.
+     * Executes a batch of order operations on the blockchain using COW pattern.
+     * Master grid is only updated after successful blockchain confirmation.
      * @param {Object} rebalanceResult - The result of a rebalance operation.
      * @returns {Promise<Object>} The batch result.
      */
     async updateOrdersOnChainBatch(rebalanceResult) {
-        let { ordersToPlace, ordersToRotate = [], ordersToUpdate = [], ordersToCancel = [] } = rebalanceResult;
+        // COW path: if workingGrid is present, use full COW broadcast
+        if (rebalanceResult.workingGrid) {
+            return await this._updateOrdersOnChainBatchCOW(rebalanceResult);
+        }
+
+        // Legacy path for simple operations (no COW data)
+        // Create temporary working grid for consistency
+        const { WorkingGrid } = require('./order/working_grid');
+        const workingGrid = new WorkingGrid(this.manager.orders);
+        const workingIndexes = workingGrid.getIndexes();
+        const workingBoundary = this.manager.boundaryIdx;
+        
+        // Convert simple operations to actions
+        const { ordersToPlace, ordersToRotate = [], ordersToUpdate = [], ordersToCancel = [] } = rebalanceResult;
+        const actions = [];
+        
+        if (ordersToCancel) {
+            for (const o of ordersToCancel) {
+                if (o?.orderId) {
+                    actions.push({ type: 'cancel', id: o.id, orderId: o.orderId });
+                }
+            }
+        }
+        
+        if (ordersToPlace) {
+            for (const o of ordersToPlace) {
+                actions.push({ type: 'create', id: o.id, order: o });
+            }
+        }
+        
+        if (ordersToUpdate) {
+            for (const o of ordersToUpdate) {
+                actions.push({ type: 'update', id: o.id, orderId: o.orderId, newSize: o.newSize, order: { size: o.newSize, type: o.type } });
+            }
+        }
+
+        const cowResult = {
+            workingGrid,
+            workingIndexes,
+            workingBoundary,
+            actions,
+            stateUpdates: rebalanceResult.stateUpdates || []
+        };
+        
+        return await this._updateOrdersOnChainBatchCOW(cowResult);
+    }
+
+    /**
+     * COW broadcast: Execute blockchain operations and commit working grid on success.
+     * Master grid is ONLY updated after successful blockchain confirmation.
+     * @param {Object} cowResult - COW result with workingGrid, actions, etc.
+     * @returns {Promise<Object>} The batch result.
+     * @private
+     */
+    async _updateOrdersOnChainBatchCOW(cowResult) {
+        const { workingGrid, workingIndexes, workingBoundary, actions, stateUpdates } = cowResult;
 
         if (this.config.dryRun) {
-            if (ordersToCancel && ordersToCancel.length > 0) this.manager.logger.log(`Dry run: would cancel ${ordersToCancel.length} orders`, 'info');
-            if (ordersToPlace && ordersToPlace.length > 0) this.manager.logger.log(`Dry run: would place ${ordersToPlace.length} new orders`, 'info');
-            if (ordersToRotate && ordersToRotate.length > 0) this.manager.logger.log(`Dry run: would update ${ordersToRotate.length} orders`, 'info');
-            if (ordersToUpdate && ordersToUpdate.length > 0) this.manager.logger.log(`Dry run: would update size of ${ordersToUpdate.length} orders`, 'info');
+            const cancelCount = actions.filter(a => a.type === 'cancel').length;
+            const createCount = actions.filter(a => a.type === 'create').length;
+            const updateCount = actions.filter(a => a.type === 'update').length;
+            if (cancelCount > 0) this.manager.logger.log(`Dry run: would cancel ${cancelCount} orders`, 'info');
+            if (createCount > 0) this.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
+            if (updateCount > 0) this.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
             return { executed: true, hadRotation: false };
         }
 
@@ -1650,163 +1708,142 @@ class DEXBot {
         const operations = [];
         const opContexts = [];
 
-        // Collect IDs to lock (shadow lock: prevents these orders from being selected for rebalancing)
-        // NOTE: Shadow locks are cooperative - they work only if rebalancing logic checks exclusion sets.
-        // See line 281-288 where fillExcludeSet prevents selecting orders in flight.
+        // Collect IDs to lock from actions
         const idsToLock = new Set();
-
-        // Add cancellation order IDs
-        if (ordersToCancel && Array.isArray(ordersToCancel)) {
-            ordersToCancel.forEach(o => {
-                if (o && o.orderId) idsToLock.add(o.orderId);
-                if (o && o.id) idsToLock.add(o.id);
-            });
+        for (const action of actions) {
+            if (action.type === 'cancel' && action.orderId) {
+                idsToLock.add(action.orderId);
+                if (action.id) idsToLock.add(action.id);
+            } else if (action.type === 'create' && action.id) {
+                idsToLock.add(action.id);
+            } else if (action.type === 'update' && action.orderId) {
+                idsToLock.add(action.orderId);
+                if (action.id) idsToLock.add(action.id);
+            }
         }
 
-        // Add placement order IDs (new virtual orders being placed)
-        if (ordersToPlace && Array.isArray(ordersToPlace)) {
-            ordersToPlace.forEach(o => {
-                if (o && o.id) idsToLock.add(o.id);
-            });
-        }
-
-        // Add rotation order IDs (both old chain IDs and new grid IDs)
-        if (ordersToRotate && Array.isArray(ordersToRotate)) {
-            ordersToRotate.forEach(r => {
-                if (r && r.oldOrder && r.oldOrder.orderId) idsToLock.add(r.oldOrder.orderId);
-                if (r && r.newGridId) idsToLock.add(r.newGridId);
-            });
-        }
-
-        // Add update order IDs (orders being size-updated)
-        if (ordersToUpdate && Array.isArray(ordersToUpdate)) {
-            ordersToUpdate.forEach(u => {
-                if (u && u.partialOrder && u.partialOrder.orderId) idsToLock.add(u.partialOrder.orderId);
-            });
-        }
-
-        // Apply shadow locks to prevent concurrent selection of these orders
-        // IMPORTANT: This is cooperative locking - rebalancing must respect these locks via exclusion sets
+        // Apply shadow locks
         this.manager.lockOrders(idsToLock);
 
         try {
             this._batchInFlight = true;
-            // Pre-filter cancel operations against fresh open orders to avoid poisoning mixed batches
-            // with expected "order does not exist" races during fast fills.
-            if (Array.isArray(ordersToCancel) && ordersToCancel.length > 0) {
-                try {
-                    const openOrders = await chainOrders.readOpenOrders(this.accountId, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
-                    const openOrderIds = new Set((openOrders || []).map(o => String(o?.id)).filter(Boolean));
-                    const staleCancels = [];
-                    const liveCancels = [];
+            this.manager._setRebalanceState('BROADCASTING');
 
-                    for (const order of ordersToCancel) {
-                        const orderId = String(order?.orderId || '');
-                        if (!orderId) continue;
-                        if (openOrderIds.has(orderId)) {
-                            liveCancels.push(order);
-                        } else {
-                            staleCancels.push(order);
-                        }
+            // Build operations from actions
+            for (const action of actions) {
+                if (action.type === 'cancel') {
+                    try {
+                        const op = await chainOrders.buildCancelOrderOp(this.account, action.orderId);
+                        operations.push(op);
+                        const order = this.manager.orders.get(action.id) || { id: action.id, orderId: action.orderId };
+                        opContexts.push({ kind: 'cancel', order });
+                    } catch (err) {
+                        this.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${err.message}`, 'error');
                     }
-
-                    if (staleCancels.length > 0) {
-                        this.manager.logger.log(
-                            `[CANCEL-PREFILTER] ${staleCancels.length} cancel(s) already absent on-chain; cleaning grid refs and continuing`,
-                            'warn'
+                } else if (action.type === 'create') {
+                    try {
+                        const order = action.order;
+                        const op = await chainOrders.buildCreateOrderOp(
+                            this.account,
+                            order.type === 'buy' ? assetB : assetA,
+                            order.type === 'buy' ? assetA : assetB,
+                            order.price,
+                            order.size,
+                            order.type === 'buy',
+                            this.privateKey
                         );
-
-                        for (const staleOrder of staleCancels) {
-                            if (staleOrder?.orderId) {
-                                this._staleCleanedOrderIds.set(staleOrder.orderId, Date.now());
-                            }
-                            const existing = this.manager.orders.get(staleOrder.id);
-                            if (existing) {
-                                const spreadOrder = convertToSpreadPlaceholder(existing);
-                                this.manager._updateOrder(spreadOrder, 'batch-stale-cleanup', false, 0);
-                            }
-                        }
+                        operations.push(op);
+                        opContexts.push({ kind: 'create', id: order.id, order });
+                    } catch (err) {
+                        this.manager.logger.log(`Failed to prepare create op for ${action.id}: ${err.message}`, 'error');
                     }
+                } else if (action.type === 'update') {
+                    try {
+                        const newSize = Number.isFinite(Number(action.newSize))
+                            ? Number(action.newSize)
+                            : Number(action.order?.size || 0);
 
-                    ordersToCancel = liveCancels;
-                } catch (prefilterErr) {
-                    this.manager.logger.log(
-                        `[CANCEL-PREFILTER] Open-order prefilter failed, proceeding with original cancel list: ${prefilterErr.message}`,
-                        'warn'
-                    );
+                        const op = await chainOrders.buildUpdateOrderOp(
+                            this.account,
+                            action.orderId,
+                            newSize,
+                            this.privateKey
+                        );
+                        operations.push(op);
+                        const partialOrder = this.manager.orders.get(action.id) || {
+                            id: action.id,
+                            orderId: action.orderId,
+                            type: action.order?.type
+                        };
+                        opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize } });
+                    } catch (err) {
+                        this.manager.logger.log(`Failed to prepare update op for ${action.id}: ${err.message}`, 'error');
+                    }
                 }
             }
 
-            // 1. Build Operations
-            // Priority 1: Cancellations (Outside-In surpluses)
-            await this._buildCancelOps(ordersToCancel, operations, opContexts);
-
-            // Priority 2: Placements and Updates
-            await this._buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts);
-            await this._buildSizeUpdateOps(ordersToUpdate, operations, opContexts);
-
-            // Build rotation ops and capture any unmet rotations (orders that don't exist on-chain)
-            const unmetRotations = await this._buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts);
-
-            // Convert unmet rotations to placements so we still fill the grid gaps
-            if (unmetRotations.length > 0) {
-                this.manager.logger.log(`Converting ${unmetRotations.length} unmet rotations to new placements`, 'info');
-                // CRITICAL: Use VIRTUAL state for fallback placements - they only become ACTIVE
-                // after blockchain confirmation via synchronizeWithChain('createOrder')
-                const fallbackPlacements = unmetRotations.map(r => ({
-                    id: r.newGridId,
-                    price: r.newPrice,
-                    size: r.newSize,
-                    type: r.type,
-                    state: ORDER_STATES.VIRTUAL
-                }));
-                await this._buildCreateOps(fallbackPlacements, assetA, assetB, operations, opContexts);
+            if (operations.length === 0) {
+                this.manager._setRebalanceState('NORMAL');
+                return { executed: false, hadRotation: false };
             }
 
-            if (operations.length === 0) return { executed: false, hadRotation: false };
-
-            // 2. Validate Funds Before Broadcasting
+            // Validate funds before broadcasting
             const validation = this._validateOperationFunds(operations, assetA, assetB);
             this.manager.logger.log(validation.summary, validation.isValid ? 'info' : 'warn');
 
             if (!validation.isValid) {
                 this.manager.logger.log(`Skipping batch broadcast: ${validation.violations.length} fund violation(s) detected`, 'warn');
-
-                // Trigger sync to revert optimistic state on validation failure
-                try {
-                    await this._triggerStateRecoverySync('batch fund validation failure');
-                } catch (syncErr) {
-                    this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
-                }
-
+                this.manager._setRebalanceState('NORMAL');
                 return { executed: false, hadRotation: false };
             }
 
-            // 3. Execute Batch
-            this.manager.logger.log(`Broadcasting batch with ${operations.length} operations...`, 'info');
+            // Execute batch
+            this.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
             const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
 
-            // 4. Process Results
+            // Process results and commit on success
             this.manager.pauseFundRecalc();
             try {
                 this.manager._throwOnIllegalState = true;
-                const batchResult = await this._processBatchResults(result, opContexts);
-                this._metrics.batchesExecuted++;
-                return batchResult;
+                
+                if (result.success) {
+                    // SUCCESS: Commit working grid to master (atomic swap)
+                    this.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
+                    await this.manager._commitWorkingGrid(workingGrid, workingIndexes, workingBoundary);
+                    
+                    // Process batch results for logging/metrics
+                    const batchResult = await this._processBatchResults(result, opContexts);
+                    
+                    // Persist to disk
+                    await this.manager.persistGrid();
+                    
+                    this._metrics.batchesExecuted++;
+                    this.manager._setRebalanceState('NORMAL');
+                    
+                    return { executed: true, hadRotation: true, ...batchResult };
+                } else {
+                    // FAILURE: Working grid discarded, master unchanged
+                    this.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
+                    this.manager._setRebalanceState('NORMAL');
+                    return { executed: false, hadRotation: false, ...result };
+                }
             } finally {
                 this.manager._throwOnIllegalState = false;
-                this.manager.resumeFundRecalc();
-                this.manager.logger.logFundsStatus(this.manager, `AFTER updateOrdersOnChainBatch (placed=${ordersToPlace?.length || 0}, rotated=${ordersToRotate?.length || 0})`);
+                await this.manager.resumeFundRecalc();
+                const createCount = actions.filter(a => a.type === 'create').length;
+                const cancelCount = actions.filter(a => a.type === 'cancel').length;
+                this.manager.logger.logFundsStatus(this.manager, `AFTER COW batch (created=${createCount}, cancelled=${cancelCount})`);
             }
 
         } catch (err) {
-            this.manager.logger.log(`Batch transaction failed: ${err.message}`, 'error');
+            this.manager.logger.log(`[COW] Batch transaction failed: ${err.message}`, 'error');
+            this.manager._setRebalanceState('NORMAL');
 
-            const hardAbortResult = await this._handleBatchHardAbort(err, 'batch processing', operations.length);
+            // Handle hard abort
+            const hardAbortResult = await this._handleBatchHardAbort(err, 'COW batch processing', operations.length);
             if (hardAbortResult) return hardAbortResult;
 
-            // Check if failure is due to stale (non-existent) order references.
-            // Match all stale order IDs — multiple formats possible across BitShares node versions.
+            // Check for stale orders
             const staleOrderIds = new Set();
             const patterns = [
                 /Limit order (1\.7\.\d+) does not exist/g,
@@ -1821,97 +1858,21 @@ class DEXBot {
             }
 
             if (staleOrderIds.size > 0) {
-                this.manager.logger.log(`Stale order(s) ${[...staleOrderIds].join(', ')} detected in failed batch. Cleaning up and retrying.`, 'warn');
-
-                // Clean up grid slot(s) referencing stale orderIds.
-                // CRITICAL: Track these IDs so orphan-fill handler won't double-credit proceeds.
-                // When the slot is converted to SPREAD/VIRTUAL, committed funds are released to
-                // chainFree. If a fill event later arrives for this order, the orphan-fill handler
-                // must skip crediting to avoid double-counting.
+                this.manager.logger.log(`[COW] Stale order(s) detected: ${[...staleOrderIds].join(', ')}. Cleaning up.`, 'warn');
                 for (const gridOrder of this.manager.orders.values()) {
                     if (staleOrderIds.has(gridOrder.orderId)) {
-                        this.manager.logger.log(`Cleaning stale reference from grid slot ${gridOrder.id} (orderId=${gridOrder.orderId})`, 'warn');
                         this._staleCleanedOrderIds.set(gridOrder.orderId, Date.now());
-                        const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        this.manager._updateOrder(spreadOrder, 'batch-stale-cleanup', false, 0);
-                    }
-                }
-
-                // Filter out operations referencing any stale orderId
-                const filteredOps = [];
-                const filteredCtxs = [];
-                for (let i = 0; i < operations.length; i++) {
-                    const opData = operations[i].op_data;
-                    const refersToStale =
-                        staleOrderIds.has(opData.order) ||               // limit_order_cancel
-                        staleOrderIds.has(opData.order_id);              // limit_order_update
-                    if (!refersToStale) {
-                        filteredOps.push(operations[i]);
-                        filteredCtxs.push(opContexts[i]);
-                    }
-                }
-
-                // Retry once with remaining operations
-                if (filteredOps.length > 0) {
-                    try {
-                        this.manager.logger.log(`Retrying batch with ${filteredOps.length} operation(s) (excluded ${staleOrderIds.size} stale ref(s))...`, 'info');
-                        this._batchRetryInFlight = true;
-                        const retryResult = await chainOrders.executeBatch(this.account, this.privateKey, filteredOps);
-
-                        this.manager.pauseFundRecalc();
-                        try {
-                            this.manager._throwOnIllegalState = true;
-                            const batchResult = await this._processBatchResults(retryResult, filteredCtxs);
-                            this._metrics.batchesExecuted++;
-                            return batchResult;
-                        } finally {
-                            this.manager._throwOnIllegalState = false;
-                            this.manager.resumeFundRecalc();
-                            this._batchRetryInFlight = false;
-                        }
-                    } catch (retryErr) {
-                        this._batchRetryInFlight = false;
-                        this.manager.logger.log(`Retry batch also failed: ${retryErr.message}`, 'error');
-
-                        const retryHardAbortResult = await this._handleBatchHardAbort(retryErr, 'retry batch processing', filteredOps.length);
-                        if (retryHardAbortResult) return retryHardAbortResult;
-
-                        // Fall through to recovery sync below
-                    }
-                } else {
-                    const staleOnlyCancels = opContexts.length > 0 && opContexts.every(ctx => ctx.kind === 'cancel');
-                    if (staleOnlyCancels) {
-                        this.manager.logger.log('Batch contained only stale cancel references; treating as expected race and continuing.', 'warn');
-                        return { executed: false, hadRotation: false, staleOnly: true };
                     }
                 }
             }
 
-            // Trigger sync to revert optimistic state on execution failure
-            try {
-                await this._triggerStateRecoverySync('batch execution failure');
-            } catch (syncErr) {
-                this.manager.logger.log(`Recovery sync failed: ${syncErr.message}`, 'error');
-            }
-
-            return { executed: false, hadRotation: false };
+            throw err;
         } finally {
-            this._batchRetryInFlight = false;
             this._batchInFlight = false;
-            this.manager._throwOnIllegalState = false;
             this.manager.unlockOrders(idsToLock);
         }
     }
 
-    /**
-     * Build create order operations for new placements.
-     * @param {Array} ordersToPlace - Grid orders to place
-     * @param {Object} assetA - Asset A metadata
-     * @param {Object} assetB - Asset B metadata
-     * @param {Array} operations - Operations array to append to
-     * @param {Array} opContexts - Operation contexts array to append to
-     * @private
-     */
     /**
      * Build cancellation operations for surplus orders.
      * @param {Array} ordersToCancel - Grid orders to cancel
@@ -2161,6 +2122,8 @@ class DEXBot {
         let hadRotation = false;
         let updateOperationCount = 0;
 
+        const updatesToApply = [];
+
         for (let i = 0; i < opContexts.length; i++) {
             const ctx = opContexts[i];
             const res = results[i];
@@ -2184,7 +2147,7 @@ class DEXBot {
                             }
                         };
                     }
-                    this.manager._updateOrder(updatedSlot, 'order-update', false, btsFeeData.updateFee);
+                    updatesToApply.push({ order: updatedSlot, context: 'order-update', fee: btsFeeData.updateFee });
                 }
                 this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
                 updateOperationCount++;
@@ -2206,9 +2169,11 @@ class DEXBot {
                                 }
                             };
                         }
-                        this.manager._updateOrder(updatedOrder, 'post-placement', false, 0);
+                        updatesToApply.push({ order: updatedOrder, context: 'post-placement' });
                     }
 
+                    // For createOrder sync, we can't easily batch it yet as it has internal logic
+                    // but since it takes _gridLock, it will run after our batch update.
                     await this.manager.synchronizeWithChain({
                         gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData.createFee
                     }, 'createOrder');
@@ -2216,8 +2181,6 @@ class DEXBot {
                 }
             }
             else if (ctx.kind === 'rotation') {
-                // Rotation processing: divergence corrections are already synchronized via _divergenceLock
-                // during fill processing, so no additional lock needed here
                 hadRotation = true;
                 const { rotation } = ctx;
                 const { oldOrder, newPrice, newGridId, newSize, type } = rotation;
@@ -2238,23 +2201,20 @@ class DEXBot {
                                 }
                             };
                         }
-                        this.manager._updateOrder(updatedSlot, 'order-update', false, btsFeeData.updateFee);
+                        updatesToApply.push({ order: updatedSlot, context: 'order-update', fee: btsFeeData.updateFee });
                     }
-
                     updateOperationCount++;
                     continue;
                 }
 
                 // Full rotation
                 const slot = this.manager.orders.get(newGridId) || { id: newGridId, type, price: newPrice, size: 0, state: ORDER_STATES.VIRTUAL };
-                const isPartialPlacement = slot.size > 0 && newSize < slot.size;
-
                 const updatedSlot = { ...slot, id: newGridId, type, size: newSize, price: newPrice, state: ORDER_STATES.VIRTUAL, orderId: null };
 
                 // Update rawOnChain cache for the rotated order
                 if (ctx.finalInts) {
                     updatedSlot.rawOnChain = {
-                        id: oldOrder.orderId,
+                        id: null, // Still virtual
                         for_sale: String(ctx.finalInts.sell),
                         sell_price: {
                             base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
@@ -2262,26 +2222,23 @@ class DEXBot {
                         }
                     };
                 }
-
-                this.manager._updateOrder(updatedSlot, 'rotation-prepare', false, 0);
-
-                this.manager.completeOrderRotation(oldOrder);
-
-                try {
-                    await this.manager.synchronizeWithChain({
-                        gridOrderId: newGridId, chainOrderId: oldOrder.orderId, expectedType: type, isPartialPlacement, fee: btsFeeData.updateFee
-                    }, 'createOrder');
-                    updateOperationCount++;
-                } catch (err) {
-                    if (err?.code === 'ILLEGAL_ORDER_STATE' || err?.code === 'ACCOUNTING_COMMITMENT_FAILED') {
-                        throw err;
-                    }
-                    this.manager.logger.log(`ERROR: Sync failed for rotation ${oldOrder.orderId} -> ${newGridId}`, 'error');
-                }
+                updatesToApply.push({ order: updatedSlot, context: 'rotation-metadata' });
             }
         }
 
-        return { executed: true, hadRotation };
+        // Apply all collected updates in a single batch
+        if (updatesToApply.length > 0) {
+            await this.manager.applyGridUpdateBatch(
+                updatesToApply.map(u => u.order), 
+                'batch-results-process'
+            );
+        }
+
+        return {
+            executed: true,
+            hadRotation,
+            updateOperationCount
+        };
     }
 
     /**
@@ -2720,7 +2677,7 @@ class DEXBot {
      * @private
      */
     async _executeMaintenanceLogic(context) {
-        this.manager.recalculateFunds();
+        await this.manager.recalculateFunds();
 
         // Clear any operations that have been stuck beyond timeout threshold
         this.manager.clearStalePipelineOperations();
@@ -2789,55 +2746,38 @@ class DEXBot {
                 return;
             }
 
-            const gridCheckResult = Grid.checkAndUpdateGridIfNeeded(this.manager);
+            // Perform unified divergence monitoring (Ratio + RMS)
+            try {
+                const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
+                const calculatedGrid = Array.from(this.manager.orders.values());
+                const divergence = await Grid.monitorDivergence(this.manager, calculatedGrid, persistedGridData);
 
-            if (gridCheckResult.buyUpdated || gridCheckResult.sellUpdated) {
-                this._log(`Grid updated during ${context} due to funds (buy: ${gridCheckResult.buyUpdated}, sell: ${gridCheckResult.sellUpdated})`);
-                const orderType = getOrderTypeFromUpdatedFlags(gridCheckResult.buyUpdated, gridCheckResult.sellUpdated);
-                await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-                await this._persistAndRecoverIfNeeded();
-
-                try {
-                    await applyGridDivergenceCorrections(
-                        this.manager,
-                        this.accountOrders,
-                        this.config.botKey,
-                        this.updateOrdersOnChainBatch.bind(this)
-                    );
-                    if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
-                    this._log(`Grid corrections applied on-chain during ${context}`);
-                } catch (err) {
-                    this._warn(`Error applying grid corrections during ${context}: ${err.message}`);
-                }
-            } else {
-                // Detect structural mismatch between calculated and persisted grid
-                try {
-                    const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
-                    const calculatedGrid = Array.from(this.manager.orders.values());
-                    const comparisonResult = await Grid.compareGrids(calculatedGrid, persistedGridData, this.manager);
-
-                    if (comparisonResult?.buy?.updated || comparisonResult?.sell?.updated) {
-                        this._log(`Grid divergence detected during ${context}: buy=${Format.formatPrice6(comparisonResult.buy.metric)}, sell=${Format.formatPrice6(comparisonResult.sell.metric)}`);
-                        const orderType = getOrderTypeFromUpdatedFlags(comparisonResult.buy.updated, comparisonResult.sell.updated);
-                        await Grid.updateGridFromBlockchainSnapshot(this.manager, orderType, true);
-                        await this._persistAndRecoverIfNeeded();
-
-                        try {
-                            await applyGridDivergenceCorrections(
-                                this.manager,
-                                this.accountOrders,
-                                this.config.botKey,
-                                this.updateOrdersOnChainBatch.bind(this)
-                            );
-                            if (await this._abortFlowIfIllegalState(`${context} divergence recheck correction`)) return;
-                            this._log(`Grid divergence corrections applied during ${context}`);
-                        } catch (err) {
-                            this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
-                        }
+                if (divergence.needsUpdate) {
+                    if (divergence.buy.ratio || divergence.sell.ratio) {
+                        this._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}, sell: ${divergence.sell.ratio})`);
                     }
-                } catch (err) {
-                    this._warn(`Error running divergence check during ${context}: ${err.message}`);
+                    if (divergence.buy.rms || divergence.sell.rms) {
+                        this._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
+                    }
+
+                    await Grid.updateGridFromBlockchainSnapshot(this.manager, divergence.orderType, true);
+                    await this._persistAndRecoverIfNeeded();
+
+                    try {
+                        await applyGridDivergenceCorrections(
+                            this.manager,
+                            this.accountOrders,
+                            this.config.botKey,
+                            this.updateOrdersOnChainBatch.bind(this)
+                        );
+                        if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
+                        this._log(`Grid divergence corrections applied during ${context}`);
+                    } catch (err) {
+                        this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
+                    }
                 }
+            } catch (err) {
+                this._warn(`Error running divergence check during ${context}: ${err.message}`);
             }
         }
     }

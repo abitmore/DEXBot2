@@ -40,7 +40,7 @@ async function testDoubledTargetReduction() {
         assetB: { id: '1.3.2', symbol: 'QUOTE', precision: 5 }
     };
 
-    mgr.setAccountTotals({
+    await mgr.setAccountTotals({
         buy: 1000, sell: 1000,
         buyFree: 1000, sellFree: 1000
     });
@@ -51,7 +51,7 @@ async function testDoubledTargetReduction() {
     for(let i=0; i<20; i++) {
         const type = i < 10 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
         const price = i < 10 ? 0.95 - (i * 0.01) : 1.05 + ((i-10) * 0.01);
-        mgr._updateOrder({ id: `slot-${i}`, type, state: ORDER_STATES.VIRTUAL, price, size: 0 });
+        await mgr._updateOrder({ id: `slot-${i}`, type, state: ORDER_STATES.VIRTUAL, price, size: 0 });
     }
     // Set boundary to separate them
     mgr.boundaryIdx = 9; // slots 0-9 are BUY

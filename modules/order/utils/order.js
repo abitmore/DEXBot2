@@ -120,15 +120,18 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
  * Detects partial fills and updates accounting if size changed.
  * Skips dust refills (prevents unnecessary sync when size decreases).
  * 
+ * Returns the updated order object or null if no update needed.
+ * 
  * @param {Object} manager - OrderManager instance
  * @param {Object} gridOrder - Grid order to update
  * @param {number} chainSize - Size from blockchain
  * @param {boolean} [skipAccounting=false] - Skip fund accounting update if true
+ * @returns {Promise<Object|null>} Updated order object or null
  * @throws {Error} If chainSize suspicious (possible data corruption)
  */
-function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting = false) {
-    if (!manager || !gridOrder) return;
-    if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) return;
+async function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting = false) {
+    if (!manager || !gridOrder) return null;
+    if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) return null;
 
     const precision = (gridOrder.type === ORDER_TYPES.SELL) ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
 
@@ -145,20 +148,20 @@ function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting
     const oldSize = Number(gridOrder.size || 0);
     const newSize = Number.isFinite(Number(chainSize)) ? Number(chainSize) : oldSize;
 
-    if (gridOrder.isDustRefill && newSize < oldSize) return;
+    if (gridOrder.isDustRefill && newSize < oldSize) return null;
 
-    const delta = newSize - oldSize;
     if (floatToBlockchainInt(oldSize, precision) === floatToBlockchainInt(newSize, precision)) { 
-        gridOrder.size = newSize; 
-        return; 
+        return null; 
     }
     
-    gridOrder.size = newSize;
-    try { manager._updateOrder(gridOrder, 'size-adjust', skipAccounting, 0); } catch (e) { }
+    const updatedOrder = { ...gridOrder, size: newSize };
+    try { await manager._updateOrder(updatedOrder, 'size-adjust', skipAccounting, 0); } catch (e) { }
 
+    const delta = newSize - oldSize;
     if (delta < 0 && manager.logger) {
         if (typeof manager.logger.logFundsStatus === 'function') manager.logger.logFundsStatus(manager);
     }
+    return updatedOrder;
 }
 
 /**
@@ -185,9 +188,9 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
             manager.logger?.log?.(`[CORRECTION] Cancelling surplus/mismatched ${sideLabel} order ${chainOrderId} for slot ${gridOrder?.id || 'unknown'}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
             manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
-            if (gridOrder && manager._updateOrder) {
+            if (gridOrder && manager._applyOrderUpdate) {
                 const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                manager._updateOrder(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
+                await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
             }
             return { success: true, cancelled: true };
         } catch (error) {
@@ -227,9 +230,9 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
  * @returns {Promise<Object>} Summary {corrected, failed, results}
  */
 async function correctAllPriceMismatches(manager, accountName, privateKey, accountOrders) {
-    if (!manager || !manager._correctionsLock) return { corrected: 0, failed: 0, results: [] };
+    if (!manager || !manager._gridLock) return { corrected: 0, failed: 0, results: [] };
 
-    return await manager._correctionsLock.acquire(async () => {
+    return await manager._gridLock.acquire(async () => {
         const results = [];
         let corrected = 0; let failed = 0;
         const seen = new Set();

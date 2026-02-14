@@ -123,9 +123,13 @@ class Logger {
             : manager?.assets?.assetA?.precision;
     }
 
+    /**
+     * Safely format a value with fixed decimals, returns 'N/A' if value is invalid.
+     * Proxy for Format.formatAmountStrict.
+     * @private
+     */
     _formatAmountStrict(value, precision) {
-        if (!Number.isFinite(Number(value)) || !Number.isFinite(precision)) return 'N/A';
-        return Format.formatAmountByPrecision(value, precision);
+        return Format.formatAmountStrict(value, precision);
     }
 
     /**

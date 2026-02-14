@@ -104,6 +104,19 @@ function formatSizeByOrderType(value, orderType, assets, fallbackPrecision = 8) 
 	return formatAmountByPrecision(value, precision, fallbackPrecision);
 }
 
+/**
+ * Format an amount with strict precision validation.
+ * Returns 'N/A' if value or precision is invalid.
+ * 
+ * @param {*} value - Value to format
+ * @param {number} precision - Decimal precision
+ * @returns {string} Formatted amount or 'N/A'
+ */
+function formatAmountStrict(value, precision) {
+	if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(precision))) return 'N/A';
+	return formatAmountByPrecision(value, precision);
+}
+
 // ===============================================================================
 // SECTION 2: PRICE FORMATTING
 // ===============================================================================
@@ -267,6 +280,7 @@ module.exports = {
 	formatAmount8,
 	formatAmount,
 	formatAmountByPrecision,
+	formatAmountStrict,
 	formatSizeByOrderType,
 
 	// Price formatting

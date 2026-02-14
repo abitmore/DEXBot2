@@ -23,18 +23,18 @@ OrderUtils.getAssetFees = (asset) => {
 async function runTests() {
     console.log('Running Sync Logic Tests...');
 
-    const createManager = () => {
+    const createManager = async () => {
         const mgr = new OrderManager({
             market: 'TEST/BTS', assetA: 'TEST', assetB: 'BTS'
         });
         mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
-        mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
+        await mgr.setAccountTotals({ buy: 10000, sell: 100, buyFree: 10000, sellFree: 100 });
         return mgr;
     };
 
     console.log(' - Testing Input Validation...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         const result = await manager.sync.syncFromOpenOrders(null);
         assert(result !== undefined);
         assert.deepStrictEqual(result.filledOrders, []);
@@ -42,20 +42,37 @@ async function runTests() {
 
     console.log(' - Testing Fill Detection...');
     {
-        const manager = createManager();
-        manager._updateOrder({
+        const manager = await createManager();
+        await manager._updateOrder({
             id: 'g-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 50, orderId: 'c-123'
         });
         // Sync with empty chain -> order filled
         const result = await manager.sync.syncFromOpenOrders([]);
-        assert(result.filledOrders.length >= 0, 'Should return filled orders list');
+        assert.strictEqual(result.filledOrders.length, 1, 'Missing ACTIVE order should be reported as filled');
+        assert.strictEqual(result.filledOrders[0].id, 'g-1', 'Filled order should map to grid slot');
+        assert.strictEqual(result.filledOrders[0].orderId, 'c-123', 'Filled order should preserve chain orderId');
+    }
+
+    console.log(' - Testing Missing ACTIVE with orderId Is Fill Signal...');
+    {
+        const manager = await createManager();
+        await manager._updateOrder({
+            id: 'fill-signal-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
+            size: 42, price: 123, orderId: 'c-fill-signal-1'
+        });
+
+        const result = await manager.sync.syncFromOpenOrders([]);
+        const hit = result.filledOrders.find(o => o.id === 'fill-signal-1');
+
+        assert(hit, 'Missing ACTIVE/PARTIAL order with orderId must appear in filledOrders');
+        assert.strictEqual(hit.orderId, 'c-fill-signal-1', 'Fill signal should retain chain order id');
     }
 
     console.log(' - Testing Partial Fill Detection...');
     {
-        const manager = createManager();
-        manager._updateOrder({
+        const manager = await createManager();
+        await manager._updateOrder({
             id: 'p-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.SELL,
             size: 100, price: 150, orderId: 'c-456'
         });
@@ -70,8 +87,8 @@ async function runTests() {
 
     console.log(' - Testing Price Tolerance...');
     {
-        const manager = createManager();
-        manager._updateOrder({
+        const manager = await createManager();
+        await manager._updateOrder({
             id: 't-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 100.00, orderId: 'c-789'
         });
@@ -87,8 +104,8 @@ async function runTests() {
 
     console.log(' - Testing Type Mismatch Does Not Mutate Grid Slot...');
     {
-        const manager = createManager();
-        manager._updateOrder({
+        const manager = await createManager();
+        await manager._updateOrder({
             id: 'tm-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 10, orderId: 'c-tm'
         });
@@ -112,8 +129,8 @@ async function runTests() {
 
     console.log(' - Testing Non-Grid Pair Chain Orders Are Ignored...');
     {
-        const manager = createManager();
-        manager._updateOrder({
+        const manager = await createManager();
+        await manager._updateOrder({
             id: 'fg-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY,
             size: 5, price: 10, orderId: null
         });
@@ -135,8 +152,8 @@ async function runTests() {
 
     console.log(' - Testing Price Mismatch Queues Manager Correction...');
     {
-        const manager = createManager();
-        manager._updateOrder({
+        const manager = await createManager();
+        await manager._updateOrder({
             id: 'pc-1', state: ORDER_STATES.ACTIVE, type: ORDER_TYPES.BUY,
             size: 100, price: 100, orderId: 'c-price'
         });
@@ -156,7 +173,7 @@ async function runTests() {
 
     console.log(' - Testing Concurrent Sync Race Protection...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         const p1 = manager.sync.syncFromOpenOrders([]);
         const p2 = manager.sync.syncFromOpenOrders([]);
         const [r1, r2] = await Promise.all([p1, p2]);
@@ -165,8 +182,8 @@ async function runTests() {
 
     console.log(' - Testing Fill History defaults missing is_maker to maker...');
     {
-        const manager = createManager();
-        manager._updateOrder({
+        const manager = await createManager();
+        await manager._updateOrder({
             id: 'mk-1',
             state: ORDER_STATES.ACTIVE,
             type: ORDER_TYPES.SELL,
@@ -185,7 +202,7 @@ async function runTests() {
             id: '1.11.999'
         };
 
-        const result = manager.sync.syncFromFillHistory(fill);
+        const result = await manager.sync.syncFromFillHistory(fill);
         assert.strictEqual(result.filledOrders.length, 1, 'Expected full fill to be detected');
         assert.strictEqual(result.filledOrders[0].isMaker, true, 'Missing is_maker should default to maker');
     }

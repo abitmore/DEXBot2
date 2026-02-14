@@ -11,8 +11,8 @@ const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
     mgr1.accountTotals = { buy: null, sell: null };
 
     const start1 = Date.now();
-    setTimeout(() => {
-        mgr1.setAccountTotals({ buy: 123.45, sell: 67.89, buyFree: 120.0, sellFree: 60.0 });
+    setTimeout(async () => {
+        await mgr1.setAccountTotals({ buy: 123.45, sell: 67.89, buyFree: 120.0, sellFree: 60.0 });
     }, 50);
 
     await mgr1.waitForAccountTotals(500);
@@ -24,8 +24,8 @@ const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
     // Test: waiter does not resolve on totals-only updates (buy/sell without free)
     const mgr2 = new OrderManager({ botFunds: { buy: 0, sell: 0 } });
     mgr2.accountTotals = { buy: null, sell: null };
-    setTimeout(() => {
-        mgr2.setAccountTotals({ buy: 10, sell: 20 });
+    setTimeout(async () => {
+        await mgr2.setAccountTotals({ buy: 10, sell: 20 });
     }, 25);
 
     const start2 = Date.now();
@@ -48,7 +48,7 @@ const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
     // Test: explicit zero allocation should cap available funds to zero
     const mgr4 = new OrderManager({ botFunds: { buy: 0, sell: '0%' }, activeOrders: { buy: 1, sell: 1 } });
-    mgr4.setAccountTotals({ buy: 100, sell: 50, buyFree: 100, sellFree: 50 });
+    await mgr4.setAccountTotals({ buy: 100, sell: 50, buyFree: 100, sellFree: 50 });
     assert.strictEqual(mgr4.funds.available.buy, 0, 'numeric zero allocation must cap buy availability to 0');
     assert.strictEqual(mgr4.funds.available.sell, 0, 'percentage zero allocation must cap sell availability to 0');
 

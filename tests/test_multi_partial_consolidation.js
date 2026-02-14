@@ -7,7 +7,7 @@ console.log('Testing Multi-Partial Consolidation Rule');
 console.log('='.repeat(70));
 
 // Helper to setup a manager with grid and test orders
-function setupManager() {
+async function setupManager() {
     const cfg = {
         assetA: 'BTS',
         assetB: 'USD',
@@ -31,6 +31,8 @@ function setupManager() {
         assetB: { id: '1.3.121', precision: 5 }
     };
 
+    await mgr.setAccountTotals({ buy: 10000, sell: 10000, buyFree: 10000, sellFree: 10000 });
+
     // Setup a simple grid with slots between partials, all with size 10
     mgr.orders.set('sell-0', { id: 'sell-0', type: ORDER_TYPES.SELL, price: 1.30, size: 10, state: ORDER_STATES.VIRTUAL });
     mgr.orders.set('sell-v1', { id: 'sell-v1', type: ORDER_TYPES.SELL, price: 1.25, size: 10, state: ORDER_STATES.VIRTUAL });
@@ -43,7 +45,7 @@ function setupManager() {
 
     // Initialize indices by adding the initial orders
     for (const order of mgr.orders.values()) {
-        mgr._updateOrder(order);
+        await mgr._updateOrder(order);
     }
 
     return mgr;
@@ -53,7 +55,7 @@ async function testMultiPartialConsolidation() {
     console.log('\n[Test] Consolidating 3 SELL partials');
     console.log('-'.repeat(70));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Setup 3 partial SELL orders
     // P1 (130, size 2) - Outermost
@@ -63,9 +65,9 @@ async function testMultiPartialConsolidation() {
     const p2 = { id: 'sell-1', orderId: 'chain-p2', type: ORDER_TYPES.SELL, price: 1.20, size: 15, state: ORDER_STATES.PARTIAL };
     const p3 = { id: 'sell-2', orderId: 'chain-p3', type: ORDER_TYPES.SELL, price: 1.10, size: 1, state: ORDER_STATES.PARTIAL };
 
-    mgr._updateOrder(p1);
-    mgr._updateOrder(p2);
-    mgr._updateOrder(p3);
+    await mgr._updateOrder(p1);
+    await mgr._updateOrder(p2);
+    await mgr._updateOrder(p3);
 
     // Execute rebalance logic - simulate opposite side fill
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);

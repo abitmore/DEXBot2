@@ -32,7 +32,7 @@ async function testPartialAtGridBoundary() {
         size: 0.5,
         orderId: '1.7.999'
     };
-    mgr._updateOrder(partialOrder);
+    await mgr._updateOrder(partialOrder);
 
     // Create active buy to have both sides (in buy namespace to avoid slot issues)
     const activeBuy = {
@@ -44,7 +44,7 @@ async function testPartialAtGridBoundary() {
         orderId: '1.7.998'
     };
     // Actually, let's use a properly numbered buy
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-2',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.ACTIVE,
@@ -55,21 +55,21 @@ async function testPartialAtGridBoundary() {
 
     // Create virtual slots for navigation (need proper slot structure)
     // Slots between sell and buy in price order
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-172',
         type: ORDER_TYPES.SPREAD,
         state: ORDER_STATES.VIRTUAL,
         price: 1860,
         size: 0
     });
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-171',
         type: ORDER_TYPES.SPREAD,
         state: ORDER_STATES.VIRTUAL,
         price: 1830,
         size: 0
     });
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-170',
         type: ORDER_TYPES.SPREAD,
         state: ORDER_STATES.VIRTUAL,
@@ -77,14 +77,14 @@ async function testPartialAtGridBoundary() {
         size: 0
     });
     // Spread zone
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-0',
         type: ORDER_TYPES.SPREAD,
         state: ORDER_STATES.VIRTUAL,
         price: 1790,
         size: 0
     });
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-1',
         type: ORDER_TYPES.SPREAD,
         state: ORDER_STATES.VIRTUAL,
@@ -126,7 +126,7 @@ async function testPartialOrdersCounting() {
     };
 
     // Add 1 ACTIVE BUY and 1 PARTIAL BUY (total 2)
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-0',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.ACTIVE,
@@ -135,7 +135,7 @@ async function testPartialOrdersCounting() {
         orderId: '1.7.100'
     });
 
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-1',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.PARTIAL,
@@ -146,7 +146,7 @@ async function testPartialOrdersCounting() {
 
     // Add 3 ACTIVE SELLs (already at target)
     for (let i = 0; i < 3; i++) {
-        mgr._updateOrder({
+        await mgr._updateOrder({
             id: `sell-${i}`,
             type: ORDER_TYPES.SELL,
             state: ORDER_STATES.ACTIVE,
@@ -185,7 +185,7 @@ async function testMultiplePartialsOnSameSide() {
     };
 
     // Create multiple PARTIAL BUYs (edge case, should be rare)
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-0',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.PARTIAL,
@@ -194,7 +194,7 @@ async function testMultiplePartialsOnSameSide() {
         orderId: '1.7.100'
     });
 
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-1',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.PARTIAL,
@@ -204,7 +204,7 @@ async function testMultiplePartialsOnSameSide() {
     });
 
     // Create virtual buy slots for move test
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-2',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.VIRTUAL,
@@ -213,7 +213,7 @@ async function testMultiplePartialsOnSameSide() {
     });
 
     // Create one ACTIVE SELL to have both sides
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-0',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.ACTIVE,
@@ -261,13 +261,13 @@ async function testPartialStateTransitions() {
         size: 100,
         orderId: '1.7.500'
     };
-    mgr._updateOrder(order);
+    await mgr._updateOrder(order);
     assert.strictEqual(mgr.orders.get('sell-10').state, ORDER_STATES.ACTIVE, 'Should start ACTIVE');
 
     // Transition to PARTIAL with size > 0
     order.state = ORDER_STATES.PARTIAL;
     order.size = 50; // Must be > 0
-    mgr._updateOrder(order);
+    await mgr._updateOrder(order);
     assert.strictEqual(mgr.orders.get('sell-10').state, ORDER_STATES.PARTIAL, 'Should transition to PARTIAL');
     assert(mgr.orders.get('sell-10').size > 0, 'PARTIAL must have size > 0');
 
@@ -277,7 +277,7 @@ async function testPartialStateTransitions() {
     order.state = ORDER_STATES.VIRTUAL;
     order.type = ORDER_TYPES.SPREAD;
     order.size = 0;
-    mgr._updateOrder(order);
+    await mgr._updateOrder(order);
     assert.strictEqual(mgr.orders.get('sell-10').state, ORDER_STATES.VIRTUAL, 'Should transition to VIRTUAL');
     assert.strictEqual(mgr.orders.get('sell-10').type, ORDER_TYPES.SPREAD, 'Should become SPREAD type');
     assert.strictEqual(mgr.orders.get('sell-10').size, 0, 'SPREAD must have size = 0');
@@ -320,7 +320,7 @@ async function testPartialInSpreadCalculation() {
     };
 
     // Add 1 ACTIVE and 1 PARTIAL on each side
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-0',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.ACTIVE,
@@ -329,7 +329,7 @@ async function testPartialInSpreadCalculation() {
         orderId: '1.7.100'
     });
 
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-1',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.PARTIAL,
@@ -338,7 +338,7 @@ async function testPartialInSpreadCalculation() {
         orderId: '1.7.101'
     });
 
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-0',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.ACTIVE,
@@ -347,7 +347,7 @@ async function testPartialInSpreadCalculation() {
         orderId: '1.7.200'
     });
 
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-1',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.PARTIAL,
@@ -392,7 +392,7 @@ async function testSpreadConditionWithPartials() {
     };
 
     // Test case 1: Only PARTIAL on one side
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'sell-0',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.PARTIAL,
@@ -408,7 +408,7 @@ async function testSpreadConditionWithPartials() {
     assert(!hasBothSides, 'Should recognize missing BUY side');
 
     // Add a PARTIAL BUY
-    mgr._updateOrder({
+    await mgr._updateOrder({
         id: 'buy-0',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.PARTIAL,

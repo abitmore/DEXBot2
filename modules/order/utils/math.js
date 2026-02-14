@@ -16,6 +16,29 @@ const MIN_INT64 = -9223372036854775808;
 // ================================================================================
 
 /**
+ * Check if a value is explicitly set to zero (number 0, string "0", or "0%").
+ * Used to distinguish between "not set" and "explicitly disabled".
+ * 
+ * @param {*} value - Value to check
+ * @returns {boolean} True if value is explicitly zero
+ */
+function isExplicitZeroAllocation(value) {
+    if (typeof value === 'number') return value === 0;
+    if (typeof value !== 'string') return false;
+
+    const trimmed = value.trim();
+    if (trimmed === '') return false;
+
+    if (trimmed.endsWith('%')) {
+        const percent = parseFloat(trimmed.slice(0, -1));
+        return Number.isFinite(percent) && percent === 0;
+    }
+
+    const numeric = parseFloat(trimmed);
+    return Number.isFinite(numeric) && numeric === 0;
+}
+
+/**
  * Check if a value can be converted to a number.
  * Accepts numbers and numeric strings that are not empty or NaN.
  * 
@@ -443,6 +466,33 @@ function getPrecisionSlack(precision, factor = 2) {
     return factor * Math.pow(10, -precision);
 }
 
+/**
+ * Unified precision lookup for assets.
+ * 
+ * @param {Object} assets - Assets object with assetA and assetB
+ * @param {Object} [options={}] - Lookup options { type, side, proceeds }
+ * @returns {number} Asset precision
+ */
+function getPrecision(assets, { type, side, proceeds = false } = {}) {
+    if (!assets) throw new Error("Assets object required for precision lookup");
+    
+    // Determine target side: side param priority, then type param
+    let isSellSide;
+    if (side) isSellSide = (side === 'sell');
+    else if (type) isSellSide = (type === ORDER_TYPES.SELL);
+    else throw new Error("Either 'type' or 'side' must be provided for getPrecision");
+
+    // Proceeds logic: SELL (assetA) results in assetB proceeds; BUY (assetB) results in assetA
+    const targetIsAssetA = proceeds ? !isSellSide : isSellSide;
+    const asset = targetIsAssetA ? assets.assetA : assets.assetB;
+    
+    if (typeof asset?.precision !== 'number') {
+        const label = targetIsAssetA ? 'assetA' : 'assetB';
+        throw new Error(`CRITICAL: Precision missing for ${label} (${asset?.symbol || 'unknown'}).`);
+    }
+    return asset.precision;
+}
+
 // ================================================================================
 // SECTION 4: PRICE OPERATIONS (PART 1 - Tolerance)
 // ================================================================================
@@ -860,6 +910,8 @@ module.exports = {
     isPercentageString,
     parsePercentageString,
     resolveRelativePrice,
+    isExplicitZeroAllocation,
+    getPrecision,
     computeChainFundTotals,
     calculateAvailableFundsValue,
     calculateSpreadFromOrders,

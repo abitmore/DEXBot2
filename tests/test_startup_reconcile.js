@@ -41,12 +41,12 @@ class MockOrderManager {
 /**
  * TEST 1: Grid edge detection with all ACTIVE orders
  */
-function testGridEdgeDetection() {
+async function testGridEdgeDetection() {
     const manager = new MockOrderManager();
 
     // Create BUY orders: 5 VIRTUAL + 5 ACTIVE (edge orders)
     for (let i = 0; i < 5; i++) {
-        manager._updateOrder({
+        await manager._updateOrder({
             id: `buy-virtual-${i}`,
             type: ORDER_TYPES.BUY,
             state: ORDER_STATES.VIRTUAL,
@@ -57,7 +57,7 @@ function testGridEdgeDetection() {
     }
 
     for (let i = 0; i < 5; i++) {
-        manager._updateOrder({
+        await manager._updateOrder({
             id: `buy-active-${i}`,
             type: ORDER_TYPES.BUY,
             state: ORDER_STATES.ACTIVE,
@@ -82,12 +82,12 @@ function testGridEdgeDetection() {
 /**
  * TEST 2: Grid edge detection fails when edge has VIRTUAL orders
  */
-function testGridEdgeDetectionWithVirtual() {
+async function testGridEdgeDetectionWithVirtual() {
     const manager = new MockOrderManager();
 
     // Create BUY orders: mix of VIRTUAL and ACTIVE at edges
     for (let i = 0; i < 3; i++) {
-        manager._updateOrder({
+        await manager._updateOrder({
             id: `buy-active-${i}`,
             type: ORDER_TYPES.BUY,
             state: ORDER_STATES.ACTIVE,
@@ -99,7 +99,7 @@ function testGridEdgeDetectionWithVirtual() {
 
     // Virtual orders at the edge (should prevent detection)
     for (let i = 0; i < 3; i++) {
-        manager._updateOrder({
+        await manager._updateOrder({
             id: `buy-virtual-${i}`,
             type: ORDER_TYPES.BUY,
             state: ORDER_STATES.VIRTUAL,
@@ -122,7 +122,7 @@ function testGridEdgeDetectionWithVirtual() {
 /**
  * TEST 3: Find largest order from multiple options
  */
-function testFindLargestOrder() {
+async function testFindLargestOrder() {
     const unmatchedOrders = [
         { id: 'order-1', for_sale: 500 },
         { id: 'order-2', for_sale: 1000 },  // Largest
@@ -153,7 +153,7 @@ function testFindLargestOrder() {
 /**
  * TEST 4: Find largest order with ties (picks first)
  */
-function testFindLargestOrderWithTies() {
+async function testFindLargestOrderWithTies() {
     const unmatchedOrders = [
         { id: 'order-1', for_sale: 1000 },  // First maximum
         { id: 'order-2', for_sale: 1000 },  // Same size (should be skipped)
@@ -182,7 +182,7 @@ function testFindLargestOrderWithTies() {
 /**
  * TEST 5: Order restoration via index mapping
  */
-function testOrderRestorationByIndex() {
+async function testOrderRestorationByIndex() {
     const unmatchedOrders = [
         { id: 'order-a', for_sale: 500 },
         { id: 'order-b', for_sale: 1000 },  // Index 1 (largest)
@@ -209,14 +209,14 @@ function testOrderRestorationByIndex() {
 /**
  * TEST 6: Verify SELL side ordering (low to high price)
  */
-function testSellOrderEdgeOrdering() {
+async function testSellOrderEdgeOrdering() {
     const manager = new MockOrderManager();
 
     // Create SELL orders: highest prices first (center), lowest last (edge)
     const sellPrices = [0.8, 0.7, 0.6, 0.5, 0.4];  // descending = market to edge
 
-    sellPrices.forEach((price, i) => {
-        manager._updateOrder({
+    for (const [i, price] of sellPrices.entries()) {
+        await manager._updateOrder({
             id: `sell-${i}`,
             type: ORDER_TYPES.SELL,
             state: ORDER_STATES.ACTIVE,
@@ -224,7 +224,7 @@ function testSellOrderEdgeOrdering() {
             size: 100 + i * 20,
             orderId: `chain-sell-${i}`
         });
-    });
+    }
 
     // Sort for edge detection (low to high = market to edge)
     const orders = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.SELL);
@@ -244,14 +244,14 @@ function testSellOrderEdgeOrdering() {
 /**
  * TEST 7: Verify BUY side ordering (high to low price)
  */
-function testBuyOrderEdgeOrdering() {
+async function testBuyOrderEdgeOrdering() {
     const manager = new MockOrderManager();
 
     // Create BUY orders: lowest prices last (edge), highest first (center)
     const buyPrices = [0.4, 0.5, 0.6, 0.7, 0.8];  // ascending = market to edge
 
-    buyPrices.forEach((price, i) => {
-        manager._updateOrder({
+    for (const [i, price] of buyPrices.entries()) {
+        await manager._updateOrder({
             id: `buy-${i}`,
             type: ORDER_TYPES.BUY,
             state: ORDER_STATES.ACTIVE,
@@ -259,7 +259,7 @@ function testBuyOrderEdgeOrdering() {
             size: 100 + i * 20,
             orderId: `chain-buy-${i}`
         });
-    });
+    }
 
     // Sort for edge detection (high to low = market to edge)
     const orders = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
@@ -279,11 +279,11 @@ function testBuyOrderEdgeOrdering() {
 /**
  * TEST 8: No reduction needed when edge has VIRTUAL orders
  */
-function testNoReductionWhenEdgeHasVirtual() {
+async function testNoReductionWhenEdgeHasVirtual() {
     const manager = new MockOrderManager();
 
     // Edge has VIRTUAL - reduction NOT needed
-    manager._updateOrder({
+    await manager._updateOrder({
         id: 'buy-active-1',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.ACTIVE,
@@ -292,7 +292,7 @@ function testNoReductionWhenEdgeHasVirtual() {
         orderId: 'chain-1'
     });
 
-    manager._updateOrder({
+    await manager._updateOrder({
         id: 'buy-virtual-edge',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.VIRTUAL,
@@ -311,14 +311,16 @@ function testNoReductionWhenEdgeHasVirtual() {
 }
 
 // Run all tests
-console.log('\n========== STARTUP RECONCILE TESTS ==========\n');
-testGridEdgeDetection();
-testGridEdgeDetectionWithVirtual();
-testFindLargestOrder();
-testFindLargestOrderWithTies();
-testOrderRestorationByIndex();
-testSellOrderEdgeOrdering();
-testBuyOrderEdgeOrdering();
-testNoReductionWhenEdgeHasVirtual();
+(async () => {
+    console.log('\n========== STARTUP RECONCILE TESTS ==========\n');
+    await testGridEdgeDetection();
+    await testGridEdgeDetectionWithVirtual();
+    await testFindLargestOrder();
+    await testFindLargestOrderWithTies();
+    await testOrderRestorationByIndex();
+    await testSellOrderEdgeOrdering();
+    await testBuyOrderEdgeOrdering();
+    await testNoReductionWhenEdgeHasVirtual();
 
-console.log('\n✅ All startup reconcile tests passed!\n');
+    console.log('\n✅ All startup reconcile tests passed!\n');
+})();

@@ -7,7 +7,7 @@ console.log('Testing Multi-Partial Consolidation Edge Cases');
 console.log('='.repeat(80));
 
 // Helper to setup a manager with grid
-function setupManager(gridSize = 6) {
+async function setupManager(gridSize = 6) {
     const cfg = {
         assetA: 'BTS',
         assetB: 'USD',
@@ -32,7 +32,7 @@ function setupManager(gridSize = 6) {
         assetB: { id: '1.3.121', precision: 5 }
     };
 
-    mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
 
     // Setup grid
     for (let i = 0; i < gridSize; i++) {
@@ -48,7 +48,7 @@ function setupManager(gridSize = 6) {
     }
 
     for (const order of mgr.orders.values()) {
-        mgr._updateOrder(order);
+        await mgr._updateOrder(order);
     }
 
     // Mock evaluatePartialOrderAnchor to use a consistent ideal size mapping
@@ -78,7 +78,7 @@ async function testSingleDustPartial() {
     console.log('\n[Test 1] Single DUST partial (should restore to ideal)');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Create a single tiny partial at 1.10 (ideal size = 10)
     const dustPartial = {
@@ -90,7 +90,7 @@ async function testSingleDustPartial() {
         state: ORDER_STATES.PARTIAL
     };
 
-    mgr._updateOrder(dustPartial);
+    await mgr._updateOrder(dustPartial);
 
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
 
@@ -107,7 +107,7 @@ async function testMultipleDustPartials() {
     console.log('\n[Test 2] Multiple DUST partials at different grid positions');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager(8);
+    const mgr = await await setupManager(8);
 
     // Create 3 dust partials at different grid positions
     const dustPartials = [
@@ -123,7 +123,7 @@ async function testMultipleDustPartials() {
             type: ORDER_TYPES.SELL,
             state: ORDER_STATES.PARTIAL
         };
-        mgr._updateOrder(order);
+        await mgr._updateOrder(order);
     }
 
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
@@ -143,7 +143,7 @@ async function testSubstantialPartialAsInnermost() {
     console.log('\n[Test 3] Substantial partial as innermost absorbs residuals');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager(6);
+    const mgr = await setupManager(6);
 
     // Create 2 partials: outer dust + inner substantial
     const outerDust = {
@@ -164,8 +164,8 @@ async function testSubstantialPartialAsInnermost() {
         state: ORDER_STATES.PARTIAL
     };
 
-    mgr._updateOrder(outerDust);
-    mgr._updateOrder(innerSubstantial);
+    await mgr._updateOrder(outerDust);
+    await mgr._updateOrder(innerSubstantial);
 
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
 
@@ -183,7 +183,7 @@ async function testLargeResidualSplit() {
     console.log('\n[Test 4] Large residual capital causes innermost to SPLIT');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager(6);
+    const mgr = await setupManager(6);
 
     // Create 2 partials: outer oversized + inner dust
     const outerOversized = {
@@ -204,8 +204,8 @@ async function testLargeResidualSplit() {
         state: ORDER_STATES.PARTIAL
     };
 
-    mgr._updateOrder(outerOversized);
-    mgr._updateOrder(innerDust);
+    await mgr._updateOrder(outerOversized);
+    await mgr._updateOrder(innerDust);
 
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
 
@@ -225,7 +225,7 @@ async function testGhostVirtualizationIsolation() {
     console.log('\n[Test 5] Ghost virtualization prevents mutual blocking');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager(6);
+    const mgr = await setupManager(6);
 
     // Create 3 partials that would block each other without ghost virtualization
     const p1 = {
@@ -255,9 +255,9 @@ async function testGhostVirtualizationIsolation() {
         state: ORDER_STATES.PARTIAL
     };
 
-    mgr._updateOrder(p1);
-    mgr._updateOrder(p2);
-    mgr._updateOrder(p3);
+    await mgr._updateOrder(p1);
+    await mgr._updateOrder(p2);
+    await mgr._updateOrder(p3);
 
     // Before executing, verify all are PARTIAL
     assert(mgr.orders.get('sell-0').state === ORDER_STATES.PARTIAL);
@@ -280,7 +280,7 @@ async function testInnermostMergeWithAccumulatedResiduals() {
     console.log('\n[Test 6] Innermost partial merges small accumulated residuals');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager(6);
+    const mgr = await setupManager(6);
 
     // Create 3 partials: two small outer + one inner
     // Outer residuals: 0.5*1.10 + 0.5*1.15 = 1.075 total capital
@@ -313,9 +313,9 @@ async function testInnermostMergeWithAccumulatedResiduals() {
         state: ORDER_STATES.PARTIAL
     };
 
-    mgr._updateOrder(outer1);
-    mgr._updateOrder(outer2);
-    mgr._updateOrder(inner);
+    await mgr._updateOrder(outer1);
+    await mgr._updateOrder(outer2);
+    await mgr._updateOrder(inner);
 
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
 

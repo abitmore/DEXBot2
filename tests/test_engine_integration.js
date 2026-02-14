@@ -38,7 +38,7 @@ console.log('Testing Engine Integration: Fill → Rebalance → Sync Cycle');
 console.log('='.repeat(80));
 
 // Helper to setup a manager with initial grid
-function setupManager() {
+async function setupManager() {
     const cfg = {
         assetA: 'BTS',
         assetB: 'USD',
@@ -63,10 +63,10 @@ function setupManager() {
         assetB: { id: '1.3.121', precision: 5 }
     };
 
-    mgr.accountTotals = { 
+    await mgr.setAccountTotals({ 
         buy: 50000, buyFree: 50000, 
         sell: 50000, sellFree: 50000 
-    };
+    });
 
     mgr.fetchAccountTotals = async () => mgr.accountTotals;
 
@@ -94,7 +94,7 @@ function setupManager() {
     }
 
     for (const order of mgr.orders.values()) {
-        mgr._updateOrder(order);
+        await mgr._updateOrder(order);
     }
 
     // Mock persistence methods for testing
@@ -121,7 +121,7 @@ async function testFillToRebalanceCycle() {
     console.log('\n[Test 1] Full cycle: Detect fill → Rebalance → Update funds');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Initial state: all VIRTUAL orders
     assert(mgr.orders.get('sell-0').state === ORDER_STATES.VIRTUAL);
@@ -130,7 +130,7 @@ async function testFillToRebalanceCycle() {
     // Step 1: SYNC ENGINE - Activate a SELL order on chain
     const sellOrder = mgr.orders.get('sell-0');
     const activeSell = { ...sellOrder, state: ORDER_STATES.ACTIVE, orderId: 'chain-sell-1' };
-    mgr._updateOrder(activeSell);
+    await mgr._updateOrder(activeSell);
 
     // Verify: Order is now ACTIVE and chainFree is deducted
     assert(mgr.orders.get('sell-0').state === ORDER_STATES.ACTIVE);
@@ -140,7 +140,7 @@ async function testFillToRebalanceCycle() {
 
     // Step 2: SYNC ENGINE - Detect partial fill (fill 5 of 10)
     const partialSell = { ...activeSell, size: 5, state: ORDER_STATES.PARTIAL };
-    mgr._updateOrder(partialSell);
+    await mgr._updateOrder(partialSell);
 
     assert(mgr.orders.get('sell-0').state === ORDER_STATES.PARTIAL);
     assert(mgr.orders.get('sell-0').size === 5);
@@ -148,7 +148,7 @@ async function testFillToRebalanceCycle() {
 
     // Step 3: STRATEGY ENGINE - Process fills and rebalance
     const filledOrders = [{ ...sellOrder, size: 5, isPartial: false }];
-    const result = await mgr.strategy.processFilledOrders(filledOrders, new Set());
+    const result = await mgr.processFilledOrders(filledOrders, new Set());
 
     // Verify rebalancing created new orders
     assert(result.ordersToPlace.length > 0, 'Should have rebalancing orders');
@@ -156,7 +156,7 @@ async function testFillToRebalanceCycle() {
 
     // Step 4: ACCOUNTANT - Verify fund calculations are consistent
     // Recalculate funds to verify consistency
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
 
     // Check that committed funds reflect the partial order (at least the size)
     const partialOrderSize = mgr.orders.get('sell-0').size;
@@ -176,7 +176,7 @@ async function testOrderLockingPreventsRaces() {
     console.log('\n[Test 2] Order locking prevents race conditions between engines');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Simulate StrategyEngine starting to process a partial
     const orderId = 'sell-0';
@@ -208,11 +208,11 @@ async function testStatTransitionFundTracking() {
     console.log('\n[Test 3] Fund tracking across state transitions');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Setup optimistic chainFree tracking
     mgr.accountTotals = { buy: 50000, buyFree: 50000, sell: 50000, sellFree: 50000 };
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
 
     const initialFreeAmnasset = mgr.accountTotals.sellFree;
     const orderSize = 10;
@@ -221,8 +221,8 @@ async function testStatTransitionFundTracking() {
     const virtualSell = mgr.orders.get('sell-0');
     const activeSell = { ...virtualSell, state: ORDER_STATES.ACTIVE, orderId: 'chain-1' };
 
-    mgr.accountant.updateOptimisticFreeBalance(virtualSell, activeSell, 'test-placement');
-    mgr._updateOrder(activeSell);
+    await mgr.accountant.updateOptimisticFreeBalance(virtualSell, activeSell, 'test-placement');
+    await mgr._updateOrder(activeSell);
 
     // Verify: chainFree decreased
     const afterActivationFree = mgr.accountTotals.sellFree;
@@ -231,8 +231,8 @@ async function testStatTransitionFundTracking() {
 
     // Transition: ACTIVE → VIRTUAL (funds should be added back)
     const virtualAgain = { ...activeSell, state: ORDER_STATES.VIRTUAL, orderId: null };
-    mgr.accountant.updateOptimisticFreeBalance(activeSell, virtualAgain, 'test-cancellation');
-    mgr._updateOrder(virtualAgain);
+    await mgr.accountant.updateOptimisticFreeBalance(activeSell, virtualAgain, 'test-cancellation');
+    await mgr._updateOrder(virtualAgain);
 
     // Verify: chainFree increased back
     const afterCancellationFree = mgr.accountTotals.sellFree;
@@ -251,14 +251,14 @@ async function testConsolidationSyncRebalanceCycle() {
     console.log('\n[Test 4] Complex cycle: Consolidation → Sync → Rebalance');
     console.log('-'.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
 
     // Create two partial orders on opposite sides
     const partial1 = { ...mgr.orders.get('sell-1'), size: 5, state: ORDER_STATES.PARTIAL, orderId: 'chain-s1' };
     const partial2 = { ...mgr.orders.get('sell-3'), size: 7, state: ORDER_STATES.PARTIAL, orderId: 'chain-s2' };
 
-    mgr._updateOrder(partial1);
-    mgr._updateOrder(partial2);
+    await mgr._updateOrder(partial1);
+    await mgr._updateOrder(partial2);
 
     console.log('  Step 1: Created 2 partial SELL orders');
 
@@ -272,18 +272,18 @@ async function testConsolidationSyncRebalanceCycle() {
     // Step 3: SYNC ENGINE - Sync updated orders from blockchain
     // Simulate one of the partials completing fill
     const filledPartial = { ...partial1, size: 0, state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.SPREAD };
-    mgr._updateOrder(filledPartial);
+    await mgr._updateOrder(filledPartial);
 
     console.log('  ✓ Step 3: Sync detected full fill of partial');
 
     // Step 4: STRATEGY ENGINE - Rebalance based on fills
-    const rebalanceResult = await mgr.strategy.processFilledOrders([partial1], new Set());
+    const rebalanceResult = await mgr.processFilledOrders([partial1], new Set());
 
     assert(rebalanceResult.ordersToPlace.length >= 0, 'Rebalancing should complete');
     console.log('  ✓ Step 4: Rebalancing completed');
 
     // Verify final state consistency
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
     assert(mgr.funds.available.sell >= 0, 'Available funds should be consistent');
     console.log('  ✓ Final state: All engines consistent');
 }

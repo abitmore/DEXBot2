@@ -20,7 +20,7 @@ async function runTests() {
         'XRP': { marketFee: { percent: 0.2 }, takerFee: { percent: 0.2 } }
     });
 
-    const createManager = () => {
+    const createManager = async () => {
         const mgr = new OrderManager({
             market: 'XRP/BTS', assetA: 'XRP', assetB: 'BTS'
         });
@@ -29,17 +29,17 @@ async function runTests() {
             assetA: { symbol: 'XRP', id: '1.3.5537', precision: 4 }, 
             assetB: { symbol: 'BTS', id: '1.3.0', precision: 5 } 
         };
-        mgr.setAccountTotals({ buy: 100000, sell: 1000, buyFree: 100000, sellFree: 1000 });
+        await mgr.setAccountTotals({ buy: 100000, sell: 1000, buyFree: 100000, sellFree: 1000 });
         return mgr;
     };
 
     console.log(' - Testing tiny remainder rounding to full fill (SyncEngine)...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         
         // Setup initial order: Buy XRP with 249.27798 BTS (exactly the case from the log)
         const initialSize = 249.27798;
-        manager._updateOrder({
+        await manager._updateOrder({
             id: 'slot-164', 
             state: ORDER_STATES.ACTIVE, 
             type: ORDER_TYPES.BUY,
@@ -62,7 +62,7 @@ async function runTests() {
             }]
         };
 
-        const result = manager.sync.syncFromFillHistory(fillEvent);
+        const result = await manager.sync.syncFromFillHistory(fillEvent);
         
         // Assertions
         assert.strictEqual(result.partialFill, false, 'Should be treated as full fill despite non-zero remainder');

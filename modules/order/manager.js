@@ -53,13 +53,13 @@
  *   23. stopBroadcasting() - Stop order broadcast operations
  *
  * ORDER OPERATIONS (2 methods)
- *   24. _updateOrder(order, context, skipAccounting, fee) - Update order state internally
- *   25. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
+ *   24. _updateOrder(order, context, skipAccounting, fee) - Update order state internally (async)
+ *   25. performSafeRebalance(fills, excludeIds) - Safe rebalance pipeline (async)
  *
  * STRATEGY DELEGATION (3 methods)
- *   26. processFilledOrders(orders, excl, options) - Process filled orders (delegate, async)
- *   27. completeOrderRotation(oldInfo) - Complete order rotation (delegate)
- *   28. _verifyFundInvariants(chainFreeBuy, chainFreeSell, chainBuy, chainSell) - Verify fund invariants
+ *   27. processFilledOrders(orders, excl, options) - Process filled orders (delegate, async)
+ *   28. completeOrderRotation(oldInfo) - Complete order rotation (delegate)
+ *   29. _verifyFundInvariants(chainFreeBuy, chainFreeSell, chainBuy, chainSell) - Verify fund invariants
  *
  * ORDER QUERIES (3 methods)
  *   29. getInitialOrdersToActivate() - Get orders ready for activation
@@ -77,9 +77,8 @@
  *   37. assertIndexConsistency() - Assert indices match orders (throws on mismatch)
  *   38. _repairIndices() - Repair corrupted indices (internal)
  *
- * CONFIGURATION & RESOLUTION (2 methods)
- *   39. _resolveConfigValue(value, total) - Resolve config value with defaults
- *   40. _triggerAccountTotalsFetchIfNeeded() - Fetch totals if stale
+ * CONFIGURATION & RESOLUTION (1 method)
+ *   39. _triggerAccountTotalsFetchIfNeeded() - Fetch totals if stale
  *
  * RECALC CONTROL (4 methods)
  *   41. pauseFundRecalc() - Pause automatic fund recalculation
@@ -138,14 +137,18 @@ const {
     computeChainFundTotals,
     hasValidAccountTotals,
     resolveConfigValue,
+    isExplicitZeroAllocation,
     floatToBlockchainInt,
     getPrecisionSlack
 } = require('./utils/math');
 const {
     isOrderOnChain,
-    isPhantomOrder
+    isPhantomOrder,
+    hasOnChainId,
+    convertToSpreadPlaceholder
 } = require('./utils/order');
-const { persistGridSnapshot } = require('./utils/system');
+const { persistGridSnapshot, deepFreeze, cloneMap } = require('./utils/system');
+const { WorkingGrid } = require('./working_grid');
 const Logger = require('./logger');
 const AsyncLock = require('./async_lock');
 const Accountant = require('./accounting');
@@ -156,22 +159,6 @@ const Format = require('./format');
 
 const VALID_ORDER_STATES = new Set(Object.values(ORDER_STATES));
 const VALID_ORDER_TYPES = new Set(Object.values(ORDER_TYPES));
-
-function isExplicitZeroAllocation(value) {
-    if (typeof value === 'number') return value === 0;
-    if (typeof value !== 'string') return false;
-
-    const trimmed = value.trim();
-    if (trimmed === '') return false;
-
-    if (trimmed.endsWith('%')) {
-        const percent = parseFloat(trimmed.slice(0, -1));
-        return Number.isFinite(percent) && percent === 0;
-    }
-
-    const numeric = parseFloat(trimmed);
-    return Number.isFinite(numeric) && numeric === 0;
-}
 
 class OrderManager {
     /**
@@ -198,7 +185,9 @@ class OrderManager {
         this.marketName = this.config.market || (this.config.assetA && this.config.assetB ? `${this.config.assetA}/${this.config.assetB}` : null);
         this.logger = new Logger(LOG_LEVEL);
         this.logger.marketName = this.marketName;
-        this.orders = new Map();
+        this.orders = Object.freeze(new Map()); // Immutable Master Grid
+        this.boundaryIdx = null;
+        this.targetGrid = null; // Desired state from strategy
 
         // Specialized Engines
         this.accountant = new Accountant(this);
@@ -227,19 +216,16 @@ class OrderManager {
         this._accountTotalsResolve = null;
         this.ordersNeedingPriceCorrection = [];
         this.shadowOrderIds = new Map();
-        this._correctionsLock = new AsyncLock();
-        this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations (defense-in-depth)
-        this._fillProcessingLock = new AsyncLock();  // Prevents concurrent fill processing
-        this._divergenceLock = new AsyncLock();  // Prevents concurrent divergence correction
-        this._accountTotalsLock = new AsyncLock();  // Prevents race condition in waitForAccountTotals
+        this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations
+        this._fillProcessingLock = new AsyncLock(); // Prevents concurrent fill processing
+        this._divergenceLock = new AsyncLock(); // Prevents concurrent divergence correction
         this._gridLock = new AsyncLock();  // Prevents concurrent grid mutations
-        this._fundsSemaphore = new AsyncLock();  // Prevents concurrent fund updates
-        this._spreadCountLock = new AsyncLock();  // Prevents concurrent spread count updates
+        this._fundLock = new AsyncLock({ timeout: 30000 });  // Prevents concurrent fund updates
         this._recentlyRotatedOrderIds = new Set();
 
         this._gridSidesUpdated = new Set();
-        this._pauseFundRecalcDepth = 0;
-        this._recalcLoggingDepth = 0;
+        this._pauseFundRecalc = false;
+        this._pauseRecalcLogging = false;
         this._isBroadcasting = false;
         // SCOPE CONSTRAINT: _throwOnIllegalState must only be set to true inside the
         // _fillProcessingLock critical section (i.e. within updateOrdersOnChainBatch and
@@ -249,6 +235,7 @@ class OrderManager {
         this._lastIllegalState = null;
         this._lastAccountingFailure = null;
         this._pipelineBlockedSince = null;  // Tracks when pipeline became blocked for timeout detection
+        this._recoveryAttempted = false;    // Tracks if recovery has been attempted in the current cycle
 
         // Metrics for observability
         this._metrics = {
@@ -263,6 +250,10 @@ class OrderManager {
 
         // Bootstrap flag to suppress warnings during initial grid build
         this.isBootstrapping = true;
+
+        // Copy-on-Write (COW) infrastructure
+        this._rebalanceState = 'NORMAL'; // NORMAL | REBALANCING | BROADCASTING | CONFIRMED
+        this._currentWorkingGrid = null; // Track working grid during rebalance for fill sync
 
         // Clean up any stale locks from previous process crash on startup
         this._cleanExpiredLocks();
@@ -317,17 +308,19 @@ class OrderManager {
     /**
      * Deduct an amount from the optimistic chainFree balance.
      * Proxy for accountant.tryDeductFromChainFree used by dexbot_class.js.
+     * CRITICAL: Now async - must be awaited by callers.
      */
-    _deductFromChainFree(orderType, size, operation) {
-        return this.accountant.tryDeductFromChainFree(orderType, size, operation);
+    async _deductFromChainFree(orderType, size, operation) {
+         return await this.accountant.tryDeductFromChainFree(orderType, size, operation);
     }
 
     /**
      * Add an amount back to the optimistic chainFree balance.
      * Proxy for accountant.addToChainFree used by dexbot_class.js.
+     * CRITICAL: Now async - must be awaited by callers.
      */
-    _addToChainFree(orderType, size, operation) {
-        return this.accountant.addToChainFree(orderType, size, operation);
+    async _addToChainFree(orderType, size, operation) {
+         return await this.accountant.addToChainFree(orderType, size, operation);
     }
 
     /**
@@ -358,9 +351,9 @@ class OrderManager {
      * Recalculates all fund values based on current order states.
      * @returns {void}
      */
-    recalculateFunds() {
-        this._metrics.fundRecalcCount++;
-        return this.accountant.recalculateFunds();
+    async recalculateFunds() {
+         this._metrics.fundRecalcCount++;
+         return await this.accountant.recalculateFunds();
     }
 
     /**
@@ -406,20 +399,50 @@ class OrderManager {
      * @param {Object} [options] - Optional processing flags passed to StrategyEngine.
      * @returns {Promise<Object>} Rebalance result.
      */
-    async processFilledOrders(orders, excl, options) { return await this.strategy.processFilledOrders(orders, excl, options); }
+    /**
+     * Process filled orders using the new safe rebalance pipeline.
+     * 1. Process fills (Accountant update, logging)
+     * 2. Perform Safe Rebalance (Calc -> Validate -> Execute)
+     */
+    async processFilledOrders(orders, excl, options) { 
+        // Step 1: Handle Fills (Accounting & State Updates)
+        await this.strategy.processFilledOrders(orders, excl, options);
+        
+        // Step 2: Trigger Safe Rebalance
+        // Criteria for rebalance:
+        // 1. We have actual fills (non-partial)
+        // 2. We have dual-side dust (unhealthy partials on both sides)
+        const triggerFills = orders.filter(f => !f.isPartial || f.isDelayedRotationTrigger || f.isDoubleReplacementTrigger);
+        let shouldRebalance = triggerFills.length > 0;
+
+        if (!shouldRebalance) {
+            const allOrders = Array.from(this.orders.values());
+            const { getPartialsByType } = require('./utils/order');
+            const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
+
+            if (buyPartials.length > 0 && sellPartials.length > 0) {
+                const buyHasDust = this.strategy.hasAnyDust(buyPartials, "buy");
+                const sellHasDust = this.strategy.hasAnyDust(sellPartials, "sell");
+
+                if (buyHasDust && sellHasDust) {
+                    this.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");
+                    shouldRebalance = true;
+                }
+            }
+        }
+
+        if (shouldRebalance) {
+            return this.performSafeRebalance(orders, excl);
+        }
+
+        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+    }
 
     /**
      * Completes an order rotation by updating internal state.
      * @param {Object} oldInfo - The old order information.
      */
     completeOrderRotation(oldInfo) { return this.strategy.completeOrderRotation(oldInfo); }
-
-    /**
-     * Shared spread-gap calculation helper exposed for utility modules.
-     */
-    calculateGapSlots(incrementPercent = this.config.incrementPercent, targetSpreadPercent = this.config.targetSpreadPercent) {
-        return this.strategy.calculateGapSlots(incrementPercent, targetSpreadPercent);
-    }
 
     // --- Sync Delegation ---
 
@@ -440,11 +463,18 @@ class OrderManager {
 
     /**
      * Synchronizes internal state with provided blockchain data.
+
      * @param {Object|Array} data - Blockchain data (orders or fill).
      * @param {string} src - Source identifier for logging.
      * @returns {Promise<Object>} Sync result.
      */
-    async synchronizeWithChain(data, src) { return await this.sync.synchronizeWithChain(data, src); }
+    /**
+     * Internal logic for synchronization.
+     * PRIVATE: Must be called while holding _gridLock.
+     */
+    async _applySync(data, src) {
+        return await this.sync.synchronizeWithChain(data, src);
+    }
 
     /**
      * Fetches current account balances and updates totals.
@@ -463,28 +493,11 @@ class OrderManager {
     // --- Controller Logic ---
 
     /**
-     * Resolve a configuration value (absolute or percentage-based).
-     * SIDE EFFECT: If value is a percentage but total is unavailable,
-     * this method triggers an async fetch of account totals for future calls.
-     * Use _resolveConfigValueWithAccountFetch() to handle the fetch explicitly.
-     */
-    _resolveConfigValue(value, total) {
-        const resolved = resolveConfigValue(value, total);
-        // If percentage-based but no total available, trigger background fetch
-        if (resolved === 0 && typeof value === 'string' && value.trim().endsWith('%')) {
-            if (total === null || total === undefined) {
-                this._triggerAccountTotalsFetchIfNeeded();
-            }
-        }
-        return resolved;
-    }
-
-    /**
      * Trigger background fetch of account totals if not already fetching.
-     * Used by _resolveConfigValue() when percentage-based allocation is requested.
      * @private
      */
     _triggerAccountTotalsFetchIfNeeded() {
+
         if (!this._isFetchingTotals) {
             this._isFetchingTotals = true;
             this._fetchAccountBalancesAndSetTotals().finally(() => {
@@ -563,7 +576,7 @@ class OrderManager {
     }
 
     /**
-     * Clean up expired locks. Called after lock/unlock to remove stale locks
+     * Clean up expired locks and pending actions. Called after lock/unlock to remove stale entries
      * that exceeded LOCK_TIMEOUT_MS. This prevents stale locks from permanently
      * blocking orders if a process crashed while holding the lock.
      *
@@ -619,15 +632,25 @@ class OrderManager {
      *   - Bot can never spend more than 3000 in buy orders
      *
      * PERCENTAGE RESOLUTION:
-     * Uses _resolveConfigValue() to convert percentages to absolute amounts.
+     * Uses resolveConfigValue() to convert percentages to absolute amounts.
      * For percentages, uses current chainTotal (account balance on blockchain)
      * as the base for calculation.
      */
     applyBotFundsAllocation() {
         if (!this.config.botFunds || !this.accountTotals) return;
         const { chainTotalBuy, chainTotalSell } = computeChainFundTotals(this.accountTotals, this.funds?.committed?.chain);
-        const allocatedBuy = this._resolveConfigValue(this.config.botFunds.buy, chainTotalBuy);
-        const allocatedSell = this._resolveConfigValue(this.config.botFunds.sell, chainTotalSell);
+        
+        const allocatedBuy = resolveConfigValue(this.config.botFunds.buy, chainTotalBuy);
+        const allocatedSell = resolveConfigValue(this.config.botFunds.sell, chainTotalSell);
+
+        // If percentage-based but no total available, trigger background fetch
+        if (allocatedBuy === 0 && typeof this.config.botFunds.buy === 'string' && this.config.botFunds.buy.trim().endsWith('%')) {
+            if (chainTotalBuy === 0) this._triggerAccountTotalsFetchIfNeeded();
+        }
+        if (allocatedSell === 0 && typeof this.config.botFunds.sell === 'string' && this.config.botFunds.sell.trim().endsWith('%')) {
+            if (chainTotalSell === 0) this._triggerAccountTotalsFetchIfNeeded();
+        }
+
         this.funds.allocated = { buy: allocatedBuy, sell: allocatedSell };
 
         // Keep legacy behavior for non-positive dynamic resolutions, while allowing explicit 0 to disable a side.
@@ -638,24 +661,63 @@ class OrderManager {
         if (shouldCapSell) this.funds.available.sell = Math.min(this.funds.available.sell, Math.max(0, allocatedSell));
     }
 
-    /**
-     * Set account totals and update fund state.
-     * @param {Object} totals - Account balances.
-     */
-    setAccountTotals(totals = { buy: null, sell: null, buyFree: null, sellFree: null }) {
-        this.accountTotals = { ...this.accountTotals, ...totals };
-        if (!this.funds) this.resetFunds();
-        this.recalculateFunds();
-        if (hasValidAccountTotals(this.accountTotals, true) && typeof this._accountTotalsResolve === 'function') {
-            try {
-                this._accountTotalsResolve();
-            } catch (e) {
-                this.logger?.log?.(`Error resolving account totals promise: ${e.message}`, 'warn');
-            }
-            this._accountTotalsPromise = null;
-            this._accountTotalsResolve = null;
-        }
-    }
+     /**
+      * Set account totals and update fund state.
+      * PUBLIC API: Acquires _fundLock.
+      * @param {Object} totals - Account balances.
+      */
+     async setAccountTotals(totals = { buy: null, sell: null, buyFree: null, sellFree: null }) {
+         return await this._fundLock.acquire(async () => {
+             return await this._setAccountTotals(totals);
+         });
+     }
+
+     /**
+      * Internal logic for setting account totals.
+      * PRIVATE: Must be called while holding _fundLock.
+      */
+     async _setAccountTotals(totals) {
+         // CRITICAL: Use Object.assign for in-place mutation (Race Condition #2)
+         if (!this.accountTotals) {
+             this.accountTotals = { ...totals };
+         } else {
+             Object.assign(this.accountTotals, totals);
+         }
+         if (!this.funds) this.resetFunds();
+         
+         // Call private recalculate logic
+         await this._recalculateFunds();
+
+         if (hasValidAccountTotals(this.accountTotals, true) && typeof this._accountTotalsResolve === 'function') {
+             try {
+                 this._accountTotalsResolve();
+             } catch (e) {
+                 this.logger?.log?.(`Error resolving account totals promise: ${e.message}`, 'warn');
+             }
+             this._accountTotalsPromise = null;
+             this._accountTotalsResolve = null;
+         }
+     }
+
+     /**
+      * Recalculate bot available/allocated funds based on current orders.
+      * PUBLIC API: Acquires _fundLock.
+      */
+     async recalculateFunds() {
+         return await this._fundLock.acquire(async () => {
+             return await this._recalculateFunds();
+         });
+     }
+
+     /**
+      * Internal logic for fund recalculation.
+      * PRIVATE: Must be called while holding _fundLock.
+      */
+     async _recalculateFunds() {
+         if (this.accountant) {
+             await this.accountant.recalculateFunds();
+         }
+     }
 
     /**
      * Wait for account free balances to be fetched from the blockchain.
@@ -670,7 +732,7 @@ class OrderManager {
         let waitPromise = null;
 
         // Protect waiter creation, but do not hold lock while waiting.
-        await this._accountTotalsLock.acquire(async () => {
+        await this._fundLock.acquire(async () => {
             if (hasValidAccountTotals(this.accountTotals, true)) return;
             if (!this._accountTotalsPromise) {
                 this._accountTotalsPromise = new Promise((resolve) => { this._accountTotalsResolve = resolve; });
@@ -739,112 +801,108 @@ class OrderManager {
      * @param {string} [context='updateOrder'] - Source of the update for logging
      * @param {boolean} [skipAccounting=false] - If true, do not update optimistic balances
      * @param {number} [fee=0] - Blockchain fee to record if this is a placement/update
-     * @returns {void}
+     * @returns {Promise<boolean>}
      */
-    _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0) {
+    async _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0) {
         if (!order || !order.id) {
             this.logger.log('Refusing to update order: missing ID', 'error');
             return false;
         }
 
-        const id = order.id;
-        const oldOrder = this.orders.get(id);
-        const nextOrder = { ...(oldOrder || {}), ...order };
+        return await this._gridLock.acquire(async () => {
+            const id = order.id;
+            const oldOrder = this.orders.get(id);
+            const nextOrder = { ...(oldOrder || {}), ...order };
 
-        // Backward-compat: allow initializing empty virtual placeholders without an explicit type.
-        if (!nextOrder.type && nextOrder.state === ORDER_STATES.VIRTUAL) {
-            const placeholderSize = Number(nextOrder.size || 0);
-            if (placeholderSize === 0) {
-                nextOrder.type = ORDER_TYPES.SPREAD;
+            // Backward-compat: allow initializing empty virtual placeholders without an explicit type.
+            if (!nextOrder.type && nextOrder.state === ORDER_STATES.VIRTUAL) {
+                const placeholderSize = Number(nextOrder.size || 0);
+                if (placeholderSize === 0) {
+                    nextOrder.type = ORDER_TYPES.SPREAD;
+                }
             }
-        }
 
-        if (!VALID_ORDER_STATES.has(nextOrder.state)) {
-            this.logger.log(`Refusing to update order ${id}: invalid state '${nextOrder.state}' (context: ${context})`, 'error');
-            return false;
-        }
-
-        if (!VALID_ORDER_TYPES.has(nextOrder.type)) {
-            this.logger.log(`Refusing to update order ${id}: invalid type '${nextOrder.type}' (context: ${context})`, 'error');
-            return false;
-        }
-
-        // Invariant: SPREAD placeholders are always size 0.
-        if (nextOrder.type === ORDER_TYPES.SPREAD && Number(nextOrder.size || 0) !== 0) {
-            this.logger.log(
-                `[INVARIANT] Normalizing SPREAD order ${id} size ${nextOrder.size} -> 0 (context: ${context})`,
-                'warn'
-            );
-            nextOrder.size = 0;
-        }
-
-        // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
-        if (nextOrder.type === ORDER_TYPES.SPREAD && isOrderOnChain(nextOrder)) {
-            const message = `ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${nextOrder.state}. SPREAD orders must remain VIRTUAL.`;
-            this.logger.log(message, 'error');
-            this._lastIllegalState = { id, context, message, at: Date.now() };
-            if (this._throwOnIllegalState) {
-                const err = new Error(message);
-                err.code = 'ILLEGAL_ORDER_STATE';
-                throw err;
+            if (!VALID_ORDER_STATES.has(nextOrder.state)) {
+                this.logger.log(`Refusing to update order ${id}: invalid state '${nextOrder.state}' (context: ${context})`, 'error');
+                return false;
             }
-            return false;
-        }
 
-        // Preserve side intent across transitions that temporarily use SPREAD placeholders.
-        if (nextOrder.type === ORDER_TYPES.BUY || nextOrder.type === ORDER_TYPES.SELL) {
-            nextOrder.committedSide = nextOrder.type;
-        } else if (!nextOrder.committedSide) {
-            if (oldOrder?.committedSide) {
-                nextOrder.committedSide = oldOrder.committedSide;
-            } else if (oldOrder?.type === ORDER_TYPES.BUY || oldOrder?.type === ORDER_TYPES.SELL) {
-                nextOrder.committedSide = oldOrder.type;
+            if (!VALID_ORDER_TYPES.has(nextOrder.type)) {
+                this.logger.log(`Refusing to update order ${id}: invalid type '${nextOrder.type}' (context: ${context})`, 'error');
+                return false;
             }
-        }
 
-        // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
-        // This is a defense-in-depth check to catch bugs in any module that might try to
-        // create an ACTIVE or PARTIAL order without a corresponding blockchain order ID.
-        if (isPhantomOrder(nextOrder)) {
-            this.logger.log(
-                `ILLEGAL STATE: Refusing to set order ${id} to ${nextOrder.state} without orderId. ` +
-                `Context: ${context}. This would create a phantom order that doubles fund tracking. ` +
-                `Downgrading to VIRTUAL instead.`,
-                'error'
-            );
-            // Auto-correct to VIRTUAL to prevent fund tracking corruption
-            // NOTE: Keep the size - VIRTUAL orders can have non-zero sizes (planned placements)
-            // Only SPREAD orders should have size 0
-            nextOrder.state = ORDER_STATES.VIRTUAL;
-        }
+            // Invariant: SPREAD placeholders are always size 0.
+            if (nextOrder.type === ORDER_TYPES.SPREAD && Number(nextOrder.size || 0) !== 0) {
+                this.logger.log(
+                    `[INVARIANT] Normalizing SPREAD order ${id} size ${nextOrder.size} -> 0 (context: ${context})`,
+                    'warn'
+                );
+                nextOrder.size = 0;
+            }
 
-        // 1. Update optimistic balance (atomic update of tracked funds)
-        if (this.accountant) {
-            this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, fee, skipAccounting);
-        }
+            // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
+            if (nextOrder.type === ORDER_TYPES.SPREAD && isOrderOnChain(nextOrder)) {
+                const message = `ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${nextOrder.state}. SPREAD orders must remain VIRTUAL.`;
+                this.logger.log(message, 'error');
+                this._lastIllegalState = { id, context, message, at: Date.now() };
+                if (this._throwOnIllegalState) {
+                    const err = new Error(message);
+                    err.code = 'ILLEGAL_ORDER_STATE';
+                    throw err;
+                }
+                return false;
+            }
 
-        // 2. Clone the order to prevent external modification races
-        const updatedOrder = { ...nextOrder };
+            // Preserve side intent across transitions that temporarily use SPREAD placeholders.
+            if (nextOrder.type === ORDER_TYPES.BUY || nextOrder.type === ORDER_TYPES.SELL) {
+                nextOrder.committedSide = nextOrder.type;
+            } else if (!nextOrder.committedSide) {
+                if (oldOrder?.committedSide) {
+                    nextOrder.committedSide = oldOrder.committedSide;
+                } else if (oldOrder?.type === ORDER_TYPES.BUY || oldOrder?.type === ORDER_TYPES.SELL) {
+                    nextOrder.committedSide = oldOrder.type;
+                }
+            }
 
-        // 3. Robust index maintenance
-        Object.values(this._ordersByState).forEach(set => set.delete(id));
-        Object.values(this._ordersByType).forEach(set => set.delete(id));
+            // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
+            if (this.sync) {
+                this.sync.sanitizePhantomOrder(nextOrder, context);
+            }
 
-        if (this._ordersByState[updatedOrder.state]) {
-            this._ordersByState[updatedOrder.state].add(id);
-        }
-        if (this._ordersByType[updatedOrder.type]) {
-            this._ordersByType[updatedOrder.type].add(id);
-        }
+            // 1. Update optimistic balance (atomic update of tracked funds)
+            if (this.accountant) {
+                await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, fee, skipAccounting);
+            }
 
-        this.orders.set(id, updatedOrder);
+            // 2. Clone and freeze the order to prevent external modification races
+            const updatedOrder = deepFreeze({ ...nextOrder });
 
-        // 4. Recalculate funds if not in a batch pause
-        if (this._pauseFundRecalcDepth === 0) {
-            this.recalculateFunds();
-        }
+            // 3. Robust index maintenance
+            Object.values(this._ordersByState).forEach(set => set.delete(id));
+            Object.values(this._ordersByType).forEach(set => set.delete(id));
 
-        return true;
+            if (this._ordersByState[updatedOrder.state]) {
+                this._ordersByState[updatedOrder.state].add(id);
+            }
+            if (this._ordersByType[updatedOrder.type]) {
+                this._ordersByType[updatedOrder.type].add(id);
+            }
+
+            // --- IMMUTABLE SWAP ---
+            // Create a new Map, update the specific order, and replace the frozen master reference.
+            const newMap = cloneMap(this.orders);
+            newMap.set(id, updatedOrder);
+            this.orders = Object.freeze(newMap);
+            // ----------------------
+
+             // 4. Recalculate funds if not in a batch pause
+             if (!this._pauseFundRecalc) {
+                 await this.recalculateFunds();
+             }
+
+            return true;
+        });
     }
 
     consumeIllegalStateSignal() {
@@ -861,49 +919,34 @@ class OrderManager {
 
     /**
      * Pause fund recalculation during batch order updates.
-     * Uses a depth counter to safely support nested pauses.
      * Use with resumeFundRecalc() to optimize multi-order operations.
-     *
-     * NESTING EXAMPLE:
-     *   pauseFundRecalc();      // depth = 1
-     *   pauseFundRecalc();      // depth = 2
-     *   resumeFundRecalc();     // depth = 1 (recalc NOT called)
-     *   resumeFundRecalc();     // depth = 0 (recalc IS called)
      */
     pauseFundRecalc() {
-        this._pauseFundRecalcDepth++;
+        this._pauseFundRecalc = true;
     }
 
-    /**
-     * Resume fund recalculation after batch updates.
-     * Recalculate only happens when depth reaches 0 (all pauses resolved).
-     * All orders updated during pause are now reflected in fund calculations.
-     */
-    resumeFundRecalc() {
-        if (this._pauseFundRecalcDepth > 0) {
-            this._pauseFundRecalcDepth--;
-        }
-        if (this._pauseFundRecalcDepth === 0) {
-            this.recalculateFunds();
-        }
-    }
+     /**
+      * Resume fund recalculation after batch updates.
+      * All orders updated during pause are now reflected in fund calculations.
+      */
+     async resumeFundRecalc() {
+         this._pauseFundRecalc = false;
+         await this.recalculateFunds();
+     }
 
     /**
      * Pause recalculation logging during high-frequency operations.
-     * Uses a depth counter to safely support nested pauses.
      * Use with resumeRecalcLogging() to optimize grid initialization.
      */
     pauseRecalcLogging() {
-        this._recalcLoggingDepth++;
+        this._pauseRecalcLogging = true;
     }
 
     /**
      * Resume recalculation logging after high-frequency operations.
      */
     resumeRecalcLogging() {
-        if (this._recalcLoggingDepth > 0) {
-            this._recalcLoggingDepth--;
-        }
+        this._pauseRecalcLogging = false;
     }
 
     /**
@@ -1063,10 +1106,196 @@ class OrderManager {
     }
 
     /**
-     * Get all PARTIAL orders of a given type that are NOT locked.
+     * Apply a batch of order updates to the grid.
+     * PUBLIC API: Acquires _gridLock once and performs all updates efficiently.
+     * 
+     * @param {Array<Object>} updates - List of order updates to apply
+     * @param {string} context - Context for logging
+     * @param {boolean} skipAccounting - Whether to skip optimistic accounting
+     * @returns {Promise<boolean>}
      */
-    getPartialOrdersOnSide(type) {
-        return this.getOrdersByTypeAndState(type, ORDER_STATES.PARTIAL).filter(o => !this.isOrderLocked(o.id) && !this.isOrderLocked(o.orderId));
+    async applyGridUpdateBatch(updates, context = 'batch-update', skipAccounting = false) {
+        if (!Array.isArray(updates) || updates.length === 0) return true;
+
+        return await this._gridLock.acquire(async () => {
+            this.pauseFundRecalc();
+            try {
+                for (const update of updates) {
+                    await this._applyOrderUpdate(update, context, skipAccounting);
+                }
+            } finally {
+                await this.resumeFundRecalc();
+            }
+            return true;
+        });
+    }
+
+    /**
+     * Internal logic for updating an order.
+     * PRIVATE: Must be called while holding _gridLock.
+     * 
+     * Invariants maintained:
+     * - VIRTUAL: Order exists in memory but not on-chain.
+     * 
+     * ACTIVE: Order is on-chain with an orderId. Funds are locked/committed.
+     *   → PARTIAL: Order fills partially. Remaining size is tracked for rebalancing.
+     *   → VIRTUAL: Order is cancelled/rotated. Becomes eligible for re-use.
+     *   → SPREAD: Order is cancelled/rotated after being filled. Becomes placeholder.
+     * 
+     * PARTIAL: Order has partially filled and is waiting for consolidation or rotation.
+     *   → ACTIVE: Upgraded by multi-partial consolidation (if size >= 100% of ideal).
+     *   → VIRTUAL: Consolidated and moved. Returns to virtual pool.
+     *   → SPREAD: Order absorbed or consolidated, converted to placeholder.
+     * 
+     * CRITICAL RULE - Size determines ACTIVE vs PARTIAL:
+     * When an order size < 100% of its slot's ideal size (determined by grid geometry),
+     * it MUST be in PARTIAL state, not ACTIVE. This prevents orders from being stuck
+     * in the wrong state after partial fills.
+     * 
+     * FUND DEDUCTION RULES (fund tracking via state change):
+     * - VIRTUAL → ACTIVE: Funds are deducted from chainFree (become locked)
+     * - ACTIVE → VIRTUAL: Funds are added back to chainFree (become free)
+     * - ACTIVE → PARTIAL: Partial fills reduce chainFree based on filled amount
+     * - PARTIAL → ACTIVE: Consolidation may lock additional funds if upgrading
+     * 
+     * INDEX MAINTENANCE:
+     * This method maintains three critical indices for O(1) lookups:
+     * 1. _ordersByState: Groups orders by state (VIRTUAL, ACTIVE, PARTIAL)
+     * 2. _ordersByType: Groups orders by type (BUY, SELL, SPREAD)
+     * 3. orders: Central Map storing the order object data
+     * 
+     * IMPORTANT: Always call this method instead of directly modifying this.orders
+     * to ensure indices remain consistent. Inconsistent indices can cause:
+     * - Missed orders during rebalancing
+     * - Incorrect fund calculations
+     * - Stuck orders in wrong states
+     * 
+     * @param {Object} order - Updated order object (must contain id)
+     * @param {string} [context='updateOrder'] - Source of the update for logging
+     * @param {boolean} [skipAccounting=false] - If true, do not update optimistic balances
+     * @param {number} [fee=0] - Blockchain fee to record if this is a placement/update
+     * @returns {Promise<boolean>}
+     */
+    async _applyOrderUpdate(order, context = 'updateOrder', skipAccounting = false, fee = 0) {
+        if (!order || !order.id) {
+            this.logger.log('Refusing to update order: missing ID', 'error');
+            return false;
+        }
+
+        const id = order.id;
+        const oldOrder = this.orders.get(id);
+        const nextOrder = { ...(oldOrder || {}), ...order };
+
+        // Backward-compat: allow initializing empty virtual placeholders without an explicit type.
+        if (!nextOrder.type && nextOrder.state === ORDER_STATES.VIRTUAL) {
+            const placeholderSize = Number(nextOrder.size || 0);
+            if (placeholderSize === 0) {
+                nextOrder.type = ORDER_TYPES.SPREAD;
+            }
+        }
+
+        if (!VALID_ORDER_STATES.has(nextOrder.state)) {
+            this.logger.log(`Refusing to update order ${id}: invalid state '${nextOrder.state}' (context: ${context})`, 'error');
+            return false;
+        }
+
+        if (!VALID_ORDER_TYPES.has(nextOrder.type)) {
+            this.logger.log(`Refusing to update order ${id}: invalid type '${nextOrder.type}' (context: ${context})`, 'error');
+            return false;
+        }
+
+        // Invariant: SPREAD placeholders are always size 0.
+        if (nextOrder.type === ORDER_TYPES.SPREAD && Number(nextOrder.size || 0) !== 0) {
+            this.logger.log(
+                `[INVARIANT] Normalizing SPREAD order ${id} size ${nextOrder.size} -> 0 (context: ${context})`,
+                'warn'
+            );
+            nextOrder.size = 0;
+        }
+
+        // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
+        if (nextOrder.type === ORDER_TYPES.SPREAD && isOrderOnChain(nextOrder)) {
+            const message = `ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${nextOrder.state}. SPREAD orders must remain VIRTUAL.`;
+            this.logger.log(message, 'error');
+            this._lastIllegalState = { id, context, message, at: Date.now() };
+            if (this._throwOnIllegalState) {
+                const err = new Error(message);
+                err.code = 'ILLEGAL_ORDER_STATE';
+                throw err;
+            }
+            return false;
+        }
+
+        // Preserve side intent across transitions that temporarily use SPREAD placeholders.
+        if (nextOrder.type === ORDER_TYPES.BUY || nextOrder.type === ORDER_TYPES.SELL) {
+            nextOrder.committedSide = nextOrder.type;
+        } else if (!nextOrder.committedSide) {
+            if (oldOrder?.committedSide) {
+                nextOrder.committedSide = oldOrder.committedSide;
+            } else if (oldOrder?.type === ORDER_TYPES.BUY || oldOrder?.type === ORDER_TYPES.SELL) {
+                nextOrder.committedSide = oldOrder.type;
+            }
+        }
+
+        // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
+        // This is a defense-in-depth check to catch bugs in any module that might try to
+        // create an ACTIVE or PARTIAL order without a corresponding blockchain order ID.
+        if (isPhantomOrder(nextOrder)) {
+            this.logger.log(
+                `ILLEGAL STATE: Refusing to set order ${id} to ${nextOrder.state} without orderId. ` +
+                `Context: ${context}. This would create a phantom order that doubles fund tracking. ` +
+                `Downgrading to VIRTUAL instead.`,
+                'error'
+            );
+            // Auto-correct to VIRTUAL to prevent fund tracking corruption
+            // NOTE: Keep the size - VIRTUAL orders can have non-zero sizes (planned placements)
+            // Only SPREAD orders should have size 0
+            nextOrder.state = ORDER_STATES.VIRTUAL;
+        }
+
+        // 1. Update optimistic balance (atomic update of tracked funds)
+        if (this.accountant) {
+            await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, fee, skipAccounting);
+        }
+
+        // 2. Clone and freeze the order to prevent external modification races
+        const updatedOrder = deepFreeze({ ...nextOrder });
+
+        // 3. Robust index maintenance
+        Object.values(this._ordersByState).forEach(set => set.delete(id));
+        Object.values(this._ordersByType).forEach(set => set.delete(id));
+
+        if (this._ordersByState[updatedOrder.state]) {
+            this._ordersByState[updatedOrder.state].add(id);
+        }
+        if (this._ordersByType[updatedOrder.type]) {
+            this._ordersByType[updatedOrder.type].add(id);
+        }
+
+        // --- IMMUTABLE SWAP ---
+        // Create a new Map, update the specific order, and replace the frozen master reference.
+        const newMap = cloneMap(this.orders);
+        newMap.set(id, updatedOrder);
+        this.orders = Object.freeze(newMap);
+
+        // --- COW WORKING GRID SYNC ---
+        // If we're in the middle of a rebalance, also update the working grid
+        // to keep it in sync with the master grid
+        if (this._currentWorkingGrid && this._rebalanceState === 'REBALANCING') {
+            try {
+                this._currentWorkingGrid.syncFromMaster(this.orders, id);
+            } catch (syncErr) {
+                this.logger.log(`[COW] Failed to sync working grid for order ${id}: ${syncErr.message}`, 'warn');
+            }
+        }
+        // ----------------------
+
+        // 4. Recalculate funds if not in a batch pause
+        if (!this._pauseFundRecalc) {
+            await this.recalculateFunds();
+        }
+
+        return true;
     }
 
     async checkSpreadCondition(BitShares, batchCb) {
@@ -1285,6 +1514,91 @@ class OrderManager {
     }
 
     /**
+     * --- NEW DELTA RECONCILER ---
+     * Compares Frozen Master Grid vs Calculated Target Grid.
+     * Generates a list of actions to transition Master -> Target.
+     * Enforces Side Invariance.
+     */
+    reconcileGrid(targetGrid, targetBoundary) {
+        const actions = [];
+        const master = this.orders;
+        const currentBoundary = this.boundaryIdx;
+
+        // 1. Boundary Validation
+        if (targetBoundary !== null) {
+            const maxIdx = this.orders.size - 1;
+            if (targetBoundary < 0 || targetBoundary > maxIdx) {
+                this.logger.log(`[RECONCILE] Invalid target boundary ${targetBoundary} (max ${maxIdx}). Aborting.`, 'error');
+                return { actions: [], aborted: true, reason: 'Invalid Boundary' };
+            }
+        }
+
+        // 2. Diffing: Iterate Target Grid (The "Ideal" State)
+        for (const [id, targetOrder] of targetGrid) {
+            const masterOrder = master.get(id);
+
+            // A. New Placement (Slot unused in Master)
+            if (!masterOrder || masterOrder.state === ORDER_STATES.VIRTUAL) {
+                if (targetOrder.size > 0) { // Only place if size > 0
+                    actions.push({ type: 'create', id, order: targetOrder });
+                }
+                continue;
+            }
+
+            // B. Existing Order logic
+            // Side Invariance: If side changes, MUST Cancel + Place
+            if (masterOrder.type !== targetOrder.type) {
+                actions.push({ type: 'cancel', id, orderId: masterOrder.orderId }); // Cancel old
+                if (targetOrder.size > 0) {
+                    actions.push({ type: 'create', id, order: targetOrder }); // Place new
+                }
+                continue;
+            }
+
+            // C. Size Update (Same Side)
+            // Use native update_order if only size changes
+            if (masterOrder.size !== targetOrder.size) {
+                if (targetOrder.size === 0) {
+                    actions.push({ type: 'cancel', id, orderId: masterOrder.orderId });
+                } else {
+                    actions.push({ type: 'update', id, orderId: masterOrder.orderId, newSize: targetOrder.size, order: targetOrder });
+                }
+            }
+        }
+
+        // 3. Diffing: Cleanup Surpluses (In Master but not in Target)
+        // Note: targetGrid should contain ALL valid slots. If a slot is missing from target,
+        // it means the strategy dropped it (e.g. grid shrink).
+        for (const [id, masterOrder] of master) {
+            if (!targetGrid.has(id) && isOrderOnChain(masterOrder)) {
+                actions.push({ type: 'cancel', id, orderId: masterOrder.orderId });
+            }
+        }
+
+        return { actions, aborted: false };
+    }
+
+    /**
+     * UNIFIED SAFE REBALANCE ENTRY POINT
+     * PUBLIC API: Acquires _gridLock and delegates to _applySafeRebalanceCOW.
+     */
+    async performSafeRebalance(fills = [], excludeIds = new Set()) {
+        this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
+        return await this._gridLock.acquire(async () => {
+            return await this._applySafeRebalanceCOW(fills, excludeIds);
+        });
+    }
+
+    /**
+     * Internal logic for safe rebalancing using Copy-on-Write pattern.
+     * Master grid is NEVER modified until blockchain confirmation.
+     * This is now the ONLY rebalance method - no snapshot/rollback.
+     */
+    async _applySafeRebalance(fills = [], excludeIds = new Set()) {
+        return await this._applySafeRebalanceCOW(fills, excludeIds);
+    }
+
+    /**
      * Validates grid state before persistence.
      * Single validation gate that prevents corrupted state from being saved.
      *
@@ -1348,6 +1662,344 @@ class OrderManager {
 
         await persistGridSnapshot(this, this.accountOrders, this.config.botKey);
         return validation; // Return successful validation
+    }
+
+    /**
+     * Set rebalance state for COW operations
+     * @param {string} state - New state (NORMAL | REBALANCING | BROADCASTING | CONFIRMED)
+     */
+    _setRebalanceState(state) {
+        this._rebalanceState = state;
+        this.logger.log(`[COW] Rebalance state: ${state}`, 'debug');
+    }
+
+    /**
+     * Validate that working grid funds are sufficient
+     * @param {WorkingGrid} workingGrid - Working grid to validate
+     * @param {Object} projectedFunds - Projected fund state
+     * @returns {Object} - Validation result
+     */
+    _validateWorkingGridFunds(workingGrid, projectedFunds) {
+        const required = this._calculateRequiredFundsFromGrid(workingGrid);
+        const availableBuy = Number.isFinite(Number(projectedFunds?.allocatedBuy))
+            ? Number(projectedFunds.allocatedBuy)
+            : Number.isFinite(Number(projectedFunds?.chainTotalBuy))
+                ? Number(projectedFunds.chainTotalBuy)
+                : Number(projectedFunds?.freeBuy || projectedFunds?.chainFreeBuy || 0);
+        const availableSell = Number.isFinite(Number(projectedFunds?.allocatedSell))
+            ? Number(projectedFunds.allocatedSell)
+            : Number.isFinite(Number(projectedFunds?.chainTotalSell))
+                ? Number(projectedFunds.chainTotalSell)
+                : Number(projectedFunds?.freeSell || projectedFunds?.chainFreeSell || 0);
+        
+        const shortfalls = [];
+        
+        if (required.buy > availableBuy) {
+            shortfalls.push({
+                asset: this.config.buyAsset,
+                required: required.buy,
+                available: availableBuy,
+                deficit: required.buy - availableBuy
+            });
+        }
+        
+        if (required.sell > availableSell) {
+            shortfalls.push({
+                asset: this.config.sellAsset,
+                required: required.sell,
+                available: availableSell,
+                deficit: required.sell - availableSell
+            });
+        }
+        
+        return {
+            isValid: shortfalls.length === 0,
+            reason: shortfalls.length > 0 ? `Fund shortfall: ${JSON.stringify(shortfalls)}` : null,
+            shortfalls
+        };
+    }
+
+    /**
+     * Calculate required funds from grid orders
+     * @param {WorkingGrid} workingGrid - Working grid
+     * @returns {Object} - Required buy and sell amounts
+     */
+    _calculateRequiredFundsFromGrid(workingGrid) {
+        let buyRequired = 0;
+        let sellRequired = 0;
+        
+        for (const order of workingGrid.values()) {
+            const size = Number.isFinite(Number(order.size))
+                ? Number(order.size)
+                : Number(order.amount || 0);
+
+            if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.VIRTUAL) {
+                if (order.type === ORDER_TYPES.BUY) {
+                    buyRequired += size;
+                } else if (order.type === ORDER_TYPES.SELL) {
+                    sellRequired += size;
+                }
+            }
+        }
+        
+        return { buy: buyRequired, sell: sellRequired };
+    }
+
+    /**
+     * Reconcile target grid against master using working copy
+     * Only modifies workingGrid, never touches master
+     * @param {Map} targetGrid - Target state from strategy
+     * @param {number} targetBoundary - Target boundary index
+     * @param {WorkingGrid} workingGrid - Working copy (starts as master clone)
+     * @returns {Object} - Actions and status
+     */
+    _reconcileGridCOW(targetGrid, targetBoundary, workingGrid) {
+        const result = this.reconcileGrid(targetGrid, targetBoundary);
+        if (result.aborted) return result;
+
+        this._projectTargetToWorkingGrid(workingGrid, targetGrid);
+
+        const actions = result.actions || [];
+        return {
+            ...result,
+            ordersCreated: actions.filter(a => a.type === 'create').length,
+            ordersUpdated: actions.filter(a => a.type === 'update').length,
+            ordersCancelled: actions.filter(a => a.type === 'cancel').length
+        };
+    }
+
+    /**
+     * Project target grid state into working copy while preserving on-chain IDs
+     * for same-side orders that remain on chain.
+     */
+    _projectTargetToWorkingGrid(workingGrid, targetGrid) {
+        const targetIds = new Set();
+
+        for (const [id, targetOrder] of targetGrid.entries()) {
+            targetIds.add(id);
+
+            const current = workingGrid.get(id);
+            const targetSize = Number.isFinite(Number(targetOrder?.size)) ? Number(targetOrder.size) : 0;
+
+            if (!current) {
+                workingGrid.set(id, {
+                    ...targetOrder,
+                    size: Math.max(0, targetSize),
+                    state: targetSize > 0 ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                    orderId: null
+                });
+                continue;
+            }
+
+            if (targetSize > 0) {
+                const keepOrderId = isOrderOnChain(current) && hasOnChainId(current) && current.type === targetOrder.type;
+                workingGrid.set(id, {
+                    ...current,
+                    ...targetOrder,
+                    size: targetSize,
+                    state: keepOrderId ? current.state : ORDER_STATES.ACTIVE,
+                    orderId: keepOrderId ? current.orderId : null
+                });
+            } else {
+                workingGrid.set(id, {
+                    ...current,
+                    ...targetOrder,
+                    size: 0,
+                    state: ORDER_STATES.VIRTUAL,
+                    orderId: null
+                });
+            }
+        }
+
+        for (const [id, current] of workingGrid.entries()) {
+            if (targetIds.has(id)) continue;
+            if (isOrderOnChain(current)) {
+                workingGrid.set(id, convertToSpreadPlaceholder(current));
+            }
+        }
+    }
+
+    /**
+     * Apply safe rebalance using Copy-on-Write pattern
+     * Master grid is NEVER modified until blockchain confirmation
+     * @param {Array} fills - Array of fill events
+     * @param {Set} excludeIds - IDs to exclude from rebalance
+     * @returns {Object} - Rebalance result with working grid (master unchanged)
+     */
+    async _applySafeRebalanceCOW(fills = [], excludeIds = new Set()) {
+        const startTime = Date.now();
+        
+        this._setRebalanceState('REBALANCING');
+
+        const workingGrid = new WorkingGrid(this.orders);
+        this._currentWorkingGrid = workingGrid; // Track for fill synchronization
+        const workingFunds = this.getChainFundsSnapshot();
+        
+        const strategyParams = {
+            frozenMasterGrid: this.orders,
+            config: this.config,
+            accountAssets: this.assets,
+            funds: this.getChainFundsSnapshot(),
+            excludeIds,
+            fills,
+            currentBoundaryIdx: this.boundaryIdx,
+            buySideIsDoubled: this.buySideIsDoubled,
+            sellSideIsDoubled: this.sellSideIsDoubled
+        };
+
+        const { targetGrid, boundaryIdx } = this.strategy.calculateTargetGrid(strategyParams);
+
+        const { actions, aborted, reason } = this._reconcileGridCOW(
+            targetGrid,
+            boundaryIdx,
+            workingGrid
+        );
+
+        if (aborted) {
+            this.logger.log(`[COW] Rebalance aborted: ${reason}`, 'warn');
+            this._currentWorkingGrid = null;
+            this._setRebalanceState('NORMAL');
+            return { aborted: true, reason, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+        }
+
+        const fundCheck = this._validateWorkingGridFunds(workingGrid, workingFunds);
+        if (!fundCheck.isValid) {
+            this.logger.log(`[COW] Fund validation failed: ${fundCheck.reason}`, 'warn');
+            this._currentWorkingGrid = null;
+            this._setRebalanceState('NORMAL');
+            return { aborted: true, reason: fundCheck.reason, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+        }
+
+        const duration = Date.now() - startTime;
+        if (duration > 100) {
+            this.logger.log(`[COW] Rebalance planning took ${duration}ms`, 'warn');
+        }
+
+        // Convert actions to legacy format for compatibility
+        const ordersToPlace = [];
+        const ordersToUpdate = [];
+        const ordersToCancel = [];
+        const ordersToRotate = [];
+        const stateUpdates = [];
+
+        for (const action of actions) {
+            if (action.type === 'create') {
+                ordersToPlace.push(action.order);
+                stateUpdates.push({ ...action.order, state: ORDER_STATES.VIRTUAL, orderId: null });
+            } else if (action.type === 'cancel') {
+                ordersToCancel.push({ orderId: action.orderId, id: action.id });
+                const masterOrder = this.orders.get(action.id);
+                if (masterOrder) {
+                    stateUpdates.push(convertToSpreadPlaceholder(masterOrder));
+                }
+            } else if (action.type === 'update') {
+                const newSize = Number.isFinite(Number(action.newSize))
+                    ? Number(action.newSize)
+                    : Number(action.order?.size || 0);
+                ordersToUpdate.push({ orderId: action.orderId, newSize, id: action.id, type: action.order?.type });
+                const masterOrder = this.orders.get(action.id);
+                if (masterOrder) {
+                    stateUpdates.push({ ...masterOrder, size: newSize });
+                }
+            }
+        }
+
+        this.logger.log(`[COW] Plan: Place=${ordersToPlace.length}, Update=${ordersToUpdate.length}, Cancel=${ordersToCancel.length}`, 'info');
+
+        // Return legacy format plus COW-specific fields
+        return {
+            ordersToPlace,
+            ordersToRotate,
+            ordersToUpdate,
+            ordersToCancel,
+            stateUpdates,
+            hadRotation: (ordersToUpdate.length > 0 || ordersToPlace.length > 0),
+            // COW-specific fields for _updateOrdersOnChainBatchCOW
+            workingGrid,
+            workingIndexes: workingGrid.getIndexes(),
+            workingBoundary: boundaryIdx,
+            actions,
+            planningDuration: duration
+        };
+    }
+
+    /**
+     * Build state updates from actions
+     * @param {Array} actions - Array of actions
+     * @param {Map} masterGrid - Master grid
+     * @returns {Array} - State updates
+     */
+    _buildStateUpdates(actions, masterGrid) {
+        const stateUpdates = [];
+
+        for (const action of actions) {
+            if (action.type === 'create') {
+                stateUpdates.push({ ...action.order, state: ORDER_STATES.VIRTUAL, orderId: null });
+            } else if (action.type === 'cancel') {
+                const masterOrder = masterGrid.get(action.id);
+                if (masterOrder) {
+                    stateUpdates.push(convertToSpreadPlaceholder(masterOrder));
+                }
+            } else if (action.type === 'update') {
+                const masterOrder = masterGrid.get(action.id);
+                if (masterOrder) {
+                    const newSize = Number.isFinite(Number(action.newSize))
+                        ? Number(action.newSize)
+                        : Number(action.order?.size || 0);
+                    stateUpdates.push({ ...masterOrder, size: newSize });
+                }
+            }
+        }
+
+        return stateUpdates;
+    }
+
+    /**
+     * Commit working grid to master (atomic swap)
+     * ONLY call after successful blockchain confirmation
+     * @param {WorkingGrid} workingGrid - Working grid to commit
+     * @param {Object} workingIndexes - Indexes from working grid
+     * @param {number} workingBoundary - Boundary index
+     */
+    async _commitWorkingGrid(workingGrid, workingIndexes, workingBoundary) {
+        const startTime = Date.now();
+        const stats = workingGrid.getMemoryStats();
+        
+        this.logger.log(
+            `[COW] Committing working grid: ${stats.size} orders, ${stats.modified} modified`,
+            'debug'
+        );
+
+        this.orders = workingGrid.toMap();
+        this.boundaryIdx = workingBoundary;
+        
+        this._ordersByState = {
+            [ORDER_STATES.VIRTUAL]: workingIndexes[ORDER_STATES.VIRTUAL],
+            [ORDER_STATES.ACTIVE]: workingIndexes[ORDER_STATES.ACTIVE],
+            [ORDER_STATES.PARTIAL]: workingIndexes[ORDER_STATES.PARTIAL]
+        };
+        
+        this._ordersByType = {
+            [ORDER_TYPES.BUY]: workingIndexes[ORDER_TYPES.BUY],
+            [ORDER_TYPES.SELL]: workingIndexes[ORDER_TYPES.SELL],
+            [ORDER_TYPES.SPREAD]: workingIndexes[ORDER_TYPES.SPREAD]
+        };
+
+        await this.recalculateFunds();
+        
+        // Clear working grid reference after successful commit
+        this._currentWorkingGrid = null;
+        
+        const duration = Date.now() - startTime;
+        this.logger.log(`[COW] Grid committed in ${duration}ms`, 'debug');
+        
+        const { COW_PERFORMANCE } = require('../constants');
+        if (stats.size > COW_PERFORMANCE.GRID_MEMORY_WARNING) {
+            this.logger.log(
+                `[COW] Warning: Large grid size (${stats.size} orders). Peak memory: ~${Math.round(stats.estimatedBytes / 1024)}KB`,
+                'warn'
+            );
+        }
     }
 }
 

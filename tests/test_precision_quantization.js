@@ -88,7 +88,7 @@ function testOrderQuantization() {
  * Test 2: Fill with quantized order
  * Simulate filling an order that was quantized before placement
  */
-function testFillWithQuantizedOrder() {
+async function testFillWithQuantizedOrder() {
     console.log('\n[Test 2] Fill Detection with Quantized Order');
     console.log('-'.repeat(70));
 
@@ -149,21 +149,21 @@ function testFillWithQuantizedOrder() {
     console.log(`\n  Simulating fill:`);
     console.log(`  Filled amount: ${filledAmount}`);
 
-    const result = mgr.syncFromFillHistory({
-        op: [4, {
-            order_id: '1.7.569640154',
-            pays: {
-                amount: Math.round(filledAmount * Math.pow(10, assetBPrecision)),
-                asset_id: mgr.assets.assetB.id
-            },
-            receives: {
-                amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
-                asset_id: mgr.assets.assetA.id
-            }
-        }],
-        block_num: 12345,
-        id: '1.11.12345'
-    });
+     const result = await mgr.syncFromFillHistory({
+         op: [4, {
+             order_id: '1.7.569640154',
+             pays: {
+                 amount: Math.round(filledAmount * Math.pow(10, assetBPrecision)),
+                 asset_id: mgr.assets.assetB.id
+             },
+             receives: {
+                 amount: Math.round(filledAmount * gridOrder.price * Math.pow(10, 4)),
+                 asset_id: mgr.assets.assetA.id
+             }
+         }],
+         block_num: 12345,
+         id: '1.11.12345'
+     });
 
     console.log(`\n  Results:`);
     console.log(`  Filled orders: ${result.filledOrders.length}`);
@@ -288,23 +288,25 @@ function testExactLogScenario() {
 }
 
 // Run all tests
-try {
-    testOrderQuantization();
-    testFillWithQuantizedOrder();
-    testMultipleSizesQuantization();
-    testExactLogScenario();
+(async () => {
+    try {
+        testOrderQuantization();
+        await testFillWithQuantizedOrder();
+        testMultipleSizesQuantization();
+        testExactLogScenario();
 
-    console.log('\n' + '='.repeat(70));
-    console.log('All Precision Quantization Tests Passed! ✅');
-    console.log('='.repeat(70));
-    console.log('\nSummary:');
-    console.log('  ✅ Orders are quantized to blockchain precision before placement');
-    console.log('  ✅ Fill detection works correctly with quantized sizes');
-    console.log('  ✅ No spurious off-by-one remainder errors');
-    console.log('  ✅ Exact log scenario produces valid remaining amounts');
-    process.exit(0);
-} catch (err) {
-    console.error('\n❌ Test failed:', err.message);
-    console.error(err.stack);
-    process.exit(1);
-}
+        console.log('\n' + '='.repeat(70));
+         console.log('All Precision Quantization Tests Passed! ✅');
+         console.log('='.repeat(70));
+         console.log('\nSummary:');
+         console.log('  ✅ Orders are quantized to blockchain precision before placement');
+         console.log('  ✅ Fill detection works correctly with quantized sizes');
+         console.log('  ✅ No spurious off-by-one remainder errors');
+         console.log('  ✅ Exact log scenario produces valid remaining amounts');
+         process.exit(0);
+     } catch (err) {
+         console.error('\n❌ Test failed:', err.message);
+         console.error(err.stack);
+         process.exit(1);
+     }
+ })();

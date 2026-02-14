@@ -12,14 +12,14 @@ const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
 async function runTests() {
     console.log('Running Resync Invariant Tests...');
 
-    const createManager = () => {
+    const createManager = async () => {
         const mgr = new OrderManager({
             market: 'TEST/BTS',
             assetA: 'TEST',
             assetB: 'BTS',
             activeOrders: { buy: 5, sell: 5 }
         });
-        mgr.setAccountTotals({
+        await mgr.setAccountTotals({
             buy: 10000,
             sell: 100,
             buyFree: 10000,
@@ -31,7 +31,7 @@ async function runTests() {
     // Test 1: Invariant check runs when NOT bootstrapping
     console.log(' - Case 1: Invariant check runs when NOT bootstrapping...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         manager.finishBootstrap(); // Set isBootstrapping = false
 
         let invariantChecked = false;
@@ -40,7 +40,7 @@ async function runTests() {
         };
 
         // Trigger a change that calls recalculateFunds
-        manager._updateOrder({
+        await manager._updateOrder({
             id: 'active-1',
             state: ORDER_STATES.ACTIVE,
             type: ORDER_TYPES.BUY,
@@ -54,7 +54,7 @@ async function runTests() {
     // Test 2: Invariant check is suppressed when bootstrapping
     console.log(' - Case 2: Invariant check is suppressed when bootstrapping...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         manager.startBootstrap(); // Set isBootstrapping = true
 
         let invariantChecked = false;
@@ -63,7 +63,7 @@ async function runTests() {
         };
 
         // Trigger a change that calls recalculateFunds
-        manager._updateOrder({
+        await manager._updateOrder({
             id: 'active-1',
             state: ORDER_STATES.ACTIVE,
             type: ORDER_TYPES.BUY,
@@ -77,7 +77,7 @@ async function runTests() {
     // Test 3: Resync simulation
     console.log(' - Case 3: Resync simulation (start -> clear -> finish)...');
     {
-        const manager = createManager();
+        const manager = await createManager();
         let invariantViolations = 0;
 
         // Mock logger to count warnings
@@ -89,7 +89,7 @@ async function runTests() {
 
         // 1. Normal state (no violations)
         manager.finishBootstrap();
-        manager.recalculateFunds();
+        await manager.recalculateFunds();
         assert.strictEqual(invariantViolations, 0);
 
         // 2. Start resync
@@ -98,21 +98,21 @@ async function runTests() {
         // 3. Clear grid (this would normally cause a violation if not bootstrapping)
         manager.orders.clear();
         manager._ordersByState[ORDER_STATES.ACTIVE].clear();
-        manager.recalculateFunds(); // Tracked total becomes 10000 (free only), but actual is still 10000. Wait, if actual is same as free, no violation.
+        await manager.recalculateFunds(); // Tracked total becomes 10000 (free only), but actual is still 10000. Wait, if actual is same as free, no violation.
 
         // To force a violation, we'd need tracked != actual.
         // During resync, tracked = free, but actual = free + chain_orders_still_on_chain.
         // So tracked < actual.
 
         // Let's manually set accountTotals.buy to 11000 (simulating 1000 on chain)
-        manager.setAccountTotals({ buy: 11000, buyFree: 10000 });
-        manager.recalculateFunds(); // Tracked = 10000. Invariant would see diff of 1000.
+        await manager.setAccountTotals({ buy: 11000, buyFree: 10000 });
+        await manager.recalculateFunds(); // Tracked = 10000. Invariant would see diff of 1000.
 
         assert.strictEqual(invariantViolations, 0, 'No violations should be logged during resync bootstrap');
 
         // 4. Finish resync (invariant check should resume)
         manager.finishBootstrap();
-        manager.recalculateFunds();
+        await manager.recalculateFunds();
 
         assert(invariantViolations > 0, 'Violation should be logged now that bootstrap is finished and grid is still empty');
     }

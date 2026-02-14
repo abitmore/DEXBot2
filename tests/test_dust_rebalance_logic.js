@@ -28,7 +28,7 @@ async function testDustTrigger() {
     };
 
     // Initialize with some funds
-    manager.setAccountTotals({
+    await manager.setAccountTotals({
         buy: 1000,
         sell: 1000,
         buyFree: 1000,
@@ -45,7 +45,7 @@ async function testDustTrigger() {
 
     // 1. Scenario: No fills, no dust -> should NOT rebalance
     console.log('\n  Scenario 1: No fills, no dust');
-    let result = await manager.strategy.processFilledOrders([]);
+    let result = await manager.processFilledOrders([]);
     assert.strictEqual(result.ordersToPlace.length, 0, 'Should not place orders');
     assert.strictEqual(result.ordersToRotate.length, 0, 'Should not rotate orders');
     console.log('  ✓ Correctly skipped rebalance');
@@ -53,7 +53,7 @@ async function testDustTrigger() {
     // 2. Scenario: No fills, single-side dust (BUY) -> should NOT rebalance
     console.log('\n  Scenario 2: Single-side dust (BUY)');
     const idealSize = 100; // estimated
-    manager._updateOrder({
+    await manager._updateOrder({
         id: 'buy-dust',
         type: ORDER_TYPES.BUY,
         state: ORDER_STATES.PARTIAL,
@@ -65,18 +65,18 @@ async function testDustTrigger() {
     // We need to make sure hasAnyDust returns true.
     // hasAnyDust uses budget to calculate idealSize.
     
-    result = await manager.strategy.processFilledOrders([]);
+    result = await manager.processFilledOrders([]);
     assert.strictEqual(result.ordersToPlace.length, 0, 'Should still skip rebalance for single-side dust');
     console.log('  ✓ Correctly skipped rebalance for single-side dust');
 
     // 3. Scenario: No fills, dual-side dust -> SHOULD rebalance
     console.log('\n  Scenario 3: Dual-side dust');
-    rebalanceTriggered = false;
+    let rebalanceTriggered = false;
     manager.logger.log = (msg) => {
         if (msg.includes('Dual-side dust partials detected')) rebalanceTriggered = true;
     };
 
-    manager._updateOrder({
+    await manager._updateOrder({
         id: 'sell-dust',
         type: ORDER_TYPES.SELL,
         state: ORDER_STATES.PARTIAL,
@@ -85,7 +85,7 @@ async function testDustTrigger() {
         orderId: '1.7.2'
     });
 
-    result = await manager.strategy.processFilledOrders([]);
+    result = await manager.processFilledOrders([]);
     assert.strictEqual(rebalanceTriggered, true, 'Should have triggered rebalance for dual-side dust');
     console.log('  ✓ Correctly triggered rebalance for dual-side dust');
 
@@ -93,11 +93,11 @@ async function testDustTrigger() {
     console.log('\n  Scenario 4: Actual fill');
     rebalanceTriggered = false;
     manager.logger.log = (msg) => {
-        if (msg.includes('processFilledOrders() with 1 orders')) rebalanceTriggered = true;
+        if (msg.includes('Starting...')) rebalanceTriggered = true;
     };
     
     const fill = { id: 'buy-dust', type: ORDER_TYPES.BUY, price: 0.9, size: 0.1, isPartial: false };
-    result = await manager.strategy.processFilledOrders([fill]);
+    result = await manager.processFilledOrders([fill]);
     assert.strictEqual(rebalanceTriggered, true, 'Should have triggered rebalance for actual fill');
     console.log('  ✓ Correctly triggered rebalance for actual fill');
 }

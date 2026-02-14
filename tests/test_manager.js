@@ -22,13 +22,13 @@ const mgr = new OrderManager(cfg);
 // Funds before setting account totals
 assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should have funds object');
 
-mgr.setAccountTotals({ buy: 1000, sell: 10, buyFree: 1000, sellFree: 10 });
-
-// Ensure funds reflect the simple config values
-assert.strictEqual(mgr.funds.available.buy, 1000);
-assert.strictEqual(mgr.funds.available.sell, 10);
-
 (async () => {
+    await mgr.setAccountTotals({ buy: 1000, sell: 10, buyFree: 1000, sellFree: 10 });
+
+    // Ensure funds reflect the simple config values
+    assert.strictEqual(mgr.funds.available.buy, 1000);
+    assert.strictEqual(mgr.funds.available.sell, 10);
+
     // Provide mock asset metadata to avoid on-chain lookups in unit tests
     mgr.assets = { assetA: { id: '1.3.0', precision: 5 }, assetB: { id: '1.3.1', precision: 5 } };
     await Grid.initializeGrid(mgr);
@@ -82,14 +82,16 @@ assert.strictEqual(mgr.funds.available.sell, 10);
         { id: 'slot-10', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 140, size: 10 },
         { id: 'slot-11', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 150, size: 10 }
     ];
-    spreads.forEach(s => mgr._updateOrder(s));
+    for (const s of spreads) {
+        await mgr._updateOrder(s);
+    }
 
     // Ensure funds are large enough (update source of truth, not derived prop)
     mgr.accountTotals.buyFree = 1000;
     mgr.accountTotals.sellFree = 1000;
     mgr.accountTotals.buy = 1000;
     mgr.accountTotals.sell = 1000;
-    mgr.recalculateFunds();
+    await mgr.recalculateFunds();
 
     // Ensure each test case starts with a fresh boundary determination
     mgr.boundaryIdx = undefined;
@@ -105,8 +107,10 @@ assert.strictEqual(mgr.funds.available.sell, 10);
         placedSells.push(...res.ordersToPlace.filter(o => o.type === ORDER_TYPES.SELL));
         
         // Simulate activation for next cycle
-        res.ordersToPlace.forEach(o => mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'mock-'+o.id }));
-        mgr.recalculateFunds(); // update available/cacheFunds
+        for (const o of res.ordersToPlace) {
+            await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'mock-'+o.id });
+        }
+        await mgr.recalculateFunds(); // update available/cacheFunds
     }
     
     // Sort all placed orders
@@ -146,13 +150,13 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     });
 
     rotateMgr.assets = { assetA: { id: '1.3.0', precision: 5 }, assetB: { id: '1.3.1', precision: 5 } };
-    rotateMgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
+    await rotateMgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
     rotateMgr.resetFunds();
 
     // 1. Large grid of slots
     for (let i = 0; i < 100; i++) {
         const type = (i <= 50) ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-        rotateMgr._updateOrder({ id: `slot-${i}`, type, state: ORDER_STATES.VIRTUAL, price: 50 + i, size: 10 });
+        await rotateMgr._updateOrder({ id: `slot-${i}`, type, state: ORDER_STATES.VIRTUAL, price: 50 + i, size: 10 });
     }
     
     // 2. Set Boundary and Outlier
@@ -161,8 +165,8 @@ assert.strictEqual(mgr.funds.available.sell, 10);
     
     // Place active BUY at furthest outlier (slot-0)
     const furthestOrder = { id: 'slot-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.100', size: 10, price: 50 };
-    rotateMgr._updateOrder(furthestOrder);
-    rotateMgr.recalculateFunds();
+    await rotateMgr._updateOrder(furthestOrder);
+    await rotateMgr.recalculateFunds();
 
     // 3. Trigger rebalance with a mock fill on the OPPOSITE side (SELL) 
     // This moves boundary UP (+1) -> slot-51 becomes new BUY hole.

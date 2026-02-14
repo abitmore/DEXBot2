@@ -10,7 +10,7 @@ if (typeof bsModule.setSuppressConnectionLog === 'function') {
     bsModule.setSuppressConnectionLog(true);
 }
 
-function createManager() {
+async function createManager() {
     const mgr = new OrderManager({
         market: 'TEST/BTS',
         assetA: 'TEST',
@@ -22,7 +22,7 @@ function createManager() {
         weightDistribution: { sell: 0.5, buy: 0.5 }
     });
     mgr.assets = { assetA: { id: '1.3.0', precision: 8 }, assetB: { id: '1.3.1', precision: 5 } };
-    mgr.setAccountTotals({ buy: 10000, sell: 1000, buyFree: 10000, sellFree: 1000 });
+    await mgr.setAccountTotals({ buy: 10000, sell: 1000, buyFree: 10000, sellFree: 1000 });
     mgr.resetFunds();
     return mgr;
 }
@@ -40,7 +40,7 @@ function createBatchManagerStub(overrides = {}) {
         consumeIllegalStateSignal: () => null,
         consumeAccountingFailureSignal: () => null,
         orders: new Map(),
-        _updateOrder: () => {},
+        _updateOrder: async () => {},
         _throwOnIllegalState: false,
         logger: {
             log: () => {},
@@ -51,7 +51,7 @@ function createBatchManagerStub(overrides = {}) {
 }
 
 async function testExtremePlacementOrdering() {
-    const mgr = createManager();
+    const mgr = await createManager();
 
     const allSlots = [
         { id: 'b0', price: 99, type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, size: 0 },
@@ -65,8 +65,10 @@ async function testExtremePlacementOrdering() {
     ];
 
     mgr.pauseFundRecalc();
-    allSlots.forEach(slot => mgr._updateOrder(slot, 'seed', true, 0));
-    mgr.resumeFundRecalc();
+    for (const slot of allSlots) {
+        await mgr._updateOrder(slot, 'seed', true, 0);
+    }
+    await mgr.resumeFundRecalc();
 
     const buySlots = allSlots.filter(s => s.type === ORDER_TYPES.BUY);
     const sellSlots = allSlots.filter(s => s.type === ORDER_TYPES.SELL);
@@ -193,7 +195,7 @@ async function testIllegalStateAbortResyncAndCooldown() {
 }
 
 async function testRoleAssignmentBlocksOnChainSpreadConversion() {
-    const mgr = createManager();
+    const mgr = await createManager();
     mgr.logger.level = 'error';
 
     const slots = [
@@ -204,7 +206,9 @@ async function testRoleAssignmentBlocksOnChainSpreadConversion() {
         { id: 'sell-1', type: ORDER_TYPES.SELL, price: 102, size: 10, state: ORDER_STATES.ACTIVE, orderId: '1.7.5' }
     ];
 
-    slots.forEach(slot => mgr._updateOrder(slot, 'seed', true, 0));
+    for (const slot of slots) {
+        await mgr._updateOrder(slot, 'seed', true, 0);
+    }
     mgr.config.startPrice = 99;
     mgr.boundaryIdx = 1;
 
@@ -220,8 +224,8 @@ async function testRoleAssignmentBlocksOnChainSpreadConversion() {
 }
 
 async function testGridResizeCacheTracksAppliedSizesAfterCap() {
-    const mgr = createManager();
-    mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1, sellFree: 1000 });
+    const mgr = await createManager();
+    await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1, sellFree: 1000 });
     mgr.resetFunds();
 
     const slots = [
@@ -234,14 +238,16 @@ async function testGridResizeCacheTracksAppliedSizesAfterCap() {
     ];
 
     mgr.pauseFundRecalc();
-    slots.forEach(slot => mgr._updateOrder(slot, 'seed', true, 0));
-    mgr.resumeFundRecalc();
+    for (const slot of slots) {
+        await mgr._updateOrder(slot, 'seed', true, 0);
+    }
+    await mgr.resumeFundRecalc();
 
     await Grid._recalculateGridOrderSizesFromBlockchain(mgr, ORDER_TYPES.BUY);
 
     const buyOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
     const allocatedBuy = buyOrders.reduce((sum, o) => sum + Number(o.size || 0), 0);
-    const buyCtx = Grid._getSizingContext(mgr, 'buy');
+    const buyCtx = await Grid._getSizingContext(mgr, 'buy');
     const expectedCache = Math.max(0, Number(buyCtx?.budget || 0) - allocatedBuy);
     const actualCache = Number(mgr.funds?.cacheFunds?.buy || 0);
 

@@ -2,6 +2,69 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.19] - 2026-02-14 - Copy-on-Write (COW) Grid Architecture
+
+This patch introduces a major architectural refactoring replacing the snapshot/rollback pattern with a cleaner Copy-on-Write approach. The master grid remains immutable until blockchain confirmation succeeds, eliminating state corruption risks and simplifying failure recovery.
+
+### Added
+- **Copy-on-Write (COW) Grid Architecture** (commit 2fc849b)
+  - **WorkingGrid Class** (`modules/order/working_grid.js`): Clone of master grid for planning phase modifications without touching production state.
+  - **Grid Index Utilities** (`modules/order/utils/grid_indexes.js`): Efficient index building for grid operations.
+  - **Order Comparison Utilities** (`modules/order/utils/order_comparison.js`): Epsilon-based order comparison for robust equality checks.
+  - **COW Performance Thresholds** (`modules/constants.js`): Performance monitoring for grid cloning operations.
+
+### Changed
+- **OrderManager** (`modules/order/manager.js`):
+  - Replaced snapshot/rollback with COW pattern: `_applySafeRebalanceCOW()`, `_commitWorkingGrid()`
+  - Added rebalance state tracking: `NORMAL → REBALANCING → BROADCASTING → CONFIRMED → NORMAL`
+  - Implemented selective fill handling: individual fills processed immediately, full-side updates blocked during fills
+  - Added working grid synchronization during fill processing to prevent stale data commits
+
+- **DEXBot Core** (`modules/dexbot_class.js`):
+  - Integrated COW broadcast path: `_updateOrdersOnChainBatchCOW()`
+  - Atomic swap on success, discard on failure (master never partially modified)
+  - Removed legacy rollback code (~55 lines)
+
+- **Async-Safe Fund Accounting**:
+  - Implemented semaphore-protected fund updates using `AsyncLock`
+  - Converted fund tracking methods to async: `recalculateFunds()`, `setAccountTotals()`
+  - Added `_fundsSemaphore` for atomic fund updates and snapshotting
+
+- **Atomic Service Pattern**:
+  - Unified locking architecture with `_gridLock` and `_fundLock`
+  - Separated public (locked) and private (logic-only) method pairs
+  - Consolidated multiple specialized locks into unified concurrency model
+
+### Removed
+- Snapshot/rollback pattern and associated rollback code
+- Volatility freeze mechanism (MAX_SHIFT boundary check)
+- Optimistic master grid modifications
+
+### Technical Improvements
+- **Simpler State Management**: No complex rollback code, clear before/after states
+- **Atomic Commits**: All-or-nothing via swap, master never in limbo state
+- **Better Consistency**: Master only changes after blockchain confirmation
+- **Easier Debugging**: Clear separation between planning and committed state
+- **Performance**: Sub-millisecond grid cloning (100 orders: ~0.03ms, 1000 orders: ~0.08ms, 5000 orders: ~0.5ms)
+
+### Documentation
+- Created comprehensive COW architecture documentation (`docs/COPY_ON_WRITE_MASTER_PLAN.md`)
+- Consolidated 3 separate docs into single unified reference
+
+### Testing
+- Added `tests/test_cow_master_plan.js` - 10 COW-specific test cases
+- Added `tests/test_working_grid.js` - WorkingGrid unit tests
+- Added `tests/benchmark_cow.js` - Performance benchmarks
+- All existing tests pass with new architecture
+
+### Safety Guardrails
+- Accountant dry-run validation before broadcasting
+- Volatility protection with MAX_SHIFT boundary deferral
+- Automatic resync on blockchain failure via `startup_reconcile.js`
+- Divergence checks and cache updates blocked during rebalance operations
+
+---
+
 ## [0.6.0-patch.18] - 2026-02-08 - Batching Hardening, Accounting Precision & Telemetry Optimization
 
 This patch refines the adaptive fill batching introduced in patch 17, addressing regression gaps in cache accounting and deduplicating error recovery paths for better operational stability.

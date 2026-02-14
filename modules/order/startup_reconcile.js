@@ -177,7 +177,7 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
     if (chainOrderObj && manager.accountant) {
         const parsed = parseChainOrder(chainOrderObj, manager.assets);
         if (parsed && parsed.size > 0) {
-            manager.accountant.addToChainFree(gridOrder.type, parsed.size, 'startup-align');
+            await manager.accountant.addToChainFree(gridOrder.type, parsed.size, 'startup-align');
         }
     }
 
@@ -394,7 +394,7 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     if (releaseUntrackedFunds && manager.accountant && chainOrderObj) {
         const parsed = parseChainOrder(chainOrderObj, manager.assets);
         if (parsed && parsed.size > 0) {
-            manager.accountant.addToChainFree(parsed.type, parsed.size, 'startup-cancel-unmatched');
+            await manager.accountant.addToChainFree(parsed.type, parsed.size, 'startup-cancel-unmatched');
         }
     }
 }
@@ -750,102 +750,96 @@ async function reconcileStartupOrders({
     // CRITICAL FIX: Sanitize phantom orders - grid orders that claim to be active with an ID,
     // but that ID is missing from the chain. Downgrade to VIRTUAL so they don't block
     // new orders or cause balance invariants.
-    const chainIds = new Set((Array.isArray(chainOpenOrders) ? chainOpenOrders : []).map(o => o && o.id).filter(Boolean));
-    for (const order of manager.orders.values()) {
-        if (isOrderPlaced(order)) {
-            if (!chainIds.has(order.orderId)) {
-                logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
+    // Wrap the entire startup reconciliation in a grid lock to ensure atomicity
+    return await manager._gridLock.acquire(async () => {
+        const chainIds = new Set((Array.isArray(chainOpenOrders) ? chainOpenOrders : []).map(o => o && o.id).filter(Boolean));
+        for (const order of manager.orders.values()) {
+            if (isOrderPlaced(order)) {
+                if (!chainIds.has(order.orderId)) {
+                    logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
 
-                // CRITICAL: Clean up rawOnChain cache for phantoms - it is now invalid
-                if (order.rawOnChain) {
-                    logger?.log?.(`Startup: Clearing invalid rawOnChain cache for phantom ${order.id}`, 'debug');
+                    // Use manager._applyOrderUpdate (PRIVATE/UNLOCKED) since we hold _gridLock
+                    await manager._applyOrderUpdate({
+                        ...order,
+                        state: ORDER_STATES.VIRTUAL,
+                        orderId: "",
+                        rawOnChain: null
+                    }, 'startup-phantom', false, 0);
                 }
-
-                // Use manager._updateOrder to maintain indices
-                // CRITICAL FIX: Use skipAccounting: false so fund accounting is properly updated
-                // When converting from ACTIVE/PARTIAL to VIRTUAL, funds must be recalculated
-                // skipAccounting: true was causing fund invariants to remain violated
-                manager._updateOrder({
-                    ...order,
-                    state: ORDER_STATES.VIRTUAL,
-                    orderId: "",
-                    rawOnChain: null
-                }, 'startup-phantom', false, 0);
             }
         }
-    }
 
-    // CRITICAL FIX: Compute unmatched orders by finding which chain orders do NOT match the grid
-    // The sync result doesn't tell us which orders didn't match - we need to compute this ourselves.
-    // An order is unmatched if:
-    // 1. It exists on-chain (in chainOpenOrders)
-    // 2. It was NOT matched to a grid order (no matching orderId in grid)
-    const matchedChainOrderIds = new Set();
-    for (const gridOrder of manager.orders.values()) {
-        if (gridOrder && gridOrder.orderId) {
-            matchedChainOrderIds.add(gridOrder.orderId);
+        // CRITICAL FIX: Compute unmatched orders by finding which chain orders do NOT match the grid
+        const matchedChainOrderIds = new Set();
+        for (const gridOrder of manager.orders.values()) {
+            if (gridOrder && gridOrder.orderId) {
+                matchedChainOrderIds.add(gridOrder.orderId);
+            }
         }
-    }
 
-    const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter(co => co && !matchedChainOrderIds.has(co.id));
-    const unmatchedParsed = unmatchedChain
-        .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
-        .filter(x => x.parsed);
+        const unmatchedChain = (Array.isArray(chainOpenOrders) ? chainOpenOrders : []).filter(co => co && !matchedChainOrderIds.has(co.id));
+        const unmatchedParsed = unmatchedChain
+            .map(co => ({ chain: co, parsed: parseChainOrder(co, manager.assets) }))
+            .filter(x => x.parsed);
 
-    let unmatchedBuys = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
-    let unmatchedSells = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
+        let unmatchedBuys = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
+        let unmatchedSells = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
 
-    logger && logger.log && logger.log(
-        `Startup reconcile starting: unmatched(sell=${unmatchedSells.length}, buy=${unmatchedBuys.length}), target(sell=${targetSell}, buy=${targetBuy})`,
-        'info'
-    );
+        logger && logger.log && logger.log(
+            `Startup reconcile starting: unmatched(sell=${unmatchedSells.length}, buy=${unmatchedBuys.length}), target(sell=${targetSell}, buy=${targetBuy})`,
+            'info'
+        );
 
-    const sellResult = await _reconcileStartupSide({
-        orderType: ORDER_TYPES.SELL,
-        targetCount: targetSell,
-        chainSideOrders: chainSells,
-        unmatchedSideOrders: unmatchedSells,
-        manager,
-        chainOrders,
-        account,
-        privateKey,
-        dryRun,
-    });
-    const chainSellCount = sellResult.chainCount;
+        const sellResult = await _reconcileStartupSide({
+            orderType: ORDER_TYPES.SELL,
+            targetCount: targetSell,
+            chainSideOrders: chainSells,
+            unmatchedSideOrders: unmatchedSells,
+            manager,
+            chainOrders,
+            account,
+            privateKey,
+            dryRun,
+        });
+        const chainSellCount = sellResult.chainCount;
 
-    const buyResult = await _reconcileStartupSide({
-        orderType: ORDER_TYPES.BUY,
-        targetCount: targetBuy,
-        chainSideOrders: chainBuys,
-        unmatchedSideOrders: unmatchedBuys,
-        manager,
-        chainOrders,
-        account,
-        privateKey,
-        dryRun,
-    });
-    const chainBuyCount = buyResult.chainCount;
+        const buyResult = await _reconcileStartupSide({
+            orderType: ORDER_TYPES.BUY,
+            targetCount: targetBuy,
+            chainSideOrders: chainBuys,
+            unmatchedSideOrders: unmatchedBuys,
+            manager,
+            chainOrders,
+            account,
+            privateKey,
+            dryRun,
+        });
+        const chainBuyCount = buyResult.chainCount;
 
-    logger && logger.log && logger.log(
-        `Startup reconcile complete: target(sell=${targetSell}, buy=${targetBuy}), chain(sell=${chainSellCount}, buy=${chainBuyCount}), ` +
-        `gridActive(sell=${_countActiveOnGrid(manager, ORDER_TYPES.SELL)}, buy=${_countActiveOnGrid(manager, ORDER_TYPES.BUY)})`,
-        'info'
-    );
+        logger && logger.log && logger.log(
+            `Startup reconcile complete: target(sell=${targetSell}, buy=${targetBuy}), chain(sell=${chainSellCount}, buy=${chainBuyCount}), ` +
+            `gridActive(sell=${_countActiveOnGrid(manager, ORDER_TYPES.SELL)}, buy=${_countActiveOnGrid(manager, ORDER_TYPES.BUY)})`,
+            'info'
+        );
 
-    // DUST CHECK: If startup reconcile resulted in partials on either side,
-    // trigger a full rebalance to consolidate them.
-    const allOrders = Array.from(manager.orders.values());
-    const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
+        // DUST CHECK: If startup reconcile resulted in partials on either side,
+        // trigger a full rebalance to consolidate them.
+        const allOrders = Array.from(manager.orders.values());
+        const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
 
-    if (buyPartials.length > 0 && sellPartials.length > 0) {
-        const buyHasDust = manager.strategy.hasAnyDust(buyPartials, "buy");
-        const sellHasDust = manager.strategy.hasAnyDust(sellPartials, "sell");
+        if (buyPartials.length > 0 && sellPartials.length > 0) {
+            const buyHasDust = manager.strategy.hasAnyDust(buyPartials, "buy");
+            const sellHasDust = manager.strategy.hasAnyDust(sellPartials, "sell");
 
-        if (buyHasDust && sellHasDust) {
-            logger && logger.log && logger.log("[STARTUP] Dual-side dust partials detected. Triggering full rebalance.", "info");
-            return await manager.strategy.rebalance();
+            if (buyHasDust && sellHasDust) {
+                logger && logger.log && logger.log("[STARTUP] Dual-side dust partials detected. Triggering full rebalance.", "info");
+                // Use the PRIVATE logic for safe rebalance since we already hold the lock
+                return await manager._applySafeRebalance();
+            }
         }
-    }
+
+        return null;
+    });
 
     return null;
 }

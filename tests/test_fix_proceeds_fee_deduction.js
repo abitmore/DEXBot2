@@ -48,7 +48,7 @@ const tests = [
         run: async () => {
             let manager = new OrderManager(config, logger, accountOrders);
             manager.resetFunds();
-            manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
+            await manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
 
             // Sell-side fills produce buy-side proceeds (quote asset = BTS)
             manager.funds.cacheFunds = { buy: 100, sell: 0 };
@@ -70,7 +70,7 @@ const tests = [
         run: async () => {
             let manager = new OrderManager(config, logger, accountOrders);
             manager.resetFunds();
-            manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
+            await manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
 
             manager.funds.cacheFunds = { buy: 100, sell: 0 };
             manager.funds.btsFeesOwed = 50;

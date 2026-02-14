@@ -55,7 +55,7 @@ async function testFeeAccounting() {
         assetB: { id: '1.3.121', symbol: 'USD', precision: 5 }
     };
 
-    manager.setAccountTotals({
+    await manager.setAccountTotals({
         buy: 1000,
         sell: 1000,
         buyFree: 1000,
@@ -83,7 +83,7 @@ async function testFeeAccounting() {
     
     // We need some orders on the grid for rebalance to work
     for (let i = 0; i < 10; i++) {
-        manager._updateOrder({
+        await manager._updateOrder({
             id: `slot-${i}`,
             type: i < 5 ? ORDER_TYPES.BUY : ORDER_TYPES.SELL,
             state: i === 6 ? ORDER_STATES.VIRTUAL : ORDER_STATES.ACTIVE, // slot 6 is filled
@@ -93,7 +93,7 @@ async function testFeeAccounting() {
         });
     }
 
-    const result = await manager.strategy.processFilledOrders([fill]);
+    const result = await manager.processFilledOrders([fill]);
 
     // 2. Simulate execution of planned rotations (this is where updateFees are deducted)
     if (result && result.ordersToRotate) {
@@ -144,7 +144,7 @@ async function testFeeSettlementCorrectness() {
         assetB: { id: '1.3.121', symbol: 'USD', precision: 5 }
     };
 
-    manager.setAccountTotals({
+    await manager.setAccountTotals({
         buy: 1000,
         sell: 1000,
         buyFree: 1000,
@@ -223,7 +223,7 @@ async function testInsufficientFundsDeferral() {
     };
 
     // Setup: 50 BTS owed, 30 in cache, but only 40 chainFree
-    manager.setAccountTotals({
+    await manager.setAccountTotals({
         buy: 1000,
         sell: 40,  // Less than fees owed (50)
         buyFree: 1000,

@@ -27,7 +27,7 @@ const mockBitShares = {
     }
 };
 
-function setupManager() {
+async function setupManager() {
     const cfg = {
         name: 'multi-fill-test',
         assetA: 'BTS',
@@ -52,7 +52,7 @@ function setupManager() {
         assetA: { id: '1.3.0', precision: 5, symbol: 'BTS' },
         assetB: { id: '1.3.1', precision: 8, symbol: 'USD' }
     };
-    mgr.setAccountTotals({ buy: 1000, buyFree: 1000, sell: 50000, sellFree: 50000 });
+    await mgr.setAccountTotals({ buy: 1000, buyFree: 1000, sell: 50000, sellFree: 50000 });
 
     return mgr;
 }
@@ -62,7 +62,7 @@ async function testSequentialMultiFillProcessing() {
     console.log('TEST: Sequential Multi-Fill Processing');
     console.log('='.repeat(80));
 
-    const mgr = setupManager();
+    const mgr = await setupManager();
     const grid = require('../modules/order/grid');
     await grid.initializeGrid(mgr, mgr.config);
 
@@ -77,10 +77,10 @@ async function testSequentialMultiFillProcessing() {
         console.log(`    Cycle ${i}: Placing ${initial.ordersToPlace.length} orders`);
         
         // Simulate placing orders on-chain
-        initial.ordersToPlace.forEach(o => {
-            mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `ord-${o.id}` });
-        });
-        mgr.recalculateFunds();
+        for (const o of initial.ordersToPlace) {
+            await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `ord-${o.id}` });
+        }
+        await mgr.recalculateFunds();
         
         const activeCount = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).length;
         if (activeCount >= 2) break;
@@ -118,7 +118,7 @@ async function testSequentialMultiFillProcessing() {
     console.log('\n>>> Processing FILL 1 (Sequential - Single Fill)');
     const boundaryBefore1 = mgr.boundaryIdx;
 
-    const result1 = await mgr.strategy.processFilledOrders([fill1], new Set([fill2.id]));
+    const result1 = await mgr.processFilledOrders([fill1], new Set([fill2.id]));
 
     console.log(`    Boundary: ${boundaryBefore1} -> ${mgr.boundaryIdx}`);
     console.log(`    New Orders to Place: ${result1.ordersToPlace.length}`);
@@ -132,17 +132,17 @@ async function testSequentialMultiFillProcessing() {
      }
 
     // Simulate on-chain execution of result1
-    result1.ordersToPlace.forEach(o => {
-        mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `new1-${o.id}` });
-    });
-    result1.ordersToRotate.forEach(r => {
-        mgr._updateOrder({ ...mgr.orders.get(r.oldOrder.id), state: ORDER_STATES.VIRTUAL, orderId: null });
+    for (const o of result1.ordersToPlace) {
+        await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `new1-${o.id}` });
+    }
+    for (const r of result1.ordersToRotate) {
+        await mgr._updateOrder({ ...mgr.orders.get(r.oldOrder.id), state: ORDER_STATES.VIRTUAL, orderId: null });
         const targetSlot = mgr.orders.get(r.newGridId);
         if (targetSlot) {
-            mgr._updateOrder({ ...targetSlot, size: r.newSize, state: ORDER_STATES.ACTIVE, orderId: `rot1-${r.newGridId}` });
+            await mgr._updateOrder({ ...targetSlot, size: r.newSize, state: ORDER_STATES.ACTIVE, orderId: `rot1-${r.newGridId}` });
         }
-    });
-    mgr.recalculateFunds();
+    }
+    await mgr.recalculateFunds();
 
     // ===========================================================================
     // PROCESS FILL 2 (Sequential)
@@ -151,7 +151,7 @@ async function testSequentialMultiFillProcessing() {
     console.log('\n>>> Processing FILL 2 (Sequential - Single Fill)');
     const boundaryBefore2 = mgr.boundaryIdx;
 
-    const result2 = await mgr.strategy.processFilledOrders([fill2], new Set());
+    const result2 = await mgr.processFilledOrders([fill2], new Set());
 
     console.log(`    Boundary: ${boundaryBefore2} -> ${mgr.boundaryIdx}`);
     console.log(`    New Orders to Place: ${result2.ordersToPlace.length}`);

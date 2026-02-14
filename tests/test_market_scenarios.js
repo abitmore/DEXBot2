@@ -24,7 +24,7 @@ const mockBitShares = {
     }
 };
 
-function setupScenarioManager(activeCount = 3) {
+async function setupScenarioManager(activeCount = 3) {
     const cfg = {
         name: 'scenario-bot', assetA: 'BTS', assetB: 'USD',
         startPrice: 0.02, minPrice: 0.01, maxPrice: 0.04,
@@ -43,7 +43,7 @@ function setupScenarioManager(activeCount = 3) {
         assetA: { id: '1.3.0', precision: 5, symbol: 'BTS' }, 
         assetB: { id: '1.3.1', precision: 8, symbol: 'USD' } 
     };
-    mgr.setAccountTotals({ buy: 1000, buyFree: 1000, sell: 50000, sellFree: 50000 });
+    await mgr.setAccountTotals({ buy: 1000, buyFree: 1000, sell: 50000, sellFree: 50000 });
     return mgr;
 }
 
@@ -51,48 +51,52 @@ function setupScenarioManager(activeCount = 3) {
 
 async function runMarketPumpScenario() {
     console.log('\n📈 SCENARIO 1: Market Pump');
-    const mgr = setupScenarioManager();
+    const mgr = await await setupScenarioManager();
     const grid = require('../modules/order/grid');
     await grid.initializeGrid(mgr, mgr.config);
 
     // Initial rebalance to place orders
     const res = await mgr.strategy.rebalance();
-    res.ordersToPlace.forEach(o => mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `id-${o.id}` }));
-    mgr.recalculateFunds();
+    for (const o of res.ordersToPlace) {
+        await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `id-${o.id}` });
+    }
+    await mgr.recalculateFunds();
 
     console.log('  >>> Market PUMPS');
     const activeSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE).sort((a,b) => a.price - b.price);
     const fills = activeSells.slice(0, 2).map(o => ({ ...o, isPartial: false }));
     
-    const result = await mgr.strategy.processFilledOrders(fills);
+    const result = await mgr.processFilledOrders(fills);
     assert(result.ordersToPlace.length > 0 || result.ordersToRotate.length > 0, 'Pump should trigger strategy actions');
     console.log('    ✓ Pump handled.');
 }
 
 async function runDumpAndPumpScenario() {
     console.log('\n📉 SCENARIO 2: Dump and Recovery');
-    const mgr = setupScenarioManager();
+    const mgr = await await setupScenarioManager();
     const grid = require('../modules/order/grid');
     await grid.initializeGrid(mgr, mgr.config);
 
     const setup = await mgr.strategy.rebalance();
-    setup.ordersToPlace.forEach(o => mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `init-${o.id}` }));
-    mgr.recalculateFunds();
+    for (const o of setup.ordersToPlace) {
+        await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `init-${o.id}` });
+    }
+    await mgr.recalculateFunds();
 
     console.log('  >>> Flash DUMP');
     const activeBuys = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE);
-    await mgr.strategy.processFilledOrders(activeBuys.map(o => ({ ...o, isPartial: false })));
+    await mgr.processFilledOrders(activeBuys.map(o => ({ ...o, isPartial: false })));
     
     console.log('  >>> Fast RECOVERY');
     const currentSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE).sort((a,b) => a.price - b.price);
-    const recoveryResult = await mgr.strategy.processFilledOrders(currentSells.slice(0, 1).map(o => ({ ...o, isPartial: false })));
+    const recoveryResult = await mgr.processFilledOrders(currentSells.slice(0, 1).map(o => ({ ...o, isPartial: false })));
     assert(recoveryResult, 'Recovery rebalance should return result');
     console.log('    ✓ V-Shape handled.');
 }
 
 async function runStateLifecycleScenario() {
     console.log('\n🔄 SCENARIO 3: Single Slot Lifecycle (V->A->S->A)');
-    const mgr = setupScenarioManager(1);
+    const mgr = await setupScenarioManager(1);
     const grid = require('../modules/order/grid');
     await grid.initializeGrid(mgr, mgr.config);
 
@@ -100,23 +104,27 @@ async function runStateLifecycleScenario() {
     const target = res1.ordersToPlace.find(o => o.type === ORDER_TYPES.SELL);
     const targetId = target.id;
     
-    res1.ordersToPlace.forEach(o => mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'L1' }));
+    for (const o of res1.ordersToPlace) {
+        await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'L1' });
+    }
     assert.strictEqual(mgr.orders.get(targetId).state, ORDER_STATES.ACTIVE);
     console.log('    ✓ ACTIVE');
 
-    await mgr.strategy.processFilledOrders([{ ...mgr.orders.get(targetId), isPartial: false }]);
+    await mgr.processFilledOrders([{ ...mgr.orders.get(targetId), isPartial: false }]);
     
     // Move window past it
     const sellSlots = Array.from(mgr.orders.values()).filter(o => o.id.startsWith('sell-')).sort((a,b) => a.price - b.price);
-    mgr._updateOrder({ ...sellSlots[10], state: ORDER_STATES.ACTIVE, orderId: 'force' });
+    await mgr._updateOrder({ ...sellSlots[10], state: ORDER_STATES.ACTIVE, orderId: 'force' });
     await mgr.strategy.rebalance();
     
     assert.strictEqual(mgr.orders.get(targetId).type, ORDER_TYPES.SPREAD);
     console.log('    ✓ SPREAD');
 
-    mgr._updateOrder({ ...sellSlots[10], state: ORDER_STATES.VIRTUAL, orderId: null });
+    await mgr._updateOrder({ ...sellSlots[10], state: ORDER_STATES.VIRTUAL, orderId: null });
     const res2 = await mgr.strategy.rebalance([{ type: ORDER_TYPES.SELL, price: target.price * 0.99 }]);
-    res2.ordersToPlace.forEach(o => mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'L2' }));
+    for (const o of res2.ordersToPlace) {
+        await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'L2' });
+    }
     
     assert.strictEqual(mgr.orders.get(targetId).state, ORDER_STATES.ACTIVE);
     console.log('    ✓ ACTIVE again');
@@ -130,8 +138,10 @@ async function runPartialHandlingScenario() {
 
     // Initial placement to get sizes into orders
     const initial = await mgr.strategy.rebalance();
-    initial.ordersToPlace.forEach(o => mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `id-${o.id}` }));
-    mgr.recalculateFunds();
+    for (const o of initial.ordersToPlace) {
+        await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `id-${o.id}` });
+    }
+    await mgr.recalculateFunds();
 
     const activeSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE).sort((a,b) => a.price - b.price);
     const idealSize = activeSells[0].size;
@@ -141,14 +151,14 @@ async function runPartialHandlingScenario() {
 
     // 1. Substantial (Oversized)
     // Anchoring only triggers if current size > ideal (releasing capital)
-    mgr._updateOrder({ ...mgr.orders.get(subId), state: ORDER_STATES.PARTIAL, size: idealSize * 1.5, orderId: 'sub-1' });
+    await mgr._updateOrder({ ...mgr.orders.get(subId), state: ORDER_STATES.PARTIAL, size: idealSize * 1.5, orderId: 'sub-1' });
     const resSub = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.019 }]);
     assert(resSub.ordersToUpdate.some(u => u.partialOrder.id === subId), 'Oversized partial should be anchored down');
     console.log('    ✓ Substantial (oversized) correctly anchored.');
 
     // 2. Dust
     const dustId = activeSells[1].id;
-    mgr._updateOrder({ ...mgr.orders.get(dustId), state: ORDER_STATES.PARTIAL, size: idealSize * 0.01, orderId: 'dust-1' });
+    await mgr._updateOrder({ ...mgr.orders.get(dustId), state: ORDER_STATES.PARTIAL, size: idealSize * 0.01, orderId: 'dust-1' });
     
     // Inject available funds to allow merge (StrategyEngine checks availableFunds > 0)
     mgr.funds.available.sell = 1000; 
