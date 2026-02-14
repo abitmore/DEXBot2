@@ -85,7 +85,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS } = require('../constants');
 const {
     blockchainToFloat,
     floatToBlockchainInt,
@@ -370,37 +370,48 @@ class SyncEngine {
         // Lock orders before reconciliation
         mgr.lockOrders([...orderIdsToLock]);
 
-        // Set up lock refresh mechanism to prevent timeout during long reconciliation
-        // Refreshes every LOCK_TIMEOUT_MS/2 to keep locks alive
-        //
-        // DESIGN NOTE: The refresh mechanism ensures that long-running reconciliations
-        // don't lose their locks mid-operation. If reconciliation completes normally,
-        // clearInterval() in the finally block stops the refresh. If the process crashes
-        // before finally executes, the locks will eventually expire after LOCK_TIMEOUT_MS,
-        // allowing orders to be unlocked and traded again in the next bot instance.
-        //
-        // RACE WINDOW: There is a small theoretical race between clearing the interval
-        // and unlocking (if another thread reads shadowOrderIds in that window). This is
-        // acceptable because: (1) it's microseconds-long, (2) worst case is a lock held
-        // slightly too long (safe), not released too early (unsafe), and (3) only matters
-        // on path to process crash which already breaks invariants.
-        const lockRefreshInterval = setInterval(() => {
-            const now = Date.now();
+        // Keep lock leases alive during long reconciliation runs.
+        const refreshEveryMs = Math.max(250, Math.floor(TIMING.LOCK_TIMEOUT_MS / 3));
+        const refreshLockLeases = () => {
+            const expiresAt = Date.now() + TIMING.LOCK_TIMEOUT_MS;
             for (const id of orderIdsToLock) {
-                mgr.shadowOrderIds.set(id, now);
+                mgr.shadowOrderIds.set(id, expiresAt);
             }
-            mgr.logger?.log?.(`Refreshed locks for ${orderIdsToLock.size} orders to prevent timeout expiry`, 'debug');
-        }, TIMING.LOCK_TIMEOUT_MS / 2);
+            mgr.logger?.log?.(`Refreshed lock leases for ${orderIdsToLock.size} orders`, 'debug');
+        };
+
+        refreshLockLeases();
+        const lockRefreshTimer = setInterval(refreshLockLeases, refreshEveryMs);
 
         try {
-            mgr.pauseFundRecalc();
-            // Reconciliation logic moved below in the try block
-            await this._performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
-                 chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection, options);
-         } finally {
-             await mgr.resumeFundRecalc();
-             // Stop refresh interval first
-             clearInterval(lockRefreshInterval);
+            const runReconciliation = async () => {
+                mgr.pauseFundRecalc();
+                try {
+                    await this._performSyncFromOpenOrders(
+                        mgr,
+                        assetAPrecision,
+                        assetBPrecision,
+                        parsedChainOrders,
+                        rawChainOrders,
+                        chainOrderIdsOnGrid,
+                        matchedGridOrderIds,
+                        filledOrders,
+                        updatedOrders,
+                        ordersNeedingCorrection,
+                        options
+                    );
+                } finally {
+                    await mgr.resumeFundRecalc();
+                }
+            };
+
+            if (options?.gridLockAlreadyHeld) {
+                await runReconciliation();
+            } else {
+                await mgr._gridLock.acquire(runReconciliation);
+            }
+        } finally {
+            clearInterval(lockRefreshTimer);
             // Unlock after reconciliation completes
             mgr.unlockOrders([...orderIdsToLock]);
         }
@@ -409,61 +420,11 @@ class SyncEngine {
     }
 
     /**
-     * Internal helper that performs the actual reconciliation logic.
-     * Called with locks held to prevent concurrent modifications.
-     * 
-     * Uses two separate maps:
-     * - parsedChainOrders: Converted values (floats) - use for logic
-     * - rawChainOrders: Raw blockchain data - keep for reference
+     * Internal two-pass reconciliation with locks already held.
      */
     async _performSyncFromOpenOrders(mgr, assetAPrecision, assetBPrecision, parsedChainOrders, rawChainOrders,
         chainOrderIdsOnGrid, matchedGridOrderIds, filledOrders, updatedOrders, ordersNeedingCorrection, options) {
-
-        /**
-         * TWO-PASS RECONCILIATION ALGORITHM:
-         * ==================================
-         *
-         * This method performs two passes over order data:
-         * 1. PASS 1 (Grid → Chain): Match grid orders to blockchain
-         * 2. PASS 2 (Chain → Grid): Match unmatched chain orders to grid
-         *
-         * PASS 1: GRID → CHAIN RECONCILIATION
-         * ===================================
-         * For each grid order that has an orderId (known on-chain order):
-         * - Look up the corresponding chain order in parsedChainOrders
-         * - If found:
-         *   * Verify type match (detect reassignments like sell→buy)
-         *   * Check if price drifted beyond tolerance (queue for correction)
-         *   * Check if size changed (partial fills, precision changes)
-         *   * Mark as matched and update grid state
-         * - If not found:
-         *   * Mark as VIRTUAL (order no longer exists on-chain)
-         *   * Add to filledOrders if it previously had an orderId
-         *
-         * PASS 2: CHAIN → GRID RECONCILIATION
-         * ===================================
-         * For each chain order not yet matched (orphan orders):
-         * - Use fuzzy matching (price ± tolerance, type, size range) to find best grid match
-         * - If match found:
-         *   * Assign orderId to grid slot
-         *   * Mark as ACTIVE or PARTIAL based on size changes
-         *   * Track matching to prevent double-assignment
-         * - If no match:
-         *   * Log as orphan (chain order not in grid; rare edge case)
-         *
-         * STATE TRANSITIONS:
-         * ==================
-         * Grid Order → ACTIVE: On-chain with full size
-         * Grid Order → PARTIAL: On-chain with reduced size (filled)
-         * Grid Order → VIRTUAL: Was on-chain but no longer found
-         * Chain Order → Grid: Unmatched chain order assigned to VIRTUAL grid slot
-         *
-         * CRITICAL INVARIANTS:
-         * - Each grid order matches AT MOST one chain order
-         * - Each chain order matches AT MOST one grid order
-         * - If mismatch (chain matched to wrong grid), use price tolerance to avoid assigning
-         * - Filled orders trigger rebalancing (new orders to maintain spread)
-         */
+        const skipAccounting = Boolean(options?.skipAccounting);
 
         const queueCorrection = (entry) => {
             ordersNeedingCorrection.push(entry);
@@ -483,6 +444,31 @@ class SyncEngine {
             }
         };
 
+        const configuredRestoreRatio = Number(GRID_LIMITS.PARTIAL_ACTIVE_RESTORE_RATIO);
+        const restoreRatio = (Number.isFinite(configuredRestoreRatio) && configuredRestoreRatio > 0)
+            ? configuredRestoreRatio
+            : 0.95;
+
+        const resolveStateFromChainSize = (priorState, chainSize, idealSize) => {
+            const chainNumeric = Number.isFinite(Number(chainSize)) ? Number(chainSize) : 0;
+            if (chainNumeric <= 0) return ORDER_STATES.VIRTUAL;
+
+            const idealNumeric = Number.isFinite(Number(idealSize)) ? Number(idealSize) : 0;
+            const ratio = idealNumeric > 0 ? (chainNumeric / idealNumeric) : 1;
+
+            if (priorState === ORDER_STATES.PARTIAL) {
+                if (idealNumeric <= 0) return ORDER_STATES.PARTIAL;
+                return ratio >= restoreRatio ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
+            }
+
+            if (priorState === ORDER_STATES.ACTIVE) {
+                if (idealNumeric <= 0) return ORDER_STATES.PARTIAL;
+                return ratio >= restoreRatio ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
+            }
+
+            return ORDER_STATES.ACTIVE;
+        };
+
         // ====================================================================
         // PASS 1: GRID → CHAIN - Match grid orders to blockchain
         // ====================================================================
@@ -495,9 +481,7 @@ class SyncEngine {
                 // Store raw blockchain data in grid slot for later update calculation
                 updatedOrder.rawOnChain = rawChainOrders.get(gridOrder.orderId);
 
-                // Type mismatch: grid slot was reassigned (e.g., sell→buy) but on-chain order retains original type.
-                // Treat as surplus requiring cancellation — push directly to manager correction queue
-                // so the divergence correction system will cancel this stale chain order.
+                // Side mismatch: keep slot untouched and queue cancellation for stale chain order.
                 if (gridOrder.type !== chainOrder.type) {
                     mgr.logger?.log?.(
                         `[SYNC] Type mismatch for ${gridOrder.id}: grid=${gridOrder.type}, chain=${chainOrder.type}. ` +
@@ -515,15 +499,13 @@ class SyncEngine {
                         isSurplus: true,
                         sideUpdated: chainOrder.type
                     });
-                    // Do NOT sync size/state for mismatched side; wait for cancellation correction.
                     continue;
                 } else {
-                    // Calculate price tolerance for comparison (skip type-mismatched orders — handled above)
-                    // CRITICAL FIX: Skip orders where tolerance is null (e.g., size=0, which happens for SPREAD placeholders)
                     const priceTolerance = calculatePriceTolerance(gridOrder.price, gridOrder.size, gridOrder.type, mgr.assets);
+                    const normalizedTolerance = (priceTolerance === null) ? 0 : priceTolerance;
 
-                    // Skip price correction for orders with null tolerance (zero-sized slots, SPREADs, etc)
-                    if (priceTolerance !== null && Math.abs(chainOrder.price - gridOrder.price) > priceTolerance) {
+                    // Null tolerance is strict mode (0).
+                    if (Math.abs(chainOrder.price - gridOrder.price) > normalizedTolerance) {
                         queueCorrection({
                             gridOrder: { ...gridOrder },
                             chainOrderId: gridOrder.orderId,
@@ -535,7 +517,7 @@ class SyncEngine {
                     }
                 }
 
-                // Use chain order type for precision: the chain order's type is ground truth for which asset for_sale represents
+                // Chain side determines which precision applies to for_sale.
                 const precision = (chainOrder.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const currentSizeInt = floatToBlockchainInt(gridOrder.size, precision);
                 const chainSizeInt = floatToBlockchainInt(chainOrder.size, precision);
@@ -545,34 +527,43 @@ class SyncEngine {
                     const newInt = floatToBlockchainInt(newSize, precision);
 
                     if (newInt > 0) {
-                        const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize, options?.skipAccounting);
+                        const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize, skipAccounting);
                         if (nextOrder) {
                             // Merge updated state if size actually changed
                             Object.assign(updatedOrder, nextOrder);
                         }
-                        if (updatedOrder.state === ORDER_STATES.ACTIVE) {
-                            updatedOrder.state = ORDER_STATES.PARTIAL;
-                        }
-                        // Always call _updateOrder to ensure index and state maintenance
-                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', options?.skipAccounting || false, 0);
+                        updatedOrder.state = resolveStateFromChainSize(
+                            gridOrder.state,
+                            newSize,
+                            updatedOrder.idealSize || gridOrder.idealSize
+                        );
+                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', skipAccounting, 0);
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', options?.skipAccounting || false, 0);
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', skipAccounting, 0);
                         filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                     }
                 } else if (gridOrder.state === ORDER_STATES.PARTIAL && chainOrder.size > 0 && chainOrder.size < gridOrder.size) {
-                    const updatedOrder = { ...gridOrder, size: chainOrder.size, rawOnChain: chainOrder.raw };
-                    await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', options?.skipAccounting || false, 0);
+                    const updatedOrder = {
+                        ...gridOrder,
+                        size: chainOrder.size,
+                        rawOnChain: chainOrder.raw,
+                        state: resolveStateFromChainSize(
+                            gridOrder.state,
+                            chainOrder.size,
+                            gridOrder.idealSize
+                        )
+                    };
+                    await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', skipAccounting, 0);
                 }
             } else if (isOrderOnChain(gridOrder)) {
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', options?.skipAccounting || false, 0);
+                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', skipAccounting, 0);
 
-                // Genuine on-chain disappearance (had orderId) is a fill signal and must
-                // continue through fill handling. Pure phantom cleanup should not trigger rotation.
+                // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
                     filledOrders.push({ ...currentGridOrder });
                 }
@@ -599,30 +590,49 @@ class SyncEngine {
             if (match && !matchedGridOrderIds.has(match.id)) {
                 const bestMatch = { ...match };
                 const wasVirtual = match.state === ORDER_STATES.VIRTUAL;
+                const wasPartial = match.state === ORDER_STATES.PARTIAL;
                 bestMatch.orderId = chainOrderId;
-                bestMatch.state = ORDER_STATES.ACTIVE;
+                bestMatch.state = wasVirtual ? ORDER_STATES.ACTIVE : match.state;
                 bestMatch.rawOnChain = rawChainOrders.get(chainOrderId);
                 matchedGridOrderIds.add(bestMatch.id);
 
                 const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
+                const targetInt = floatToBlockchainInt(match.size, precision);
+                const chainInt = floatToBlockchainInt(chainOrder.size, precision);
                 if (floatToBlockchainInt(bestMatch.size, precision) !== floatToBlockchainInt(chainOrder.size, precision)) {
-                    const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size, options?.skipAccounting);
+                    const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size, skipAccounting);
                     if (updated) Object.assign(bestMatch, updated);
-                    
-                    if (floatToBlockchainInt(chainOrder.size, precision) > 0) {
-                        if (!wasVirtual && bestMatch.state === ORDER_STATES.ACTIVE) {
+
+                    if (chainInt > 0) {
+                        if (wasVirtual) {
+                            bestMatch.state = ORDER_STATES.ACTIVE;
+                        } else if (chainInt < targetInt) {
                             bestMatch.state = ORDER_STATES.PARTIAL;
+                        } else if (wasPartial) {
+                            bestMatch.state = resolveStateFromChainSize(
+                                match.state,
+                                chainOrder.size,
+                                match.idealSize
+                            );
+                        } else {
+                            bestMatch.state = ORDER_STATES.ACTIVE;
                         }
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', options?.skipAccounting || false, 0);
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', skipAccounting, 0);
                         updatedOrders.push(spreadOrder);
                         chainOrderIdsOnGrid.add(chainOrderId);
                         continue;
                     }
+                } else if (!wasVirtual && wasPartial) {
+                    bestMatch.state = resolveStateFromChainSize(
+                        match.state,
+                        chainOrder.size,
+                        match.idealSize
+                    );
                 }
-                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', options?.skipAccounting || false, 0);
+                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', skipAccounting, 0);
                 updatedOrders.push(bestMatch);
                 chainOrderIdsOnGrid.add(chainOrderId);
             } else if (match) {
@@ -638,38 +648,8 @@ class SyncEngine {
     }
 
     /**
-     * Process a single fill history operation (incremental update).
-     * This is called for individual fills detected in blockchain history, as opposed to
-     * the snapshot approach used by syncFromOpenOrders().
-     *
-     * FILL PROCESSING:
-     * ========================================================================
-     * When an order fills on-chain, we need to:
-     * 1. Find the grid order matching this fill's orderId
-     * 2. Calculate how much of the order was filled (based on asset paid)
-     * 3. Update grid size: newSize = currentSize - filledAmount
-      * 4. Determine if fill is complete or partial
-      * 5. For doubled sides, reset flag and trigger double replacement rotations
-      *
-      * PRECISION HANDLING:
-     * Fill amounts must be converted using the same blockchain precision as the order.
-     * For SELL orders: check paysAsset == assetA (what we sold)
-     * For BUY orders: check paysAsset == assetB (what we paid)
-     * Use floatToBlockchainInt/blockchainToFloat to ensure consistency.
-     *
-      * DOUBLE-SIDE STRATEGY:
-      * When a side is marked as "doubled" (e.g. after a dust merge), the next
-      * full fill on that side triggers a double replacement rotation to 
-      * account for the combined capital.
-      *
-      * COMPLETE vs PARTIAL FILL:
-     * - Complete: newSize <= 0 → convert to SPREAD placeholder
-     * - Partial: newSize > 0 → stay in PARTIAL state, track remaining
-     *
-     * RETURNS: { filledOrders, updatedOrders, partialFill }
-     * - filledOrders: The filled portion (what was sold/paid)
-     * - updatedOrders: The updated grid order (remaining portion)
-     * - partialFill: true if fill was partial (order still on chain), false if complete
+     * Process one incremental fill-history event.
+     * Returns `{ filledOrders, updatedOrders, partialFill }`.
      */
     async syncFromFillHistory(fill) {
         const mgr = this.manager;
@@ -904,12 +884,12 @@ class SyncEngine {
                         if (isRotation && existingOrder) {
                             if (!isOrderVirtual(existingOrder)) {
                                 const oldVirtualOrder = { ...virtualizeOrder(existingOrder), size: 0 };
-                                await mgr._applyOrderUpdate(oldVirtualOrder, 'rotation-cleanup', chainData.skipAccounting || false, 0);
+                                await mgr._updateOrder(oldVirtualOrder, 'rotation-cleanup', chainData.skipAccounting || false, 0);
                             } else if (hasOnChainId(existingOrder)) {
                                 // Already VIRTUAL but still has orderId (from rebalance)
                                 // Just clear the orderId to reflect blockchain state
                                 const clearedOrder = { ...virtualizeOrder(existingOrder), size: 0 };
-                                await mgr._applyOrderUpdate(clearedOrder, 'fill-cleanup', chainData.skipAccounting || false, 0);
+                                await mgr._updateOrder(clearedOrder, 'fill-cleanup', chainData.skipAccounting || false, 0);
                             }
                         }
 
@@ -925,7 +905,7 @@ class SyncEngine {
                         };
                         // Deduced fee (createFee or updateFee) must always be applied to reflect blockchain cost
                         const actualFee = fee;
-                        await mgr._applyOrderUpdate(updatedOrder, 'fill-place', chainData.skipAccounting || false, actualFee);
+                        await mgr._updateOrder(updatedOrder, 'fill-place', chainData.skipAccounting || false, actualFee);
                     }
                 } finally {
                     mgr.unlockOrders([gridOrderId]);
@@ -943,7 +923,7 @@ class SyncEngine {
                         // Re-fetch to ensure we have latest state after acquiring lock
                         const currentGridOrder = mgr.orders.get(gridOrder.id);
                         if (currentGridOrder && currentGridOrder.orderId === orderId) {
-                            await mgr._applyOrderUpdate(virtualizeOrder(currentGridOrder), 'cancel-order', false, 0);
+                            await mgr._updateOrder(virtualizeOrder(currentGridOrder), 'cancel-order', false, 0);
                         }
                     } finally {
                         mgr.unlockOrders(orderIds);

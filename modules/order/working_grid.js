@@ -11,10 +11,13 @@ class WorkingGrid {
      * Create working grid from master
      * @param {Map} masterGrid - Source of truth grid (will be cloned)
      */
-    constructor(masterGrid) {
+    constructor(masterGrid, options = {}) {
         this.grid = this._cloneGrid(masterGrid);
         this.modified = new Set();
         this._indexes = null;
+        this.baseVersion = Number.isFinite(Number(options.baseVersion)) ? Number(options.baseVersion) : 0;
+        this._stale = false;
+        this._staleReason = null;
     }
 
     /**
@@ -96,6 +99,19 @@ class WorkingGrid {
      */
     isModified() {
         return this.modified.size > 0;
+    }
+
+    markStale(reason = 'working grid stale') {
+        this._stale = true;
+        this._staleReason = reason;
+    }
+
+    isStale() {
+        return this._stale;
+    }
+
+    getStaleReason() {
+        return this._staleReason;
     }
 
     /**

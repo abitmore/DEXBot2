@@ -167,6 +167,43 @@ async function runTests() {
         assert.strictEqual(await Grid.hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
     }
 
+    console.log(' - Testing regeneration re-arm and cooldown...');
+    {
+        const mockManager = {
+            funds: {
+                total: { grid: { buy: 100, sell: 100 } },
+                cacheFunds: { buy: 4, sell: 0 }
+            },
+            _gridSidesUpdated: new Set(),
+            _gridRegenState: {
+                buy: { armed: true, lastTriggeredAt: 0 },
+                sell: { armed: true, lastTriggeredAt: 0 }
+            },
+            getChainFundsSnapshot() {
+                return {
+                    allocatedBuy: 100,
+                    allocatedSell: 100,
+                    chainTotalBuy: 100,
+                    chainTotalSell: 100
+                };
+            }
+        };
+
+        const first = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(first.buyUpdated, true, 'First threshold crossing should trigger buy-side update');
+
+        const second = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(second.buyUpdated, false, 'Repeated checks above threshold should not retrigger while disarmed/cooling down');
+
+        mockManager.funds.cacheFunds.buy = 2.0;
+        Grid.checkAndUpdateGridIfNeeded(mockManager); // falls below threshold, re-arms side
+
+        mockManager.funds.cacheFunds.buy = 4.0;
+        mockManager._gridRegenState.buy.lastTriggeredAt = 0; // clear cooldown effect for deterministic test
+        const third = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(third.buyUpdated, true, 'Side should trigger again after dropping below threshold');
+    }
+
     console.log('✓ Grid logic tests passed!');
     process.exit(0);
 }

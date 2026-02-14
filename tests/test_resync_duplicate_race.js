@@ -14,6 +14,7 @@ async function testDuplicateRacePrevention() {
             assetB: { id: '1.3.0', precision: 5, symbol: 'BTS' }
         },
         accountTotals: { sellFree: 100, buyFree: 100 },
+        _gridLock: { acquire: async (cb) => await cb() },
         getOrdersByTypeAndState: (type, state) => {
             return Array.from(orders.values()).filter(o => o.type === type && o.state === state);
         },

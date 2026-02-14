@@ -215,6 +215,7 @@ class OrderManager {
         this._accountTotalsPromise = null;
         this._accountTotalsResolve = null;
         this.ordersNeedingPriceCorrection = [];
+        // Map<orderId, expiresAtMs> shadow locks for concurrent-operation shielding.
         this.shadowOrderIds = new Map();
         this._syncLock = new AsyncLock();  // Prevents concurrent full-sync operations
         this._fillProcessingLock = new AsyncLock(); // Prevents concurrent fill processing
@@ -236,6 +237,17 @@ class OrderManager {
         this._lastAccountingFailure = null;
         this._pipelineBlockedSince = null;  // Tracks when pipeline became blocked for timeout detection
         this._recoveryAttempted = false;    // Tracks if recovery has been attempted in the current cycle
+        this._recoveryState = {
+            attemptCount: 0,
+            lastAttemptAt: 0,
+            inFlight: false,
+            lastFailureAt: 0
+        };
+        this._gridVersion = 0;
+        this._gridRegenState = {
+            buy: { armed: true, lastTriggeredAt: 0 },
+            sell: { armed: true, lastTriggeredAt: 0 }
+        };
 
         // Metrics for observability
         this._metrics = {
@@ -355,6 +367,17 @@ class OrderManager {
      */
     async modifyCacheFunds(side, delta, op) {
         return await this.accountant.modifyCacheFunds(side, delta, op);
+    }
+
+    /**
+     * Atomically set cache funds for one side.
+     * @param {string} side - 'buy' or 'sell'
+     * @param {number} value - Absolute cache value
+     * @param {string} op - Operation label for logging
+     * @returns {Promise<number>} New cache value
+     */
+    async setCacheFundsAbsolute(side, value, op = 'set-absolute') {
+        return await this.accountant.setCacheFundsAbsolute(side, value, op);
     }
 
     /**
@@ -571,8 +594,8 @@ class OrderManager {
      */
     lockOrders(orderIds) {
         if (!orderIds) return;
-        const now = Date.now();
-        for (const id of orderIds) if (id) this.shadowOrderIds.set(id, now);
+        const expiresAt = Date.now() + TIMING.LOCK_TIMEOUT_MS;
+        for (const id of orderIds) if (id) this.shadowOrderIds.set(id, expiresAt);
         this._cleanExpiredLocks();
     }
 
@@ -598,8 +621,8 @@ class OrderManager {
      */
     _cleanExpiredLocks() {
         const now = Date.now();
-        for (const [id, timestamp] of this.shadowOrderIds) {
-            if (now - timestamp > TIMING.LOCK_TIMEOUT_MS) this.shadowOrderIds.delete(id);
+        for (const [id, expiresAt] of this.shadowOrderIds) {
+            if (now > expiresAt) this.shadowOrderIds.delete(id);
         }
     }
 
@@ -612,7 +635,7 @@ class OrderManager {
      */
     isOrderLocked(id) {
         if (!id || !this.shadowOrderIds.has(id)) return false;
-        if (Date.now() - this.shadowOrderIds.get(id) > TIMING.LOCK_TIMEOUT_MS) {
+        if (Date.now() > this.shadowOrderIds.get(id)) {
             this.shadowOrderIds.delete(id);
             return false;
         }
@@ -821,98 +844,7 @@ class OrderManager {
         }
 
         return await this._gridLock.acquire(async () => {
-            const id = order.id;
-            const oldOrder = this.orders.get(id);
-            const nextOrder = { ...(oldOrder || {}), ...order };
-
-            // Backward-compat: allow initializing empty virtual placeholders without an explicit type.
-            if (!nextOrder.type && nextOrder.state === ORDER_STATES.VIRTUAL) {
-                const placeholderSize = Number(nextOrder.size || 0);
-                if (placeholderSize === 0) {
-                    nextOrder.type = ORDER_TYPES.SPREAD;
-                }
-            }
-
-            if (!VALID_ORDER_STATES.has(nextOrder.state)) {
-                this.logger.log(`Refusing to update order ${id}: invalid state '${nextOrder.state}' (context: ${context})`, 'error');
-                return false;
-            }
-
-            if (!VALID_ORDER_TYPES.has(nextOrder.type)) {
-                this.logger.log(`Refusing to update order ${id}: invalid type '${nextOrder.type}' (context: ${context})`, 'error');
-                return false;
-            }
-
-            // Invariant: SPREAD placeholders are always size 0.
-            if (nextOrder.type === ORDER_TYPES.SPREAD && Number(nextOrder.size || 0) !== 0) {
-                this.logger.log(
-                    `[INVARIANT] Normalizing SPREAD order ${id} size ${nextOrder.size} -> 0 (context: ${context})`,
-                    'warn'
-                );
-                nextOrder.size = 0;
-            }
-
-            // Validation: Prevent SPREAD orders from becoming ACTIVE/PARTIAL
-            if (nextOrder.type === ORDER_TYPES.SPREAD && isOrderOnChain(nextOrder)) {
-                const message = `ILLEGAL STATE: Refusing to move SPREAD order ${id} to ${nextOrder.state}. SPREAD orders must remain VIRTUAL.`;
-                this.logger.log(message, 'error');
-                this._lastIllegalState = { id, context, message, at: Date.now() };
-                if (this._throwOnIllegalState) {
-                    const err = new Error(message);
-                    err.code = 'ILLEGAL_ORDER_STATE';
-                    throw err;
-                }
-                return false;
-            }
-
-            // Preserve side intent across transitions that temporarily use SPREAD placeholders.
-            if (nextOrder.type === ORDER_TYPES.BUY || nextOrder.type === ORDER_TYPES.SELL) {
-                nextOrder.committedSide = nextOrder.type;
-            } else if (!nextOrder.committedSide) {
-                if (oldOrder?.committedSide) {
-                    nextOrder.committedSide = oldOrder.committedSide;
-                } else if (oldOrder?.type === ORDER_TYPES.BUY || oldOrder?.type === ORDER_TYPES.SELL) {
-                    nextOrder.committedSide = oldOrder.type;
-                }
-            }
-
-            // CRITICAL VALIDATION: Prevent phantom orders (ACTIVE/PARTIAL without orderId)
-            if (this.sync) {
-                this.sync.sanitizePhantomOrder(nextOrder, context);
-            }
-
-            // 1. Update optimistic balance (atomic update of tracked funds)
-            if (this.accountant) {
-                await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, fee, skipAccounting);
-            }
-
-            // 2. Clone and freeze the order to prevent external modification races
-            const updatedOrder = deepFreeze({ ...nextOrder });
-
-            // 3. Robust index maintenance
-            Object.values(this._ordersByState).forEach(set => set.delete(id));
-            Object.values(this._ordersByType).forEach(set => set.delete(id));
-
-            if (this._ordersByState[updatedOrder.state]) {
-                this._ordersByState[updatedOrder.state].add(id);
-            }
-            if (this._ordersByType[updatedOrder.type]) {
-                this._ordersByType[updatedOrder.type].add(id);
-            }
-
-            // --- IMMUTABLE SWAP ---
-            // Create a new Map, update the specific order, and replace the frozen master reference.
-            const newMap = cloneMap(this.orders);
-            newMap.set(id, updatedOrder);
-            this.orders = Object.freeze(newMap);
-            // ----------------------
-
-             // 4. Recalculate funds if not in a batch pause
-             if (!this._pauseFundRecalc) {
-                 await this.recalculateFunds();
-             }
-
-            return true;
+            return await this._applyOrderUpdate(order, context, skipAccounting, fee);
         });
     }
 
@@ -1088,19 +1020,31 @@ class OrderManager {
      */
     _repairIndices() {
         try {
-            // Clear and rebuild all indices
-            for (const set of Object.values(this._ordersByState)) set.clear();
-            for (const set of Object.values(this._ordersByType)) set.clear();
+            // Build new index sets first, then atomically swap references.
+            // This avoids exposing partially rebuilt indices to concurrent readers.
+            const rebuiltByState = {
+                [ORDER_STATES.VIRTUAL]: new Set(),
+                [ORDER_STATES.ACTIVE]: new Set(),
+                [ORDER_STATES.PARTIAL]: new Set()
+            };
+            const rebuiltByType = {
+                [ORDER_TYPES.BUY]: new Set(),
+                [ORDER_TYPES.SELL]: new Set(),
+                [ORDER_TYPES.SPREAD]: new Set()
+            };
 
             // Rebuild from orders Map
             for (const [id, order] of this.orders) {
                 if (order && order.state && order.type) {
-                    this._ordersByState[order.state]?.add(id);
-                    this._ordersByType[order.type]?.add(id);
+                    rebuiltByState[order.state]?.add(id);
+                    rebuiltByType[order.type]?.add(id);
                 } else {
                     this.logger.log(`Skipping corrupted order ${id} during index repair`, 'warn');
                 }
             }
+
+            this._ordersByState = rebuiltByState;
+            this._ordersByType = rebuiltByType;
 
             // Verify repair worked
             if (this.validateIndices()) {
@@ -1258,10 +1202,16 @@ class OrderManager {
                 `Downgrading to VIRTUAL instead.`,
                 'error'
             );
-            // Auto-correct to VIRTUAL to prevent fund tracking corruption
-            // NOTE: Keep the size - VIRTUAL orders can have non-zero sizes (planned placements)
-            // Only SPREAD orders should have size 0
+            // Auto-correct to VIRTUAL to prevent fund tracking corruption.
+            // If this was previously on-chain, clear identity fields and reset size so
+            // we don't carry a stale committed amount into virtual accounting.
+            const oldWasOnChain = isOrderOnChain(oldOrder);
             nextOrder.state = ORDER_STATES.VIRTUAL;
+            nextOrder.orderId = null;
+            nextOrder.rawOnChain = null;
+            if (oldWasOnChain) {
+                nextOrder.size = 0;
+            }
         }
 
         // 1. Update optimistic balance (atomic update of tracked funds)
@@ -1288,14 +1238,17 @@ class OrderManager {
         const newMap = cloneMap(this.orders);
         newMap.set(id, updatedOrder);
         this.orders = Object.freeze(newMap);
+        this._gridVersion += 1;
 
         // --- COW WORKING GRID SYNC ---
         // If we're in the middle of a rebalance, also update the working grid
         // to keep it in sync with the master grid
         if (this._currentWorkingGrid && this._rebalanceState === 'REBALANCING') {
             try {
+                this._currentWorkingGrid.markStale(`master mutation during rebalance (${context})`);
                 this._currentWorkingGrid.syncFromMaster(this.orders, id);
             } catch (syncErr) {
+                this._currentWorkingGrid.markStale(`working-grid sync failure: ${syncErr.message}`);
                 this.logger.log(`[COW] Failed to sync working grid for order ${id}: ${syncErr.message}`, 'warn');
             }
         }
@@ -1537,10 +1490,14 @@ class OrderManager {
 
         // 1. Boundary Validation
         if (targetBoundary !== null) {
-            const maxIdx = this.orders.size - 1;
+            const maxIdx = Math.max(0, this.orders.size - 1);
             if (targetBoundary < 0 || targetBoundary > maxIdx) {
-                this.logger.log(`[RECONCILE] Invalid target boundary ${targetBoundary} (max ${maxIdx}). Aborting.`, 'error');
-                return { actions: [], aborted: true, reason: 'Invalid Boundary' };
+                const clamped = Math.max(0, Math.min(maxIdx, targetBoundary));
+                this.logger.log(
+                    `[RECONCILE] Clamping target boundary ${targetBoundary} -> ${clamped} (max ${maxIdx}).`,
+                    'warn'
+                );
+                targetBoundary = clamped;
             }
         }
 
@@ -1765,7 +1722,7 @@ class OrderManager {
                 ? Number(order.size)
                 : Number(order.amount || 0);
 
-            if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.VIRTUAL) {
+            if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
                 if (order.type === ORDER_TYPES.BUY) {
                     buyRequired += size;
                 } else if (order.type === ORDER_TYPES.SELL) {
@@ -1773,7 +1730,7 @@ class OrderManager {
                 }
             }
         }
-        
+
         return { buy: buyRequired, sell: sellRequired };
     }
 
@@ -1874,7 +1831,7 @@ class OrderManager {
         
         this._setRebalanceState('REBALANCING');
 
-        const workingGrid = new WorkingGrid(this.orders);
+        const workingGrid = new WorkingGrid(this.orders, { baseVersion: this._gridVersion });
         this._currentWorkingGrid = workingGrid; // Track for fill synchronization
         const workingFunds = this.getChainFundsSnapshot();
         
@@ -1917,6 +1874,13 @@ class OrderManager {
         }
 
         const stateUpdates = this._buildStateUpdates(actions, this.orders);
+
+        if (workingGrid.isStale()) {
+            const reasonStale = workingGrid.getStaleReason() || 'Master grid changed during planning';
+            this.logger.log(`[COW] Rebalance plan invalidated: ${reasonStale}`, 'warn');
+            this._clearWorkingGridRef();
+            return { aborted: true, reason: reasonStale, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+        }
 
         this.logger.log(`[COW] Plan: Actions=${actions.length}, StateUpdates=${stateUpdates.length}`, 'info');
 
@@ -1993,6 +1957,21 @@ class OrderManager {
     async _commitWorkingGrid(workingGrid, workingIndexes, workingBoundary) {
         const startTime = Date.now();
         const stats = workingGrid.getMemoryStats();
+
+        if (workingGrid?.isStale?.()) {
+            this.logger.log(`[COW] Refusing stale working grid commit: ${workingGrid.getStaleReason() || 'stale'}`, 'warn');
+            this._clearWorkingGridRef();
+            return;
+        }
+
+        if (Number.isFinite(Number(workingGrid?.baseVersion)) && workingGrid.baseVersion !== this._gridVersion) {
+            this.logger.log(
+                `[COW] Refusing working grid commit: base version ${workingGrid.baseVersion} != current ${this._gridVersion}`,
+                'warn'
+            );
+            this._clearWorkingGridRef();
+            return;
+        }
         
         this.logger.log(
             `[COW] Committing working grid: ${stats.size} orders, ${stats.modified} modified`,
@@ -2009,6 +1988,7 @@ class OrderManager {
 
         this.orders = Object.freeze(workingGrid.toMap());
         this.boundaryIdx = workingBoundary;
+        this._gridVersion += 1;
         
         this._ordersByState = {
             [ORDER_STATES.VIRTUAL]: workingIndexes[ORDER_STATES.VIRTUAL],

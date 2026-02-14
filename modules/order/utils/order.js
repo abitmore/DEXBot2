@@ -148,14 +148,21 @@ async function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAcco
     const oldSize = Number(gridOrder.size || 0);
     const newSize = Number.isFinite(Number(chainSize)) ? Number(chainSize) : oldSize;
 
-    if (gridOrder.isDustRefill && newSize < oldSize) return null;
+    if (gridOrder.isDustRefill && newSize < oldSize) {
+        const oldInt = floatToBlockchainInt(oldSize, precision);
+        const newInt = floatToBlockchainInt(newSize, precision);
+        const deltaInt = Math.max(0, oldInt - newInt);
+
+        // Ignore only negligible one-unit quantization noise on dust refill orders.
+        // Real decreases must still be synchronized to avoid stuck PARTIAL states.
+        if (deltaInt <= 1) return null;
+    }
 
     if (floatToBlockchainInt(oldSize, precision) === floatToBlockchainInt(newSize, precision)) { 
         return null; 
     }
-    
+
     const updatedOrder = { ...gridOrder, size: newSize };
-    try { await manager._updateOrder(updatedOrder, 'size-adjust', skipAccounting, 0); } catch (e) { }
 
     const delta = newSize - oldSize;
     if (delta < 0 && manager.logger) {
@@ -188,9 +195,9 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
             manager.logger?.log?.(`[CORRECTION] Cancelling surplus/mismatched ${sideLabel} order ${chainOrderId} for slot ${gridOrder?.id || 'unknown'}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
             manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
-            if (gridOrder && manager._applyOrderUpdate) {
+            if (gridOrder && manager._updateOrder) {
                 const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
+                await manager._updateOrder(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
             }
             return { success: true, cancelled: true };
         } catch (error) {
@@ -549,10 +556,13 @@ function calculateFundDrivenBoundary(allSlots, availA, availB, price, gapSlots) 
  */
 function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, options = {}) {
     const assignOnChain = options.assignOnChain === true;
+    const getCurrentSlot = (typeof options.getCurrentSlot === 'function') ? options.getCurrentSlot : null;
     const buyEndIdx = boundaryIdx;
     const sellStartIdx = boundaryIdx + gapSlots + 1;
     allSlots.forEach((slot, i) => {
-        if (assignOnChain || (slot.state !== ORDER_STATES.ACTIVE && slot.state !== ORDER_STATES.PARTIAL)) {
+        const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
+        const canAssign = assignOnChain || !isOrderOnChain(liveSlot);
+        if (canAssign) {
             if (i <= buyEndIdx) slot.type = ORDER_TYPES.BUY;
             else if (i >= sellStartIdx) slot.type = ORDER_TYPES.SELL;
             else slot.type = ORDER_TYPES.SPREAD;

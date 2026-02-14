@@ -360,7 +360,11 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
             );
             // CRITICAL FIX: Use skipAccounting: false - order discovery must update accounting
             // Orphan order requires fund deduction to prevent phantom capital
-            await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source: 'chainOrderIdExtractionFailure' });
+            await manager.syncFromOpenOrders(freshChainOrders, {
+                skipAccounting: false,
+                source: 'chainOrderIdExtractionFailure',
+                gridLockAlreadyHeld: true
+            });
         } catch (syncErr) {
             logger?.log?.(`[_createOrderFromGrid] Recovery sync failed: ${syncErr.message}`, 'error');
         }
@@ -413,7 +417,11 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
             true,
             marketAssets
         );
-        await manager.syncFromOpenOrders(freshChainOrders, { skipAccounting: false, source });
+        await manager.syncFromOpenOrders(freshChainOrders, {
+            skipAccounting: false,
+            source,
+            gridLockAlreadyHeld: true
+        });
     } catch (syncErr) {
         logger?.log?.(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
     }
@@ -747,19 +755,20 @@ async function reconcileStartupOrders({
     const chainBuys = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
     const chainSells = parsedChain.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
 
-    // CRITICAL FIX: Sanitize phantom orders - grid orders that claim to be active with an ID,
-    // but that ID is missing from the chain. Downgrade to VIRTUAL so they don't block
-    // new orders or cause balance invariants.
-    // Wrap the entire startup reconciliation in a grid lock to ensure atomicity
+    // Sanitize phantom on-chain claims under a single grid lock.
     return await manager._gridLock.acquire(async () => {
+        // Use unlocked updater when available; fallback keeps lightweight tests working.
+        const applyUpdate = (typeof manager._applyOrderUpdate === 'function')
+            ? manager._applyOrderUpdate.bind(manager)
+            : manager._updateOrder.bind(manager);
+
         const chainIds = new Set((Array.isArray(chainOpenOrders) ? chainOpenOrders : []).map(o => o && o.id).filter(Boolean));
         for (const order of manager.orders.values()) {
             if (isOrderPlaced(order)) {
                 if (!chainIds.has(order.orderId)) {
                     logger?.log?.(`Startup: Found phantom order ${order.id} (ID ${order.orderId}) not on chain. Resetting to VIRTUAL.`, 'warn');
 
-                    // Use manager._applyOrderUpdate (PRIVATE/UNLOCKED) since we hold _gridLock
-                    await manager._applyOrderUpdate({
+                    await applyUpdate({
                         ...order,
                         state: ORDER_STATES.VIRTUAL,
                         orderId: "",
@@ -769,7 +778,7 @@ async function reconcileStartupOrders({
             }
         }
 
-        // CRITICAL FIX: Compute unmatched orders by finding which chain orders do NOT match the grid
+        // Determine unmatched chain orders after phantom cleanup.
         const matchedChainOrderIds = new Set();
         for (const gridOrder of manager.orders.values()) {
             if (gridOrder && gridOrder.orderId) {

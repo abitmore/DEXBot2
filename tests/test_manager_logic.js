@@ -73,6 +73,19 @@ async function runTests() {
         assert(loggedError, 'Should log error when trying to move SPREAD to ACTIVE');
     }
 
+    console.log(' - Testing boundary clamping during reconcile...');
+    {
+        const manager = await createManager();
+        await manager._updateOrder({ id: 'bc-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 10, price: 100 });
+
+        const targetGrid = new Map([
+            ['bc-1', { id: 'bc-1', state: ORDER_STATES.VIRTUAL, type: ORDER_TYPES.BUY, size: 10, price: 100 }]
+        ]);
+
+        const result = manager.reconcileGrid(targetGrid, 999);
+        assert.strictEqual(result.aborted, false, 'Out-of-range boundary should be clamped, not aborted');
+    }
+
     console.log(' - Testing Order Locking...');
     {
         const manager = await createManager();

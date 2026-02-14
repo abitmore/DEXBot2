@@ -218,6 +218,50 @@ async function runTests() {
         assert.strictEqual(manager.funds.cacheFunds.sell, cacheSellBefore + rawReceives, 'cacheFunds should track credited raw proceeds');
     }
 
+    // Test: Recovery retry cooldown and reset behavior
+    console.log(' - Testing recovery retry cooldown and reset...');
+    {
+        const manager = await createManager();
+        const originalRecovery = manager.accountant._performStateRecovery;
+        let attempts = 0;
+
+        manager.accountant._performStateRecovery = async () => {
+            attempts += 1;
+            return { isValid: false, reason: 'forced failure' };
+        };
+
+        const first = await manager.accountant._attemptFundRecovery(manager, 'unit-test');
+        assert.strictEqual(first, false, 'First forced recovery should fail');
+        assert.strictEqual(manager._recoveryState.attemptCount, 1, 'Attempt count should increment after first try');
+
+        const second = await manager.accountant._attemptFundRecovery(manager, 'unit-test');
+        assert.strictEqual(second, false, 'Second immediate attempt should be blocked by cooldown');
+        assert.strictEqual(manager._recoveryState.attemptCount, 1, 'Cooldown-blocked attempt must not increment attempt count');
+
+        manager._recoveryState.lastAttemptAt = Date.now() - 61000;
+        await manager.accountant._attemptFundRecovery(manager, 'unit-test');
+        assert.strictEqual(manager._recoveryState.attemptCount, 2, 'Attempt count should increment after cooldown expires');
+        assert.strictEqual(attempts >= 2, true, 'Recovery should have executed at least twice after cooldown expiry');
+
+        manager.accountant._performStateRecovery = async () => ({ isValid: true, reason: null });
+        manager._recoveryState.lastAttemptAt = Date.now() - 61000;
+        const success = await manager.accountant._attemptFundRecovery(manager, 'unit-test');
+        assert.strictEqual(success, true, 'Successful recovery should return true');
+        assert.strictEqual(manager._recoveryState.attemptCount, 0, 'Successful recovery should reset attempt count');
+
+        manager.accountant._performStateRecovery = originalRecovery;
+    }
+
+    // Test: Absolute cacheFunds setter is atomic and authoritative
+    console.log(' - Testing setCacheFundsAbsolute()...');
+    {
+        const manager = await createManager();
+        await manager.modifyCacheFunds('buy', 5, 'seed-cache');
+        const updated = await manager.setCacheFundsAbsolute('buy', 2.25, 'unit-set-absolute');
+        assert.strictEqual(updated, 2.25, 'Absolute setter should return applied value');
+        assert.strictEqual(manager.funds.cacheFunds.buy, 2.25, 'Absolute setter should override previous cache value');
+    }
+
     // Restore original
     OrderUtils.getAssetFees = originalGetAssetFees;
 

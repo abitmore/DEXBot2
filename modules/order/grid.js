@@ -229,6 +229,9 @@ class Grid {
      * @private
      */
     static async _updateCacheFundsAtomic(manager, sideName, newValue) {
+        if (typeof manager.setCacheFundsAbsolute === 'function') {
+            return await manager.setCacheFundsAbsolute(sideName, newValue, 'recalculate-remainder');
+        }
         const current = manager.funds?.cacheFunds?.[sideName] || 0;
         const delta = newValue - current;
         return await manager.modifyCacheFunds(sideName, delta, 'recalculate-remainder');
@@ -688,10 +691,19 @@ class Grid {
      */
     static checkAndUpdateGridIfNeeded(manager) {
         const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 1;
+        const cooldownMs = Math.max(0, Number(GRID_LIMITS.GRID_REGEN_COOLDOWN_MS) || 0);
+        const now = Date.now();
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
         const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
         const result = { buyUpdated: false, sellUpdated: false };
+
+        if (!manager._gridRegenState || typeof manager._gridRegenState !== 'object') {
+            manager._gridRegenState = {
+                buy: { armed: true, lastTriggeredAt: 0 },
+                sell: { armed: true, lastTriggeredAt: 0 }
+            };
+        }
 
         const sides = [
             { name: 'buy', grid: gridBuy, orderType: ORDER_TYPES.BUY },
@@ -711,12 +723,25 @@ class Grid {
             const denominator = (allocated > 0) ? allocated : chainTotal;
             const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
 
-            if (ratio >= threshold) {
+            const regenState = manager._gridRegenState[s.name] || { armed: true, lastTriggeredAt: 0 };
+
+            if (ratio < threshold) {
+                regenState.armed = true;
+            }
+
+            const onCooldown = cooldownMs > 0 && (now - (regenState.lastTriggeredAt || 0)) < cooldownMs;
+
+            if (ratio >= threshold && regenState.armed && !onCooldown) {
                 // RC-3: Use Set for automatic duplicate prevention
                 if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
                 manager._gridSidesUpdated.add(s.orderType);
                 if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
+
+                regenState.armed = false;
+                regenState.lastTriggeredAt = now;
             }
+
+            manager._gridRegenState[s.name] = regenState;
         }
         return result;
     }
@@ -852,7 +877,7 @@ class Grid {
                 appliedSizes[i] = newSize;
             }
 
-            manager.recalculateFunds();
+            await manager.recalculateFunds();
         } finally {
             manager.resumeRecalcLogging();
         }

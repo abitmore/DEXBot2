@@ -348,7 +348,13 @@ class Accountant {
 
         // NEW: Attempt immediate recovery if violation detected
         if (hasViolation) {
-            await this._attemptFundRecovery(mgr, 'Fund invariant violation');
+            if (mgr._gridLock?.isLocked?.()) {
+                this._attemptFundRecovery(mgr, 'Fund invariant violation').catch(err => {
+                    mgr.logger?.log?.(`[RECOVERY] Deferred recovery scheduling failed: ${err.message}`, 'error');
+                });
+            } else {
+                await this._attemptFundRecovery(mgr, 'Fund invariant violation');
+            }
         }
     }
 
@@ -388,28 +394,69 @@ class Accountant {
        * @param {string} violationType - Description of the violation for logging
        * @returns {Promise<boolean>} - True if recovery succeeded, false otherwise
        */
-      async _attemptFundRecovery(mgr, violationType) {
-          // Prevent duplicate recovery attempts in the same cycle
-          if (mgr._recoveryAttempted) {
+    async _attemptFundRecovery(mgr, violationType) {
+          if (!mgr._recoveryState || typeof mgr._recoveryState !== 'object') {
+              mgr._recoveryState = { attemptCount: 0, lastAttemptAt: 0, inFlight: false, lastFailureAt: 0 };
+          }
+
+          const state = mgr._recoveryState;
+          const now = Date.now();
+          const retryIntervalMs = Math.max(0, Number(PIPELINE_TIMING.RECOVERY_RETRY_INTERVAL_MS) || 0);
+          const maxAttemptsRaw = Number(PIPELINE_TIMING.MAX_RECOVERY_ATTEMPTS);
+          const hasAttemptLimit = Number.isFinite(maxAttemptsRaw) && maxAttemptsRaw > 0;
+
+          if (state.inFlight) {
+              mgr.logger?.log?.('[RECOVERY] Skipping recovery: attempt already in flight', 'debug');
               return false;
           }
 
+          if (hasAttemptLimit && state.attemptCount >= maxAttemptsRaw) {
+              mgr.logger?.log?.(
+                  `[RECOVERY] Skipping recovery: max attempts reached (${state.attemptCount}/${maxAttemptsRaw})`,
+                  'warn'
+              );
+              return false;
+          }
+
+          if (state.attemptCount > 0 && retryIntervalMs > 0) {
+              const elapsed = now - state.lastAttemptAt;
+              if (elapsed < retryIntervalMs) {
+                  mgr.logger?.log?.(
+                      `[RECOVERY] Cooldown active (${elapsed}ms/${retryIntervalMs}ms). Skipping retry.`,
+                      'debug'
+                  );
+                  return false;
+              }
+          }
+
+          state.inFlight = true;
+          state.attemptCount += 1;
+          state.lastAttemptAt = now;
           mgr._recoveryAttempted = true;
-          mgr.logger?.log?.(`[RECOVERY] ${violationType} - attempting state recovery...`, 'warn');
+          mgr.logger?.log?.(
+              `[RECOVERY] ${violationType} - attempting state recovery (attempt ${state.attemptCount}${hasAttemptLimit ? `/${maxAttemptsRaw}` : ''})...`,
+              'warn'
+          );
 
           try {
               const validation = await this._performStateRecovery(mgr);
 
               if (validation.isValid) {
                   mgr.logger?.log?.('[RECOVERY] State recovery succeeded', 'info');
+                  this.resetRecoveryState();
                   return true;
-              } else {
-                  mgr.logger?.log?.(`[RECOVERY] State recovery failed: ${validation.reason}`, 'error');
-                  return false;
               }
+
+              state.lastFailureAt = Date.now();
+              mgr.logger?.log?.(`[RECOVERY] State recovery failed: ${validation.reason}`, 'error');
+              return false;
           } catch (err) {
+              state.lastFailureAt = Date.now();
               mgr.logger?.log?.(`[RECOVERY] State recovery error: ${err.message}`, 'error');
               return false;
+          } finally {
+              state.inFlight = false;
+              mgr._recoveryAttempted = false;
           }
       }
 
@@ -418,8 +465,15 @@ class Accountant {
        * Called at the start of each fill processing cycle to allow fresh recovery attempts.
        */
        resetRecoveryState() {
-           if (this.manager) this.manager._recoveryAttempted = false;
-       }
+           if (!this.manager) return;
+           this.manager._recoveryAttempted = false;
+           this.manager._recoveryState = {
+               attemptCount: 0,
+               lastAttemptAt: 0,
+               inFlight: false,
+               lastFailureAt: 0
+           };
+        }
 
     /**
      * Check if sufficient funds exist AND atomically deduct (FREE portion only).
@@ -675,6 +729,36 @@ class Accountant {
          return await this.manager._fundLock.acquire(async () => {
              return await this._modifyCacheFunds(side, delta, operation);
          });
+    }
+
+    /**
+     * Atomically set cache funds to an absolute value.
+     * PUBLIC API: Acquires _fundLock.
+     *
+     * @param {string} side - 'buy' or 'sell'
+     * @param {number} absoluteValue - New absolute cache value
+     * @param {string} operation - Logging context
+     * @returns {Promise<number>} New cached value
+     */
+    async setCacheFundsAbsolute(side, absoluteValue, operation = 'set-absolute') {
+        return await this.manager._fundLock.acquire(async () => {
+            const mgr = this.manager;
+            if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
+
+            const oldValue = Number(mgr.funds.cacheFunds[side]) || 0;
+            const nextValue = Math.max(0, Number.isFinite(Number(absoluteValue)) ? Number(absoluteValue) : 0);
+            mgr.funds.cacheFunds[side] = nextValue;
+
+            if (mgr.logger && mgr.logger.level === 'debug') {
+                const delta = nextValue - oldValue;
+                mgr.logger.log(
+                    `[CACHEFUNDS] ${side} set ${Format.formatAmount8(oldValue)} -> ${Format.formatAmount8(nextValue)} ` +
+                    `(${operation}, delta=${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)})`,
+                    'debug'
+                );
+            }
+            return nextValue;
+        });
     }
 
     /**

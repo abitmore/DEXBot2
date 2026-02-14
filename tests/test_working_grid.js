@@ -82,8 +82,25 @@ function testIndexes() {
     console.log('✓ Index building test passed');
 }
 
+function testStaleTracking() {
+    const master = new Map([
+        ['order1', { id: 'order1', type: 'BUY', state: 'ACTIVE', price: 100, amount: 10 }]
+    ]);
+
+    const working = new WorkingGrid(master, { baseVersion: 7 });
+    assert.strictEqual(working.baseVersion, 7, 'Working grid should preserve base version');
+    assert.strictEqual(working.isStale(), false, 'Fresh working grid must not be stale');
+
+    working.markStale('master changed');
+    assert.strictEqual(working.isStale(), true, 'Working grid should be stale after markStale');
+    assert.strictEqual(working.getStaleReason(), 'master changed', 'Stale reason should be preserved');
+
+    console.log('✓ Stale tracking test passed');
+}
+
 testCloneIndependence();
 testDeltaBuilding();
 testOrderComparison();
 testIndexes();
+testStaleTracking();
 console.log('\nAll WorkingGrid tests passed!');

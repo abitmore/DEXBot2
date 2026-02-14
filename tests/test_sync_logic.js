@@ -32,6 +32,20 @@ async function runTests() {
         return mgr;
     };
 
+    const makeSellChainOrder = (id, sizeFloat, priceFloat = 100) => {
+        const forSale = Math.round(sizeFloat * 1e8);
+        const baseAmount = 1000;
+        const quoteAmount = Math.max(1, Math.round((priceFloat / 1000) * baseAmount));
+        return {
+            id,
+            sell_price: {
+                base: { amount: baseAmount, asset_id: '1.3.0' },
+                quote: { amount: quoteAmount, asset_id: '1.3.1' }
+            },
+            for_sale: forSale
+        };
+    };
+
     console.log(' - Testing Input Validation...');
     {
         const manager = await createManager();
@@ -169,6 +183,59 @@ async function runTests() {
 
         assert(result.ordersNeedingCorrection.some(c => c.chainOrderId === 'c-price'), 'Sync result should include price correction');
         assert(manager.ordersNeedingPriceCorrection.some(c => c.chainOrderId === 'c-price' && !c.isSurplus), 'Manager correction queue should include regular price mismatch');
+    }
+
+    console.log(' - Testing Null Price Tolerance Uses Strict Drift Detection...');
+    {
+        const manager = await createManager();
+        await manager._updateOrder({
+            id: 'nulltol-1',
+            state: ORDER_STATES.ACTIVE,
+            type: ORDER_TYPES.BUY,
+            size: 0,
+            price: 50,
+            orderId: 'c-nulltol'
+        });
+
+        const chainOrders = [{
+            id: 'c-nulltol',
+            sell_price: { base: { amount: 101000, asset_id: '1.3.1' }, quote: { amount: 1000000, asset_id: '1.3.0' } },
+            for_sale: 100000
+        }];
+
+        const result = await manager.sync.syncFromOpenOrders(chainOrders);
+        assert(
+            result.ordersNeedingCorrection.some(c => c.chainOrderId === 'c-nulltol'),
+            'Null tolerance case should still queue correction with strict (0) tolerance'
+        );
+    }
+
+    console.log(' - Testing PARTIAL restore threshold before ACTIVE upgrade...');
+    {
+        const manager = await createManager();
+        await manager._updateOrder({
+            id: 'partial-restore-1',
+            state: ORDER_STATES.PARTIAL,
+            type: ORDER_TYPES.SELL,
+            size: 50,
+            idealSize: 100,
+            price: 100,
+            orderId: 'c-partial-restore'
+        });
+
+        await manager.sync.syncFromOpenOrders([makeSellChainOrder('c-partial-restore', 60, 100)]);
+        assert.strictEqual(
+            manager.orders.get('partial-restore-1').state,
+            ORDER_STATES.PARTIAL,
+            'Order should remain PARTIAL when chain size is below restore ratio'
+        );
+
+        await manager.sync.syncFromOpenOrders([makeSellChainOrder('c-partial-restore', 98, 100)]);
+        assert.strictEqual(
+            manager.orders.get('partial-restore-1').state,
+            ORDER_STATES.ACTIVE,
+            'Order should upgrade to ACTIVE when chain size meets restore ratio'
+        );
     }
 
     console.log(' - Testing Concurrent Sync Race Protection...');

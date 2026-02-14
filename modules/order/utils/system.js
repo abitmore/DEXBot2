@@ -520,7 +520,10 @@ function syncBoundaryToFunds(manager) {
     const newIdx = OrderUtils.calculateFundDrivenBoundary(allSlots, availA, availB, manager.config.startPrice, gapSlots);
     if (newIdx !== manager.boundaryIdx) {
         manager.boundaryIdx = newIdx;
-        OrderUtils.assignGridRoles(allSlots, newIdx, gapSlots, ORDER_TYPES, ORDER_STATES);
+        OrderUtils.assignGridRoles(allSlots, newIdx, gapSlots, ORDER_TYPES, ORDER_STATES, {
+            assignOnChain: false,
+            getCurrentSlot: (id) => manager.orders.get(id)
+        });
         return true;
     }
     return false;

@@ -70,6 +70,25 @@ const Grid = require('./grid');
 class StrategyEngine {
     constructor(manager) {
         this.manager = manager;
+        this._settledFeeEvents = new Map();
+        this._feeEventTtlMs = 6 * 60 * 60 * 1000;
+    }
+
+    _pruneSettledFeeEvents(now) {
+        for (const [eventId, ts] of this._settledFeeEvents) {
+            if (now - ts > this._feeEventTtlMs) {
+                this._settledFeeEvents.delete(eventId);
+            }
+        }
+    }
+
+    _buildFeeEventId(filledOrder) {
+        return filledOrder.historyId || [
+            filledOrder.orderId || filledOrder.id,
+            filledOrder.blockNum || 'na',
+            Number(filledOrder.size || 0),
+            filledOrder.isMaker === false ? 'taker' : 'maker'
+        ].join(':');
     }
 
     /**
@@ -111,6 +130,9 @@ class StrategyEngine {
 
         mgr.logger.log(`[STRATEGY] Processing batch of ${filledOrders.length} filled orders...`, 'info');
 
+        const now = Date.now();
+        this._pruneSettledFeeEvents(now);
+
         let fillsToSettle = 0;
         let makerFillCount = 0;
         let takerFillCount = 0;
@@ -125,9 +147,16 @@ class StrategyEngine {
             mgr.logger.log(`[STRATEGY] Processing fill: id=${filledOrder.id}, type=${filledOrder.type}, price=${filledOrder.price}, size=${filledOrder.size}, partial=${isPartial}`, 'debug');
 
             if (!isPartial || filledOrder.isDelayedRotationTrigger) {
-                fillsToSettle++;
-                if (filledOrder.isMaker !== false) makerFillCount++;
-                else takerFillCount++;
+                const feeEventId = this._buildFeeEventId(filledOrder);
+
+                if (!this._settledFeeEvents.has(feeEventId)) {
+                    this._settledFeeEvents.set(feeEventId, now);
+                    fillsToSettle++;
+                    if (filledOrder.isMaker !== false) makerFillCount++;
+                    else takerFillCount++;
+                } else {
+                    mgr.logger.log(`[STRATEGY] Skipping duplicate fee settlement event ${feeEventId}`, 'debug');
+                }
 
                 const currentSlot = mgr.orders.get(filledOrder.id);
                 const slotReused = currentSlot && hasOnChainId(currentSlot) && filledOrder.orderId && currentSlot.orderId !== filledOrder.orderId;
@@ -279,6 +308,7 @@ class StrategyEngine {
                     price: slot.price,
                     type: slot.type,
                     size: size,
+                    idealSize: size,
                     // If size > 0, we WANT it active. If size 0, we want it VIRTUAL/SPREAD
                     state: size > 0 ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
                     committedSide: slot.committedSide // Preserve metadata
@@ -298,6 +328,7 @@ class StrategyEngine {
                     price: slot.price,
                     type: slot.type, // Keep current type
                     size: 0,
+                    idealSize: 0,
                     state: ORDER_STATES.VIRTUAL
                 });
             }
