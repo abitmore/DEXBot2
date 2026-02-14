@@ -1,5 +1,5 @@
 const assert = require('assert');
-console.log('Running manager tests');
+console.log('Running manager tests (COW)');
 
 const { OrderManager, grid: Grid } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
@@ -47,11 +47,10 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
     assert(Array.isArray(syncResult.updatedOrders), 'updatedOrders should be array');
     assert(Array.isArray(syncResult.filledOrders), 'filledOrders should be array');
 
-    console.log('manager tests passed');
+    console.log('manager core tests passed');
 
     // --- New tests for SPREAD selection behavior ---
-    // In the new StrategyEngine, spread activation happens during rebalance() 
-    // when shortages are detected in the active window.
+    // MODERN: Uses performSafeRebalance (COW pipeline)
     
     // Clear any existing orders and indices so test is deterministic
     mgr.orders = new Map();
@@ -67,7 +66,8 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
     };
 
     // Add SPREAD placeholders across a wider range (Unified IDs)
-    // midpoint is 100. slots 0-5 are BUY zone, 6-11 are SELL zone
+    // midpoint is 100. Price spacing 10%.
+    // slots 0-5 are BUY zone, 6-11 are SELL zone
     const spreads = [
         { id: 'slot-0', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 50, size: 10 },
         { id: 'slot-1', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 60, size: 10 },
@@ -86,56 +86,39 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
         await mgr._updateOrder(s);
     }
 
-    // Ensure funds are large enough (update source of truth, not derived prop)
+    // Ensure funds are large enough
     mgr.accountTotals.buyFree = 1000;
     mgr.accountTotals.sellFree = 1000;
     mgr.accountTotals.buy = 1000;
     mgr.accountTotals.sell = 1000;
     await mgr.recalculateFunds();
 
-    // Ensure each test case starts with a fresh boundary determination
     mgr.boundaryIdx = undefined;
 
-    // Trigger rebalance loop to fill the window (reactionCap=1 per cycle builds outside-in)
-    // We need 2 cycles to place both active orders per side
-    let placedBuys = [];
-    let placedSells = [];
+    // MODERN: COW rebalance plans the whole window at once
+    const cowRes = await mgr.performSafeRebalance();
+    const placements = cowRes.actions.filter(a => a.type === 'create');
     
-    for (let i = 0; i < 3; i++) {
-        const res = await mgr.strategy.rebalance();
-        placedBuys.push(...res.ordersToPlace.filter(o => o.type === ORDER_TYPES.BUY));
-        placedSells.push(...res.ordersToPlace.filter(o => o.type === ORDER_TYPES.SELL));
-        
-        // Simulate activation for next cycle
-        for (const o of res.ordersToPlace) {
-            await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: 'mock-'+o.id });
-        }
-        await mgr.recalculateFunds(); // update available/cacheFunds
-    }
+    let placedBuys = placements.filter(a => a.order.type === ORDER_TYPES.BUY);
+    let placedSells = placements.filter(a => a.order.type === ORDER_TYPES.SELL);
     
     // Sort all placed orders
-    placedBuys.sort((a,b) => b.price - a.price); // Descending (90, 80)
-    placedSells.sort((a,b) => a.price - b.price); // Ascending (110, 120)
+    placedBuys.sort((a,b) => b.order.price - a.order.price); // Descending (90, 80)
+    placedSells.sort((a,b) => a.order.price - b.order.price); // Ascending (110, 120)
     
-    assert(placedBuys.length >= 2, 'Should place at least two buys');
-    assert(placedSells.length >= 2, 'Should place at least two sells');
+    assert(placedBuys.length >= 2, 'Should plan at least two buys');
+    assert(placedSells.length >= 2, 'Should plan at least two sells');
     
     // Verify we covered the window (both Inner and Outer)
-    assert.strictEqual(placedBuys[0].price, 90, 'Should have activated Inner Buy (90)');
-    assert.strictEqual(placedBuys[1].price, 80, 'Should have activated Outer Buy (80)');
+    assert.strictEqual(placedBuys[0].order.price, 90, 'Should have planned Inner Buy (90)');
+    assert.strictEqual(placedBuys[1].order.price, 80, 'Should have planned Outer Buy (80)');
     
-    assert.strictEqual(placedSells[0].price, 110, 'Should have activated Inner Sell (110)');
-    assert.strictEqual(placedSells[1].price, 120, 'Should have activated Outer Sell (120)');
+    assert.strictEqual(placedSells[0].order.price, 110, 'Should have planned Inner Sell (110)');
+    assert.strictEqual(placedSells[1].order.price, 120, 'Should have planned Outer Sell (120)');
 
-     console.log('spread selection tests (via rebalance) passed');
-     process.exit(0);
-})().catch(err => {
-    console.error('Test failed:', err);
-    process.exit(1);
-});
+    console.log('spread selection tests (COW) passed');
 
-// --- Test the rotation behavior via rebalance ---
-(async () => {
+    // --- Test the rotation behavior via COW ---
     const rotateMgr = new OrderManager({
         assetA: 'BASE',
         assetB: 'QUOTE',
@@ -145,7 +128,7 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
         incrementPercent: 1,
         targetSpreadPercent: 5,
         botFunds: { buy: 1000, sell: 1000 },
-        weightDistribution: { buy: 1.0, sell: 1.0 }, // EQUAL WEIGHTS for rotation test
+        weightDistribution: { buy: 1.0, sell: 1.0 }, 
         activeOrders: { buy: 1, sell: 1 }
     });
 
@@ -153,35 +136,34 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
     await rotateMgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1000, sellFree: 1000 });
     rotateMgr.resetFunds();
 
-    // 1. Large grid of slots
     for (let i = 0; i < 100; i++) {
         const type = (i <= 50) ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
         await rotateMgr._updateOrder({ id: `slot-${i}`, type, state: ORDER_STATES.VIRTUAL, price: 50 + i, size: 10 });
     }
     
-    // 2. Set Boundary and Outlier
     rotateMgr.boundaryIdx = 50; 
-    rotateMgr.config.activeOrders = { buy: 1, sell: 1 };
     
     // Place active BUY at furthest outlier (slot-0)
     const furthestOrder = { id: 'slot-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.100', size: 10, price: 50 };
     await rotateMgr._updateOrder(furthestOrder);
     await rotateMgr.recalculateFunds();
 
-    // 3. Trigger rebalance with a mock fill on the OPPOSITE side (SELL) 
+    // Trigger rebalance with a mock fill on the OPPOSITE side (SELL) 
     // This moves boundary UP (+1) -> slot-51 becomes new BUY hole.
     const mockFills = [{ type: ORDER_TYPES.SELL, price: 105 }];
-    const result = await rotateMgr.strategy.rebalance(mockFills);
+    // performSafeRebalance expects fills
+    const rotateRes = await rotateMgr.performSafeRebalance(mockFills);
     
-    assert.strictEqual(result.ordersToRotate.length, 1, 'Should rotate 1 order');
-    assert.strictEqual(result.ordersToRotate[0].oldOrder.id, 'slot-0', 'Should rotate the furthest outlier');
-    assert.strictEqual(result.ordersToRotate[0].newGridId, 'slot-51', 'Should rotate to the new market hole (slot-51)');
+    // In COW, rotation is cancel + create
+    const cancel = rotateRes.actions.find(a => a.type === 'cancel' && a.id === 'slot-0');
+    const create = rotateRes.actions.find(a => a.type === 'create' && a.id === 'slot-51');
+    
+    assert(cancel, 'Should cancel the furthest outlier');
+    assert(create, 'Should create new order in the hole (slot-51)');
 
-     console.log('rotation behavior tests (via rebalance) passed');
-     process.exit(0);
+    console.log('rotation behavior tests (COW) passed');
+    process.exit(0);
 })().catch(err => {
     console.error('Test failed:', err);
     process.exit(1);
 });
-
-

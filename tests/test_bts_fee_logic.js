@@ -69,6 +69,7 @@ async function runTests() {
     }
 
     console.log('✓ BTS Fee logic tests passed!');
+    process.exit(0);
 }
 
 runTests().catch(err => {

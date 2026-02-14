@@ -3,7 +3,7 @@ const { OrderManager } = require('../modules/order/manager');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 console.log('='.repeat(70));
-console.log('Testing Multi-Partial Consolidation Rule');
+console.log('Testing Multi-Partial Consolidation Rule (COW)');
 console.log('='.repeat(70));
 
 // Helper to setup a manager with grid and test orders
@@ -21,8 +21,7 @@ async function setupManager() {
     const mgr = new OrderManager(cfg);
     mgr.logger = {
         log: (msg, level) => {
-            if (level === 'debug') return;
-            console.log(`    [${level}] ${msg}`);
+            if (level !== 'debug') console.log(`    [${level}] ${msg}`);
         }
     };
 
@@ -33,7 +32,7 @@ async function setupManager() {
 
     await mgr.setAccountTotals({ buy: 10000, sell: 10000, buyFree: 10000, sellFree: 10000 });
 
-    // Setup a simple grid with slots between partials, all with size 10
+    // Setup a simple grid
     mgr.orders.set('sell-0', { id: 'sell-0', type: ORDER_TYPES.SELL, price: 1.30, size: 10, state: ORDER_STATES.VIRTUAL });
     mgr.orders.set('sell-v1', { id: 'sell-v1', type: ORDER_TYPES.SELL, price: 1.25, size: 10, state: ORDER_STATES.VIRTUAL });
     mgr.orders.set('sell-1', { id: 'sell-1', type: ORDER_TYPES.SELL, price: 1.20, size: 10, state: ORDER_STATES.VIRTUAL });
@@ -43,8 +42,8 @@ async function setupManager() {
     mgr.orders.set('buy-0', { id: 'buy-0', type: ORDER_TYPES.BUY, price: 0.90, size: 10, state: ORDER_STATES.ACTIVE });
     mgr.orders.set('buy-1', { id: 'buy-1', type: ORDER_TYPES.BUY, price: 0.80, size: 10, state: ORDER_STATES.ACTIVE });
 
-    // Initialize indices by adding the initial orders
-    for (const order of mgr.orders.values()) {
+    // Initialize indices
+    for (const order of Array.from(mgr.orders.values())) {
         await mgr._updateOrder(order);
     }
 
@@ -59,7 +58,7 @@ async function testMultiPartialConsolidation() {
 
     // Setup 3 partial SELL orders
     // P1 (130, size 2) - Outermost
-    // P2 (120, size 15) - Middle (has residual: 15 - 10 = 5)
+    // P2 (120, size 15) - Middle
     // P3 (110, size 1) - Innermost
     const p1 = { id: 'sell-0', orderId: 'chain-p1', type: ORDER_TYPES.SELL, price: 1.30, size: 2, state: ORDER_STATES.PARTIAL };
     const p2 = { id: 'sell-1', orderId: 'chain-p2', type: ORDER_TYPES.SELL, price: 1.20, size: 15, state: ORDER_STATES.PARTIAL };
@@ -69,23 +68,32 @@ async function testMultiPartialConsolidation() {
     await mgr._updateOrder(p2);
     await mgr._updateOrder(p3);
 
-    // Execute rebalance logic - simulate opposite side fill
-    const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
+    // Execute COW rebalance
+    const result = await mgr.performSafeRebalance([{ type: ORDER_TYPES.BUY, price: 0.95 }]);
 
     console.log('  Verifying strategy actions:');
-    console.log(`  ordersToPlace: ${result.ordersToPlace.length}, ordersToUpdate: ${result.ordersToUpdate.length}, ordersToRotate: ${result.ordersToRotate.length}`);
+    console.log(`  Actions count: ${result.actions.length}`);
 
-    // The new strategy (activeOrders=2) will want a window of 2 orders.
-    // It will find active/partial orders p1, p2, p3.
-    // Since targetCount is 2, it will keep p3 (closest) and p2, and cancel/rotate p1.
-    
     // Check that we have some actions
-    assert(result.ordersToRotate.length > 0 || result.ordersToUpdate.length > 0, 'Should have rotation or updates for partials');
+    assert(result.actions.length > 0, 'Should have actions for partials');
 
-    const updatedP2 = result.ordersToUpdate.find(u => u.partialOrder.id === 'sell-1');
-    const rotatedP1 = result.ordersToRotate.find(r => r.oldOrder.id === 'sell-0');
+    // In modern architecture, activeOrders=2 window will keep p3 and sell-v3?
+    // Let's see roles. startPrice=1.0. Prices=[1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
+    // splitIdx for 1.0 is 0. gapSlots=2. boundaryIdx=-1.
+    // Slots 0, 1 are SPREAD. Slots 2... are SELL.
+    // Slot 2: 1.10 (p3) is SELL.
+    // Slot 3: 1.15 (sell-v2) is SELL.
+    // Slot 4: 1.20 (p2) is SELL.
+    // Window of 2: p3 and sell-v2.
+    // p2 and p1 are outside window -> should be CANCELLED.
+    
+    const cancelP1 = result.actions.find(a => a.type === 'cancel' && a.id === 'sell-0');
+    const cancelP2 = result.actions.find(a => a.type === 'cancel' && a.id === 'sell-1');
+    const updateP3 = result.actions.find(a => a.type === 'update' && a.id === 'sell-2');
 
-    console.log(`  ✓ Multi-partial handling verified via unified strategy`);
+    assert(cancelP1 || cancelP2 || updateP3, 'Should handle at least one of the partials');
+
+    console.log(`  ✓ Multi-partial handling verified via unified strategy (COW)`);
 }
 
 (async () => {

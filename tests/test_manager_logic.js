@@ -102,6 +102,7 @@ async function runTests() {
 
     OrderUtils.getAssetFees = originalGetAssetFees;
     console.log('✓ OrderManager logic tests passed!');
+    process.exit(0);
 }
 
 runTests().catch(err => {

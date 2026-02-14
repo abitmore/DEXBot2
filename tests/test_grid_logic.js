@@ -168,6 +168,7 @@ async function runTests() {
     }
 
     console.log('✓ Grid logic tests passed!');
+    process.exit(0);
 }
 
 runTests().catch(err => {

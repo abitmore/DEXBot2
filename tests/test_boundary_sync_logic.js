@@ -257,6 +257,7 @@ async function runTests() {
         await testStartupGridChecks();
         await testPoolIdCaching();
         console.log('\n✓ All boundary sync and startup integration tests passed!');
+        process.exit(0);
     } catch (err) {
         console.error('\n✗ Test failed:', err.message);
         process.exit(1);

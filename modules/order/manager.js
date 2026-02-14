@@ -393,16 +393,25 @@ class OrderManager {
     // --- Strategy Delegation ---
 
     /**
-     * Processes filled orders and calculates rebalancing actions.
-     * @param {Array<Object>} orders - Array of filled order objects.
-     * @param {Set<string>} excl - Set of order IDs to exclude from rebalancing.
-     * @param {Object} [options] - Optional processing flags passed to StrategyEngine.
-     * @returns {Promise<Object>} Rebalance result.
-     */
-    /**
      * Process filled orders using the new safe rebalance pipeline.
-     * 1. Process fills (Accountant update, logging)
-     * 2. Perform Safe Rebalance (Calc -> Validate -> Execute)
+     * 
+     * This method implements a two-phase approach:
+     * 1. Process fills (Accountant update, logging, fund recalculation)
+     * 2. Conditionally perform Safe Rebalance (Calc -> Validate -> Execute)
+     *
+     * Rebalancing is triggered when:
+     * - Non-partial fills occur (actual order completions)
+     * - Dual-side dust partials are detected (unhealthy state on both sides)
+     *
+     * @param {Array<Object>} orders - Array of filled order objects with fill metadata
+     * @param {Set<string>} excl - Set of order IDs to exclude from processing
+     * @param {Object} [options] - Optional processing flags passed to StrategyEngine
+     * @param {boolean} [options.skipRebalance] - If true, skip rebalance even if fills occur
+     * @returns {Promise<Object>} Rebalance result containing:
+     *   - actions {Array}: List of actions to execute (create, update, cancel)
+     *   - stateUpdates {Array}: Predicted state changes for optimistic UI updates
+     *   - hadRotation {boolean}: Whether any orders were rotated/placed/updated
+     * @async
      */
     async processFilledOrders(orders, excl, options) { 
         // Step 1: Handle Fills (Accounting & State Updates)
@@ -432,10 +441,11 @@ class OrderManager {
         }
 
         if (shouldRebalance) {
-            return this.performSafeRebalance(orders, excl);
+            const rebalanceResult = await this.performSafeRebalance(orders, excl);
+            return rebalanceResult;
         }
 
-        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+        return { actions: [], stateUpdates: [], hadRotation: false };
     }
 
     /**
@@ -1580,7 +1590,37 @@ class OrderManager {
 
     /**
      * UNIFIED SAFE REBALANCE ENTRY POINT
-     * PUBLIC API: Acquires _gridLock and delegates to _applySafeRebalanceCOW.
+     * 
+     * Performs a complete grid rebalancing using the Copy-on-Write (COW) pattern.
+     * This is the primary public API for rebalancing operations.
+     * 
+     * PROCESS:
+     * 1. Acquires exclusive _gridLock to prevent concurrent modifications
+     * 2. Creates a working copy of the grid (WorkingGrid)
+     * 3. Calculates target grid state using StrategyEngine
+     * 4. Reconciles current state with target state
+     * 5. Validates fund constraints
+     * 6. Returns action plan for execution
+     * 
+     * SAFETY FEATURES:
+     * - Lock-based concurrency control prevents race conditions
+     * - Copy-on-Write pattern ensures master grid is never modified until confirmed
+     * - Fund validation ensures actions won't exceed available capital
+     * - Comprehensive logging for observability
+     *
+     * @param {Array<Object>} [fills=[]] - Recently filled orders that triggered the rebalance
+     * @param {Set<string>} [excludeIds=new Set()] - Order IDs to exclude from rebalancing (e.g., locked orders)
+     * @returns {Promise<Object>} Rebalance plan containing:
+     *   - actions {Array}: Action objects {type, id, order, newSize, orderId}
+     *   - stateUpdates {Array}: Optimistic state predictions for UI
+     *   - hadRotation {boolean}: Whether grid structure changed
+     *   - workingGrid {WorkingGrid}: The working grid copy (COW pattern)
+     *   - workingIndexes {Object}: Index state of working grid
+     *   - workingBoundary {number}: New boundary index
+     *   - planningDuration {number}: Time spent planning in milliseconds
+     *   - aborted {boolean}: Whether planning was aborted
+     *   - reason {string}: Reason for abortion (if aborted)
+     * @async
      */
     async performSafeRebalance(fills = [], excludeIds = new Set()) {
         this.logger.log("[SAFE-REBALANCE] Starting with COW...", "info");
@@ -1593,6 +1633,12 @@ class OrderManager {
      * Internal logic for safe rebalancing using Copy-on-Write pattern.
      * Master grid is NEVER modified until blockchain confirmation.
      * This is now the ONLY rebalance method - no snapshot/rollback.
+     * 
+     * @param {Array<Object>} fills - Array of fill objects that triggered the rebalance
+     * @param {Set<string>} excludeIds - Order IDs to exclude from rebalancing
+     * @returns {Promise<Object>} Rebalance plan from _applySafeRebalanceCOW
+     * @async
+     * @private
      */
     async _applySafeRebalance(fills = [], excludeIds = new Set()) {
         return await this._applySafeRebalanceCOW(fills, excludeIds);
@@ -1824,7 +1870,18 @@ class OrderManager {
      * Master grid is NEVER modified until blockchain confirmation
      * @param {Array} fills - Array of fill events
      * @param {Set} excludeIds - IDs to exclude from rebalance
-     * @returns {Object} - Rebalance result with working grid (master unchanged)
+     * @returns {Promise<Object>} - Rebalance result with working grid (master unchanged)
+     *   - actions {Array}: Planned actions (create, update, cancel)
+     *   - stateUpdates {Array}: Optimistic state updates
+     *   - hadRotation {boolean}: Whether grid had structural changes
+     *   - workingGrid {WorkingGrid}: The COW working grid copy
+     *   - workingIndexes {Object}: Index snapshot of working grid
+     *   - workingBoundary {number}: New boundary index
+     *   - planningDuration {number}: Planning time in ms
+     *   - aborted {boolean}: Whether planning was aborted
+     *   - reason {string}: Abort reason (if aborted)
+     * @async
+     * @private
      */
     async _applySafeRebalanceCOW(fills = [], excludeIds = new Set()) {
         const startTime = Date.now();
@@ -1875,59 +1932,47 @@ class OrderManager {
             this.logger.log(`[COW] Rebalance planning took ${duration}ms`, 'warn');
         }
 
-        // Convert actions to legacy format for compatibility
-        const ordersToPlace = [];
-        const ordersToUpdate = [];
-        const ordersToCancel = [];
-        const ordersToRotate = [];
-        const stateUpdates = [];
+        const stateUpdates = this._buildStateUpdates(actions, this.orders);
 
-        for (const action of actions) {
-            if (action.type === 'create') {
-                ordersToPlace.push(action.order);
-                stateUpdates.push({ ...action.order, state: ORDER_STATES.VIRTUAL, orderId: null });
-            } else if (action.type === 'cancel') {
-                ordersToCancel.push({ orderId: action.orderId, id: action.id });
-                const masterOrder = this.orders.get(action.id);
-                if (masterOrder) {
-                    stateUpdates.push(convertToSpreadPlaceholder(masterOrder));
-                }
-            } else if (action.type === 'update') {
-                const newSize = Number.isFinite(Number(action.newSize))
-                    ? Number(action.newSize)
-                    : Number(action.order?.size || 0);
-                ordersToUpdate.push({ orderId: action.orderId, newSize, id: action.id, type: action.order?.type });
-                const masterOrder = this.orders.get(action.id);
-                if (masterOrder) {
-                    stateUpdates.push({ ...masterOrder, size: newSize });
-                }
-            }
-        }
+        this.logger.log(`[COW] Plan: Actions=${actions.length}, StateUpdates=${stateUpdates.length}`, 'info');
 
-        this.logger.log(`[COW] Plan: Place=${ordersToPlace.length}, Update=${ordersToUpdate.length}, Cancel=${ordersToCancel.length}`, 'info');
-
-        // Return legacy format plus COW-specific fields
         return {
-            ordersToPlace,
-            ordersToRotate,
-            ordersToUpdate,
-            ordersToCancel,
+            actions,
             stateUpdates,
-            hadRotation: (ordersToUpdate.length > 0 || ordersToPlace.length > 0),
+            hadRotation: actions.some(a => a.type === 'create' || a.type === 'update'),
             // COW-specific fields for _updateOrdersOnChainBatchCOW
             workingGrid,
             workingIndexes: workingGrid.getIndexes(),
             workingBoundary: boundaryIdx,
-            actions,
             planningDuration: duration
         };
     }
 
     /**
-     * Build state updates from actions
-     * @param {Array} actions - Array of actions
-     * @param {Map} masterGrid - Master grid
-     * @returns {Array} - State updates
+     * Build optimistic state updates from rebalance actions.
+     * 
+     * This method generates predicted state changes that can be applied
+     * optimistically to the UI before blockchain confirmation. It converts
+     * action objects into state update objects that represent the expected
+     * final state of affected orders.
+     *
+     * ACTION TYPES:
+     * - 'create': New order placement -> VIRTUAL state, no orderId
+     * - 'cancel': Order cancellation -> SPREAD placeholder
+     * - 'update': Order size update -> Modified size, same state
+     *
+     * @param {Array<Object>} actions - Array of rebalance action objects from _reconcileGridCOW
+     *   - type {string}: Action type ('create', 'cancel', 'update')
+     *   - id {string}: Order slot ID
+     *   - order {Object}: Order data (for create actions)
+     *   - newSize {number}: New size (for update actions)
+     *   - orderId {string}: Blockchain order ID (for cancel actions)
+     * @param {Map} masterGrid - Master grid Map containing current order states
+     * @returns {Array<Object>} State update objects for optimistic rendering:
+     *   - For creates: {id, price, type, size, state: VIRTUAL, orderId: null}
+     *   - For cancels: SPREAD placeholder {id, price, type: SPREAD, size: 0, state: VIRTUAL}
+     *   - For updates: {id, price, type, size: newSize, state, orderId}
+     * @private
      */
     _buildStateUpdates(actions, masterGrid) {
         const stateUpdates = [];

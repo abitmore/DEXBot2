@@ -2,9 +2,7 @@
  * tests/test_sequential_multi_fill.js
  * 
  * Focused test for sequential processing of multiple filled orders.
- * Verifies that when two buy orders fill at once:
- * 1. First fill: activates highest virtual buy + places new sell at highest spread
- * 2. Second fill: activates next virtual buy + places next sell at highest spread
+ * UPDATED: Uses modern COW pipeline (performSafeRebalance).
  */
 
 const assert = require('assert');
@@ -36,7 +34,7 @@ async function setupManager() {
         minPrice: 0.01,
         maxPrice: 0.04,
         botFunds: { buy: 1000, sell: 50000 },
-        activeOrders: { buy: 3, sell: 3 },  // 3 active orders per side
+        activeOrders: { buy: 3, sell: 3 }, 
         incrementPercent: 1,
         targetSpreadPercent: 2,
         weightDistribution: { buy: 0.5, sell: 0.5 }
@@ -44,9 +42,9 @@ async function setupManager() {
 
     const mgr = new OrderManager(cfg);
     mgr.logger = {
-        log: (msg, lvl) => console.log(`[${(lvl || 'INFO').toUpperCase().padEnd(5)}] ${msg}`),
+        log: (msg, lvl) => { if (lvl !== 'debug') console.log(`[${(lvl || 'INFO').toUpperCase().padEnd(5)}] ${msg}`); },
         logFundsStatus: () => { },
-        level: 'debug'
+        level: 'info'
     };
     mgr.assets = {
         assetA: { id: '1.3.0', precision: 5, symbol: 'BTS' },
@@ -59,129 +57,74 @@ async function setupManager() {
 
 async function testSequentialMultiFillProcessing() {
     console.log('\n' + '='.repeat(80));
-    console.log('TEST: Sequential Multi-Fill Processing');
+    console.log('TEST: Sequential Multi-Fill Processing (COW)');
     console.log('='.repeat(80));
 
     const mgr = await setupManager();
     const grid = require('../modules/order/grid');
     await grid.initializeGrid(mgr, mgr.config);
 
-    // Initial rebalance to place orders
     console.log('\n>>> Initial Grid Setup');
     
-    // Loop rebalance to build up grid (since strict cap limits to 1 per cycle)
-    for (let i = 0; i < 5; i++) {
-        const initial = await mgr.strategy.rebalance();
-        if (initial.ordersToPlace.length === 0) break;
-        
-        console.log(`    Cycle ${i}: Placing ${initial.ordersToPlace.length} orders`);
-        
-        // Simulate placing orders on-chain
-        for (const o of initial.ordersToPlace) {
-            await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `ord-${o.id}` });
-        }
-        await mgr.recalculateFunds();
-        
-        const activeCount = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).length;
-        if (activeCount >= 2) break;
+    // COW rebalance builds the window instantly if budget allows
+    const setupRes = await mgr.performSafeRebalance();
+    const setupPlacements = setupRes.actions.filter(a => a.type === 'create');
+    
+    for (const action of setupPlacements) {
+        await mgr._updateOrder({ ...action.order, state: ORDER_STATES.ACTIVE, orderId: `ord-${action.id}` });
     }
+    await mgr.recalculateFunds();
 
-    // Get current state
     const activeBuys = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
-        .sort((a, b) => b.price - a.price);  // Highest price first (closest to market)
+        .sort((a, b) => b.price - a.price); 
     const activeSells = mgr.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.ACTIVE)
-        .sort((a, b) => a.price - b.price);  // Lowest price first (closest to market)
+        .sort((a, b) => a.price - b.price); 
 
     console.log(`\n>>> Initial Active Orders:`);
     console.log(`    BUY: ${activeBuys.map(o => `${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
     console.log(`    SELL: ${activeSells.map(o => `${o.id}@${o.price.toFixed(4)}`).join(', ')}`);
     console.log(`    Boundary Index: ${mgr.boundaryIdx}`);
 
-    // ===========================================================================
-    // SIMULATE TWO BUY ORDERS FILLING SIMULTANEOUSLY
-    // ===========================================================================
-
-    // Select the two closest-to-market buys (highest prices)
     const fill1 = { ...activeBuys[0], isPartial: false };
     const fill2 = { ...activeBuys[1], isPartial: false };
 
     console.log('\n' + '─'.repeat(80));
     console.log('SIMULATING: Two buy orders filled at once');
-    console.log(`    Fill 1: ${fill1.id} @ ${fill1.price.toFixed(4)} (closest to market)`);
-    console.log(`    Fill 2: ${fill2.id} @ ${fill2.price.toFixed(4)} (next closest)`);
+    console.log(`    Fill 1: ${fill1.id} @ ${fill1.price.toFixed(4)}`);
+    console.log(`    Fill 2: ${fill2.id} @ ${fill2.price.toFixed(4)}`);
     console.log('─'.repeat(80));
 
-    // ===========================================================================
-    // PROCESS FILL 1 (Sequential)
-    // ===========================================================================
+    // PROCESS FILL 1
+    console.log('\n>>> Processing FILL 1');
+    await mgr.strategy.processFillsOnly([fill1], new Set([fill2.id]));
+    const result1 = await mgr.performSafeRebalance([fill1], new Set([fill2.id]));
 
-    console.log('\n>>> Processing FILL 1 (Sequential - Single Fill)');
-    const boundaryBefore1 = mgr.boundaryIdx;
+    console.log(`    Actions: ${result1.actions.length}`);
 
-    const result1 = await mgr.processFilledOrders([fill1], new Set([fill2.id]));
-
-    console.log(`    Boundary: ${boundaryBefore1} -> ${mgr.boundaryIdx}`);
-    console.log(`    New Orders to Place: ${result1.ordersToPlace.length}`);
-    console.log(`    Orders to Rotate: ${result1.ordersToRotate.length}`);
-
-    if (result1.ordersToPlace.length > 0) {
-         console.log(`    Placing: ${result1.ordersToPlace.map(o => `${o.type} ${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
-     }
-     if (result1.ordersToRotate.length > 0) {
-         console.log(`    Rotating: ${result1.ordersToRotate.map(r => `${r.oldOrder.id}->${r.newGridId}@${Format.formatPrice4(r.newPrice)}`).join(', ')}`);
-     }
-
-    // Simulate on-chain execution of result1
-    for (const o of result1.ordersToPlace) {
-        await mgr._updateOrder({ ...o, state: ORDER_STATES.ACTIVE, orderId: `new1-${o.id}` });
-    }
-    for (const r of result1.ordersToRotate) {
-        await mgr._updateOrder({ ...mgr.orders.get(r.oldOrder.id), state: ORDER_STATES.VIRTUAL, orderId: null });
-        const targetSlot = mgr.orders.get(r.newGridId);
-        if (targetSlot) {
-            await mgr._updateOrder({ ...targetSlot, size: r.newSize, state: ORDER_STATES.ACTIVE, orderId: `rot1-${r.newGridId}` });
+    // Apply actions from result1
+    for (const action of result1.actions) {
+        if (action.type === 'create') {
+            await mgr._updateOrder({ ...action.order, state: ORDER_STATES.ACTIVE, orderId: `new1-${action.id}` });
+        } else if (action.type === 'cancel') {
+            await mgr._updateOrder({ ...mgr.orders.get(action.id), state: ORDER_STATES.VIRTUAL, orderId: null });
+        } else if (action.type === 'update') {
+            await mgr._updateOrder({ ...mgr.orders.get(action.id), size: action.newSize });
         }
     }
     await mgr.recalculateFunds();
 
-    // ===========================================================================
-    // PROCESS FILL 2 (Sequential)
-    // ===========================================================================
+    // PROCESS FILL 2
+    console.log('\n>>> Processing FILL 2');
+    await mgr.strategy.processFillsOnly([fill2]);
+    const result2 = await mgr.performSafeRebalance([fill2]);
 
-    console.log('\n>>> Processing FILL 2 (Sequential - Single Fill)');
-    const boundaryBefore2 = mgr.boundaryIdx;
+    console.log(`    Actions: ${result2.actions.length}`);
 
-    const result2 = await mgr.processFilledOrders([fill2], new Set());
-
-    console.log(`    Boundary: ${boundaryBefore2} -> ${mgr.boundaryIdx}`);
-    console.log(`    New Orders to Place: ${result2.ordersToPlace.length}`);
-    console.log(`    Orders to Rotate: ${result2.ordersToRotate.length}`);
-
-     if (result2.ordersToPlace.length > 0) {
-         console.log(`    Placing: ${result2.ordersToPlace.map(o => `${o.type} ${o.id}@${Format.formatPrice4(o.price)}`).join(', ')}`);
-     }
-     if (result2.ordersToRotate.length > 0) {
-         console.log(`    Rotating: ${result2.ordersToRotate.map(r => `${r.oldOrder.id}->${r.newGridId}@${Format.formatPrice4(r.newPrice)}`).join(', ')}`);
-     }
-
-    // ===========================================================================
     // ASSERTIONS
-    // ===========================================================================
-
     console.log('\n>>> Verification');
 
-    // 1. Each fill should trigger at least one action
-    const actions1 = result1.ordersToPlace.length + result1.ordersToRotate.length;
-    const actions2 = result2.ordersToPlace.length + result2.ordersToRotate.length;
-
-    console.log(`    Fill 1 actions: ${actions1}`);
-    console.log(`    Fill 2 actions: ${actions2}`);
-
-    assert(actions1 > 0, 'Fill 1 should trigger at least one action');
-    assert(actions2 > 0, 'Fill 2 should trigger at least one action');
-
-    // 2. Boundary should shift once per fill
-    // (BUY fill shifts boundary left by 1)
+    assert(result1.actions.length > 0, 'Fill 1 should trigger at least one action');
+    assert(result2.actions.length > 0, 'Fill 2 should trigger at least one action');
 
     console.log('\n✅ Sequential multi-fill processing test PASSED');
 }

@@ -21,11 +21,6 @@ async function testStartupAfterDivergenceWithPartial() {
         assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
     };
 
-    // Simulate persisted grid with mixed states (from previous run):
-    // - 2 ACTIVE SELLs
-    // - 1 PARTIAL SELL (from previous partial fill)
-    // - 2 ACTIVE BUYs
-    // - 1 PARTIAL BUY
     const persistedGrid = [
         { id: 'sell-0', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, price: 1900, size: 10, orderId: '1.7.100' },
         { id: 'sell-1', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, price: 1880, size: 12, orderId: '1.7.101' },
@@ -35,12 +30,10 @@ async function testStartupAfterDivergenceWithPartial() {
         { id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL, price: 1750, size: 50, orderId: '1.7.202' }
     ];
 
-    // Load persisted grid
     for (const order of persistedGrid) {
         await mgr._updateOrder(order);
     }
 
-    // TEST: Partial states should be preserved at startup (not converted to ACTIVE)
     const sellPartial = mgr.orders.get('sell-2');
     const buyPartial = mgr.orders.get('buy-2');
 
@@ -48,7 +41,6 @@ async function testStartupAfterDivergenceWithPartial() {
     assert.strictEqual(buyPartial.state, ORDER_STATES.PARTIAL, 'BUY partial should remain PARTIAL');
     console.log(`  ✓ PARTIAL states preserved at startup (not converted to ACTIVE)`);
 
-    // TEST: Counting should include partials
     const activeBuyCount = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE).length;
     const partialBuyCount = mgr.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL).length;
     const totalBuyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
@@ -58,7 +50,6 @@ async function testStartupAfterDivergenceWithPartial() {
     assert.strictEqual(totalBuyCount, 3, 'Total should be 3 (2 ACTIVE + 1 PARTIAL)');
     console.log(`  ✓ BUY order count correct: ${activeBuyCount} ACTIVE + ${partialBuyCount} PARTIAL = ${totalBuyCount} total`);
 
-    // TEST: Rebalancing should not create new orders (at target)
     const targetBuys = mgr.config.activeOrders.buy;
     const belowTarget = totalBuyCount < targetBuys;
     assert(!belowTarget, `At target (${totalBuyCount} >= ${targetBuys}), should not create new orders`);
@@ -81,44 +72,14 @@ async function testFundCyclingWithPartialFills() {
         assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
     };
 
-    // Setup: 1 ACTIVE SELL + 1 PARTIAL SELL at target
-    await mgr._updateOrder({
-        id: 'sell-0',
-        type: ORDER_TYPES.SELL,
-        state: ORDER_STATES.ACTIVE,
-        price: 1900,
-        size: 10,
-        orderId: '1.7.100'
-    });
+    await mgr._updateOrder({ id: 'sell-0', type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, price: 1900, size: 10, orderId: '1.7.100' });
+    await mgr._updateOrder({ id: 'sell-1', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, price: 1850, size: 5, orderId: '1.7.101' });
+    await mgr._updateOrder({ id: 'buy-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, price: 1700, size: 100, orderId: '1.7.200' });
 
-    await mgr._updateOrder({
-        id: 'sell-1',
-        type: ORDER_TYPES.SELL,
-        state: ORDER_STATES.PARTIAL,
-        price: 1850,
-        size: 5, // Remaining after partial fill
-        orderId: '1.7.101'
-    });
-
-    // Add 1 ACTIVE BUY
-    await mgr._updateOrder({
-        id: 'buy-0',
-        type: ORDER_TYPES.BUY,
-        state: ORDER_STATES.ACTIVE,
-        price: 1700,
-        size: 100,
-        orderId: '1.7.200'
-    });
-
-    // Setup initial funds (simplified for test)
     mgr.resetFunds();
-    // Set account totals and recalculate
     await mgr.setAccountTotals({ buy: 600, sell: 515, buyFree: 100, sellFree: 0 });
     await mgr.recalculateFunds();
 
-    // TEST: Partial fill was processed without affecting fund cycles
-    // The important thing is that even with partial fills, fund cycling continues
-    // If a fill happens with a partial existing, the proceeds go to cacheFunds
     const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
     assert.strictEqual(buyCount, 1, 'Should have 1 ACTIVE buy after setup');
     console.log(`  ✓ Fund cycling with partial fill: maintains grid consistency`);
@@ -141,61 +102,18 @@ async function testRebalancingWithExistingPartial() {
         assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
     };
 
-    // Setup grid: 2 ACTIVE BUYs + 1 PARTIAL BUY (at target)
-    await mgr._updateOrder({
-        id: 'buy-0',
-        type: ORDER_TYPES.BUY,
-        state: ORDER_STATES.ACTIVE,
-        price: 1750,
-        size: 100,
-        orderId: '1.7.100'
-    });
+    await mgr._updateOrder({ id: 'buy-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, price: 1750, size: 100, orderId: '1.7.100' });
+    await mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, price: 1700, size: 120, orderId: '1.7.101' });
+    await mgr._updateOrder({ id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL, price: 1650, size: 80, orderId: '1.7.102' });
 
-    await mgr._updateOrder({
-        id: 'buy-1',
-        type: ORDER_TYPES.BUY,
-        state: ORDER_STATES.ACTIVE,
-        price: 1700,
-        size: 120,
-        orderId: '1.7.101'
-    });
-
-    await mgr._updateOrder({
-        id: 'buy-2',
-        type: ORDER_TYPES.BUY,
-        state: ORDER_STATES.PARTIAL,
-        price: 1650,
-        size: 80, // Remaining
-        orderId: '1.7.102'
-    });
-
-    // Setup 3 ACTIVE SELLs (above target - ready to rotate)
     for (let i = 0; i < 3; i++) {
-        await mgr._updateOrder({
-            id: `sell-${i}`,
-            type: ORDER_TYPES.SELL,
-            state: ORDER_STATES.ACTIVE,
-            price: 1850 + i * 10,
-            size: 10,
-            orderId: `1.7.${200 + i}`
-        });
+        await mgr._updateOrder({ id: `sell-${i}`, type: ORDER_TYPES.SELL, state: ORDER_STATES.ACTIVE, price: 1850 + i * 10, size: 10, orderId: `1.7.${200 + i}` });
     }
 
-    // Setup virtual slots for virtual order activation
     for (let i = 3; i < 6; i++) {
-        await mgr._updateOrder({
-            id: `buy-${i}`,
-            type: ORDER_TYPES.BUY,
-            state: ORDER_STATES.VIRTUAL,
-            price: 1600 - (i - 2) * 10,
-            size: 0
-        });
+        await mgr._updateOrder({ id: `buy-${i}`, type: ORDER_TYPES.BUY, state: ORDER_STATES.VIRTUAL, price: 1600 - (i - 2) * 10, size: 0 });
     }
 
-    // Simulate a BUY fill (fully fills buy-0)
-    const filledBuy = mgr.orders.get('buy-0');
-
-    // TEST: Count should reflect current state (2 ACTIVE + 1 PARTIAL = 3 at target)
     const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
     const targetBuys = mgr.config.activeOrders.buy;
     const buyBelowTarget = buyCount < targetBuys;
@@ -205,7 +123,6 @@ async function testRebalancingWithExistingPartial() {
     console.log(`  ✓ BUY count at target: ${buyCount}/${targetBuys}`);
     console.log(`  ✓ Decision: Will ROTATE (not create) because at target`);
 
-    // TEST: Partial order is not moved during rotation (it's on the opposite fill side)
     const partialStaysInPlace = mgr.orders.get('buy-2').state === ORDER_STATES.PARTIAL;
     assert(partialStaysInPlace, 'Partial on filled side should stay in place');
     console.log(`  ✓ Existing PARTIAL BUY remains in place during SELL-side rebalancing\n`);
@@ -227,35 +144,24 @@ async function testGridNavigationWithPartials() {
         assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
     };
 
-    // Create a full price-sorted grid from high to low
     const gridSlots = [
         { id: 'sell-0', type: ORDER_TYPES.SELL, price: 2000 },
         { id: 'sell-1', type: ORDER_TYPES.SELL, price: 1900 },
         { id: 'sell-2', type: ORDER_TYPES.SELL, price: 1850 },
-        { id: 'sell-3', type: ORDER_TYPES.SELL, price: 1820 }, // PARTIAL here
+        { id: 'sell-3', type: ORDER_TYPES.SELL, price: 1820 }, 
         { id: 'buy-0', type: ORDER_TYPES.SPREAD, price: 1780 },
         { id: 'buy-1', type: ORDER_TYPES.BUY, price: 1700 },
         { id: 'buy-2', type: ORDER_TYPES.BUY, price: 1600 }
     ];
 
-    // Add all slots to grid
     for (const slot of gridSlots) {
         const stateType = slot.id === 'sell-3' ? ORDER_STATES.PARTIAL : ORDER_STATES.VIRTUAL;
         const size = slot.id === 'sell-3' ? 5 : 0;
         const orderId = slot.id === 'sell-3' ? '1.7.999' : undefined;
 
-        await mgr._updateOrder({
-            id: slot.id,
-            type: slot.id.startsWith('sell') ? ORDER_TYPES.SELL : ORDER_TYPES.BUY,
-            state: stateType,
-            price: slot.price,
-            size: size,
-            orderId: orderId
-        });
+        await mgr._updateOrder({ id: slot.id, type: slot.id.startsWith('sell') ? ORDER_TYPES.SELL : ORDER_TYPES.BUY, state: stateType, price: slot.price, size: size, orderId: orderId });
     }
 
-    // TEST: STEP 2.5 - PARTIAL at sell-3 should be recognized and handled in-place
-    // (Rather than moving to different slot, STEP 2.5 handles it in its current position)
     const partial = mgr.orders.get('sell-3');
     assert(partial !== undefined, 'Partial sell-3 should exist');
     assert(partial.state === ORDER_STATES.PARTIAL, 'sell-3 should be in PARTIAL state');
@@ -264,8 +170,6 @@ async function testGridNavigationWithPartials() {
     console.log(`  ✓ Partial sell-3 (price 1820) recognized at its position`);
     console.log(`  ✓ STEP 2.5 will handle in-place: evaluate if dust or non-dust`);
 
-    // Verify partial is preserved during rebalancing
-    // (with STEP 2.5, partials stay at their current slot, don't move between slots)
     const afterRebalance = mgr.orders.get('sell-3');
     assert(afterRebalance !== undefined, 'Partial should remain in grid after rebalancing');
     assert(afterRebalance.id === 'sell-3', 'Partial should stay at sell-3 position');
@@ -288,41 +192,14 @@ async function testEdgeBoundGridWithPartial() {
         assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
     };
 
-    // Simulate edge-bound situation: only highest sell slot + partial
-    await mgr._updateOrder({
-        id: 'sell-0',
-        type: ORDER_TYPES.SELL,
-        state: ORDER_STATES.PARTIAL,
-        price: 2000, // At max price (edge)
-        size: 5,
-        orderId: '1.7.100'
-    });
+    await mgr._updateOrder({ id: 'sell-0', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, price: 2000, size: 5, orderId: '1.7.100' });
+    await mgr._updateOrder({ id: 'buy-0', type: ORDER_TYPES.SPREAD, state: ORDER_STATES.VIRTUAL, price: 1800, size: 0 });
+    await mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, price: 1700, size: 100, orderId: '1.7.200' });
 
-    // Add some virtual slots for checking
-    await mgr._updateOrder({
-        id: 'buy-0',
-        type: ORDER_TYPES.SPREAD,
-        state: ORDER_STATES.VIRTUAL,
-        price: 1800,
-        size: 0
-    });
-
-    await mgr._updateOrder({
-        id: 'buy-1',
-        type: ORDER_TYPES.BUY,
-        state: ORDER_STATES.ACTIVE,
-        price: 1700,
-        size: 100,
-        orderId: '1.7.200'
-    });
-
-    // TEST: Partial at edge is recognized in counting
     const sellCount = countOrdersByType(ORDER_TYPES.SELL, mgr.orders);
     assert.strictEqual(sellCount, 1, 'Should count the partial sell at edge');
     console.log(`  ✓ Edge-bound partial recognized in count: ${sellCount}`);
 
-    // TEST: STEP 2.5 - Partial at edge should be handled in-place
-    // (Edge-bound partial stays at its position, STEP 2.5 evaluates dust status)
     const partial = mgr.orders.get('sell-0');
     assert(partial !== undefined, 'Partial sell-0 should exist');
     assert(partial.state === ORDER_STATES.PARTIAL, 'sell-0 should be PARTIAL state');
@@ -330,7 +207,6 @@ async function testEdgeBoundGridWithPartial() {
     console.log(`  ✓ Partial at grid edge (sell-0) recognized`);
     console.log(`  ✓ STEP 2.5 handles in-place: not moved despite being at boundary`);
 
-    // TEST: Creates new orders instead of rotating when below target
     const buyCount = countOrdersByType(ORDER_TYPES.BUY, mgr.orders);
     const targetBuys = mgr.config.activeOrders.buy;
     const belowTarget = buyCount < targetBuys;
@@ -357,27 +233,16 @@ async function testStartupDualDustTrigger() {
         assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
     };
 
-    // Setup: Dust partials on both sides
-    // Ideal size will be roughly 500 per order (1000 budget / 2 orders)
-    // 5% of 500 = 25. So < 25 is dust.
-    
-    await mgr._updateOrder({
-        id: 'sell-0', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL,
-        price: 1900, size: 1, orderId: '1.7.100' // tiny dust
-    });
+    // Provide dummy synchronizeWithChain
+    mgr.synchronizeWithChain = async () => ({ newOrders: [], ordersNeedingCorrection: [] });
 
-    await mgr._updateOrder({
-        id: 'buy-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL,
-        price: 1700, size: 5, orderId: '1.7.200' // tiny dust
-    });
+    await mgr._updateOrder({ id: 'sell-0', type: ORDER_TYPES.SELL, state: ORDER_STATES.PARTIAL, price: 1900, size: 1, orderId: '1.7.100' });
+    await mgr._updateOrder({ id: 'buy-0', type: ORDER_TYPES.BUY, state: ORDER_STATES.PARTIAL, price: 1700, size: 5, orderId: '1.7.200' });
 
-    // Mock reconcileStartupOrders logic (simplified)
     const { reconcileStartupOrders } = require('../modules/order/startup_reconcile');
     
-    // We need to mock getChainFundsSnapshot for the dust check
-    // Unified logic uses this to calculate ideal sizes
     mgr.getChainFundsSnapshot = () => ({
-        allocatedBuy: 1000, allocatedSell: 1000, // Use allocated for unified sizing
+        allocatedBuy: 1000, allocatedSell: 1000,
         chainFreeBuy: 1000, chainFreeSell: 1000,
         committedChainBuy: 5, committedChainSell: 1
     });
@@ -388,15 +253,13 @@ async function testStartupDualDustTrigger() {
     
     mgr.performSafeRebalance = async () => {
         rebalanceCalled = true;
-        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], partialMoves: [] };
+        return { actions: [], stateUpdates: [] };
     };
     mgr._applySafeRebalance = async () => {
         rebalanceCalled = true;
-        return { ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [], partialMoves: [] };
+        return { actions: [], stateUpdates: [] };
     };
 
-    // Run reconcile (partially mocked inputs)
-    // FIX: Provide matching chain orders so they aren't detected as phantoms and cleared
     const chainDustOrders = [
         { id: '1.7.100', sell_price: { base: { asset_id: '1.3.5537', amount: 1000 }, quote: { asset_id: '1.3.0', amount: 1900 } }, for_sale: 1000 },
         { id: '1.7.200', sell_price: { base: { asset_id: '1.3.0', amount: 8500 }, quote: { asset_id: '1.3.5537', amount: 5000 } }, for_sale: 8500 }
@@ -412,8 +275,7 @@ async function testStartupDualDustTrigger() {
             cancelOrder: async () => {},
             createOrder: async () => [[{ trx: { operation_results: [[null, 'test-order-id']] } }]]
         },
-        chainOpenOrders: chainDustOrders,
-        syncResult: { unmatchedChainOrders: [] }
+        chainOpenOrders: chainDustOrders
     });
 
     assert.strictEqual(rebalanceCalled, true, 'Should have triggered full rebalance for dual-side dust at startup');
@@ -423,9 +285,6 @@ async function testStartupDualDustTrigger() {
     mgr._applySafeRebalance = originalApplyRebalance;
 }
 
-// ============================================================================
-// RUN ALL TESTS
-// ============================================================================
 (async () => {
     try {
         await testStartupAfterDivergenceWithPartial();

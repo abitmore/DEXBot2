@@ -236,6 +236,8 @@ class SyncEngine {
             return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
         }
 
+        mgr.logger?.log?.(`[SYNC] Starting synchronization from ${chainOrders?.length || 0} blockchain orders...`, 'info');
+
         // Defense-in-depth: Use AsyncLock to ensure only one full-sync at a time
         // Add timeout to prevent indefinite lock acquisition hangs
         const timeoutMs = TIMING.SYNC_LOCK_TIMEOUT_MS; // Deadlock prevention timeout
@@ -248,7 +250,9 @@ class SyncEngine {
                     if (cancelToken.isCancelled) {
                         throw new Error('Sync operation cancelled due to lock acquisition timeout');
                     }
-                    return this._doSyncFromOpenOrders(chainOrders, options);
+                    const result = await this._doSyncFromOpenOrders(chainOrders, options);
+                    mgr.logger?.log?.(`[SYNC] Synchronization complete: ${result.filledOrders.length} filled, ${result.updatedOrders.length} updated, ${result.ordersNeedingCorrection.length} needing correction.`, 'info');
+                    return result;
                 }, { cancelToken }),
                 new Promise((_, reject) =>
                     setTimeout(() => {
@@ -264,11 +268,32 @@ class SyncEngine {
     }
 
     /**
-     * Internal method that performs the actual sync logic.
-     * Called within _syncLock to guarantee exclusive execution.
-     * @param {Array|null} chainOrders - Array of blockchain order objects
+     * Internal method that performs the actual sync logic within lock context.
+     *
+     * This is the core synchronization implementation that runs inside _syncLock
+     * to ensure exclusive access. It validates inputs, parses chain orders, and
+     * delegates to _performSyncFromOpenOrders for the actual reconciliation.
+     *
+     * VALIDATION CHECKS:
+     * - Manager must be initialized
+     * - Chain orders must be a valid array
+     * - Manager.orders must be initialized as Map
+     * - Asset precisions must be available
+     *
+     * PARSING:
+     * Converts raw blockchain order objects to normalized format using parseChainOrder()
+     * with appropriate asset precision.
+     *
+     * @param {Array<Object>|null} chainOrders - Array of raw blockchain order objects
+     *   Each object contains sell_price, for_sale, id, etc. from blockchain
      * @param {Object} options - Sync options
-     * @returns {Promise<Object>} Sync result
+     *   - validateOnly {boolean}: If true, only validate without applying changes
+     *   - skipFundRecalc {boolean}: If true, skip fund recalculation after sync
+     * @returns {Promise<Object>} Sync result:
+     *   - filledOrders {Array}: Orders that were detected as filled
+     *   - updatedOrders {Array}: Orders that were updated during sync
+     *   - ordersNeedingCorrection {Array}: Orders flagged for price correction
+     * @async
      * @private
      */
     async _doSyncFromOpenOrders(chainOrders, options) {
@@ -656,6 +681,13 @@ class SyncEngine {
         const isMaker = fillOp.is_maker !== false;  // Default missing flag to maker for consistency with accounting
         const orderId = fillOp.order_id;
 
+        const paysAmountRaw = fillOp.pays ? Number(fillOp.pays.amount) : 0;
+        const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
+        const receivesAmountRaw = fillOp.receives ? Number(fillOp.receives.amount) : 0;
+        const receivesAssetId = fillOp.receives ? fillOp.receives.asset_id : null;
+
+        mgr.logger.log(`[SYNC] Processing fill ${historyId} at block ${blockNum} for order ${orderId} (maker=${isMaker}). Pays=${paysAmountRaw}@${paysAssetId}, Receives=${receivesAmountRaw}@${receivesAssetId}`, 'debug');
+
          // Optimistically update account totals to reflect the fill
          // This prevents fund invariant violations during the window between fill detection and next blockchain fetch
          await mgr.accountant.processFillAccounting(fillOp);
@@ -668,8 +700,7 @@ class SyncEngine {
         try {
             mgr.pauseFundRecalc();
             try {
-                const paysAmount = fillOp.pays ? Number(fillOp.pays.amount) : 0;
-                const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
+                const paysAmount = paysAmountRaw;
 
                 const assetAPrecision = mgr.assets?.assetA?.precision;
                 const assetBPrecision = mgr.assets?.assetB?.precision;
@@ -687,7 +718,10 @@ class SyncEngine {
                     }
                 }
 
-                if (!matchedGridOrder) return { filledOrders: [], updatedOrders: [], partialFill: false };
+                if (!matchedGridOrder) {
+                    mgr.logger.log(`[SYNC] Fill for order ${orderId} ignored: order not found in active grid.`, 'debug');
+                    return { filledOrders: [], updatedOrders: [], partialFill: false };
+                }
 
                 const orderType = matchedGridOrder.type;
                 const currentSize = Number(matchedGridOrder.size || 0);
@@ -701,6 +735,8 @@ class SyncEngine {
                 } else {
                     if (paysAssetId === mgr.assets.assetB.id) filledAmount = blockchainToFloat(paysAmount, precision, true);
                 }
+
+                mgr.logger.log(`[SYNC] Order ${orderId} (${orderType}) currentSize=${currentSize}, filledAmount=${filledAmount}`, 'debug');
 
                 const currentSizeInt = floatToBlockchainInt(currentSize, precision);
                 const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
@@ -728,6 +764,7 @@ class SyncEngine {
                 const filledOrders = [];
                 const updatedOrders = [];
                 if (isEffectivelyFull) {
+                    mgr.logger.log(`[SYNC] Full fill for order ${orderId} (slot ${matchedGridOrder.id}).`, 'info');
                     const filledOrder = {
                         ...matchedGridOrder,
                         blockNum: blockNum,
@@ -750,6 +787,7 @@ class SyncEngine {
                     filledOrders.push(filledOrder);
                     return { filledOrders, updatedOrders, partialFill: false };
                 } else {
+                    mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${newSize}`, 'info');
                     const filledPortion = {
                         ...matchedGridOrder,
                         size: filledAmount,

@@ -222,6 +222,7 @@ async function runTests() {
     OrderUtils.getAssetFees = originalGetAssetFees;
 
     console.log('✓ Accountant logic tests passed!');
+    process.exit(0);
 }
 
 runTests().catch(err => {

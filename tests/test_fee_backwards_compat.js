@@ -228,6 +228,7 @@ async function runTests() {
         await testMixedAssetAccounting();
         await testFeeCalculationAccuracy();
         console.log('\n✓ All fee backwards compatibility tests passed!');
+        process.exit(0);
     } catch (err) {
         console.error('\n✗ Test failed:', err.message);
         process.exit(1);
