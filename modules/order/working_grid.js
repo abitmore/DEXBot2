@@ -135,12 +135,13 @@ class WorkingGrid {
     }
 
     /**
-     * Sync a specific order from master grid to working grid
-     * Used when fills arrive during rebalance to keep working grid in sync
+     * Sync a specific order from master grid to working grid.
+     * Used when fills arrive during rebalance to keep working grid in sync.
      * @param {Map} masterGrid - Current master grid
      * @param {string} orderId - Order ID to sync
+     * @param {number} [masterVersion] - Current master grid version (updates baseVersion to stay in sync)
      */
-    syncFromMaster(masterGrid, orderId) {
+    syncFromMaster(masterGrid, orderId, masterVersion) {
         const masterOrder = masterGrid.get(orderId);
         if (!masterOrder) {
             // Order was deleted from master, also delete from working
@@ -149,13 +150,18 @@ class WorkingGrid {
                 this.modified.add(orderId);
                 this._indexes = null;
             }
-            return;
+        } else {
+            // Clone and update working grid with master state
+            this.grid.set(orderId, this._cloneOrder(masterOrder));
+            this.modified.add(orderId);
+            this._indexes = null;
         }
 
-        // Clone and update working grid with master state
-        this.grid.set(orderId, this._cloneOrder(masterOrder));
-        this.modified.add(orderId);
-        this._indexes = null;
+        // Track the master version we've synced to so the commit-time version
+        // check passes when the working grid has been kept up-to-date.
+        if (Number.isFinite(masterVersion)) {
+            this.baseVersion = masterVersion;
+        }
     }
 }
 

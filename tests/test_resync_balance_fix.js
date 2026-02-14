@@ -27,6 +27,8 @@ async function testDeltaBalanceCheck() {
         getOrdersByTypeAndState: (type, state) => [],
         synchronizeWithChain: async () => { },
         _updateOrder: (o) => { manager.orders.set(o.id, o); },
+        _applyOrderUpdate: async (o) => { manager.orders.set(o.id, o); return true; },
+        _gridLock: { acquire: async (cb) => await cb() },
         startPrice: 0.5
     };
 

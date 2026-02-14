@@ -28,6 +28,7 @@ async function testDuplicateRacePrevention() {
             }
         },
         _updateOrder: (o) => { orders.set(o.id, o); },
+        _applyOrderUpdate: async (o) => { orders.set(o.id, o); return true; },
         startPrice: 0.5
     };
 

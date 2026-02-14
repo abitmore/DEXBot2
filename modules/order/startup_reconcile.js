@@ -757,10 +757,12 @@ async function reconcileStartupOrders({
 
     // Sanitize phantom on-chain claims under a single grid lock.
     return await manager._gridLock.acquire(async () => {
-        // Use unlocked updater when available; fallback keeps lightweight tests working.
-        const applyUpdate = (typeof manager._applyOrderUpdate === 'function')
-            ? manager._applyOrderUpdate.bind(manager)
-            : manager._updateOrder.bind(manager);
+        // Use unlocked updater directly -- we already hold _gridLock.
+        // _updateOrder must NOT be used here: it re-acquires _gridLock and would deadlock.
+        if (typeof manager._applyOrderUpdate !== 'function') {
+            throw new Error('manager._applyOrderUpdate is required for startup reconciliation');
+        }
+        const applyUpdate = manager._applyOrderUpdate.bind(manager);
 
         const chainIds = new Set((Array.isArray(chainOpenOrders) ? chainOpenOrders : []).map(o => o && o.id).filter(Boolean));
         for (const order of manager.orders.values()) {

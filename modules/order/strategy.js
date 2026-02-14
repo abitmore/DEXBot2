@@ -54,7 +54,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES } = require("../constants");
+const { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING } = require("../constants");
 const {
     getAssetFees,
     _getFeeCache
@@ -71,7 +71,7 @@ class StrategyEngine {
     constructor(manager) {
         this.manager = manager;
         this._settledFeeEvents = new Map();
-        this._feeEventTtlMs = 6 * 60 * 60 * 1000;
+        this._feeEventTtlMs = Number(PIPELINE_TIMING.FEE_EVENT_DEDUP_TTL_MS) || (6 * 60 * 60 * 1000);
     }
 
     _pruneSettledFeeEvents(now) {
@@ -83,10 +83,13 @@ class StrategyEngine {
     }
 
     _buildFeeEventId(filledOrder) {
+        // Use integer satoshi representation for size to avoid float imprecision
+        // (e.g. 0.1 + 0.2 = 0.30000000000000004 vs 0.3 producing different keys).
+        const sizeInt = Math.round(Number(filledOrder.size || 0) * 1e8);
         return filledOrder.historyId || [
             filledOrder.orderId || filledOrder.id,
             filledOrder.blockNum || 'na',
-            Number(filledOrder.size || 0),
+            sizeInt,
             filledOrder.isMaker === false ? 'taker' : 'maker'
         ].join(':');
     }

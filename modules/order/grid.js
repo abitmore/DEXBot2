@@ -1266,10 +1266,94 @@ class Grid {
     }
 
     /**
-     * Prepare orders for spread correction.
+     * Determine which side has more available funds for spread correction.
      * @param {OrderManager} manager - The manager instance.
-     * @param {string} preferredSide - The side to place orders on.
-     * @returns {Object} { ordersToPlace, ordersToUpdate }
+     * @param {number} currentMarketPrice - Current market price (for valuation context).
+     * @returns {{ side: string|null, reason: string }} The side to correct on, or null if insufficient funds.
+     */
+    static determineOrderSideByFunds(manager, currentMarketPrice) {
+        const buyAvailable = Math.min(
+            Number(manager.funds?.available?.buy || 0),
+            Number(manager.accountTotals?.buyFree || 0)
+        );
+        const sellAvailable = Math.min(
+            Number(manager.funds?.available?.sell || 0),
+            Number(manager.accountTotals?.sellFree || 0)
+        );
+
+        // Need at least some funds on a side to justify correction
+        const buyPrecision = manager.assets?.assetB?.precision ?? 8;
+        const sellPrecision = manager.assets?.assetA?.precision ?? 8;
+        const buyMinUnit = 1 / Math.pow(10, buyPrecision);
+        const sellMinUnit = 1 / Math.pow(10, sellPrecision);
+
+        const buyViable = buyAvailable > buyMinUnit;
+        const sellViable = sellAvailable > sellMinUnit;
+
+        let side = null;
+        if (buyViable && sellViable) {
+            side = buyAvailable > sellAvailable ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+        } else if (buyViable) {
+            side = ORDER_TYPES.BUY;
+        } else if (sellViable) {
+            side = ORDER_TYPES.SELL;
+        }
+
+        if (!side) {
+            manager.logger?.log?.(
+                `Spread correction skipped: insufficient funds on both sides ` +
+                `(buy=${Format.formatAmount8(buyAvailable)}, sell=${Format.formatAmount8(sellAvailable)})`,
+                'warn'
+            );
+        }
+
+        return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
+    }
+
+    /**
+     * Calculate the geometric ideal size for a new order being placed during spread correction.
+     * @param {OrderManager} manager - The manager instance.
+     * @param {string} targetType - The type of order being placed.
+     * @returns {Promise<number|null>} The calculated geometric size.
+     */
+    static async calculateGeometricSizeForSpreadCorrection(manager, targetType) {
+        const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+        const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
+
+        // Use centralized sizing context (respects botFunds % allocation)
+        const ctx = await Grid._getSizingContext(manager, side);
+        if (!ctx || ctx.budget <= 0 || slotsCount < 1) return null;
+
+        // ALLOW slotsCount === 1 to enable spread correction even if a side is completely missing
+        const dummy = Array.from({ length: slotsCount }, () => ({ type: targetType }));
+        try {
+            const sized = calculateOrderSizes(
+                dummy,
+                manager.config,
+                side === 'sell' ? ctx.budget : 0,
+                side === 'buy' ? ctx.budget : 0,
+                0,
+                0,
+                ctx.precision,
+                ctx.precision
+            );
+            if (!Array.isArray(sized) || sized.length === 0) {
+                manager.logger?.log?.(`calculateOrderSizes returned invalid result for spread correction`, 'warn');
+                return null;
+            }
+            return side === 'sell' ? sized[0].size : sized[sized.length - 1].size;
+        } catch (e) {
+            manager.logger?.log?.(`Error calculating geometric size for spread correction: ${e.message}`, 'warn');
+            return null;
+        }
+    }
+
+    /**
+     * Prepares one or more orders to correct a wide spread.
+     * @param {Object} manager - The OrderManager instance.
+     * @param {string} preferredSide - The side to place the correction on (ORDER_TYPES.BUY/SELL).
+     * @returns {Object} Correction result { ordersToPlace }.
+     * @throws {Error} If preferredSide is invalid.
      */
     static async prepareSpreadCorrectionOrders(manager, preferredSide) {
         // FIX: Validate preferredSide parameter to prevent silent logic errors
@@ -1324,133 +1408,6 @@ class Grid {
 
         // Process the selected candidate
         const idealSize = await Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
-        const availableFund = Math.min(
-            Number(manager.funds?.available?.[sideName] || 0),
-            Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0
-        );
-
-        const sellAvailable = Math.min(
-            Number(manager.funds?.available?.sell || 0),
-            Number(manager.accountTotals?.sellFree || 0)
-        );
-
-        const buyRatio = reqBuy ? (buyAvailable / reqBuy) : 0;
-        const sellRatio = reqSell ? (sellAvailable / reqSell) : 0;
-
-        let side = null;
-        if (buyRatio >= 1 && sellRatio >= 1) side = buyRatio > sellRatio ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-        else if (buyRatio >= 1) side = ORDER_TYPES.BUY;
-        else if (sellRatio >= 1) side = ORDER_TYPES.SELL;
-
-        if (!side) {
-            const buyPrecision = manager.assets?.assetB?.precision;
-            const sellPrecision = manager.assets?.assetA?.precision;
-            const reqBuyText = reqBuy && Number.isFinite(buyPrecision) ? Format.formatAmountByPrecision(reqBuy, buyPrecision) : 'N/A';
-            const reqSellText = reqSell && Number.isFinite(sellPrecision) ? Format.formatAmountByPrecision(reqSell, sellPrecision) : 'N/A';
-            manager.logger?.log?.(`Spread correction skipped: insufficient funds for either side (buy ratio: ${Format.formatPercent2(buyRatio)}, sell ratio: ${Format.formatPercent2(sellRatio)}). Required: buy=${reqBuyText}, sell=${reqSellText}`, 'warn');
-        }
-
-        return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
-    }
-
-    /**
-     * Calculate the geometric ideal size for a new order being placed during spread correction.
-     * @param {OrderManager} manager - The manager instance.
-     * @param {string} targetType - The type of order being placed.
-     * @returns {number|null} The calculated geometric size.
-     */
-    static async calculateGeometricSizeForSpreadCorrection(manager, targetType) {
-        const side = targetType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-        const slotsCount = Array.from(manager.orders.values()).filter(o => o.type === targetType).length + 1;
-
-        // Use centralized sizing context (respects botFunds % allocation)
-        const ctx = await Grid._getSizingContext(manager, side);
-        if (!ctx || ctx.budget <= 0 || slotsCount < 1) return null;
-
-        // ALLOW slotsCount === 1 to enable spread correction even if a side is completely missing
-        const dummy = Array.from({ length: slotsCount }, () => ({ type: targetType }));
-        try {
-            const sized = calculateOrderSizes(
-                dummy,
-                manager.config,
-                side === 'sell' ? ctx.budget : 0,
-                side === 'buy' ? ctx.budget : 0,
-                0,
-                0,
-                ctx.precision,
-                ctx.precision
-            );
-            if (!Array.isArray(sized) || sized.length === 0) {
-                manager.logger?.log?.(`calculateOrderSizes returned invalid result for spread correction`, 'warn');
-                return null;
-            }
-            return side === 'sell' ? sized[0].size : sized[sized.length - 1].size;
-        } catch (e) {
-            manager.logger?.log?.(`Error calculating geometric size for spread correction: ${e.message}`, 'warn');
-            return null;
-        }
-    }
-
-    /**
-     * Prepares one or more orders to correct a wide spread.
-     * @param {Object} manager - The OrderManager instance.
-     * @param {string} preferredSide - The side to place the correction on (ORDER_TYPES.BUY/SELL).
-     * @returns {Object} Correction result { ordersToPlace }.
-     * @throws {Error} If preferredSide is invalid.
-     */
-    static prepareSpreadCorrectionOrders(manager, preferredSide) {
-        // FIX: Validate preferredSide parameter to prevent silent logic errors
-        if (preferredSide !== ORDER_TYPES.BUY && preferredSide !== ORDER_TYPES.SELL) {
-            throw new Error(`Invalid preferredSide: ${preferredSide}. Must be '${ORDER_TYPES.BUY}' or '${ORDER_TYPES.SELL}'.`);
-        }
-
-        const ordersToPlace = [];
-        const ordersToUpdate = [];
-        const railType = preferredSide;
-        const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-
-        // STRATEGY: Edge-Based Correction (Safe Bridging)
-        // Instead of calculating a "mid-price" (which can be dangerous in wide gaps),
-        // we strictly target the orders closest to the spread gap.
-        // 1. Priority: Update existing PARTIAL orders at the edge (Highest Buy / Lowest Sell).
-        // 2. Fallback: Activate SPREAD slots at the edge (Lowest Spread for Buy / Highest Spread for Sell).
-
-        const allOrders = Array.from(manager.orders.values());
-        let candidate = null;
-
-        // 1. Look for PARTIAL orders on the preferred side
-        const partials = allOrders.filter(o => o.type === railType && o.state === ORDER_STATES.PARTIAL);
-
-        if (partials.length > 0) {
-            // Sort to find the one closest to the gap
-            // BUY: Highest price (descending)
-            // SELL: Lowest price (ascending)
-            partials.sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-            candidate = partials[0];
-            manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${candidate.price} for update`, 'debug');
-        }
-
-        // 2. If no partials, look for SPREAD slots to activate
-        if (!candidate) {
-            const spreads = allOrders.filter(o => o.type === ORDER_TYPES.SPREAD && isSlotAvailable(o));
-
-            if (spreads.length > 0) {
-                // Sort to find the one closest to our existing wall
-                // BUY: We want to extend UPWARDS, so pick the LOWEST price spread slot (closest to Buys)
-                // SELL: We want to extend DOWNWARDS, so pick the HIGHEST price spread slot (closest to Sells)
-                spreads.sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
-                candidate = spreads[0];
-                manager.logger?.log?.(`[SPREAD-CORRECTION] Identified spread slot at ${candidate.price} for activation`, 'debug');
-            }
-        }
-
-        if (!candidate) {
-            manager.logger?.log?.(`[SPREAD-CORRECTION] No suitable partials or spread slots found. Skipping.`, 'warn');
-            return { ordersToPlace: [], ordersToUpdate: [] };
-        }
-
-        // Process the selected candidate
-        const idealSize = Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
         const availableFund = Math.min(
             Number(manager.funds?.available?.[sideName] || 0),
             Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0

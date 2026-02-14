@@ -1203,15 +1203,12 @@ class OrderManager {
                 'error'
             );
             // Auto-correct to VIRTUAL to prevent fund tracking corruption.
-            // If this was previously on-chain, clear identity fields and reset size so
-            // we don't carry a stale committed amount into virtual accounting.
-            const oldWasOnChain = isOrderOnChain(oldOrder);
+            // Clear identity fields and reset size unconditionally so we don't
+            // carry a stale committed amount into virtual accounting.
             nextOrder.state = ORDER_STATES.VIRTUAL;
             nextOrder.orderId = null;
             nextOrder.rawOnChain = null;
-            if (oldWasOnChain) {
-                nextOrder.size = 0;
-            }
+            nextOrder.size = 0;
         }
 
         // 1. Update optimistic balance (atomic update of tracked funds)
@@ -1246,7 +1243,7 @@ class OrderManager {
         if (this._currentWorkingGrid && this._rebalanceState === 'REBALANCING') {
             try {
                 this._currentWorkingGrid.markStale(`master mutation during rebalance (${context})`);
-                this._currentWorkingGrid.syncFromMaster(this.orders, id);
+                this._currentWorkingGrid.syncFromMaster(this.orders, id, this._gridVersion);
             } catch (syncErr) {
                 this._currentWorkingGrid.markStale(`working-grid sync failure: ${syncErr.message}`);
                 this.logger.log(`[COW] Failed to sync working grid for order ${id}: ${syncErr.message}`, 'warn');
@@ -1957,50 +1954,79 @@ class OrderManager {
     async _commitWorkingGrid(workingGrid, workingIndexes, workingBoundary) {
         const startTime = Date.now();
         const stats = workingGrid.getMemoryStats();
+        let didCommit = false;
 
+        // Pre-lock staleness checks (safe to read -- these are only set by the
+        // current rebalance owner and concurrent fills mark the grid stale).
         if (workingGrid?.isStale?.()) {
             this.logger.log(`[COW] Refusing stale working grid commit: ${workingGrid.getStaleReason() || 'stale'}`, 'warn');
             this._clearWorkingGridRef();
             return;
         }
 
-        if (Number.isFinite(Number(workingGrid?.baseVersion)) && workingGrid.baseVersion !== this._gridVersion) {
+        // Acquire _gridLock for the actual atomic swap to prevent concurrent
+        // _applyOrderUpdate calls from reading partially-committed state.
+        await this._gridLock.acquire(async () => {
+            // Re-check staleness under the lock -- a fill may have arrived
+            // between the pre-check above and lock acquisition.
+            if (workingGrid?.isStale?.()) {
+                this.logger.log(`[COW] Refusing stale working grid commit (under lock): ${workingGrid.getStaleReason() || 'stale'}`, 'warn');
+                this._clearWorkingGridRef();
+                return;
+            }
+
+            // Reject stale working snapshots that were planned against an older
+            // master version. This protects against lost updates when fills land
+            // while a batch is broadcasting.
+            if (Number.isFinite(Number(workingGrid?.baseVersion)) && workingGrid.baseVersion !== this._gridVersion) {
+                this.logger.log(
+                    `[COW] Refusing working grid commit: base version ${workingGrid.baseVersion} != current ${this._gridVersion}`,
+                    'warn'
+                );
+                this._clearWorkingGridRef();
+                return;
+            }
+
             this.logger.log(
-                `[COW] Refusing working grid commit: base version ${workingGrid.baseVersion} != current ${this._gridVersion}`,
-                'warn'
+                `[COW] Committing working grid: ${stats.size} orders, ${stats.modified} modified`,
+                'debug'
             );
-            this._clearWorkingGridRef();
+
+            // Validate delta before commit - ensure actions are still valid
+            const delta = workingGrid.buildDelta(this.orders);
+            if (delta.length === 0) {
+                this.logger.log('[COW] Delta empty at commit - nothing to commit', 'debug');
+                this._clearWorkingGridRef();
+                return;
+            }
+
+            this.orders = Object.freeze(workingGrid.toMap());
+            this.boundaryIdx = workingBoundary;
+            this._gridVersion += 1;
+
+            // Recompute indexes from the working grid's current state rather than
+            // using the pre-computed workingIndexes, which may be stale if
+            // syncFromMaster updated the working grid during broadcast.
+            const freshIndexes = workingGrid.getIndexes();
+
+            this._ordersByState = {
+                [ORDER_STATES.VIRTUAL]: freshIndexes[ORDER_STATES.VIRTUAL] || new Set(),
+                [ORDER_STATES.ACTIVE]: freshIndexes[ORDER_STATES.ACTIVE] || new Set(),
+                [ORDER_STATES.PARTIAL]: freshIndexes[ORDER_STATES.PARTIAL] || new Set()
+            };
+
+            this._ordersByType = {
+                [ORDER_TYPES.BUY]: freshIndexes[ORDER_TYPES.BUY] || new Set(),
+                [ORDER_TYPES.SELL]: freshIndexes[ORDER_TYPES.SELL] || new Set(),
+                [ORDER_TYPES.SPREAD]: freshIndexes[ORDER_TYPES.SPREAD] || new Set()
+            };
+
+            didCommit = true;
+        });
+
+        if (!didCommit) {
             return;
         }
-        
-        this.logger.log(
-            `[COW] Committing working grid: ${stats.size} orders, ${stats.modified} modified`,
-            'debug'
-        );
-
-        // Validate delta before commit - ensure actions are still valid
-        const delta = workingGrid.buildDelta(this.orders);
-        if (delta.length === 0) {
-            this.logger.log('[COW] Delta empty at commit - nothing to commit', 'debug');
-            this._clearWorkingGridRef();
-            return;
-        }
-
-        this.orders = Object.freeze(workingGrid.toMap());
-        this.boundaryIdx = workingBoundary;
-        this._gridVersion += 1;
-        
-        this._ordersByState = {
-            [ORDER_STATES.VIRTUAL]: workingIndexes[ORDER_STATES.VIRTUAL],
-            [ORDER_STATES.ACTIVE]: workingIndexes[ORDER_STATES.ACTIVE],
-            [ORDER_STATES.PARTIAL]: workingIndexes[ORDER_STATES.PARTIAL]
-        };
-        
-        this._ordersByType = {
-            [ORDER_TYPES.BUY]: workingIndexes[ORDER_TYPES.BUY],
-            [ORDER_TYPES.SELL]: workingIndexes[ORDER_TYPES.SELL],
-            [ORDER_TYPES.SPREAD]: workingIndexes[ORDER_TYPES.SPREAD]
-        };
 
         await this.recalculateFunds();
         

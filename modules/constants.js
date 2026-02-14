@@ -479,7 +479,13 @@ let PIPELINE_TIMING = {
     //   - Set to 0: unlimited retries (not recommended; can cause infinite recovery loops)
     //   - Set to 1: one-shot only (minimal recovery effort; original patch15 behavior)
     //   - Set to 5: balanced (typical value; ~5 min of effort)
-    MAX_RECOVERY_ATTEMPTS: 5
+    MAX_RECOVERY_ATTEMPTS: 5,
+
+    // FEE_EVENT_DEDUP_TTL_MS: How long to remember settled fee events for deduplication.
+    // Prevents the same fill from being fee-settled multiple times when
+    // re-detected across sync cycles or reconnections.
+    // Default: 6 hours (21600000 ms).
+    FEE_EVENT_DEDUP_TTL_MS: 6 * 60 * 60 * 1000
 };
 
 // Logging Level Configuration

@@ -446,7 +446,7 @@ class SyncEngine {
 
         const configuredRestoreRatio = Number(GRID_LIMITS.PARTIAL_ACTIVE_RESTORE_RATIO);
         const restoreRatio = (Number.isFinite(configuredRestoreRatio) && configuredRestoreRatio > 0)
-            ? configuredRestoreRatio
+            ? Math.min(configuredRestoreRatio, 1.0)
             : 0.95;
 
         const resolveStateFromChainSize = (priorState, chainSize, idealSize) => {
@@ -456,12 +456,7 @@ class SyncEngine {
             const idealNumeric = Number.isFinite(Number(idealSize)) ? Number(idealSize) : 0;
             const ratio = idealNumeric > 0 ? (chainNumeric / idealNumeric) : 1;
 
-            if (priorState === ORDER_STATES.PARTIAL) {
-                if (idealNumeric <= 0) return ORDER_STATES.PARTIAL;
-                return ratio >= restoreRatio ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
-            }
-
-            if (priorState === ORDER_STATES.ACTIVE) {
+            if (priorState === ORDER_STATES.PARTIAL || priorState === ORDER_STATES.ACTIVE) {
                 if (idealNumeric <= 0) return ORDER_STATES.PARTIAL;
                 return ratio >= restoreRatio ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
             }
@@ -527,7 +522,7 @@ class SyncEngine {
                     const newInt = floatToBlockchainInt(newSize, precision);
 
                     if (newInt > 0) {
-                        const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize, skipAccounting);
+                        const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
                         if (nextOrder) {
                             // Merge updated state if size actually changed
                             Object.assign(updatedOrder, nextOrder);
@@ -548,7 +543,7 @@ class SyncEngine {
                     const updatedOrder = {
                         ...gridOrder,
                         size: chainOrder.size,
-                        rawOnChain: chainOrder.raw,
+                        rawOnChain: rawChainOrders.get(gridOrder.orderId),
                         state: resolveStateFromChainSize(
                             gridOrder.state,
                             chainOrder.size,
@@ -599,8 +594,8 @@ class SyncEngine {
                 const precision = (bestMatch.type === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
                 const targetInt = floatToBlockchainInt(match.size, precision);
                 const chainInt = floatToBlockchainInt(chainOrder.size, precision);
-                if (floatToBlockchainInt(bestMatch.size, precision) !== floatToBlockchainInt(chainOrder.size, precision)) {
-                    const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size, skipAccounting);
+                if (targetInt !== chainInt) {
+                    const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size);
                     if (updated) Object.assign(bestMatch, updated);
 
                     if (chainInt > 0) {
@@ -625,7 +620,7 @@ class SyncEngine {
                         chainOrderIdsOnGrid.add(chainOrderId);
                         continue;
                     }
-                } else if (!wasVirtual && wasPartial) {
+                } else if (wasPartial) {
                     bestMatch.state = resolveStateFromChainSize(
                         match.state,
                         chainOrder.size,

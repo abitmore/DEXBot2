@@ -410,6 +410,19 @@ class Accountant {
               return false;
           }
 
+          // Decay: if enough time has passed since the last failure, treat this
+          // as a fresh violation cycle to prevent stale counts from a previous
+          // cycle permanently exhausting the attempt budget.
+          const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : 180000;
+          if (state.attemptCount > 0 && state.lastFailureAt > 0 && (now - state.lastFailureAt) > decayMs) {
+              mgr.logger?.log?.(
+                  `[RECOVERY] Attempt count decayed (${state.attemptCount} -> 0) after ${Math.round((now - state.lastFailureAt) / 1000)}s idle`,
+                  'debug'
+              );
+              state.attemptCount = 0;
+              state.lastFailureAt = 0;
+          }
+
           if (hasAttemptLimit && state.attemptCount >= maxAttemptsRaw) {
               mgr.logger?.log?.(
                   `[RECOVERY] Skipping recovery: max attempts reached (${state.attemptCount}/${maxAttemptsRaw})`,
@@ -522,181 +535,6 @@ class Accountant {
     }
 
     /**
-     * Adjust both total and free balances (for fills, fees, deposits).
-     * PRIVATE: Must be called while holding _fundLock.
-     */
-    adjustTotalBalance(orderType, delta, context = 'fill') {
-        const mgr = this.manager;
-        const isBuy = orderType === ORDER_TYPES.BUY;
-        const freeKey = isBuy ? 'buyFree' : 'sellFree';
-        const totalKey = isBuy ? 'buy' : 'sell';
-
-        if (!mgr.accountTotals || mgr.accountTotals[totalKey] === undefined) return;
-
-        const oldTotal = Number(mgr.accountTotals[totalKey]) || 0;
-        const oldFree = Number(mgr.accountTotals[freeKey]) || 0;
-
-        mgr.accountTotals[totalKey] = Math.max(0, oldTotal + delta);
-        mgr.accountTotals[freeKey] = Math.max(0, oldFree + delta);
-
-        if (mgr.logger && mgr.logger.level === 'debug') {
-            mgr.logger.log(`[ACCOUNTING] ${totalKey}Total ${delta > 0 ? '+' : ''}${Format.formatAmount8(delta)} (${context}) -> ${Format.formatAmount8(mgr.accountTotals[totalKey])} (was ${Format.formatAmount8(oldTotal)})`, 'debug');
-        }
-    }
-
-    /**
-     * Update optimistic balance tracked by the accountant.
-     * PUBLIC API: Acquires _fundLock.
-     */
-    async updateOptimisticFreeBalance(oldOrder, nextOrder, context = 'update', fee = 0, skipAssetAccounting = false) {
-        return await this.manager._fundLock.acquire(async () => {
-            return await this._applyOptimisticBalanceUpdate(oldOrder, nextOrder, context, fee, skipAssetAccounting);
-        });
-    }
-
-    /**
-     * Internal logic for updating optimistic balance.
-     * PRIVATE: Must be called while holding _fundLock.
-     */
-    async _applyOptimisticBalanceUpdate(oldOrder, nextOrder, context = 'update', fee = 0, skipAssetAccounting = false) {
-        const mgr = this.manager;
-
-        // 1. Asset Commitment Changes (Optimistic lock/unlock of capital)
-        if (!skipAssetAccounting) {
-            const oldStateOnChain = isOrderOnChain(oldOrder);
-            const nextStateOnChain = isOrderOnChain(nextOrder);
-            const oldSize = Number(oldOrder?.size) || 0;
-            const nextSize = Number(nextOrder?.size) || 0;
-            const oldSideType = oldOrder?.type;
-
-            // ... (rest of the logic stays the same but uses the private helpers)
-            let commitmentDelta = 0;
-            let commitmentSide = null;
-
-            if (!oldStateOnChain && nextStateOnChain) {
-                // LOCK: Order moving from Virtual -> On-chain
-                commitmentDelta = nextSize;
-                commitmentSide = nextOrder.type;
-            } else if (oldStateOnChain && !nextStateOnChain) {
-                // UNLOCK: Order moving from On-chain -> Virtual/Spread
-                commitmentDelta = -oldSize;
-                commitmentSide = oldSideType || oldOrder.type;
-            } else if (oldStateOnChain && nextStateOnChain) {
-                // ADJUST: Size changed while on-chain
-                commitmentDelta = nextSize - oldSize;
-                commitmentSide = nextOrder.type;
-            }
-
-            if (commitmentDelta > 0) {
-                // Acquire capital: move from Free to Committed
-                const success = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
-                if (!success) {
-                    mgr._lastAccountingFailure = { side: commitmentSide, amount: commitmentDelta, context, at: Date.now() };
-
-                    mgr.logger?.log?.(
-                        `[ACCOUNTING] CRITICAL: Failed to lock ${Format.formatAmount8(commitmentDelta)} for ${commitmentSide} during ${context}. Scheduling recovery.`,
-                        'error'
-                    );
-
-                    if (mgr._throwOnIllegalState) {
-                        const err = new Error(
-                            `CRITICAL ACCOUNTING STATE: failed to lock ${Format.formatAmount8(commitmentDelta)} ${commitmentSide} during ${context}`
-                        );
-                        err.code = 'ACCOUNTING_COMMITMENT_FAILED';
-                        throw err;
-                    }
-
-                    this._attemptFundRecovery(mgr, 'Optimistic commitment deduction failure').catch(err => {
-                        mgr.logger?.log?.(`[RECOVERY] Immediate recovery scheduling failed: ${err.message}`, 'error');
-                    });
-                }
-            } else if (commitmentDelta < 0) {
-                // Release capital: move from Committed back to Free
-                const releaseSide = oldSideType || oldOrder.type;
-                await this.addToChainFree(releaseSide, Math.abs(commitmentDelta), `${context}`);
-            }
-        }
-
-        // 2. Handle Blockchain Fees (Physical reduction of TOTAL balance)
-        const btsSide = (mgr.config?.assetA === 'BTS') ? 'sell' : (mgr.config?.assetB === 'BTS') ? 'buy' : null;
-        if (fee > 0 && btsSide) {
-            const btsOrderType = (btsSide === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-            this.adjustTotalBalance(btsOrderType, -fee, `${context}-fee`);
-        }
-    }
-
-    /**
-     * Deduct BTS fees using adjustTotalBalance.
-     * PUBLIC API: Acquires _fundLock.
-     */
-    async deductBtsFees(requestedSide = null) {
-        return await this.manager._fundLock.acquire(async () => {
-            return await this._applyBtsFeeDeduction(requestedSide);
-        });
-    }
-
-    /**
-     * Internal logic for BTS fee deduction.
-     * PRIVATE: Must be called while holding _fundLock.
-     */
-    async _applyBtsFeeDeduction(requestedSide) {
-        const mgr = this.manager;
-
-        // Early returns for no work needed
-        if (!mgr.funds || !mgr.funds.btsFeesOwed || mgr.funds.btsFeesOwed <= 0) return;
-        if (!mgr.accountTotals) return;
-
-        const btsSide = (mgr.config.assetA === 'BTS') ? 'sell' : (mgr.config.assetB === 'BTS') ? 'buy' : null;
-        const normalizedRequestedSide = (requestedSide === 'buy' || requestedSide === 'sell') ? requestedSide : null;
-        let side = btsSide || normalizedRequestedSide;
-
-        if (normalizedRequestedSide && btsSide && normalizedRequestedSide !== btsSide) {
-            mgr.logger?.log?.(
-                `[BTS-FEE] Ignoring requested side '${normalizedRequestedSide}' (configured BTS side is '${btsSide}').`,
-                'warn'
-            );
-            side = btsSide;
-        }
-
-        if (!side) return;
-
-        const fees = mgr.funds.btsFeesOwed;
-        const orderType = (side === 'buy') ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-        const freeKey = (side === 'buy') ? 'buyFree' : 'sellFree';
-        const chainFree = mgr.accountTotals[freeKey] || 0;
-
-        // SUFFICIENCY CHECK: Defer if insufficient funds
-        if (chainFree < fees) {
-            if (mgr.logger && mgr.logger.level === 'debug') {
-                mgr.logger.log(`[BTS-FEE] Deferring settlement: need ${Format.formatAmount8(fees)}, have ${Format.formatAmount8(chainFree)}`, 'debug');
-            }
-            return;
-        }
-
-        // SETTLEMENT: Deduct from cache first, then base capital
-        const cache = mgr.funds.cacheFunds?.[side] || 0;
-         const cacheDeduction = Math.min(fees, cache);
-
-         if (cacheDeduction > 0) {
-             await this._modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
-         }
-
-        // FULL DEDUCTION from chainFree (cache is part of chainFree, so always deduct full amount)
-        this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
-
-        if (mgr.logger && mgr.logger.level === 'debug') {
-            const baseCapitalDeduction = fees - cacheDeduction;
-            mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS (${Format.formatAmount8(cacheDeduction)} from cache, ${Format.formatAmount8(baseCapitalDeduction)} from base capital)`, 'debug');
-        }
-
-        // Reset fees after successful settlement
-        mgr.funds.btsFeesOwed = 0;
-
-        // Recalculate funds to update all tracking metrics
-        await mgr._recalculateFunds();
-    }
-
-    /**
      * Record a fill in the optimistic total balances.
      * PUBLIC API: Acquires _fundLock.
      */
@@ -719,16 +557,6 @@ class Accountant {
                 await this._modifyCacheFunds('sell', receivesAmount, `${context}-proceeds`);
             }
         });
-    }
-
-    /**
-     * Directly modify cached proceeds funds.
-     * PUBLIC API: Acquires _fundLock.
-     */
-    async modifyCacheFunds(side, delta, operation = 'update') {
-         return await this.manager._fundLock.acquire(async () => {
-             return await this._modifyCacheFunds(side, delta, operation);
-         });
     }
 
     /**

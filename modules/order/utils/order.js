@@ -125,11 +125,10 @@ function findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) {
  * @param {Object} manager - OrderManager instance
  * @param {Object} gridOrder - Grid order to update
  * @param {number} chainSize - Size from blockchain
- * @param {boolean} [skipAccounting=false] - Skip fund accounting update if true
  * @returns {Promise<Object|null>} Updated order object or null
  * @throws {Error} If chainSize suspicious (possible data corruption)
  */
-async function applyChainSizeToGridOrder(manager, gridOrder, chainSize, skipAccounting = false) {
+async function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
     if (!manager || !gridOrder) return null;
     if (gridOrder.state !== ORDER_STATES.ACTIVE && gridOrder.state !== ORDER_STATES.PARTIAL) return null;
 
@@ -195,9 +194,9 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
             manager.logger?.log?.(`[CORRECTION] Cancelling surplus/mismatched ${sideLabel} order ${chainOrderId} for slot ${gridOrder?.id || 'unknown'}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
             manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
-            if (gridOrder && manager._updateOrder) {
+            if (gridOrder && manager._applyOrderUpdate) {
                 const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                await manager._updateOrder(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
+                await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
             }
             return { success: true, cancelled: true };
         } catch (error) {
