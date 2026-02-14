@@ -1818,13 +1818,13 @@ class DEXBot {
                     await this.manager.persistGrid();
                     
                     this._metrics.batchesExecuted++;
-                    this.manager._setRebalanceState('NORMAL');
+                    this.manager._clearWorkingGridRef();
                     
                     return { executed: true, hadRotation: true, ...batchResult };
                 } else {
                     // FAILURE: Working grid discarded, master unchanged
                     this.manager.logger.log('[COW] Blockchain failed - working grid discarded, master unchanged', 'warn');
-                    this.manager._setRebalanceState('NORMAL');
+                    this.manager._clearWorkingGridRef();
                     return { executed: false, hadRotation: false, ...result };
                 }
             } finally {
@@ -1837,7 +1837,7 @@ class DEXBot {
 
         } catch (err) {
             this.manager.logger.log(`[COW] Batch transaction failed: ${err.message}`, 'error');
-            this.manager._setRebalanceState('NORMAL');
+            this.manager._clearWorkingGridRef();
 
             // Handle hard abort
             const hardAbortResult = await this._handleBatchHardAbort(err, 'COW batch processing', operations.length);

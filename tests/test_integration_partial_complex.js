@@ -249,13 +249,13 @@ async function testStartupDualDustTrigger() {
 
     let rebalanceCalled = false;
     const originalRebalance = mgr.performSafeRebalance;
-    const originalApplyRebalance = mgr._applySafeRebalance;
+    const originalApplyRebalance = mgr._applySafeRebalanceCOW;
     
     mgr.performSafeRebalance = async () => {
         rebalanceCalled = true;
         return { actions: [], stateUpdates: [] };
     };
-    mgr._applySafeRebalance = async () => {
+    mgr._applySafeRebalanceCOW = async () => {
         rebalanceCalled = true;
         return { actions: [], stateUpdates: [] };
     };
@@ -282,7 +282,7 @@ async function testStartupDualDustTrigger() {
     console.log(`  ✓ Dual-side dust at startup correctly triggered rebalance\n`);
     
     mgr.performSafeRebalance = originalRebalance;
-    mgr._applySafeRebalance = originalApplyRebalance;
+    mgr._applySafeRebalanceCOW = originalApplyRebalance;
 }
 
 (async () => {

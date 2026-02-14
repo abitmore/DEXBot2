@@ -833,8 +833,7 @@ async function reconcileStartupOrders({
 
             if (buyHasDust && sellHasDust) {
                 logger && logger.log && logger.log("[STARTUP] Dual-side dust partials detected. Triggering full rebalance.", "info");
-                // Use the PRIVATE logic for safe rebalance since we already hold the lock
-                return await manager._applySafeRebalance();
+                return await manager._applySafeRebalanceCOW();
             }
         }
 

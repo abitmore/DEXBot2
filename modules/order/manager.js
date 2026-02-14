@@ -260,6 +260,16 @@ class OrderManager {
     }
 
     /**
+     * Clear working grid reference and reset rebalance state.
+     * Centralized cleanup for error paths and successful commits.
+     * @private
+     */
+    _clearWorkingGridRef() {
+        this._currentWorkingGrid = null;
+        this._setRebalanceState('NORMAL');
+    }
+
+    /**
      * Start the bootstrap phase to suppress invariant warnings during complex transitions.
      */
     startBootstrap() {
@@ -345,15 +355,6 @@ class OrderManager {
      */
     async modifyCacheFunds(side, delta, op) {
         return await this.accountant.modifyCacheFunds(side, delta, op);
-    }
-
-    /**
-     * Recalculates all fund values based on current order states.
-     * @returns {void}
-     */
-    async recalculateFunds() {
-         this._metrics.fundRecalcCount++;
-         return await this.accountant.recalculateFunds();
     }
 
     /**
@@ -1630,21 +1631,6 @@ class OrderManager {
     }
 
     /**
-     * Internal logic for safe rebalancing using Copy-on-Write pattern.
-     * Master grid is NEVER modified until blockchain confirmation.
-     * This is now the ONLY rebalance method - no snapshot/rollback.
-     * 
-     * @param {Array<Object>} fills - Array of fill objects that triggered the rebalance
-     * @param {Set<string>} excludeIds - Order IDs to exclude from rebalancing
-     * @returns {Promise<Object>} Rebalance plan from _applySafeRebalanceCOW
-     * @async
-     * @private
-     */
-    async _applySafeRebalance(fills = [], excludeIds = new Set()) {
-        return await this._applySafeRebalanceCOW(fills, excludeIds);
-    }
-
-    /**
      * Validates grid state before persistence.
      * Single validation gate that prevents corrupted state from being saved.
      *
@@ -1914,16 +1900,14 @@ class OrderManager {
 
         if (aborted) {
             this.logger.log(`[COW] Rebalance aborted: ${reason}`, 'warn');
-            this._currentWorkingGrid = null;
-            this._setRebalanceState('NORMAL');
+            this._clearWorkingGridRef();
             return { aborted: true, reason, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
         }
 
         const fundCheck = this._validateWorkingGridFunds(workingGrid, workingFunds);
         if (!fundCheck.isValid) {
             this.logger.log(`[COW] Fund validation failed: ${fundCheck.reason}`, 'warn');
-            this._currentWorkingGrid = null;
-            this._setRebalanceState('NORMAL');
+            this._clearWorkingGridRef();
             return { aborted: true, reason: fundCheck.reason, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
         }
 
@@ -2015,7 +1999,15 @@ class OrderManager {
             'debug'
         );
 
-        this.orders = workingGrid.toMap();
+        // Validate delta before commit - ensure actions are still valid
+        const delta = workingGrid.buildDelta(this.orders);
+        if (delta.length === 0) {
+            this.logger.log('[COW] Delta empty at commit - nothing to commit', 'debug');
+            this._clearWorkingGridRef();
+            return;
+        }
+
+        this.orders = Object.freeze(workingGrid.toMap());
         this.boundaryIdx = workingBoundary;
         
         this._ordersByState = {
@@ -2033,7 +2025,7 @@ class OrderManager {
         await this.recalculateFunds();
         
         // Clear working grid reference after successful commit
-        this._currentWorkingGrid = null;
+        this._clearWorkingGridRef();
         
         const duration = Date.now() - startTime;
         this.logger.log(`[COW] Grid committed in ${duration}ms`, 'debug');
