@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Copy-on-Write (COW) Grid Architecture replaces the old snapshot/rollback pattern with a cleaner approach: **master grid is never modified until blockchain confirmation**.
+The Copy-on-Write (COW) Grid Architecture replaces the old optimistic mutation pattern with a cleaner approach: **master grid is never modified until blockchain confirmation**.
 
 This architecture implements the core philosophy of **"Verify, Then Commit"**:
 1. **Immutable Master Grid:** The master grid is never directly modified during planning
@@ -16,13 +16,20 @@ This architecture implements the core philosophy of **"Verify, Then Commit"**:
 
 ## Architecture
 
-### Old Pattern (Removed)
+### Phase 0: Original Optimistic State (Removed)
+**Also known as:** "Old Pattern"
+
 ```
-1. Take snapshot of master grid
-2. Modify master directly (optimistic)
-3. Broadcast to blockchain
-4. On failure: rollback to snapshot
+1. Modify master grid directly (optimistic)
+2. Broadcast to blockchain
+3. (No recovery mechanism on failure)
 ```
+
+**Problems:**
+- Direct mutation of master grid during planning
+- No isolation between planning and committed state
+- No snapshot/rollback capability - failures leave grid in corrupted state
+- Ghost orders persist because nothing cleans them up (see Incident Report: XRP-BTS Price Jump)
 
 ### New COW Pattern
 ```
@@ -37,14 +44,24 @@ This architecture implements the core philosophy of **"Verify, Then Commit"**:
 
 The COW architecture evolved from earlier attempts to achieve grid immutability:
 
+### Phase 0: Original Optimistic State (Pre-v1.0)
+- **Approach:** Direct in-memory mutation of master grid during planning
+- **Pattern:** Modify master directly → Broadcast to blockchain → No recovery mechanism
+- **Vulnerability:** State corruption during any failure, no isolation between planning and committed state, no rollback capability
+- **Incident:** This approach caused the XRP-BTS Price Jump incident (see `/docs/INCIDENT_REPORT_XRP_BTS_PRICE_JUMP.md`)
+- **Status:** ❌ **Vulnerable** - Replaced by frozen master approach
+
 ### Phase 1: Frozen Master State (v1.0)
 - **Approach:** `Object.freeze()` on Maps and order objects
+- **Implementation:** Each `_applyOrderUpdate` creates new frozen Map via immutable-swap pattern
 - **Original concern:** Performance overhead, complexity in deep-freezing nested structures
-- **Status:** Retained as defense-in-depth layer alongside COW
+- **Advantage:** Runtime enforcement prevents accidental mutations, catches bugs that read `manager.orders` and mutate in-place
+- **Status:** ✅ **Retained** as defense-in-depth layer alongside COW
 
 ### Phase 2: Copy-on-Write (v2.0 - Current)
-- **Approach:** Working copy during planning, atomic swap on success
-- **Advantage:** Cleaner semantics, better performance, easier to reason about
+- **Approach:** Working copy during planning, atomic swap on blockchain confirmation
+- **Pattern:** Clone → Modify working copy → Broadcast → Commit on success / Discard on failure
+- **Advantage:** True transactional semantics, master never in intermediate state, cleaner than snapshot/rollback
 - **Status:** ✅ Production-ready
 
 **Actual Implementation: Freeze + COW Hybrid**

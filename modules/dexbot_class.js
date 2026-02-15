@@ -1654,8 +1654,9 @@ class DEXBot {
         // Legacy path for simple operations (no COW data)
         // Create temporary working grid for consistency
         const { WorkingGrid } = require('./order/working_grid');
-        const workingGrid = new WorkingGrid(this.manager.orders);
-        const workingIndexes = workingGrid.getIndexes();
+        const workingGrid = new WorkingGrid(this.manager.orders, {
+            baseVersion: Number.isFinite(Number(this.manager._gridVersion)) ? this.manager._gridVersion : 0
+        });
         const workingBoundary = this.manager.boundaryIdx;
         
         // Convert simple operations to actions
@@ -1678,9 +1679,66 @@ class DEXBot {
         
         if (ordersToUpdate) {
             for (const o of ordersToUpdate) {
-                actions.push({ type: COW_ACTIONS.UPDATE, id: o.id, orderId: o.orderId, newSize: o.newSize, order: { size: o.newSize, type: o.type } });
+                const partialOrder = o?.partialOrder || o;
+                const id = o?.id || partialOrder?.id;
+                const orderId = o?.orderId || partialOrder?.orderId;
+                const orderType = o?.type || partialOrder?.type;
+                const newSize = Number.isFinite(Number(o?.newSize))
+                    ? Number(o.newSize)
+                    : Number(partialOrder?.size || 0);
+
+                if (!id || !orderId) continue;
+
+                actions.push({
+                    type: COW_ACTIONS.UPDATE,
+                    id,
+                    orderId,
+                    newSize,
+                    order: {
+                        ...(partialOrder || {}),
+                        id,
+                        orderId,
+                        type: orderType,
+                        size: newSize
+                    }
+                });
             }
         }
+
+        // Legacy compatibility: project planned actions into working grid so COW commit
+        // contains the pre-broadcast intent (type/size/orderId transitions).
+        for (const action of actions) {
+            if (action.type === COW_ACTIONS.CANCEL) {
+                const current = workingGrid.get(action.id);
+                if (!current) continue;
+                workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+            } else if (action.type === COW_ACTIONS.CREATE) {
+                if (!action.id || !action.order) continue;
+                const current = workingGrid.get(action.id) || { id: action.id };
+                workingGrid.set(action.id, {
+                    ...current,
+                    ...action.order,
+                    id: action.id,
+                    state: ORDER_STATES.VIRTUAL,
+                    orderId: null
+                });
+            } else if (action.type === COW_ACTIONS.UPDATE) {
+                const current = workingGrid.get(action.id);
+                if (!current) continue;
+                const newSize = Number.isFinite(Number(action.newSize))
+                    ? Number(action.newSize)
+                    : Number(current.size || 0);
+                workingGrid.set(action.id, {
+                    ...current,
+                    ...(action.order || {}),
+                    id: action.id,
+                    orderId: action.orderId || current.orderId,
+                    size: newSize
+                });
+            }
+        }
+
+        const workingIndexes = workingGrid.getIndexes();
 
         const cowResult = {
             workingGrid,
@@ -1752,17 +1810,24 @@ class DEXBot {
                 } else if (action.type === COW_ACTIONS.CREATE) {
                     try {
                         const order = action.order;
-                        const op = await chainOrders.buildCreateOrderOp(
+                        const args = buildCreateOrderArgs(order, assetA, assetB);
+                        const buildResult = await chainOrders.buildCreateOrderOp(
                             this.account,
-                            order.type === 'buy' ? assetB : assetA,
-                            order.type === 'buy' ? assetA : assetB,
-                            order.price,
-                            order.size,
-                            order.type === 'buy',
-                            this.privateKey
+                            args.amountToSell,
+                            args.sellAssetId,
+                            args.minToReceive,
+                            args.receiveAssetId,
+                            null
                         );
-                        operations.push(op);
-                        opContexts.push({ kind: 'create', id: order.id, order });
+                        if (!buildResult) {
+                            this.manager.logger.log(
+                                `Skipping create op for ${action.id}: amounts would round to 0 on blockchain`,
+                                'warn'
+                            );
+                            continue;
+                        }
+                        operations.push(buildResult.op);
+                        opContexts.push({ kind: 'create', id: order.id, order, args, finalInts: buildResult.finalInts });
                     } catch (err) {
                         this.manager.logger.log(`Failed to prepare create op for ${action.id}: ${err.message}`, 'error');
                     }
@@ -1772,19 +1837,24 @@ class DEXBot {
                             ? Number(action.newSize)
                             : Number(action.order?.size || 0);
 
+                        const masterOrder = this.manager.orders.get(action.id);
+                        const orderType = action.order?.type || masterOrder?.type;
+                        const cachedRawOnChain = masterOrder?.rawOnChain || action.order?.rawOnChain || null;
+
                         const op = await chainOrders.buildUpdateOrderOp(
                             this.account,
                             action.orderId,
-                            newSize,
-                            this.privateKey
+                            { amountToSell: newSize, orderType },
+                            cachedRawOnChain
                         );
-                        operations.push(op);
-                        const partialOrder = this.manager.orders.get(action.id) || {
+                        if (!op) continue;
+                        operations.push(op.op);
+                        const partialOrder = masterOrder || {
                             id: action.id,
                             orderId: action.orderId,
-                            type: action.order?.type
+                            type: orderType
                         };
-                        opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize } });
+                        opContexts.push({ kind: 'size-update', updateInfo: { partialOrder, newSize }, finalInts: op.finalInts });
                     } catch (err) {
                         this.manager.logger.log(`Failed to prepare update op for ${action.id}: ${err.message}`, 'error');
                     }
@@ -2125,7 +2195,12 @@ class DEXBot {
      * @private
      */
     async _processBatchResults(result, opContexts) {
-        const results = (result && result[0] && result[0].trx && result[0].trx.operation_results) || [];
+        const results =
+            (result && Array.isArray(result.operation_results) && result.operation_results) ||
+            (result && result.raw && Array.isArray(result.raw.operation_results) && result.raw.operation_results) ||
+            (result && result.raw && result.raw.trx && Array.isArray(result.raw.trx.operation_results) && result.raw.trx.operation_results) ||
+            (result && Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results) ||
+            [];
         const { getAssetFees } = require('./order/utils/math');
         const btsFeeData = getAssetFees('BTS', 1);
         let hadRotation = false;
@@ -2669,10 +2744,10 @@ class DEXBot {
      * MAINTENANCE SEQUENCE:
      * 1. Fund Recalculation (ALWAYS) - Updates internal fund metrics
      * 2. Pipeline Check (GATE) - Verifies no pending operations
-     * 3. Spread Correction (IF IDLE) - Corrects wide spreads before divergence
-     * 4. Health Check (IF IDLE) - Detects and cleans dust orders
-     * 5. Divergence Detection (IF IDLE) - Identifies structural mismatches
-     * 6. Grid Resizing (IF IDLE) - Applies size corrections on-chain
+     * 3. Health Check (IF IDLE) - Detects and cleans dust orders
+     * 4. Divergence Detection (IF IDLE) - Identifies structural mismatches
+     * 5. Grid Resizing (IF IDLE) - Applies size corrections on-chain
+     * 6. Spread Correction (IF IDLE) - Corrects spread after structural work completes
      *
      * WHY PIPELINE CONSENSUS MATTERS:
      * - After a fill, funds temporarily show a "surplus" from the filled order
@@ -2707,11 +2782,72 @@ class DEXBot {
         const pipelineStatus = this.manager.isPipelineEmpty(this._getPipelineSignals());
         if (pipelineStatus.isEmpty) {
             // ================================================================================
-            // STEP 1: SPREAD AND HEALTH CHECKS
+            // STEP 1: HEALTH CHECK
             // ================================================================================
-            // Run spread check FIRST to correct wide spreads before divergence detection.
-            // This ensures divergence calculation sees corrected spread state.
-            // Only performed when pipeline is empty to prevent cascading trades.
+            const healthResult = await this.manager.checkGridHealth(
+                this.updateOrdersOnChainBatch.bind(this)
+            );
+            if (await this._abortFlowIfIllegalState(`${context} health check`)) return;
+            if (healthResult.buyDust && healthResult.sellDust) {
+                await this._persistAndRecoverIfNeeded();
+            }
+
+            // ================================================================================
+            // STEP 2: THRESHOLD AND DIVERGENCE CHECKS
+            // ================================================================================
+            // Structural checks run before spread correction so spread decisions use
+            // the final post-resize grid state.
+            // Only performed when pipeline is empty to prevent premature resizing.
+
+            const shouldSkipDivergenceResize =
+                context === 'post-fill' && this._divergenceResizeCooldownCycles > 0;
+            if (shouldSkipDivergenceResize) {
+                this._divergenceResizeCooldownCycles--;
+                this._log(
+                    `[DIVERGENCE-GATE] Skipping divergence resize during ${context} (remaining cooldown=${this._divergenceResizeCooldownCycles})`,
+                    'warn'
+                );
+            } else {
+                // Perform unified divergence monitoring (Ratio + RMS)
+                try {
+                    const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
+                    const calculatedGrid = Array.from(this.manager.orders.values());
+                    const divergence = await Grid.monitorDivergence(this.manager, calculatedGrid, persistedGridData);
+
+                    if (divergence.needsUpdate) {
+                        if (divergence.buy.ratio || divergence.sell.ratio) {
+                            this._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}, sell: ${divergence.sell.ratio})`);
+                        }
+                        if (divergence.buy.rms || divergence.sell.rms) {
+                            this._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
+                        }
+
+                        await Grid.updateGridFromBlockchainSnapshot(this.manager, divergence.orderType, true);
+                        await this._persistAndRecoverIfNeeded();
+
+                        try {
+                            await applyGridDivergenceCorrections(
+                                this.manager,
+                                this.accountOrders,
+                                this.config.botKey,
+                                this.updateOrdersOnChainBatch.bind(this)
+                            );
+                            if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
+                            this._log(`Grid divergence corrections applied during ${context}`);
+                        } catch (err) {
+                            this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
+                        }
+                    }
+                } catch (err) {
+                    this._warn(`Error running divergence check during ${context}: ${err.message}`);
+                }
+            }
+
+            // ================================================================================
+            // STEP 3: SPREAD CORRECTION (FINAL)
+            // ================================================================================
+            // Run spread correction after health + divergence work so it uses the
+            // final stabilized grid state for this maintenance cycle.
 
             const shouldSkipSpreadCorrection =
                 context === 'post-fill' && this._spreadCorrectionCooldownCycles > 0;
@@ -2731,66 +2867,6 @@ class DEXBot {
                     this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
                     await this._persistAndRecoverIfNeeded();
                 }
-            }
-
-            const healthResult = await this.manager.checkGridHealth(
-                this.updateOrdersOnChainBatch.bind(this)
-            );
-            if (await this._abortFlowIfIllegalState(`${context} health check`)) return;
-            if (healthResult.buyDust && healthResult.sellDust) {
-                await this._persistAndRecoverIfNeeded();
-            }
-
-            // ================================================================================
-            // STEP 2: THRESHOLD AND DIVERGENCE CHECKS
-            // ================================================================================
-            // Run divergence check AFTER spread correction to detect structural issues
-            // on the corrected grid state.
-            // Only performed when pipeline is empty to prevent premature resizing from temporary surplus.
-
-            const shouldSkipDivergenceResize =
-                context === 'post-fill' && this._divergenceResizeCooldownCycles > 0;
-            if (shouldSkipDivergenceResize) {
-                this._divergenceResizeCooldownCycles--;
-                this._log(
-                    `[DIVERGENCE-GATE] Skipping divergence resize during ${context} (remaining cooldown=${this._divergenceResizeCooldownCycles})`,
-                    'warn'
-                );
-                return;
-            }
-
-            // Perform unified divergence monitoring (Ratio + RMS)
-            try {
-                const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
-                const calculatedGrid = Array.from(this.manager.orders.values());
-                const divergence = await Grid.monitorDivergence(this.manager, calculatedGrid, persistedGridData);
-
-                if (divergence.needsUpdate) {
-                    if (divergence.buy.ratio || divergence.sell.ratio) {
-                        this._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}, sell: ${divergence.sell.ratio})`);
-                    }
-                    if (divergence.buy.rms || divergence.sell.rms) {
-                        this._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
-                    }
-
-                    await Grid.updateGridFromBlockchainSnapshot(this.manager, divergence.orderType, true);
-                    await this._persistAndRecoverIfNeeded();
-
-                    try {
-                        await applyGridDivergenceCorrections(
-                            this.manager,
-                            this.accountOrders,
-                            this.config.botKey,
-                            this.updateOrdersOnChainBatch.bind(this)
-                        );
-                        if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
-                        this._log(`Grid divergence corrections applied during ${context}`);
-                    } catch (err) {
-                        this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
-                    }
-                }
-            } catch (err) {
-                this._warn(`Error running divergence check during ${context}: ${err.message}`);
             }
         }
     }

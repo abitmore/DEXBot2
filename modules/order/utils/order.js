@@ -268,7 +268,7 @@ async function correctAllPriceMismatches(manager, accountName, privateKey, accou
  * Converts grid order data to blockchain-compatible amounts and asset IDs.
  * Handles both BUY and SELL order types.
  * 
- * @param {Object} order - Grid order with type, size, price, rawOnChain
+ * @param {Object} order - Grid order with type, size, price
  * @param {Object} assetA - Asset metadata with id and precision
  * @param {Object} assetB - Asset metadata with id and precision
  * @returns {Object} Blockchain args {amountToSell, sellAssetId, minToReceive, receiveAssetId}
@@ -278,12 +278,10 @@ function buildCreateOrderArgs(order, assetA, assetB) {
     let precision = (order.type === 'sell') ? assetA?.precision : assetB?.precision;
     if (typeof precision !== 'number') throw new Error("Asset precision missing");
 
-    let quantizedSize;
-    if (order.rawOnChain?.for_sale) {
-        quantizedSize = blockchainToFloat(order.rawOnChain.for_sale, precision);
-    } else {
-        quantizedSize = quantizeFloat(order.size, precision);
-    }
+    // IMPORTANT: create args must always come from target grid size.
+    // Never reuse rawOnChain.for_sale here because stale metadata from a prior
+    // slot role can inflate create amounts (e.g., SPREAD->BUY activation).
+    const quantizedSize = quantizeFloat(order.size, precision);
 
     if (order.type === 'sell') {
         return { amountToSell: quantizedSize, sellAssetId: assetA.id, minToReceive: quantizedSize * order.price, receiveAssetId: assetB.id };

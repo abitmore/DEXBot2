@@ -1761,7 +1761,18 @@ class OrderManager {
      * @returns {Object} - Validation result
      */
     _validateWorkingGridFunds(workingGrid, projectedFunds) {
-        const required = this._calculateRequiredFundsFromGrid(workingGrid);
+        const buyPrecision = Number.isFinite(Number(this.assets?.assetB?.precision))
+            ? Number(this.assets.assetB.precision)
+            : 8;
+        const sellPrecision = Number.isFinite(Number(this.assets?.assetA?.precision))
+            ? Number(this.assets.assetA.precision)
+            : 8;
+
+        const intToFloat = (value, precision) => Number(value || 0) / Math.pow(10, precision);
+        const required = this._calculateRequiredFundsFromGrid(workingGrid, {
+            buyPrecision,
+            sellPrecision
+        });
         const availableBuy = Number.isFinite(Number(projectedFunds?.allocatedBuy))
             ? Number(projectedFunds.allocatedBuy)
             : Number.isFinite(Number(projectedFunds?.chainTotalBuy))
@@ -1775,21 +1786,28 @@ class OrderManager {
         
         const shortfalls = [];
         
-        if (required.buy > availableBuy) {
+        const availableBuyInt = floatToBlockchainInt(availableBuy, buyPrecision);
+        const availableSellInt = floatToBlockchainInt(availableSell, sellPrecision);
+
+        if (required.buyInt > availableBuyInt) {
+            const requiredBuyFloat = intToFloat(required.buyInt, buyPrecision);
+            const availableBuyFloat = intToFloat(availableBuyInt, buyPrecision);
             shortfalls.push({
                 asset: this.config.buyAsset,
-                required: required.buy,
-                available: availableBuy,
-                deficit: required.buy - availableBuy
+                required: requiredBuyFloat,
+                available: availableBuyFloat,
+                deficit: intToFloat(required.buyInt - availableBuyInt, buyPrecision)
             });
         }
         
-        if (required.sell > availableSell) {
+        if (required.sellInt > availableSellInt) {
+            const requiredSellFloat = intToFloat(required.sellInt, sellPrecision);
+            const availableSellFloat = intToFloat(availableSellInt, sellPrecision);
             shortfalls.push({
                 asset: this.config.sellAsset,
-                required: required.sell,
-                available: availableSell,
-                deficit: required.sell - availableSell
+                required: requiredSellFloat,
+                available: availableSellFloat,
+                deficit: intToFloat(required.sellInt - availableSellInt, sellPrecision)
             });
         }
         
@@ -1805,25 +1823,41 @@ class OrderManager {
      * @param {WorkingGrid} workingGrid - Working grid
      * @returns {Object} - Required buy and sell amounts
      */
-    _calculateRequiredFundsFromGrid(workingGrid) {
-        let buyRequired = 0;
-        let sellRequired = 0;
+    _calculateRequiredFundsFromGrid(workingGrid, precisions = {}) {
+        const buyPrecision = Number.isFinite(Number(precisions?.buyPrecision))
+            ? Number(precisions.buyPrecision)
+            : Number.isFinite(Number(this.assets?.assetB?.precision))
+                ? Number(this.assets.assetB.precision)
+                : 8;
+        const sellPrecision = Number.isFinite(Number(precisions?.sellPrecision))
+            ? Number(precisions.sellPrecision)
+            : Number.isFinite(Number(this.assets?.assetA?.precision))
+                ? Number(this.assets.assetA.precision)
+                : 8;
+
+        let buyRequiredInt = 0;
+        let sellRequiredInt = 0;
         
         for (const order of workingGrid.values()) {
             const size = Number.isFinite(Number(order.size))
-                ? Number(order.size)
+                ? Math.max(0, Number(order.size))
                 : Number(order.amount || 0);
 
             if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
                 if (order.type === ORDER_TYPES.BUY) {
-                    buyRequired += size;
+                    buyRequiredInt += floatToBlockchainInt(size, buyPrecision);
                 } else if (order.type === ORDER_TYPES.SELL) {
-                    sellRequired += size;
+                    sellRequiredInt += floatToBlockchainInt(size, sellPrecision);
                 }
             }
         }
 
-        return { buy: buyRequired, sell: sellRequired };
+        return {
+            buyInt: buyRequiredInt,
+            sellInt: sellRequiredInt,
+            buy: buyRequiredInt / Math.pow(10, buyPrecision),
+            sell: sellRequiredInt / Math.pow(10, sellPrecision)
+        };
     }
 
     /**

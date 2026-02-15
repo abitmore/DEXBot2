@@ -1,0 +1,74 @@
+const assert = require('assert');
+
+const { OrderManager } = require('../modules/order/manager');
+const { WorkingGrid } = require('../modules/order/working_grid');
+const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+
+function createWorkingGridWithSingleSell(size) {
+    const master = new Map([
+        ['slot-1', {
+            id: 'slot-1',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size,
+            orderId: '1.7.1'
+        }]
+    ]);
+    return new WorkingGrid(master, { baseVersion: 1 });
+}
+
+function createManager() {
+    const manager = new OrderManager({
+        assetA: 'IOB.XRP',
+        assetB: 'BTS',
+        buyAsset: 'BTS',
+        sellAsset: 'IOB.XRP',
+        startPrice: 100
+    });
+
+    manager.assets = {
+        assetA: { id: '1.3.5537', symbol: 'IOB.XRP', precision: 4 },
+        assetB: { id: '1.3.0', symbol: 'BTS', precision: 5 }
+    };
+
+    return manager;
+}
+
+async function testAllowsTinyFloatNoise() {
+    const manager = createManager();
+    const workingGrid = createWorkingGridWithSingleSell(5.0867);
+
+    const result = manager._validateWorkingGridFunds(workingGrid, {
+        allocatedBuy: 0,
+        allocatedSell: 5.0866999999999996
+    });
+
+    assert.strictEqual(result.isValid, true, 'one-ulp float noise should not fail fund validation');
+}
+
+async function testRejectsRealPrecisionShortfall() {
+    const manager = createManager();
+    const workingGrid = createWorkingGridWithSingleSell(5.0867);
+
+    const result = manager._validateWorkingGridFunds(workingGrid, {
+        allocatedBuy: 0,
+        allocatedSell: 5.0866
+    });
+
+    assert.strictEqual(result.isValid, false, 'actual shortfall at precision should fail fund validation');
+    assert(result.reason && result.reason.includes('Fund shortfall'), 'reason should mention fund shortfall');
+}
+
+async function run() {
+    console.log('Running COW fund validation precision tests...');
+    await testAllowsTinyFloatNoise();
+    await testRejectsRealPrecisionShortfall();
+    console.log('✓ COW fund validation precision tests passed');
+}
+
+run().catch((err) => {
+    console.error('✗ COW fund validation precision tests failed');
+    console.error(err);
+    process.exit(1);
+});

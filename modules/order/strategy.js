@@ -329,8 +329,35 @@ class StrategyEngine {
             .sort((a, b) => a.price - b.price)
             .slice(0, targetCountSell);
         
-        const buySizes = calculateBudgetedSizes(buySlots, 'buy', budgetBuy, config.weightDistribution?.buy, config.incrementPercent, accountAssets);
-        const sellSizes = calculateBudgetedSizes(sellSlots, 'sell', budgetSell, config.weightDistribution?.sell, config.incrementPercent, accountAssets);
+        // IMPORTANT:
+        // Size distribution must be computed on the FULL side topology, not only
+        // the active window. Otherwise budgets get concentrated into targetCount
+        // slots (e.g., 3), producing absurd per-order sizes.
+        const allBuySortedForSizing = [...allBuySlots].sort((a, b) => a.price - b.price);
+        const allSellSortedForSizing = [...allSellSlots].sort((a, b) => a.price - b.price);
+
+        const fullBuySizes = calculateBudgetedSizes(
+            allBuySortedForSizing,
+            'buy',
+            budgetBuy,
+            config.weightDistribution?.buy,
+            config.incrementPercent,
+            accountAssets
+        );
+        const fullSellSizes = calculateBudgetedSizes(
+            allSellSortedForSizing,
+            'sell',
+            budgetSell,
+            config.weightDistribution?.sell,
+            config.incrementPercent,
+            accountAssets
+        );
+
+        const buySizeById = new Map(allBuySortedForSizing.map((slot, i) => [slot.id, fullBuySizes[i] || 0]));
+        const sellSizeById = new Map(allSellSortedForSizing.map((slot, i) => [slot.id, fullSellSizes[i] || 0]));
+
+        const buySizes = buySlots.map(slot => buySizeById.get(slot.id) || 0);
+        const sellSizes = sellSlots.map(slot => sellSizeById.get(slot.id) || 0);
 
         // Apply sizes to target grid map
         const targetGrid = new Map();

@@ -379,58 +379,16 @@ async function _readMarketOrders(accountId, assetAId, assetBId, limit = 300) {
     }
 }
 
-async function _readOpenOrdersPaginated(accId, limit = 100) {
-    const allOrdersMap = new Map();
-    let lastId = "1.7.0";
-    let hasMore = true;
-
-    while (hasMore) {
-        try {
-            // Note: some nodes require the 3rd argument (start_order_id)
-            // If it fails with "too few arguments", we fall back to get_full_accounts in the catch block
-            const batch = await BitShares.db.get_account_limit_orders(accId, limit, lastId);
-            
-            if (!batch || batch.length === 0) {
-                hasMore = false;
-            } else {
-                let addedInThisBatch = 0;
-                for (const order of batch) {
-                    if (!allOrdersMap.has(order.id)) {
-                        allOrdersMap.set(order.id, order);
-                        addedInThisBatch++;
-                    }
-                }
-
-                if (batch.length < limit || addedInThisBatch === 0) {
-                    hasMore = false;
-                } else {
-                    const newLastId = batch[batch.length - 1].id;
-                    if (newLastId === lastId) {
-                        hasMore = false;
-                    } else {
-                        lastId = newLastId;
-                    }
-                }
-            }
-        } catch (err) {
-            // If the node doesn't support get_account_limit_orders or has weird argument requirements,
-            // fall back to get_full_accounts which is standard (but might be truncated)
-            if (allOrdersMap.size === 0) {
-                console.warn(`[chain_orders] Paginated order fetch failed: ${err.message}. Falling back to get_full_accounts (may be truncated).`);
-                const fullAccount = await BitShares.db.get_full_accounts([accId], false);
-                return fullAccount[0][1].limit_orders || [];
-            }
-            // If we already got some orders but then it failed, return what we have
-            hasMore = false;
-        }
-    }
-    return Array.from(allOrdersMap.values());
+async function _readOpenOrdersPaginated(accId) {
+    const fullAccount = await BitShares.db.get_full_accounts([accId], false);
+    if (!Array.isArray(fullAccount) || !fullAccount[0] || !fullAccount[0][1]) return [];
+    return fullAccount[0][1].limit_orders || [];
 }
 
 /**
  * Fetch all open limit orders for an account from the blockchain.
  * Uses AsyncLock to safely access preferredAccountId (fixes Issue #2).
- * Uses pagination to ensure all orders are retrieved (fixes Issue #8).
+ * Uses account query and optional market deep scan.
  * @param {string|null} accountId - Account ID to query (uses preferred if null)
  * @param {number} timeoutMs - Connection timeout in milliseconds
  * @param {boolean} suppress_log - Whether to suppress the log
@@ -973,7 +931,19 @@ async function executeBatch(accountName, privateKey, operations) {
         }
 
         const result = await tx.broadcast();
-        return result;
+
+        // Normalize broadcast response shape across btsdex/node variants.
+        const operationResults =
+            (result && Array.isArray(result.operation_results) && result.operation_results) ||
+            (result && result.trx && Array.isArray(result.trx.operation_results) && result.trx.operation_results) ||
+            (Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results) ||
+            [];
+
+        return {
+            success: true,
+            raw: result,
+            operation_results: operationResults
+        };
     } catch (error) {
         console.error('Error executing batch transaction:', error.message);
         throw error;
