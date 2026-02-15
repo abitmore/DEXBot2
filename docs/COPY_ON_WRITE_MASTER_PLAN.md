@@ -1,7 +1,7 @@
 # Copy-on-Write (COW) Grid Master Plan
 
-**Author:** Antigravity (Gemini)  
-**Status:** Implemented  
+**Author:** froooze  
+**Status:** Implemented & Stabilized  
 **Objective:** Eliminate optimistic state corruption by separating "Blockchain Truth" from "Strategy Targets" using immutable master grids and Copy-on-Write semantics.
 
 ## Overview
@@ -72,7 +72,7 @@ and mutates an order object in-place). The COW layer provides the transactional 
 
 ### Phase 0: Dependencies ✅
 - Created `modules/order/utils/order_comparison.js` - Epsilon-based order comparison
-- Created `modules/order/utils/grid_indexes.js` - Index building utilities
+- Created `modules/order/utils/grid_indexes.js` - Index building utilities (used by WorkingGrid)
 
 ### Phase 1: Infrastructure ✅
 - Created `modules/order/working_grid.js` - WorkingGrid class
@@ -83,8 +83,6 @@ and mutates an order object in-place). The COW layer provides the transactional 
 - `_applySafeRebalanceCOW()` - Creates working grid, runs planning, returns result without modifying master
 - `_reconcileGridCOW()` - Delta reconciliation against working copy
 - `_commitWorkingGrid()` - Atomic swap from working to master
-- Fill queue for handling fills during broadcast
-- Abort controller for fill detection during broadcast
 
 ### Phase 3: Broadcast Integration ✅
 - `updateOrdersOnChainBatch()` - Routes to COW path when `workingGrid` present
@@ -190,9 +188,10 @@ NEW FILL ARRIVES (Individual Order Fill)
 ```
 
 ### Phase 5: Tests ✅
-- `tests/test_cow_master_plan.js` - 11 COW core tests (COW-001 through COW-011)
-- `tests/test_cow_commit_guards.js` - Commit guard regression tests (version mismatch, empty delta)
-- `tests/test_cow_concurrent_fills.js` - Concurrent fill integration tests (fill during REBALANCING/BROADCASTING)
+- `tests/test_cow_master_plan.js` - 11 COW core tests
+- `tests/test_cow_commit_guards.js` - Commit guard regression tests
+- `tests/test_cow_concurrent_fills.js` - Concurrent fill integration tests
+- `tests/test_sync_lock_routing.js` - Lock routing verification tests
 - `tests/test_working_grid.js` - WorkingGrid unit tests
 - `tests/benchmark_cow.js` - Performance benchmarks
 
@@ -220,7 +219,7 @@ if (fills.length === 0 && rebalanceState === 'NORMAL') {
 - 5000 orders: ~0.5ms clone
 
 ### Phase 8: Cleanup ✅
-- Removed snapshot/rollback from `_applySafeRebalance()`
+- Removed snapshot/rollback pattern; `performSafeRebalance()` now delegates to `_applySafeRebalanceCOW()`
 - Removed duplicate `_updateOrdersOnChainBatchCOW`
 - Removed legacy rollback references in `dexbot_class.js`
 
@@ -253,15 +252,16 @@ if (fills.length === 0 && rebalanceState === 'NORMAL') {
 ## Rebalance States
 
 ```
-NORMAL → REBALANCING → BROADCASTING → NORMAL (commit + cleanup)
-                         ↓ (on failure)
-                       NORMAL (master unchanged, working grid discarded)
+NORMAL → REBALANCING → BROADCASTING → _commitWorkingGrid() → NORMAL
+                                          ↓ (on failure)
+                                    _clearWorkingGridRef() → NORMAL
+                                        (master unchanged)
 ```
 
 **State transitions:**
 - `NORMAL → REBALANCING`: `_applySafeRebalanceCOW()` begins planning
 - `REBALANCING → BROADCASTING`: `_updateOrdersOnChainBatchCOW()` starts blockchain ops
-- `BROADCASTING → NORMAL`: Either commit succeeds or working grid is discarded
+- `BROADCASTING → NORMAL`: `_clearWorkingGridRef()` always called on exit (success or failure)
 - Fill during REBALANCING/BROADCASTING: marks working grid stale, syncs data
 
 ## Data Flow
@@ -389,52 +389,10 @@ Filled orders are blockchain truth and always processed immediately.
 
 **Key distinction**: Individual fills move the boundary. Full updates rebuild everything.
 
-### 2. Divergence Checks Blocked During Rebalance
-```javascript
-// Divergence check entry point
-async checkDivergence() {
-    if (this.fillsPending.length > 0) {
-        // Defer until fills processed
-        return { deferred: true, reason: 'fills_pending' };
-    }
-    if (this._rebalanceState !== 'NORMAL') {
-        // Defer until rebalance completes
-        return { deferred: true, reason: 'rebalance_in_progress' };
-    }
-    // Safe to check divergence
-    return this._calculateDivergence();
-}
-```
-
-### 3. Cache Updates Blocked During Rebalance
-```javascript
-// Cache update entry point
-async updateCache() {
-    if (this.fillsPending.length > 0) {
-        // Cache update invalid - fills will change state
-        return { skipped: true, reason: 'fills_pending' };
-    }
-    if (this._rebalanceState !== 'NORMAL') {
-        // Cache would reflect uncommitted state
-        return { skipped: true, reason: 'rebalance_in_progress' };
-    }
-    // Safe to update cache
-    return this._performCacheUpdate();
-}
-```
+### 2. Divergence & Cache Checks Blocked During Rebalance
+Divergence detection and cache function updates are deferred when fills are pending or when rebalancing is in progress to ensure calculations use stable, committed state rather than speculative working grid state.
 
 ## Integration & Validation
-
-### Fill Integration Sequence
-1. ✅ Keep fill mutation authoritative in master flow (`syncFromFillHistory` / `syncFromOpenOrders`)
-2. ✅ Normalize COW order shape to `size` (remove `amount` assumptions)
-3. ✅ Reconcile COW actions by state transition semantics:
-   - virtual → active target: `create`
-   - active/partial → zero target: `cancel`
-   - same-side on-chain size change: `update`
-   - side change: `cancel + create`
-4. ✅ Restore open-order sync parity: missing on-chain ACTIVE/PARTIAL with `orderId` treated as fill trigger
-5. ✅ Keep COW scope strict: planning + broadcast + commit-on-success; discard on failure
 
 ### Validation Gates
 Run these tests before promotion:
@@ -451,11 +409,31 @@ Run these tests before promotion:
 - Unchanged grids do not emit global COW `update` actions
 - Missing on-chain ACTIVE order with `orderId` appears in `filledOrders` from open-order sync
 
+## Constants Added (modules/constants.js)
+
+### COW Performance Thresholds
+- `COW_PERFORMANCE.MAX_REBALANCE_PLANNING_MS` - Max time for rebalance planning phase
+- `COW_PERFORMANCE.MAX_COMMIT_MS` - Max time for grid commit operation
+- `COW_PERFORMANCE.MAX_MEMORY_MB` - Memory threshold for working grid operations
+- `COW_PERFORMANCE.INDEX_REBUILD_THRESHOLD` - Grid size threshold for index rebuilding
+- `COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER` - Estimated memory per order (500 bytes)
+
+### Pipeline Timing (added in stabilization commits)
+- `PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE` - LRU cache limit for fee dedup (10,000 entries)
+- `PIPELINE_TIMING.FEE_EVENT_DEDUP_TTL_MS` - Fee event deduplication TTL (6 hours)
+- `PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO` - LRU eviction retention (0.75)
+- `PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS` - Recovery decay fallback (180 seconds)
+
+### Grid & Timing
+- `GRID_LIMITS.SATOSHI_CONVERSION_FACTOR` - Precision conversion factor (1e8)
+- `GRID_LIMITS.STATE_CHANGE_HISTORY_MAX` - Max state change history entries (100)
+- `TIMING.LOCK_REFRESH_MIN_MS` - Minimum lock refresh interval (250ms)
+
 ## Safety Guardrails
 
 1. **Accountant Dry-Run:** `Accountant.validateTargetGrid(targetMap)` verifies that the entire proposed grid fits within `Liquid + CurrentOrderValue` *before* broadcasting.
 
-2. **Volatility Protection:** If `Target.boundaryIndex` shifts more than `MAX_SHIFT` slots (configurable, default 5) from `Master.boundaryIndex`, the rebalance is deferred until market stabilizes.
+2. **Atomic Transaction Semantics:** Large boundary shifts (>5 slots) are inherently safe because the COW pattern only commits after successful blockchain confirmation. If market volatility causes rapid shifts during planning, the working grid is simply discarded and replanning occurs on the next cycle.
 
 3. **Resync on Error:** If any blockchain action fails (e.g., "Insufficient funds"), the bot discards the working grid and triggers `startup_reconcile.js` for a fresh blockchain sync.
 

@@ -177,7 +177,12 @@ let TIMING = {
     // Main loop and polling defaults
     RUN_LOOP_DEFAULT_MS: 5000,  // 5 seconds - default open-orders sync cycle delay (env override: OPEN_ORDERS_SYNC_LOOP_MS)
     OPEN_ORDERS_SYNC_LOOP_ENABLED: false,  // Preferred flag: continuous open-order watchdog sync loop
-    CHECK_INTERVAL_MS: 100  // 100 milliseconds - polling interval for connection/daemon readiness checks
+    CHECK_INTERVAL_MS: 100,  // 100 milliseconds - polling interval for connection/daemon readiness checks
+
+    // LOCK_REFRESH_MIN_MS: Minimum interval for refreshing order lock leases during long operations.
+    // Prevents lock expiration during extended reconciliations or batch operations.
+    // Default: 250ms (4 refreshes per second minimum during long operations).
+    LOCK_REFRESH_MIN_MS: 250
 };
 
 // Grid limits and scaling constants
@@ -298,7 +303,18 @@ let GRID_LIMITS = {
         // │ 44.7%       │ ~10%      │ Extremely lenient           │
         // └────────────────────────────────────────────────────────┘
         RMS_PERCENTAGE: 14.3
-    }
+    },
+
+    // SATOSHI_CONVERSION_FACTOR: Multiplier to convert decimal amounts to integer satoshis.
+    // Used for fee event deduplication to avoid float precision issues.
+    // Formula: decimalAmount × SATOSHI_CONVERSION_FACTOR = integerSatoshis
+    // Default: 100,000,000 (10^8) for 8 decimal places (standard blockchain precision).
+    SATOSHI_CONVERSION_FACTOR: 1e8,
+
+    // STATE_CHANGE_HISTORY_MAX: Maximum number of state changes to retain in circular buffer.
+    // Used by StateChangeLogger for tracking recent grid/fund mutations.
+    // Default: 100 entries (balances memory usage with debugging utility).
+    STATE_CHANGE_HISTORY_MAX: 100
 };
 
 // Increment percentage bounds for grid configuration
@@ -485,7 +501,24 @@ let PIPELINE_TIMING = {
     // Prevents the same fill from being fee-settled multiple times when
     // re-detected across sync cycles or reconnections.
     // Default: 6 hours (21600000 ms).
-    FEE_EVENT_DEDUP_TTL_MS: 6 * 60 * 60 * 1000
+    FEE_EVENT_DEDUP_TTL_MS: 6 * 60 * 60 * 1000,
+
+    // MAX_FEE_EVENT_CACHE_SIZE: Maximum number of fee events to keep in deduplication cache.
+    // Prevents unbounded memory growth during extended operation with many fills.
+    // When exceeded, oldest entries are evicted to 75% capacity.
+    // Default: 10000 entries (~60MB worst case with long event IDs).
+    MAX_FEE_EVENT_CACHE_SIZE: 10000,
+
+    // CACHE_EVICTION_RETENTION_RATIO: Target ratio of entries to keep during cache eviction.
+    // When cache exceeds max size, evict down to (maxSize × ratio) entries.
+    // Default: 0.75 (75%) - evicts oldest 25% to get back to 75% capacity.
+    CACHE_EVICTION_RETENTION_RATIO: 0.75,
+
+    // RECOVERY_DECAY_FALLBACK_MS: Default decay window for recovery attempt counter (milliseconds).
+    // Used when RECOVERY_RETRY_INTERVAL_MS is not configured.
+    // After this idle time, recovery attempt count resets to prevent permanent exhaustion.
+    // Default: 3 minutes (180000 ms).
+    RECOVERY_DECAY_FALLBACK_MS: 3 * 60 * 1000
 };
 
 // Logging Level Configuration
@@ -600,7 +633,12 @@ let COW_PERFORMANCE = {
     MAX_MEMORY_MB: 50,
     INDEX_REBUILD_THRESHOLD: 10000,
     GRID_MEMORY_WARNING: 5000,
-    GRID_MEMORY_CRITICAL: 10000
+    GRID_MEMORY_CRITICAL: 10000,
+
+    // WORKING_GRID_BYTES_PER_ORDER: Estimated memory usage per order in working grid (bytes).
+    // Used for memory profiling and warning thresholds.
+    // Default: 500 bytes (includes order object, metadata, and overhead).
+    WORKING_GRID_BYTES_PER_ORDER: 500
 };
 
 // --- LOCAL SETTINGS OVERRIDES ---

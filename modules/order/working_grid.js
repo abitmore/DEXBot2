@@ -5,6 +5,7 @@
 
 const { buildDelta } = require('./utils/order_comparison');
 const { buildIndexes } = require('./utils/grid_indexes');
+const { COW_PERFORMANCE } = require('../constants');
 
 class WorkingGrid {
     /**
@@ -144,7 +145,7 @@ class WorkingGrid {
         return {
             size: this.grid.size,
             modified: this.modified.size,
-            estimatedBytes: this.grid.size * 500
+            estimatedBytes: this.grid.size * COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER
         };
     }
 

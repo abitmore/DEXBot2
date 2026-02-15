@@ -413,7 +413,7 @@ class Accountant {
           // Decay: if enough time has passed since the last failure, treat this
           // as a fresh violation cycle to prevent stale counts from a previous
           // cycle permanently exhausting the attempt budget.
-          const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : 180000;
+          const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS;
           if (state.attemptCount > 0 && state.lastFailureAt > 0 && (now - state.lastFailureAt) > decayMs) {
               mgr.logger?.log?.(
                   `[RECOVERY] Attempt count decayed (${state.attemptCount} -> 0) after ${Math.round((now - state.lastFailureAt) / 1000)}s idle`,

@@ -2044,20 +2044,27 @@ class OrderManager {
             return;
         }
 
-        await this.recalculateFunds();
-        
-        // Clear working grid reference after successful commit
-        this._clearWorkingGridRef();
-        
-        const duration = Date.now() - startTime;
-        this.logger.log(`[COW] Grid committed in ${duration}ms`, 'debug');
-        
-        const { COW_PERFORMANCE } = require('../constants');
-        if (stats.size > COW_PERFORMANCE.GRID_MEMORY_WARNING) {
-            this.logger.log(
-                `[COW] Warning: Large grid size (${stats.size} orders). Peak memory: ~${Math.round(stats.estimatedBytes / 1024)}KB`,
-                'warn'
-            );
+        // Wrap post-commit cleanup in try-finally to ensure state is always reset
+        // even if fund recalculation throws.
+        try {
+            await this.recalculateFunds();
+
+            const duration = Date.now() - startTime;
+            this.logger.log(`[COW] Grid committed in ${duration}ms`, 'debug');
+
+            const { COW_PERFORMANCE } = require('../constants');
+            if (stats.size > COW_PERFORMANCE.GRID_MEMORY_WARNING) {
+                this.logger.log(
+                    `[COW] Warning: Large grid size (${stats.size} orders). Peak memory: ~${Math.round(stats.estimatedBytes / 1024)}KB`,
+                    'warn'
+                );
+            }
+        } catch (recalcErr) {
+            this.logger.log(`[COW] Fund recalculation failed post-commit: ${recalcErr.message}`, 'error');
+            // Continue to cleanup - grid is committed, just funds may be stale
+        } finally {
+            // Clear working grid reference after commit (success or recalc failure)
+            this._clearWorkingGridRef();
         }
     }
 }

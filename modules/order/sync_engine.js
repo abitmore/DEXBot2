@@ -371,7 +371,7 @@ class SyncEngine {
         mgr.lockOrders([...orderIdsToLock]);
 
         // Keep lock leases alive during long reconciliation runs.
-        const refreshEveryMs = Math.max(250, Math.floor(TIMING.LOCK_TIMEOUT_MS / 3));
+        const refreshEveryMs = Math.max(TIMING.LOCK_REFRESH_MIN_MS, Math.floor(TIMING.LOCK_TIMEOUT_MS / 3));
         const refreshLockLeases = () => {
             const expiresAt = Date.now() + TIMING.LOCK_TIMEOUT_MS;
             for (const id of orderIdsToLock) {

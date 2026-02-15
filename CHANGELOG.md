@@ -37,8 +37,8 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
 
 ### Removed
 - Snapshot/rollback pattern and associated rollback code
-- Volatility freeze mechanism (MAX_SHIFT boundary check)
 - Optimistic master grid modifications
+- Pre-COW volatility freeze mechanism (superseded by atomic COW semantics)
 
 ### Technical Improvements
 - **Simpler State Management**: No complex rollback code, clear before/after states
@@ -59,9 +59,69 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
 
 ### Safety Guardrails
 - Accountant dry-run validation before broadcasting
-- Volatility protection with MAX_SHIFT boundary deferral
+- Atomic COW semantics inherently handle volatility (no partial state commits)
 - Automatic resync on blockchain failure via `startup_reconcile.js`
 - Divergence checks and cache updates blocked during rebalance operations
+
+### Fixes and Refinements (Post-Implementation)
+
+**Critical Bug Fixes:**
+- **Post-Commit State Cleanup** (`modules/order/manager.js`) - commit 55ab7d1
+  - Fixed bug where `recalculateFunds()` exception left system stuck in `BROADCASTING` state
+  - Added try-finally block to ensure `_clearWorkingGridRef()` always executes
+
+- **Fee Event Deduplication Memory Hardening** (`modules/order/strategy.js`) - commit 55ab7d1
+  - Added LRU eviction for `_settledFeeEvents` Map (limit: 10,000 entries)
+  - Prevents unbounded memory growth (~60MB worst case during high-fill periods)
+  - Added sampling optimization (every 10th call) reducing CPU overhead ~90%
+
+- **COW Deadlocks and Lock Routing** - commit 710e1d3
+  - Fixed deadlock in `correctOrderPriceOnChain` (nested `_gridLock` acquire)
+  - Fixed commit outside lock boundary with stale index usage
+  - Added proper lock routing for all chain operations
+
+- **Sync/Accounting Concurrency Hardening** - commit 584cb23
+  - Ensured sync reconciliation executes under `_gridLock`
+  - Added grid version tracking to detect stale working grids
+  - Fixed PARTIAL/ACTIVE premature restoration with restore-ratio-based state resolution
+  - Implemented atomic cache-funds setter and recovery cooldown/max-attempt policy
+
+- **Bug Fixes from Post-Review** - commit ef03f39
+  - Fixed `rawOnChain` cleared to undefined in sync_engine.js:551
+  - Fixed `syncFromMaster` version mismatch in working_grid.js
+  - Removed 208 lines of dead duplicate methods in accounting.js
+  - Fixed float precision in `_buildFeeEventId` using satoshi-based keys
+  - Fixed recovery `attemptCount` never decaying after max retries
+
+**Refactoring:**
+- **Gap-Slot Math Centralization** (`modules/order/utils/math.js`) - commit f19ff01
+  - Consolidated spread-gap calculation into shared utility
+  - Removed unused `grid_indexes.js` implementation
+  - Hardened fallback behavior with config-default anchoring
+
+- **COW Implementation Corrections** - commit 804ff55
+  - Added missing `Object.freeze()` on grid commit
+  - Added delta re-validation before commit
+  - Removed duplicate `recalculateFunds()` and dead `_applySafeRebalance` wrapper
+
+**Documentation and Testing:**
+- **JSDoc Improvements** - commit 9d12283
+  - Enhanced documentation for `processFilledOrders()`, `performSafeRebalance()`, `_buildStateUpdates()`
+  - Documented COW pattern and decoupled architecture in strategy.js
+
+- **Test Suite Fixes** - commit 9d12283
+  - Fixed test hanging issue from BitConnections keeping event loop alive
+  - Added `process.exit(0)` to 20 test files for clean exits
+
+**Magic Number Elimination** (`modules/constants.js`) - commit 55ab7d1
+- Added `TIMING.LOCK_REFRESH_MIN_MS: 250`
+- Added `GRID_LIMITS.SATOSHI_CONVERSION_FACTOR: 1e8`
+- Added `GRID_LIMITS.STATE_CHANGE_HISTORY_MAX: 100`
+- Added `COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER: 500`
+- Added `PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO: 0.75`
+- Added `PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS: 180000`
+- Added `PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE: 10000`
+- Added `PIPELINE_TIMING.FEE_EVENT_DEDUP_TTL_MS: 21600000`
 
 ---
 

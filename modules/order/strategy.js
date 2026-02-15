@@ -75,17 +75,49 @@ class StrategyEngine {
     }
 
     _pruneSettledFeeEvents(now) {
+        // Remove expired entries by TTL
         for (const [eventId, ts] of this._settledFeeEvents) {
             if (now - ts > this._feeEventTtlMs) {
                 this._settledFeeEvents.delete(eventId);
             }
+        }
+
+        // Sampling: Only check size limit every N calls to avoid O(n log n) sort on every fill batch.
+        // The expensive eviction (sort) is deferred until we're truly near the limit.
+        this._pruneCallCount = (this._pruneCallCount || 0) + 1;
+        const PRUNE_SAMPLE_INTERVAL = 10;
+        const maxEvents = Number.isFinite(PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE) && PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE > 0
+            ? PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE
+            : 10000;
+
+        // Check every Nth call OR if we're already over the limit (to drain it down)
+        const shouldCheckSize = (this._pruneCallCount % PRUNE_SAMPLE_INTERVAL === 0) ||
+                                (this._settledFeeEvents.size > maxEvents);
+
+        if (shouldCheckSize && this._settledFeeEvents.size > maxEvents) {
+            // Convert to array sorted by timestamp (oldest first) - O(n log n)
+            const entries = Array.from(this._settledFeeEvents.entries())
+                .sort((a, b) => a[1] - b[1]);
+            // Evict oldest entries to get back to target retention ratio
+            const retentionRatio = Number.isFinite(PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO) && PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO > 0
+                ? PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO
+                : 0.75;
+            const evictCount = this._settledFeeEvents.size - Math.floor(maxEvents * retentionRatio);
+            for (let i = 0; i < evictCount && i < entries.length; i++) {
+                this._settledFeeEvents.delete(entries[i][0]);
+            }
+            this.manager?.logger?.log?.(
+                `[STRATEGY] Fee event cache exceeded ${maxEvents}, evicted ${evictCount} oldest entries`,
+                'warn'
+            );
         }
     }
 
     _buildFeeEventId(filledOrder) {
         // Use integer satoshi representation for size to avoid float imprecision
         // (e.g. 0.1 + 0.2 = 0.30000000000000004 vs 0.3 producing different keys).
-        const sizeInt = Math.round(Number(filledOrder.size || 0) * 1e8);
+        const { SATOSHI_CONVERSION_FACTOR } = require('../constants').GRID_LIMITS;
+        const sizeInt = Math.round(Number(filledOrder.size || 0) * SATOSHI_CONVERSION_FACTOR);
         return filledOrder.historyId || [
             filledOrder.orderId || filledOrder.id,
             filledOrder.blockNum || 'na',

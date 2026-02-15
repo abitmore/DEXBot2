@@ -67,6 +67,8 @@
  * @class
  */
 
+const { GRID_LIMITS } = require('../constants');
+
 class LoggerState {
     constructor() {
         this.previousState = {
@@ -77,7 +79,9 @@ class LoggerState {
             errors: null
         };
         this.changeHistory = [];
-        this.maxHistory = 100;
+        this.maxHistory = Number.isFinite(GRID_LIMITS.STATE_CHANGE_HISTORY_MAX) && GRID_LIMITS.STATE_CHANGE_HISTORY_MAX > 0
+            ? GRID_LIMITS.STATE_CHANGE_HISTORY_MAX
+            : 100;
     }
 
     /**
