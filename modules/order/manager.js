@@ -131,7 +131,17 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, PIPELINE_TIMING } = require('../constants');
+const {
+    ORDER_TYPES,
+    ORDER_STATES,
+    REBALANCE_STATES,
+    COW_ACTIONS,
+    DEFAULT_CONFIG,
+    TIMING,
+    GRID_LIMITS,
+    LOG_LEVEL,
+    PIPELINE_TIMING
+} = require('../constants');
 const {
     getMinAbsoluteOrderSize,
     computeChainFundTotals,
@@ -265,7 +275,7 @@ class OrderManager {
         this.isBootstrapping = true;
 
         // Copy-on-Write (COW) infrastructure
-        this._rebalanceState = 'NORMAL'; // NORMAL | REBALANCING | BROADCASTING
+        this._rebalanceState = REBALANCE_STATES.NORMAL;
         this._currentWorkingGrid = null; // Track working grid during rebalance for fill sync
 
         // Clean up any stale locks from previous process crash on startup
@@ -279,7 +289,84 @@ class OrderManager {
      */
     _clearWorkingGridRef() {
         this._currentWorkingGrid = null;
-        this._setRebalanceState('NORMAL');
+        this._setRebalanceState(REBALANCE_STATES.NORMAL);
+    }
+
+    isRebalancing() {
+        return this._rebalanceState === REBALANCE_STATES.REBALANCING;
+    }
+
+    isBroadcasting() {
+        return this._rebalanceState === REBALANCE_STATES.BROADCASTING;
+    }
+
+    isPlanningActive() {
+        return this.isRebalancing() || this.isBroadcasting();
+    }
+
+    _buildAbortedCOWResult(reason) {
+        return {
+            aborted: true,
+            reason,
+            ordersToPlace: [],
+            ordersToRotate: [],
+            ordersToUpdate: [],
+            ordersToCancel: [],
+            stateUpdates: []
+        };
+    }
+
+    _summarizeCowActions(actions) {
+        return {
+            ordersCreated: actions.filter(a => a.type === COW_ACTIONS.CREATE).length,
+            ordersUpdated: actions.filter(a => a.type === COW_ACTIONS.UPDATE).length,
+            ordersCancelled: actions.filter(a => a.type === COW_ACTIONS.CANCEL).length
+        };
+    }
+
+    _syncWorkingGridFromMasterMutation(orderId, context) {
+        if (!this._currentWorkingGrid || !this.isPlanningActive()) {
+            return;
+        }
+
+        try {
+            this._currentWorkingGrid.markStale(
+                `master mutation during ${this._rebalanceState.toLowerCase()} (${context})`
+            );
+            this._currentWorkingGrid.syncFromMaster(this.orders, orderId, this._gridVersion);
+        } catch (syncErr) {
+            this._currentWorkingGrid.markStale(`working-grid sync failure: ${syncErr.message}`);
+            this.logger.log(`[COW] Failed to sync working grid for order ${orderId}: ${syncErr.message}`, 'warn');
+        }
+    }
+
+    _evaluateWorkingGridCommit(workingGrid, underLock = false) {
+        if (workingGrid?.isStale?.()) {
+            return {
+                canCommit: false,
+                reason: `Refusing stale working grid commit${underLock ? ' (under lock)' : ''}: ${workingGrid.getStaleReason() || 'stale'}`,
+                level: 'warn'
+            };
+        }
+
+        if (Number.isFinite(Number(workingGrid?.baseVersion)) && workingGrid.baseVersion !== this._gridVersion) {
+            return {
+                canCommit: false,
+                reason: `Refusing working grid commit: base version ${workingGrid.baseVersion} != current ${this._gridVersion}`,
+                level: 'warn'
+            };
+        }
+
+        const delta = workingGrid.buildDelta(this.orders);
+        if (delta.length === 0) {
+            return {
+                canCommit: false,
+                reason: 'Delta empty at commit - nothing to commit',
+                level: 'debug'
+            };
+        }
+
+        return { canCommit: true, delta, level: 'debug' };
     }
 
     /**
@@ -1253,18 +1340,10 @@ class OrderManager {
         // --- COW WORKING GRID SYNC ---
         // If we're in the middle of a rebalance or broadcast, also update the working grid
         // to keep it in sync with the master grid.
-        // During REBALANCING: marks stale so planning aborts, but syncs data for future use.
-        // During BROADCASTING: marks stale so commit is rejected, syncs data so the next
+        // During REBALANCE_STATES.REBALANCING: marks stale so planning aborts, but syncs data for future use.
+        // During REBALANCE_STATES.BROADCASTING: marks stale so commit is rejected, syncs data so the next
         //   rebalance cycle starts from a correct baseline.
-        if (this._currentWorkingGrid && (this._rebalanceState === 'REBALANCING' || this._rebalanceState === 'BROADCASTING')) {
-            try {
-                this._currentWorkingGrid.markStale(`master mutation during ${this._rebalanceState.toLowerCase()} (${context})`);
-                this._currentWorkingGrid.syncFromMaster(this.orders, id, this._gridVersion);
-            } catch (syncErr) {
-                this._currentWorkingGrid.markStale(`working-grid sync failure: ${syncErr.message}`);
-                this.logger.log(`[COW] Failed to sync working grid for order ${id}: ${syncErr.message}`, 'warn');
-            }
-        }
+        this._syncWorkingGridFromMasterMutation(id, context);
         // ----------------------
 
         // 4. Recalculate funds if not in a batch pause
@@ -1521,7 +1600,7 @@ class OrderManager {
             // A. New Placement (Slot unused in Master)
             if (!masterOrder || masterOrder.state === ORDER_STATES.VIRTUAL) {
                 if (targetOrder.size > 0) { // Only place if size > 0
-                    actions.push({ type: 'create', id, order: targetOrder });
+                    actions.push({ type: COW_ACTIONS.CREATE, id, order: targetOrder });
                 }
                 continue;
             }
@@ -1529,9 +1608,9 @@ class OrderManager {
             // B. Existing Order logic
             // Side Invariance: If side changes, MUST Cancel + Place
             if (masterOrder.type !== targetOrder.type) {
-                actions.push({ type: 'cancel', id, orderId: masterOrder.orderId }); // Cancel old
+                actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
                 if (targetOrder.size > 0) {
-                    actions.push({ type: 'create', id, order: targetOrder }); // Place new
+                    actions.push({ type: COW_ACTIONS.CREATE, id, order: targetOrder });
                 }
                 continue;
             }
@@ -1540,9 +1619,9 @@ class OrderManager {
             // Use native update_order if only size changes
             if (masterOrder.size !== targetOrder.size) {
                 if (targetOrder.size === 0) {
-                    actions.push({ type: 'cancel', id, orderId: masterOrder.orderId });
+                    actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
                 } else {
-                    actions.push({ type: 'update', id, orderId: masterOrder.orderId, newSize: targetOrder.size, order: targetOrder });
+                    actions.push({ type: COW_ACTIONS.UPDATE, id, orderId: masterOrder.orderId, newSize: targetOrder.size, order: targetOrder });
                 }
             }
         }
@@ -1552,7 +1631,7 @@ class OrderManager {
         // it means the strategy dropped it (e.g. grid shrink).
         for (const [id, masterOrder] of master) {
             if (!targetGrid.has(id) && isOrderOnChain(masterOrder)) {
-                actions.push({ type: 'cancel', id, orderId: masterOrder.orderId });
+                actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
             }
         }
 
@@ -1668,7 +1747,7 @@ class OrderManager {
 
     /**
      * Set rebalance state for COW operations
-     * @param {string} state - New state (NORMAL | REBALANCING | BROADCASTING)
+     * @param {string} state - New state from REBALANCE_STATES
      */
     _setRebalanceState(state) {
         this._rebalanceState = state;
@@ -1764,9 +1843,7 @@ class OrderManager {
         const actions = result.actions || [];
         return {
             ...result,
-            ordersCreated: actions.filter(a => a.type === 'create').length,
-            ordersUpdated: actions.filter(a => a.type === 'update').length,
-            ordersCancelled: actions.filter(a => a.type === 'cancel').length
+            ...this._summarizeCowActions(actions)
         };
     }
 
@@ -1842,7 +1919,7 @@ class OrderManager {
     async _applySafeRebalanceCOW(fills = [], excludeIds = new Set()) {
         const startTime = Date.now();
         
-        this._setRebalanceState('REBALANCING');
+        this._setRebalanceState(REBALANCE_STATES.REBALANCING);
 
         const workingGrid = new WorkingGrid(this.orders, { baseVersion: this._gridVersion });
         this._currentWorkingGrid = workingGrid; // Track for fill synchronization
@@ -1871,14 +1948,14 @@ class OrderManager {
         if (aborted) {
             this.logger.log(`[COW] Rebalance aborted: ${reason}`, 'warn');
             this._clearWorkingGridRef();
-            return { aborted: true, reason, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+            return this._buildAbortedCOWResult(reason);
         }
 
         const fundCheck = this._validateWorkingGridFunds(workingGrid, workingFunds);
         if (!fundCheck.isValid) {
             this.logger.log(`[COW] Fund validation failed: ${fundCheck.reason}`, 'warn');
             this._clearWorkingGridRef();
-            return { aborted: true, reason: fundCheck.reason, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+            return this._buildAbortedCOWResult(fundCheck.reason);
         }
 
         const duration = Date.now() - startTime;
@@ -1892,7 +1969,7 @@ class OrderManager {
             const reasonStale = workingGrid.getStaleReason() || 'Master grid changed during planning';
             this.logger.log(`[COW] Rebalance plan invalidated: ${reasonStale}`, 'warn');
             this._clearWorkingGridRef();
-            return { aborted: true, reason: reasonStale, ordersToPlace: [], ordersToRotate: [], ordersToUpdate: [], ordersToCancel: [], stateUpdates: [] };
+            return this._buildAbortedCOWResult(reasonStale);
         }
 
         this.logger.log(`[COW] Plan: Actions=${actions.length}, StateUpdates=${stateUpdates.length}`, 'info');
@@ -1900,7 +1977,7 @@ class OrderManager {
         return {
             actions,
             stateUpdates,
-            hadRotation: actions.some(a => a.type === 'create' || a.type === 'update'),
+            hadRotation: actions.some(a => a.type === COW_ACTIONS.CREATE || a.type === COW_ACTIONS.UPDATE),
             // COW-specific fields for _updateOrdersOnChainBatchCOW
             workingGrid,
             workingIndexes: workingGrid.getIndexes(),
@@ -1918,12 +1995,12 @@ class OrderManager {
      * final state of affected orders.
      *
      * ACTION TYPES:
-     * - 'create': New order placement -> VIRTUAL state, no orderId
-     * - 'cancel': Order cancellation -> SPREAD placeholder
-     * - 'update': Order size update -> Modified size, same state
+     * - COW_ACTIONS.CREATE: New order placement -> VIRTUAL state, no orderId
+     * - COW_ACTIONS.CANCEL: Order cancellation -> SPREAD placeholder
+     * - COW_ACTIONS.UPDATE: Order size update -> Modified size, same state
      *
      * @param {Array<Object>} actions - Array of rebalance action objects from _reconcileGridCOW
-     *   - type {string}: Action type ('create', 'cancel', 'update')
+     *   - type {string}: Action type from COW_ACTIONS
      *   - id {string}: Order slot ID
      *   - order {Object}: Order data (for create actions)
      *   - newSize {number}: New size (for update actions)
@@ -1939,14 +2016,14 @@ class OrderManager {
         const stateUpdates = [];
 
         for (const action of actions) {
-            if (action.type === 'create') {
+            if (action.type === COW_ACTIONS.CREATE) {
                 stateUpdates.push({ ...action.order, state: ORDER_STATES.VIRTUAL, orderId: null });
-            } else if (action.type === 'cancel') {
+            } else if (action.type === COW_ACTIONS.CANCEL) {
                 const masterOrder = masterGrid.get(action.id);
                 if (masterOrder) {
                     stateUpdates.push(convertToSpreadPlaceholder(masterOrder));
                 }
-            } else if (action.type === 'update') {
+            } else if (action.type === COW_ACTIONS.UPDATE) {
                 const masterOrder = masterGrid.get(action.id);
                 if (masterOrder) {
                     const newSize = Number.isFinite(Number(action.newSize))
@@ -1972,10 +2049,9 @@ class OrderManager {
         const stats = workingGrid.getMemoryStats();
         let didCommit = false;
 
-        // Pre-lock staleness checks (safe to read -- these are only set by the
-        // current rebalance owner and concurrent fills mark the grid stale).
-        if (workingGrid?.isStale?.()) {
-            this.logger.log(`[COW] Refusing stale working grid commit: ${workingGrid.getStaleReason() || 'stale'}`, 'warn');
+        const preCommitGuard = this._evaluateWorkingGridCommit(workingGrid);
+        if (!preCommitGuard.canCommit) {
+            this.logger.log(`[COW] ${preCommitGuard.reason}`, preCommitGuard.level || 'warn');
             this._clearWorkingGridRef();
             return;
         }
@@ -1983,22 +2059,9 @@ class OrderManager {
         // Acquire _gridLock for the actual atomic swap to prevent concurrent
         // _applyOrderUpdate calls from reading partially-committed state.
         await this._gridLock.acquire(async () => {
-            // Re-check staleness under the lock -- a fill may have arrived
-            // between the pre-check above and lock acquisition.
-            if (workingGrid?.isStale?.()) {
-                this.logger.log(`[COW] Refusing stale working grid commit (under lock): ${workingGrid.getStaleReason() || 'stale'}`, 'warn');
-                this._clearWorkingGridRef();
-                return;
-            }
-
-            // Reject stale working snapshots that were planned against an older
-            // master version. This protects against lost updates when fills land
-            // while a batch is broadcasting.
-            if (Number.isFinite(Number(workingGrid?.baseVersion)) && workingGrid.baseVersion !== this._gridVersion) {
-                this.logger.log(
-                    `[COW] Refusing working grid commit: base version ${workingGrid.baseVersion} != current ${this._gridVersion}`,
-                    'warn'
-                );
+            const lockCommitGuard = this._evaluateWorkingGridCommit(workingGrid, true);
+            if (!lockCommitGuard.canCommit) {
+                this.logger.log(`[COW] ${lockCommitGuard.reason}`, lockCommitGuard.level || 'warn');
                 this._clearWorkingGridRef();
                 return;
             }
@@ -2007,14 +2070,6 @@ class OrderManager {
                 `[COW] Committing working grid: ${stats.size} orders, ${stats.modified} modified`,
                 'debug'
             );
-
-            // Validate delta before commit - ensure actions are still valid
-            const delta = workingGrid.buildDelta(this.orders);
-            if (delta.length === 0) {
-                this.logger.log('[COW] Delta empty at commit - nothing to commit', 'debug');
-                this._clearWorkingGridRef();
-                return;
-            }
 
             this.orders = Object.freeze(workingGrid.toMap());
             this.boundaryIdx = workingBoundary;

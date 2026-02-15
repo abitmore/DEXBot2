@@ -102,7 +102,16 @@ const {
     convertToSpreadPlaceholder
 } = require('./order/utils/order');
 const { validateOrderSize } = require('./order/utils/math');
-const { ORDER_STATES, ORDER_TYPES, TIMING, MAINTENANCE, GRID_LIMITS, FILL_PROCESSING } = require('./constants');
+const {
+    ORDER_STATES,
+    ORDER_TYPES,
+    REBALANCE_STATES,
+    COW_ACTIONS,
+    TIMING,
+    MAINTENANCE,
+    GRID_LIMITS,
+    FILL_PROCESSING
+} = require('./constants');
 const { attemptResumePersistedGridByPriceMatch, decideStartupGridAction, reconcileStartupOrders } = require('./order/startup_reconcile');
 const { AccountOrders, createBotKey } = require('./account_orders');
 const { parseJsonWithComments } = require('./account_bots');
@@ -1656,20 +1665,20 @@ class DEXBot {
         if (ordersToCancel) {
             for (const o of ordersToCancel) {
                 if (o?.orderId) {
-                    actions.push({ type: 'cancel', id: o.id, orderId: o.orderId });
+                    actions.push({ type: COW_ACTIONS.CANCEL, id: o.id, orderId: o.orderId });
                 }
             }
         }
         
         if (ordersToPlace) {
             for (const o of ordersToPlace) {
-                actions.push({ type: 'create', id: o.id, order: o });
+                actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
             }
         }
         
         if (ordersToUpdate) {
             for (const o of ordersToUpdate) {
-                actions.push({ type: 'update', id: o.id, orderId: o.orderId, newSize: o.newSize, order: { size: o.newSize, type: o.type } });
+                actions.push({ type: COW_ACTIONS.UPDATE, id: o.id, orderId: o.orderId, newSize: o.newSize, order: { size: o.newSize, type: o.type } });
             }
         }
 
@@ -1695,9 +1704,9 @@ class DEXBot {
         const { workingGrid, workingIndexes, workingBoundary, actions, stateUpdates } = cowResult;
 
         if (this.config.dryRun) {
-            const cancelCount = actions.filter(a => a.type === 'cancel').length;
-            const createCount = actions.filter(a => a.type === 'create').length;
-            const updateCount = actions.filter(a => a.type === 'update').length;
+            const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
+            const createCount = actions.filter(a => a.type === COW_ACTIONS.CREATE).length;
+            const updateCount = actions.filter(a => a.type === COW_ACTIONS.UPDATE).length;
             if (cancelCount > 0) this.manager.logger.log(`Dry run: would cancel ${cancelCount} orders`, 'info');
             if (createCount > 0) this.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
             if (updateCount > 0) this.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
@@ -1711,12 +1720,12 @@ class DEXBot {
         // Collect IDs to lock from actions
         const idsToLock = new Set();
         for (const action of actions) {
-            if (action.type === 'cancel' && action.orderId) {
+            if (action.type === COW_ACTIONS.CANCEL && action.orderId) {
                 idsToLock.add(action.orderId);
                 if (action.id) idsToLock.add(action.id);
-            } else if (action.type === 'create' && action.id) {
+            } else if (action.type === COW_ACTIONS.CREATE && action.id) {
                 idsToLock.add(action.id);
-            } else if (action.type === 'update' && action.orderId) {
+            } else if (action.type === COW_ACTIONS.UPDATE && action.orderId) {
                 idsToLock.add(action.orderId);
                 if (action.id) idsToLock.add(action.id);
             }
@@ -1727,11 +1736,11 @@ class DEXBot {
 
         try {
             this._batchInFlight = true;
-            this.manager._setRebalanceState('BROADCASTING');
+            this.manager._setRebalanceState(REBALANCE_STATES.BROADCASTING);
 
             // Build operations from actions
             for (const action of actions) {
-                if (action.type === 'cancel') {
+                if (action.type === COW_ACTIONS.CANCEL) {
                     try {
                         const op = await chainOrders.buildCancelOrderOp(this.account, action.orderId);
                         operations.push(op);
@@ -1740,7 +1749,7 @@ class DEXBot {
                     } catch (err) {
                         this.manager.logger.log(`Failed to prepare cancel op for ${action.id}: ${err.message}`, 'error');
                     }
-                } else if (action.type === 'create') {
+                } else if (action.type === COW_ACTIONS.CREATE) {
                     try {
                         const order = action.order;
                         const op = await chainOrders.buildCreateOrderOp(
@@ -1757,7 +1766,7 @@ class DEXBot {
                     } catch (err) {
                         this.manager.logger.log(`Failed to prepare create op for ${action.id}: ${err.message}`, 'error');
                     }
-                } else if (action.type === 'update') {
+                } else if (action.type === COW_ACTIONS.UPDATE) {
                     try {
                         const newSize = Number.isFinite(Number(action.newSize))
                             ? Number(action.newSize)
@@ -1783,7 +1792,7 @@ class DEXBot {
             }
 
             if (operations.length === 0) {
-                this.manager._setRebalanceState('NORMAL');
+                this.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
                 return { executed: false, hadRotation: false };
             }
 
@@ -1793,7 +1802,7 @@ class DEXBot {
 
             if (!validation.isValid) {
                 this.manager.logger.log(`Skipping batch broadcast: ${validation.violations.length} fund violation(s) detected`, 'warn');
-                this.manager._setRebalanceState('NORMAL');
+                this.manager._setRebalanceState(REBALANCE_STATES.NORMAL);
                 return { executed: false, hadRotation: false };
             }
 
@@ -1830,8 +1839,8 @@ class DEXBot {
             } finally {
                 this.manager._throwOnIllegalState = false;
                 await this.manager.resumeFundRecalc();
-                const createCount = actions.filter(a => a.type === 'create').length;
-                const cancelCount = actions.filter(a => a.type === 'cancel').length;
+                const createCount = actions.filter(a => a.type === COW_ACTIONS.CREATE).length;
+                const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
                 this.manager.logger.logFundsStatus(this.manager, `AFTER COW batch (created=${createCount}, cancelled=${cancelCount})`);
             }
 

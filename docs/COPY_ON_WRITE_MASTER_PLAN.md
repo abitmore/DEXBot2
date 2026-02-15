@@ -128,17 +128,13 @@ When fills arrive during REBALANCING state (before BROADCASTING):
 // Implementation in _applyOrderUpdate (manager.js)
 async _applyOrderUpdate(order, context, skipAccounting, fee) {
     // ... update master grid (immutable swap) ...
-    
-    // --- COW WORKING GRID SYNC ---
-    // Active during both REBALANCING and BROADCASTING phases.
-    // 1. markStale() flags the working grid so planning aborts or commit is rejected.
-    // 2. syncFromMaster() keeps the working grid data current AND bumps baseVersion
-    //    so the version check stays aligned.
-    if (this._currentWorkingGrid && 
-        (this._rebalanceState === 'REBALANCING' || this._rebalanceState === 'BROADCASTING')) {
-        this._currentWorkingGrid.markStale(`master mutation during ${this._rebalanceState} (${context})`);
-        this._currentWorkingGrid.syncFromMaster(this.orders, order.id, this._gridVersion);
-    }
+
+    // Centralized adapter handles:
+    // 1) planning-state gate,
+    // 2) markStale(),
+    // 3) syncFromMaster(),
+    // 4) sync error handling.
+    this._syncWorkingGridFromMasterMutation(order.id, context);
 }
 
 // WorkingGrid.syncFromMaster (working_grid.js)
@@ -168,7 +164,7 @@ NEW FILL ARRIVES (Individual Order Fill)
 [What type of update triggered this?]
         │
     Boundary Shift Only? ──Yes──> Update master grid
-        │                      Sync to working grid (if REBALANCING)
+        │                      Sync to working grid (if planning active)
        No                      Continue current operations
         │
     Full Side Update? ──Yes──> Check State
@@ -187,6 +183,20 @@ NEW FILL ARRIVES (Individual Order Fill)
 [Note: Full updates touch all orders - needs stable state]
 ```
 
+### COW State Machine Cheat Sheet
+
+| State | Fill Handling | Working Grid Action | Commit Outcome |
+|-------|---------------|---------------------|----------------|
+| `NORMAL` | Apply fill to master immediately | No working-grid sync | Not applicable |
+| `REBALANCING` | Apply fill to master immediately | Mark stale + sync changed order from master | Planning returns aborted result |
+| `BROADCASTING` | Apply fill to master immediately | Mark stale + sync changed order from master | Commit guard rejects stale/version-mismatch grid |
+
+**Single-source rules (no special cases):**
+- Master grid always updates first (blockchain truth)
+- If planning/broadcasting is active, sync the changed order into the working grid
+- Any master mutation marks the working grid stale
+- Commit succeeds only when stale/version/delta guards all pass
+
 ### Phase 5: Tests ✅
 - `tests/test_cow_master_plan.js` - 11 COW core tests
 - `tests/test_cow_commit_guards.js` - Commit guard regression tests
@@ -200,7 +210,7 @@ NEW FILL ARRIVES (Individual Order Fill)
 
 **Execution Conditions**:
 ```javascript
-if (fills.length === 0 && rebalanceState === 'NORMAL') {
+if (fills.length === 0 && rebalanceState === REBALANCE_STATES.NORMAL) {
     // Safe to check divergence
     // Safe to update cache functions
 }

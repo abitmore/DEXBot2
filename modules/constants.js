@@ -120,6 +120,20 @@ const ORDER_STATES = Object.freeze({
     PARTIAL: 'partial'    // On-chain, partially filled order, size in funds.committed.grid (and .chain if has orderId)
 });
 
+// Rebalance lifecycle states used by COW planning/broadcast/commit pipeline.
+const REBALANCE_STATES = Object.freeze({
+    NORMAL: 'NORMAL',
+    REBALANCING: 'REBALANCING',
+    BROADCASTING: 'BROADCASTING'
+});
+
+// Canonical action labels used by grid reconciliation and batch broadcasting.
+const COW_ACTIONS = Object.freeze({
+    CREATE: 'create',
+    CANCEL: 'cancel',
+    UPDATE: 'update'
+});
+
 // Defaults applied when instantiating an OrderManager with minimal configuration.
 // These values are used when a parameter is not explicitly provided in the bot config.
 let DEFAULT_CONFIG = {
@@ -733,6 +747,8 @@ if (settings) {
 // Freeze objects to prevent accidental runtime modifications
 Object.freeze(ORDER_TYPES);
 Object.freeze(ORDER_STATES);
+Object.freeze(REBALANCE_STATES);
+Object.freeze(COW_ACTIONS);
 Object.freeze(TIMING);
 Object.freeze(GRID_LIMITS);
 Object.freeze(GRID_LIMITS.GRID_COMPARISON);
@@ -748,4 +764,4 @@ Object.freeze(UPDATER);
 Object.freeze(COW_PERFORMANCE);
 Object.freeze(LOGGING_CONFIG);
 
-module.exports = { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, COW_PERFORMANCE };
+module.exports = { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, COW_PERFORMANCE };
