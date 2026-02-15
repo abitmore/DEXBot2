@@ -2155,28 +2155,32 @@ class DEXBot {
             else if (ctx.kind === 'create') {
                 const chainOrderId = res && res[1];
                 if (chainOrderId) {
-                    const gridOrder = this.manager.orders.get(ctx.order.id);
-                    if (gridOrder) {
-                        const updatedOrder = { ...gridOrder };
-                        // Populate rawOnChain cache for newly created order with blockchain integers
-                        if (ctx.finalInts) {
-                            updatedOrder.rawOnChain = {
-                                id: chainOrderId,
-                                for_sale: String(ctx.finalInts.sell),
-                                sell_price: {
-                                    base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
-                                    quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
-                                }
-                            };
-                        }
-                        updatesToApply.push({ order: updatedOrder, context: 'post-placement' });
-                    }
-
-                    // For createOrder sync, we can't easily batch it yet as it has internal logic
-                    // but since it takes _gridLock, it will run after our batch update.
+                    // synchronizeWithChain handles the full VIRTUAL -> ACTIVE transition
+                    // including orderId assignment and fee deduction.
                     await this.manager.synchronizeWithChain({
                         gridOrderId: ctx.order.id, chainOrderId, expectedType: ctx.order.type, fee: btsFeeData.createFee
                     }, 'createOrder');
+
+                    // After sync, apply rawOnChain metadata if available
+                    if (ctx.finalInts) {
+                        const syncedOrder = this.manager.orders.get(ctx.order.id);
+                        if (syncedOrder) {
+                            updatesToApply.push({
+                                order: {
+                                    ...syncedOrder,
+                                    rawOnChain: {
+                                        id: chainOrderId,
+                                        for_sale: String(ctx.finalInts.sell),
+                                        sell_price: {
+                                            base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
+                                            quote: { amount: String(ctx.finalInts.receive), asset_id: ctx.finalInts.receiveAssetId }
+                                        }
+                                    }
+                                },
+                                context: 'post-placement-metadata'
+                            });
+                        }
+                    }
                     this.manager.logger.log(`Placed ${ctx.order.type} order ${ctx.order.id} -> ${chainOrderId}`, 'info');
                 }
             }

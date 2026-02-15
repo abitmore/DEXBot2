@@ -159,6 +159,7 @@ const Format = require('./format');
 
 const VALID_ORDER_STATES = new Set(Object.values(ORDER_STATES));
 const VALID_ORDER_TYPES = new Set(Object.values(ORDER_TYPES));
+const SYNC_SOURCES_MANAGE_OWN_GRID_LOCK = new Set(['readOpenOrders', 'periodicBlockchainFetch']);
 
 class OrderManager {
     /**
@@ -264,7 +265,7 @@ class OrderManager {
         this.isBootstrapping = true;
 
         // Copy-on-Write (COW) infrastructure
-        this._rebalanceState = 'NORMAL'; // NORMAL | REBALANCING | BROADCASTING | CONFIRMED
+        this._rebalanceState = 'NORMAL'; // NORMAL | REBALANCING | BROADCASTING
         this._currentWorkingGrid = null; // Track working grid during rebalance for fill sync
 
         // Clean up any stale locks from previous process crash on startup
@@ -497,11 +498,23 @@ class OrderManager {
 
     /**
      * Synchronizes internal state with provided blockchain data.
-
+     * PUBLIC API: Acquires _gridLock before delegating to sync engine.
+     * NOTE: readOpenOrders/periodicBlockchainFetch manage _gridLock inside SyncEngine
+     * to avoid nested non-reentrant lock acquisition.
+     * 
      * @param {Object|Array} data - Blockchain data (orders or fill).
      * @param {string} src - Source identifier for logging.
      * @returns {Promise<Object>} Sync result.
      */
+    async synchronizeWithChain(data, src) {
+        if (SYNC_SOURCES_MANAGE_OWN_GRID_LOCK.has(src)) {
+            return await this._applySync(data, src);
+        }
+        return await this._gridLock.acquire(async () => {
+            return await this._applySync(data, src);
+        });
+    }
+
     /**
      * Internal logic for synchronization.
      * PRIVATE: Must be called while holding _gridLock.
@@ -1238,11 +1251,14 @@ class OrderManager {
         this._gridVersion += 1;
 
         // --- COW WORKING GRID SYNC ---
-        // If we're in the middle of a rebalance, also update the working grid
-        // to keep it in sync with the master grid
-        if (this._currentWorkingGrid && this._rebalanceState === 'REBALANCING') {
+        // If we're in the middle of a rebalance or broadcast, also update the working grid
+        // to keep it in sync with the master grid.
+        // During REBALANCING: marks stale so planning aborts, but syncs data for future use.
+        // During BROADCASTING: marks stale so commit is rejected, syncs data so the next
+        //   rebalance cycle starts from a correct baseline.
+        if (this._currentWorkingGrid && (this._rebalanceState === 'REBALANCING' || this._rebalanceState === 'BROADCASTING')) {
             try {
-                this._currentWorkingGrid.markStale(`master mutation during rebalance (${context})`);
+                this._currentWorkingGrid.markStale(`master mutation during ${this._rebalanceState.toLowerCase()} (${context})`);
                 this._currentWorkingGrid.syncFromMaster(this.orders, id, this._gridVersion);
             } catch (syncErr) {
                 this._currentWorkingGrid.markStale(`working-grid sync failure: ${syncErr.message}`);
@@ -1652,7 +1668,7 @@ class OrderManager {
 
     /**
      * Set rebalance state for COW operations
-     * @param {string} state - New state (NORMAL | REBALANCING | BROADCASTING | CONFIRMED)
+     * @param {string} state - New state (NORMAL | REBALANCING | BROADCASTING)
      */
     _setRebalanceState(state) {
         this._rebalanceState = state;

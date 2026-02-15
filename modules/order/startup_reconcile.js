@@ -201,7 +201,8 @@ async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manag
     const btsFeeData = getAssetFees('BTS');
 
     // skipAccounting: false ensures the NEW size is deducted from our (now increased) Free balance
-    await manager.synchronizeWithChain({
+    // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
+    await manager._applySync({
         gridOrderId: gridOrder.id,
         chainOrderId,
         isPartialPlacement: false,
@@ -335,8 +336,8 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         const btsFeeData = getAssetFees('BTS');
 
         // Centralized Fund Tracking: Use manager's sync core to handle state transition and fund deduction
-        // This keeps accountBalances accurate during startup by using the same logic as synchronizeWithChain
-        await manager.synchronizeWithChain({
+        // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
+        await manager._applySync({
             gridOrderId: gridOrder.id,
             chainOrderId,
             isPartialPlacement: false,
@@ -391,7 +392,8 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
     if (dryRun) return;
 
     await chainOrders.cancelOrder(account, privateKey, chainOrderId);
-    await manager.synchronizeWithChain(chainOrderId, 'cancelOrder');
+    // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
+    await manager._applySync(chainOrderId, 'cancelOrder');
 
     // Unmatched chain orders are not represented as ACTIVE/PARTIAL grid slots, so
     // synchronizeWithChain('cancelOrder') cannot release their commitment.
@@ -850,8 +852,6 @@ async function reconcileStartupOrders({
 
         return null;
     });
-
-    return null;
 }
 
 module.exports = {

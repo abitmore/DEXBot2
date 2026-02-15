@@ -879,12 +879,12 @@ class SyncEngine {
                         if (isRotation && existingOrder) {
                             if (!isOrderVirtual(existingOrder)) {
                                 const oldVirtualOrder = { ...virtualizeOrder(existingOrder), size: 0 };
-                                await mgr._updateOrder(oldVirtualOrder, 'rotation-cleanup', chainData.skipAccounting || false, 0);
+                                await mgr._applyOrderUpdate(oldVirtualOrder, 'rotation-cleanup', chainData.skipAccounting || false, 0);
                             } else if (hasOnChainId(existingOrder)) {
                                 // Already VIRTUAL but still has orderId (from rebalance)
                                 // Just clear the orderId to reflect blockchain state
                                 const clearedOrder = { ...virtualizeOrder(existingOrder), size: 0 };
-                                await mgr._updateOrder(clearedOrder, 'fill-cleanup', chainData.skipAccounting || false, 0);
+                                await mgr._applyOrderUpdate(clearedOrder, 'fill-cleanup', chainData.skipAccounting || false, 0);
                             }
                         }
 
@@ -900,7 +900,7 @@ class SyncEngine {
                         };
                         // Deduced fee (createFee or updateFee) must always be applied to reflect blockchain cost
                         const actualFee = fee;
-                        await mgr._updateOrder(updatedOrder, 'fill-place', chainData.skipAccounting || false, actualFee);
+                        await mgr._applyOrderUpdate(updatedOrder, 'fill-place', chainData.skipAccounting || false, actualFee);
                     }
                 } finally {
                     mgr.unlockOrders([gridOrderId]);
@@ -918,7 +918,7 @@ class SyncEngine {
                         // Re-fetch to ensure we have latest state after acquiring lock
                         const currentGridOrder = mgr.orders.get(gridOrder.id);
                         if (currentGridOrder && currentGridOrder.orderId === orderId) {
-                            await mgr._updateOrder(virtualizeOrder(currentGridOrder), 'cancel-order', false, 0);
+                            await mgr._applyOrderUpdate(virtualizeOrder(currentGridOrder), 'cancel-order', false, 0);
                         }
                     } finally {
                         mgr.unlockOrders(orderIds);

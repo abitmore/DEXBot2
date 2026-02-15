@@ -39,15 +39,34 @@ The COW architecture evolved from earlier attempts to achieve grid immutability:
 
 ### Phase 1: Frozen Master State (v1.0)
 - **Approach:** `Object.freeze()` on Maps and order objects
-- **Problem:** Performance overhead, complexity in deep-freezing nested structures
-- **Status:** Abandoned in favor of COW approach
+- **Original concern:** Performance overhead, complexity in deep-freezing nested structures
+- **Status:** Retained as defense-in-depth layer alongside COW
 
 ### Phase 2: Copy-on-Write (v2.0 - Current)
 - **Approach:** Working copy during planning, atomic swap on success
 - **Advantage:** Cleaner semantics, better performance, easier to reason about
 - **Status:** ✅ Production-ready
 
-The key insight was that true immutability wasn't necessary - what matters is that **the master is never in a partially-modified state**. COW achieves this by keeping modifications isolated until confirmation.
+**Actual Implementation: Freeze + COW Hybrid**
+
+The production implementation uses BOTH approaches as complementary layers:
+
+1. **`Object.freeze()`** on the master Map and `deepFreeze()` on individual order objects
+   provides runtime enforcement -- any accidental direct mutation throws in strict mode.
+   Each `_applyOrderUpdate` call creates a new frozen Map via immutable-swap pattern:
+   ```javascript
+   const newMap = cloneMap(this.orders);
+   newMap.set(id, deepFreeze({ ...nextOrder }));
+   this.orders = Object.freeze(newMap);
+   ```
+
+2. **COW working grids** provide the planning/broadcast lifecycle isolation -- strategy
+   computes target state on a mutable clone, and master is only replaced after blockchain
+   confirmation via `_commitWorkingGrid()`.
+
+The freeze layer catches bugs that COW alone wouldn't (e.g., code that reads `manager.orders`
+and mutates an order object in-place). The COW layer provides the transactional semantics
+(plan, broadcast, commit-or-discard).
 
 ## Implementation Status
 
@@ -110,21 +129,30 @@ When fills arrive during REBALANCING state (before BROADCASTING):
 ```javascript
 // Implementation in _applyOrderUpdate (manager.js)
 async _applyOrderUpdate(order, context, skipAccounting, fee) {
-    // ... update master grid ...
+    // ... update master grid (immutable swap) ...
     
     // --- COW WORKING GRID SYNC ---
-    if (this._currentWorkingGrid && this._rebalanceState === 'REBALANCING') {
-        this._currentWorkingGrid.syncFromMaster(this.orders, order.id);
+    // Active during both REBALANCING and BROADCASTING phases.
+    // 1. markStale() flags the working grid so planning aborts or commit is rejected.
+    // 2. syncFromMaster() keeps the working grid data current AND bumps baseVersion
+    //    so the version check stays aligned.
+    if (this._currentWorkingGrid && 
+        (this._rebalanceState === 'REBALANCING' || this._rebalanceState === 'BROADCASTING')) {
+        this._currentWorkingGrid.markStale(`master mutation during ${this._rebalanceState} (${context})`);
+        this._currentWorkingGrid.syncFromMaster(this.orders, order.id, this._gridVersion);
     }
 }
 
 // WorkingGrid.syncFromMaster (working_grid.js)
-syncFromMaster(masterGrid, orderId) {
+syncFromMaster(masterGrid, orderId, masterVersion) {
     const masterOrder = masterGrid.get(orderId);
     if (masterOrder) {
         this.grid.set(orderId, this._cloneOrder(masterOrder));
         this.modified.add(orderId);
         this._indexes = null;
+    }
+    if (Number.isFinite(masterVersion)) {
+        this.baseVersion = masterVersion;
     }
 }
 ```
@@ -162,7 +190,9 @@ NEW FILL ARRIVES (Individual Order Fill)
 ```
 
 ### Phase 5: Tests ✅
-- `tests/test_cow_master_plan.js` - 10 COW tests
+- `tests/test_cow_master_plan.js` - 11 COW core tests (COW-001 through COW-011)
+- `tests/test_cow_commit_guards.js` - Commit guard regression tests (version mismatch, empty delta)
+- `tests/test_cow_concurrent_fills.js` - Concurrent fill integration tests (fill during REBALANCING/BROADCASTING)
 - `tests/test_working_grid.js` - WorkingGrid unit tests
 - `tests/benchmark_cow.js` - Performance benchmarks
 
@@ -223,10 +253,16 @@ if (fills.length === 0 && rebalanceState === 'NORMAL') {
 ## Rebalance States
 
 ```
-NORMAL → REBALANCING → BROADCASTING → CONFIRMED → NORMAL
+NORMAL → REBALANCING → BROADCASTING → NORMAL (commit + cleanup)
                          ↓ (on failure)
-                       NORMAL (master unchanged)
+                       NORMAL (master unchanged, working grid discarded)
 ```
+
+**State transitions:**
+- `NORMAL → REBALANCING`: `_applySafeRebalanceCOW()` begins planning
+- `REBALANCING → BROADCASTING`: `_updateOrdersOnChainBatchCOW()` starts blockchain ops
+- `BROADCASTING → NORMAL`: Either commit succeeds or working grid is discarded
+- Fill during REBALANCING/BROADCASTING: marks working grid stale, syncs data
 
 ## Data Flow
 
@@ -286,32 +322,52 @@ NEW FILL ARRIVES
 
 ## Files Created
 
-- `modules/order/utils/order_comparison.js`
-- `modules/order/utils/grid_indexes.js`
-- `modules/order/working_grid.js`
-- `tests/test_cow_master_plan.js`
-- `tests/test_working_grid.js`
-- `tests/benchmark_cow.js`
+- `modules/order/utils/order_comparison.js` - Epsilon-based order comparison, delta building
+- `modules/order/utils/grid_indexes.js` - Index building and validation utilities
+- `modules/order/working_grid.js` - WorkingGrid class (COW wrapper with clone/delta/stale tracking)
+- `tests/test_cow_master_plan.js` - Core COW tests
+- `tests/test_cow_commit_guards.js` - Commit guard regression tests
+- `tests/test_cow_concurrent_fills.js` - Concurrent fill integration tests
+- `tests/test_working_grid.js` - WorkingGrid unit tests
+- `tests/benchmark_cow.js` - Performance benchmarks
 
 ## Files Modified
 
-- `modules/constants.js` - Added COW_PERFORMANCE
-- `modules/order/manager.js` - Added COW methods, removed snapshot/rollback
-- `modules/order/dexbot_class.js` - Wired COW broadcast, removed legacy rollback
+- `modules/constants.js` - Added COW_PERFORMANCE thresholds
+- `modules/order/manager.js` - Added COW methods, immutable master (Object.freeze), version tracking
+- `modules/dexbot_class.js` - Wired COW broadcast, removed legacy rollback
+- `modules/order/sync_engine.js` - Uses `_applyOrderUpdate` (lock-free) for all sync paths
+- `modules/order/startup_reconcile.js` - Uses `_applySync` (lock-free) when inside `_gridLock`
+- `modules/order/utils/system.js` - Restructured `applyGridDivergenceCorrections` to avoid deadlocks
 
 ## Test Results
 
 ```
-✓ COW-001: Master unchanged on failure
-✓ COW-002: Master updated only on success
-✓ COW-003: Index transfer
-✓ COW-004: Fund recalculation
-✓ COW-005: Order comparison
-✓ COW-006: Delta building
-✓ COW-007: Index validation
-✓ COW-008: Working grid independence
-✓ COW-009: Empty grid handling
-✓ COW-010: Memory stats
+Core COW Tests (test_cow_master_plan.js):
+  ✓ COW-001: Master unchanged on failure
+  ✓ COW-002: Master updated only on success
+  ✓ COW-003: Index transfer
+  ✓ COW-004: Fund recalculation
+  ✓ COW-005: Order comparison
+  ✓ COW-006: Delta building
+  ✓ COW-007: Index validation
+  ✓ COW-008: Working grid independence
+  ✓ COW-009: Empty grid handling
+  ✓ COW-010: Memory stats
+  ✓ COW-011: No spurious updates on unchanged grid
+
+Commit Guard Tests (test_cow_commit_guards.js):
+  ✓ COW-COMMIT-001: Version mismatch rejection
+  ✓ COW-COMMIT-002: Empty delta rejection
+
+Concurrent Fill Tests (test_cow_concurrent_fills.js):
+  ✓ COW-FILL-001: Fill during REBALANCING syncs to working grid
+  ✓ COW-FILL-002: Fill during BROADCASTING syncs to working grid
+  ✓ COW-FILL-003: Commit rejected after fill during broadcast
+  ✓ COW-FILL-004: No working grid sync during NORMAL state
+  ✓ COW-FILL-005: _cloneOrder deep-clones rawOnChain
+  ✓ COW-FILL-006: _cloneOrder handles missing rawOnChain
+  ✓ COW-FILL-007: Staleness reason includes phase context
 ```
 
 ## Operational Rules
@@ -388,6 +444,8 @@ Run these tests before promotion:
 - `node tests/test_ghost_order_fix.js`
 - `node tests/test_working_grid.js`
 - `node tests/test_cow_master_plan.js`
+- `node tests/test_cow_commit_guards.js`
+- `node tests/test_cow_concurrent_fills.js`
 
 ### Additional Checks
 - Unchanged grids do not emit global COW `update` actions

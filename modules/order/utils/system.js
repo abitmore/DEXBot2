@@ -403,14 +403,19 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
     if (!manager._gridLock) return;
     const Grid = require('../grid');
 
-    await manager._gridLock.acquire(async () => {
-        if (!manager._gridSidesUpdated || manager._gridSidesUpdated.size === 0) return;
-
+    // Phase 1: Pre-lock grid resizing (needs _updateOrder which acquires _gridLock)
+    if (manager._gridSidesUpdated && manager._gridSidesUpdated.size > 0) {
         if (manager.outOfSpread > 0) {
             if (syncBoundaryToFunds(manager)) {
                 await Grid.updateGridFromBlockchainSnapshot(manager, 'both', true);
             }
         }
+    }
+
+    // Phase 2: Lock-protected correction planning
+    let corrections = null;
+    await manager._gridLock.acquire(async () => {
+        if (!manager._gridSidesUpdated || manager._gridSidesUpdated.size === 0) return;
 
         for (const orderType of manager._gridSidesUpdated) {
             const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
@@ -461,47 +466,51 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             }
         }
 
+        // Extract corrections to execute outside the lock
         if (manager.ordersNeedingPriceCorrection.length > 0) {
-            const ordersToRotate = manager.ordersNeedingPriceCorrection.filter(c => !c.isNewPlacement && !c.isSurplus).map(c => ({
-                oldOrder: { orderId: c.chainOrderId, id: c.gridOrder.id },
-                newPrice: c.expectedPrice,
-                newSize: c.size,
-                type: c.type,
-                newGridId: c.newGridId
-            }));
-
-            const ordersToPlace = manager.ordersNeedingPriceCorrection.filter(c => c.isNewPlacement).map(c => ({
-                id: c.gridOrder.id,
-                price: c.expectedPrice,
-                size: c.size,
-                type: c.type
-            }));
-
-            const ordersToCancel = manager.ordersNeedingPriceCorrection.filter(c => c.isSurplus).map(c => ({
-                orderId: c.chainOrderId,
-                id: c.gridOrder.id
-            }));
-
-            try {
-                const result = await updateOrdersOnChainBatchFn({ ordersToPlace, ordersToRotate, ordersToCancel, partialMoves: [] });
-                manager.ordersNeedingPriceCorrection = [];
-                if (result && result.executed) {
-                    manager.outOfSpread = 0;
-                    for (const type of manager._gridSidesUpdated) {
-                        if (type === ORDER_TYPES.BUY) manager.buySideIsDoubled = false;
-                        if (type === ORDER_TYPES.SELL) manager.sellSideIsDoubled = false;
-                    }
-                    manager._gridSidesUpdated.clear();
-                    await persistGridSnapshot(manager, accountOrders, botKey);
-                } else {
-                    manager._gridSidesUpdated.clear();
-                }
-            } catch (err) {
-                manager.ordersNeedingPriceCorrection = [];
-                manager._gridSidesUpdated.clear();
-            }
+            corrections = {
+                ordersToRotate: manager.ordersNeedingPriceCorrection.filter(c => !c.isNewPlacement && !c.isSurplus).map(c => ({
+                    oldOrder: { orderId: c.chainOrderId, id: c.gridOrder.id },
+                    newPrice: c.expectedPrice,
+                    newSize: c.size,
+                    type: c.type,
+                    newGridId: c.newGridId
+                })),
+                ordersToPlace: manager.ordersNeedingPriceCorrection.filter(c => c.isNewPlacement).map(c => ({
+                    id: c.gridOrder.id,
+                    price: c.expectedPrice,
+                    size: c.size,
+                    type: c.type
+                })),
+                ordersToCancel: manager.ordersNeedingPriceCorrection.filter(c => c.isSurplus).map(c => ({
+                    orderId: c.chainOrderId,
+                    id: c.gridOrder.id
+                }))
+            };
         }
     });
+
+    // Phase 3: Execute corrections outside the lock (updateOrdersOnChainBatchFn acquires its own locks)
+    if (corrections) {
+        try {
+            const result = await updateOrdersOnChainBatchFn({ ...corrections, partialMoves: [] });
+            manager.ordersNeedingPriceCorrection = [];
+            if (result && result.executed) {
+                manager.outOfSpread = 0;
+                for (const type of manager._gridSidesUpdated) {
+                    if (type === ORDER_TYPES.BUY) manager.buySideIsDoubled = false;
+                    if (type === ORDER_TYPES.SELL) manager.sellSideIsDoubled = false;
+                }
+                manager._gridSidesUpdated.clear();
+                await persistGridSnapshot(manager, accountOrders, botKey);
+            } else {
+                manager._gridSidesUpdated.clear();
+            }
+        } catch (err) {
+            manager.ordersNeedingPriceCorrection = [];
+            manager._gridSidesUpdated.clear();
+        }
+    }
 }
 
 /**
