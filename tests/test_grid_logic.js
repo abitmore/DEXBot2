@@ -8,7 +8,7 @@
 
 const assert = require('assert');
 const Grid = require('../modules/order/grid');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS } = require('../modules/constants');
 const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
 
@@ -73,6 +73,25 @@ async function runTests() {
         invalidConfigs.forEach(cfg => {
             assert.throws(() => Grid.createOrderGrid(cfg));
         });
+    }
+
+    console.log(' - Testing calculateGapSlots fallback uses DEFAULT_CONFIG.incrementPercent...');
+    {
+        const originalIncrement = DEFAULT_CONFIG.incrementPercent;
+        try {
+            DEFAULT_CONFIG.incrementPercent = 0.8;
+
+            const gap = Grid.calculateGapSlots(undefined, 0);
+
+            const step = 1 + (DEFAULT_CONFIG.incrementPercent / 100);
+            const minSpreadPercent = DEFAULT_CONFIG.incrementPercent * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1);
+            const requiredSteps = Math.ceil(Math.log(1 + (minSpreadPercent / 100)) / Math.log(step));
+            const expected = Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps - 1);
+
+            assert.strictEqual(gap, expected, 'Gap slots should use DEFAULT_CONFIG.incrementPercent as fallback');
+        } finally {
+            DEFAULT_CONFIG.incrementPercent = originalIncrement;
+        }
     }
 
     console.log(' - Testing minPrice validation and empty-grid protection...');

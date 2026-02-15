@@ -4,7 +4,7 @@
  * Pure numeric calculations, blockchain conversions, fee math, and fund allocation.
  */
 
-const { ORDER_TYPES, FEE_PARAMETERS } = require('../../constants');
+const { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG } = require('../../constants');
 const Format = require('../format');
 const { isValidNumber, toFiniteNumber } = Format;
 
@@ -905,7 +905,30 @@ function deductOrderFeesFromFunds(buyFunds, sellFunds, fees, config, logger = nu
     return { buyFunds: finalBuy, sellFunds: finalSell };
 }
 
+/**
+ * Calculate the spread gap size (number of empty slots between BUY and SELL rails).
+ * Used by both grid creation and strategy rebalancing to keep spread math consistent.
+ *
+ * @param {number} incrementPercent - Grid increment percentage
+ * @param {number} targetSpreadPercent - Target spread percentage
+ * @param {Object} GRID_LIMITS - Grid limits constants (optional, uses defaults)
+ * @returns {number} Number of gap slots
+ */
+function calculateGapSlots(incrementPercent, targetSpreadPercent, GRID_LIMITS = {}) {
+    const DEFAULT_INCREMENT = Number(DEFAULT_CONFIG.incrementPercent) || 0.5;
+    const MIN_SPREAD_FACTOR = GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1;
+    const MIN_SPREAD_ORDERS = GRID_LIMITS.MIN_SPREAD_ORDERS || 2;
+
+    const safeIncrement = (Number.isFinite(incrementPercent) && incrementPercent > 0) ? incrementPercent : DEFAULT_INCREMENT;
+    const step = 1 + (safeIncrement / 100);
+    const minSpreadPercent = safeIncrement * MIN_SPREAD_FACTOR;
+    const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
+    const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
+    return Math.max(MIN_SPREAD_ORDERS, requiredSteps - 1);
+}
+
 module.exports = {
+    calculateGapSlots,
     isNumeric,
     isPercentageString,
     parsePercentageString,

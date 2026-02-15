@@ -73,18 +73,8 @@ function buildDelta(masterGrid, workingGrid) {
     return actions;
 }
 
-/**
- * Calculate hash for quick change detection (optional optimization)
- * @param {Object} order - Order to hash
- * @returns {string} - Hash string
- */
-function orderHash(order) {
-    return `${order.id}:${order.type}:${order.state}:${order.price.toFixed(8)}:${getOrderSize(order).toFixed(8)}`;
-}
-
 module.exports = { 
     ordersEqual, 
     buildDelta,
-    orderHash,
-    EPSILON 
+    getOrderSize
 };

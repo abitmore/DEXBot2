@@ -112,7 +112,8 @@ const {
     getSingleDustThreshold,
     getDoubleDustThreshold,
     calculateSpreadFromOrders,
-    allocateFundsByWeights
+    allocateFundsByWeights,
+    calculateGapSlots
 } = require('./utils/math');
 const {
     filterOrdersByType,
@@ -132,20 +133,14 @@ const { derivePrice } = require('./utils/system');
 class Grid {
     /**
      * Calculate the spread gap size (number of empty slots between BUY and SELL rails).
-     * Shared by grid creation and strategy rebalancing to keep spread math consistent.
+     * Delegates to utils/math for pure calculation logic.
      *
      * @param {number} incrementPercent
      * @param {number} targetSpreadPercent
      * @returns {number}
      */
     static calculateGapSlots(incrementPercent, targetSpreadPercent) {
-        const fallbackIncrement = Number(DEFAULT_CONFIG.incrementPercent) || 0.5;
-        const safeIncrement = (Number.isFinite(incrementPercent) && incrementPercent > 0) ? incrementPercent : fallbackIncrement;
-        const step = 1 + (safeIncrement / 100);
-        const minSpreadPercent = safeIncrement * (GRID_LIMITS.MIN_SPREAD_FACTOR || 2.1);
-        const effectiveTargetSpread = Math.max(targetSpreadPercent || 0, minSpreadPercent);
-        const requiredSteps = Math.ceil(Math.log(1 + (effectiveTargetSpread / 100)) / Math.log(step));
-        return Math.max(GRID_LIMITS.MIN_SPREAD_ORDERS || 2, requiredSteps - 1);
+        return calculateGapSlots(incrementPercent, targetSpreadPercent, GRID_LIMITS);
     }
 
     /**

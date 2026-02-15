@@ -29,44 +29,6 @@ function buildIndexes(grid) {
 }
 
 /**
- * Build indexes incrementally (for Phase 2 optimization)
- * @param {Map} grid - Order grid
- * @param {Object} existingIndexes - Existing indexes to update
- * @param {Array} changes - Array of {type, order, oldOrder} change records
- * @returns {Object} - Updated indexes
- */
-function updateIndexesIncrementally(grid, existingIndexes, changes) {
-    const indexes = { ...existingIndexes };
-    
-    for (const change of changes) {
-        const { type, order, oldOrder } = change;
-        
-        if (oldOrder) {
-            if (indexes[oldOrder.state]) {
-                indexes[oldOrder.state].delete(oldOrder.id);
-            }
-            if (indexes[oldOrder.type]) {
-                indexes[oldOrder.type].delete(oldOrder.id);
-            }
-        }
-        
-        if (order && type !== 'cancel') {
-            if (!indexes[order.state]) {
-                indexes[order.state] = new Set();
-            }
-            indexes[order.state].add(order.id);
-            
-            if (!indexes[order.type]) {
-                indexes[order.type] = new Set();
-            }
-            indexes[order.type].add(order.id);
-        }
-    }
-    
-    return indexes;
-}
-
-/**
  * Validate index consistency (for testing/debugging)
  * @param {Map} grid - Order grid
  * @param {Object} indexes - Index object
@@ -103,6 +65,5 @@ function validateIndexes(grid, indexes) {
 
 module.exports = {
     buildIndexes,
-    updateIndexesIncrementally,
     validateIndexes
 };
