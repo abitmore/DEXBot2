@@ -1,36 +1,36 @@
 /**
  * modules/order/utils/helpers.js
  *
- * Order validation and rebalance helper functions.
- * Pure functions for order state validation and grid reconciliation.
+ * Pure functions for order validation, grid reconciliation, and immutable mutations.
  *
  * ===============================================================================
  * TABLE OF CONTENTS
  * ===============================================================================
  *
  * SECTION 1: EXTERNAL DEPENDENCIES
- * SECTION 2: ORDER VALIDATION
+ *
+ * SECTION 2: VALIDATION
  *   - validateOrder()
  *   - validateGridForPersistence()
- * SECTION 3: FUND VALIDATION
  *   - calculateRequiredFunds()
  *   - validateWorkingGridFunds()
  *   - checkFundDrift()
- * SECTION 4: GRID RECONCILIATION
+ *
+ * SECTION 3: GRID RECONCILIATION (COW Pipeline)
  *   - reconcileGrid()
  *   - summarizeActions()
  *   - projectTargetToWorkingGrid()
- * SECTION 5: STATE UPDATE BUILDERS
  *   - buildStateUpdates()
  *   - buildAbortedResult()
  *   - buildSuccessResult()
- * SECTION 6: COMMIT EVALUATION
  *   - evaluateCommit()
- * SECTION 7: ORDER MUTATIONS (Immutable operations)
+ *
+ * SECTION 4: GRID MUTATIONS (Immutable Operations)
  *   - applyOrderUpdate()
  *   - applyOrderUpdatesBatch()
  *   - buildIndices()
  *   - swapMasterGrid()
+ *
  * ===============================================================================
  */
 
@@ -62,7 +62,7 @@ const VALID_ORDER_STATES = new Set(Object.values(ORDER_STATES));
 const VALID_ORDER_TYPES = new Set(Object.values(ORDER_TYPES));
 
 // ===============================================================================
-// SECTION 2: ORDER VALIDATION
+// SECTION 2: VALIDATION
 // ===============================================================================
 
 /**
@@ -175,10 +175,6 @@ function validateGridForPersistence(orders, accountTotals) {
 
     return { isValid: true, reason: null };
 }
-
-// ===============================================================================
-// SECTION 3: FUND VALIDATION
-// ===============================================================================
 
 /**
  * Calculate required funds from a grid
@@ -350,7 +346,7 @@ function checkFundDrift(orders, accountTotals, assets = null) {
 }
 
 // ===============================================================================
-// SECTION 4: GRID RECONCILIATION
+// SECTION 3: GRID RECONCILIATION (COW Pipeline)
 // ===============================================================================
 
 /**
@@ -490,10 +486,6 @@ function projectTargetToWorkingGrid(workingGrid, targetGrid) {
     }
 }
 
-// ===============================================================================
-// SECTION 5: STATE UPDATE BUILDERS
-// ===============================================================================
-
 /**
  * Build optimistic state updates from rebalance actions
  * @param {Array<Object>} actions - Array of rebalance action objects
@@ -572,14 +564,10 @@ function buildSuccessResult({
     };
 }
 
-// ===============================================================================
-// SECTION 6: COMMIT EVALUATION
-// ===============================================================================
-
 /**
  * Evaluate if a working grid can be committed
  * @param {WorkingGrid} workingGrid - Grid to evaluate
- * @param {boolean} hasLock - Whether we hold the grid lock
+ * @param {Object} options - Evaluation options
  * @returns {Object} Evaluation result
  */
 function evaluateCommit(workingGrid, options = {}) {
@@ -651,7 +639,7 @@ function evaluateCommit(workingGrid, options = {}) {
 }
 
 // ===============================================================================
-// SECTION 7: ORDER MUTATIONS (Immutable operations)
+// SECTION 4: GRID MUTATIONS (Immutable Operations)
 // ===============================================================================
 
 /**
@@ -805,19 +793,21 @@ function swapMasterGrid(newGrid, indices) {
     };
 }
 
+// ===============================================================================
+// EXPORTS
+// ===============================================================================
+
 module.exports = {
-    // Order validation
+    // Validation
     validateOrder,
     validateGridForPersistence,
-    VALID_ORDER_STATES,
-    VALID_ORDER_TYPES,
-
-    // Fund validation
     calculateRequiredFunds,
     validateWorkingGridFunds,
     checkFundDrift,
+    VALID_ORDER_STATES,
+    VALID_ORDER_TYPES,
 
-    // Rebalance helpers
+    // Grid reconciliation (COW pipeline)
     reconcileGrid,
     summarizeActions,
     projectTargetToWorkingGrid,
@@ -826,7 +816,7 @@ module.exports = {
     buildSuccessResult,
     evaluateCommit,
 
-    // Order mutations
+    // Grid mutations (immutable)
     applyOrderUpdate,
     applyOrderUpdatesBatch,
     buildIndices,
