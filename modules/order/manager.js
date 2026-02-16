@@ -495,9 +495,29 @@ class OrderManager {
     }
 
     finishBootstrap() {
-        this.isBootstrapping = false;
-        this._state.finishBootstrap();
-        this.logger.log('[BOOTSTRAP] Finished', 'debug');
+        const result = { hadDrift: false, driftInfo: null };
+
+        if (this.isBootstrapping) {
+            this.isBootstrapping = false;
+            this._state.finishBootstrap();
+
+            // Validate fund state at bootstrap completion - if drift exists here,
+            // it's not transient (grid is now stable) and indicates a potential bug
+            const driftCheck = this.checkFundDriftAfterFills();
+            if (!driftCheck.isValid) {
+                result.hadDrift = true;
+                result.driftInfo = driftCheck;
+                this.logger.log(
+                    `[BOOTSTRAP-END] Fund drift detected after bootstrap: ${driftCheck.reason}. ` +
+                    `This may indicate a bug in grid initialization.`,
+                    'warn'
+                );
+            }
+
+            this.logger.log("Bootstrap phase complete. Grid health monitoring and fund invariants active.", "info");
+        }
+
+        return result;
     }
 
     startBroadcasting() {
@@ -761,13 +781,14 @@ class OrderManager {
             }
         }
 
+        let nextOrder = validation.normalizedOrder;
+
+        // Apply phantom order auto-correction to the normalized order
         const phantomError = validation.errors.find(e => e.code === 'PHANTOM_ORDER');
         if (phantomError && phantomError.autoCorrect) {
             this.logger.log(phantomError.message, 'error');
-            Object.assign(order, phantomError.autoCorrect);
+            nextOrder = { ...nextOrder, ...phantomError.autoCorrect };
         }
-
-        const nextOrder = validation.normalizedOrder;
 
         if (this.accountant) {
             await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, fee, skipAccounting);
@@ -825,7 +846,38 @@ class OrderManager {
     }
 
     async processFilledOrders(orders, excl, options) {
-        return await this.strategy.processFilledOrders(orders, excl, options);
+        // Step 1: Handle Fills (Accounting & State Updates)
+        await this.strategy.processFilledOrders(orders, excl, options);
+
+        // Step 2: Trigger Safe Rebalance
+        // Criteria for rebalance:
+        // 1. We have actual fills (non-partial)
+        // 2. We have dual-side dust (unhealthy partials on both sides)
+        const triggerFills = orders.filter(f => !f.isPartial || f.isDelayedRotationTrigger || f.isDoubleReplacementTrigger);
+        let shouldRebalance = triggerFills.length > 0;
+
+        if (!shouldRebalance) {
+            const allOrders = Array.from(this.orders.values());
+            const { getPartialsByType } = require('./utils/order');
+            const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
+
+            if (buyPartials.length > 0 && sellPartials.length > 0) {
+                const buyHasDust = this.strategy.hasAnyDust(buyPartials, "buy");
+                const sellHasDust = this.strategy.hasAnyDust(sellPartials, "sell");
+
+                if (buyHasDust && sellHasDust) {
+                    this.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");
+                    shouldRebalance = true;
+                }
+            }
+        }
+
+        if (shouldRebalance) {
+            const rebalanceResult = await this.performSafeRebalance(orders, excl);
+            return rebalanceResult;
+        }
+
+        return { actions: [], stateUpdates: [], hadRotation: false };
     }
 
     completeOrderRotation(oldInfo) {
@@ -833,13 +885,43 @@ class OrderManager {
     }
 
     getInitialOrdersToActivate() {
-        const result = [];
-        for (const [id, order] of this.orders) {
-            if (order.state === ORDER_STATES.VIRTUAL && order.size > 0 && order.type !== ORDER_TYPES.SPREAD) {
-                result.push(order);
-            }
-        }
-        return result;
+        // Apply activeOrders limit from config
+        const sellCountRaw = Math.max(0, Number(this.config.activeOrders?.sell || 1));
+        const buyCountRaw = Math.max(0, Number(this.config.activeOrders?.buy || 1));
+
+        // Reduce target by 1 on doubled sides to maintain grid balance
+        const sellCount = this.sellSideIsDoubled ? Math.max(1, sellCountRaw - 1) : sellCountRaw;
+        const buyCount = this.buySideIsDoubled ? Math.max(1, buyCountRaw - 1) : buyCountRaw;
+
+        // Get minimum sizes for validation
+        const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
+        const minBuySize = getMinAbsoluteOrderSize(ORDER_TYPES.BUY, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
+
+        // Use integer arithmetic for size comparisons to match blockchain behavior
+        const sellPrecision = this.assets?.assetA?.precision;
+        const buyPrecision = this.assets?.assetB?.precision;
+        const minSellSizeInt = floatToBlockchainInt(minSellSize, sellPrecision);
+        const minBuySizeInt = floatToBlockchainInt(minBuySize, buyPrecision);
+
+        // Get closest virtual sells (lowest prices first = closest to market), limit to sellCount
+        const vSells = this.getOrdersByTypeAndState(ORDER_TYPES.SELL, ORDER_STATES.VIRTUAL)
+            .sort((a, b) => a.price - b.price)
+            .slice(0, sellCount);
+        // Filter by minimum size, then reverse for placement order (highest first)
+        const validSells = vSells
+            .filter(o => floatToBlockchainInt(o.size, sellPrecision) >= minSellSizeInt)
+            .sort((a, b) => b.price - a.price);
+
+        // Get closest virtual buys (highest prices first = closest to market), limit to buyCount
+        const vBuys = this.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.VIRTUAL)
+            .sort((a, b) => b.price - a.price)
+            .slice(0, buyCount);
+        // Filter by minimum size, then reverse for placement order (lowest first)
+        const validBuys = vBuys
+            .filter(o => floatToBlockchainInt(o.size, buyPrecision) >= minBuySizeInt)
+            .sort((a, b) => a.price - b.price);
+
+        return [...validSells, ...validBuys];
     }
 
     getOrdersByTypeAndState(type, state) {
@@ -978,17 +1060,18 @@ class OrderManager {
     }
 
     isPipelineEmpty(pipelineSignals = 0) {
-        this._cleanExpiredLocks();
-
         const normalizedSignals = (typeof pipelineSignals === 'number')
             ? { incomingFillQueueLength: pipelineSignals }
             : (pipelineSignals || {});
 
         const incomingFillQueueLength = Number(normalizedSignals.incomingFillQueueLength) || 0;
+        const shadowLocks = Number(normalizedSignals.shadowLocks) || 0;
         const batchInFlight = !!normalizedSignals.batchInFlight;
         const retryInFlight = !!normalizedSignals.retryInFlight;
         const recoveryInFlight = !!normalizedSignals.recoveryInFlight;
+        const broadcasting = !!normalizedSignals.broadcasting;
 
+        this._cleanExpiredLocks();
         const reasons = [];
 
         if (incomingFillQueueLength > 0) {
@@ -1000,6 +1083,9 @@ class OrderManager {
         if (this._gridSidesUpdated?.size > 0) {
             reasons.push('grid divergence corrections pending');
         }
+        if (shadowLocks > 0) {
+            reasons.push(`${shadowLocks} shadow lock(s) active`);
+        }
         if (batchInFlight) {
             reasons.push('batch broadcast in-flight');
         }
@@ -1009,7 +1095,7 @@ class OrderManager {
         if (recoveryInFlight) {
             reasons.push('recovery sync in-flight');
         }
-        if (this._isBroadcasting) {
+        if (broadcasting || this._isBroadcasting) {
             reasons.push('broadcasting active orders');
         }
 
