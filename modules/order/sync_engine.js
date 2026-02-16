@@ -930,22 +930,7 @@ class SyncEngine {
             case 'periodicBlockchainFetch': {
                 // Must update accounting when blockchain state has changed (fills detected)
                 // Using skipAccounting: true leaves phantom funds in system, causing invariant violations
-                
-                // CRITICAL IMPROVEMENT: If we are doing a periodic fetch and we have asset metadata,
-                // pass it to readOpenOrders for a deep market scan. This bypasses account-level truncation.
-                let orders = chainData;
-                if (source === 'periodicBlockchainFetch' && mgr.assets?.assetA?.id && mgr.assets?.assetB?.id) {
-                    const chainOrders = require('../chain_orders');
-                    const accountRef = mgr.accountId || mgr.account;
-                    if (accountRef) {
-                        orders = await chainOrders.readOpenOrders(accountRef, TIMING.CONNECTION_TIMEOUT_MS, true, {
-                            assetAId: mgr.assets.assetA.id,
-                            assetBId: mgr.assets.assetB.id
-                        });
-                    }
-                }
-                
-                return this.syncFromOpenOrders(orders, { skipAccounting: false });
+                return this.syncFromOpenOrders(chainData, { skipAccounting: false });
             }
         }
         return { newOrders: [], ordersNeedingCorrection: [] };
@@ -1013,8 +998,7 @@ class SyncEngine {
             if (!assetAId || !assetBId) return;
 
             const { getOnChainAssetBalances } = require('../chain_orders');
-            const marketAssets = { assetAId, assetBId };
-            const lookup = await getOnChainAssetBalances(accountIdOrName, [assetAId, assetBId], marketAssets);
+            const lookup = await getOnChainAssetBalances(accountIdOrName, [assetAId, assetBId]);
             const aInfo = lookup?.[assetAId] || lookup?.[mgr.config.assetA];
             const bInfo = lookup?.[assetBId] || lookup?.[mgr.config.assetB];
 

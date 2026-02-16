@@ -304,16 +304,6 @@ class DEXBot {
         };
     }
 
-    _getMarketAssets() {
-        if (this.manager?.assets?.assetA?.id && this.manager?.assets?.assetB?.id) {
-            return {
-                assetAId: this.manager.assets.assetA.id,
-                assetBId: this.manager.assets.assetB.id
-            };
-        }
-        return null;
-    }
-
     async _triggerStateRecoverySync(reason = 'state recovery sync') {
         if (!this.manager) return;
 
@@ -326,7 +316,7 @@ class DEXBot {
         try {
             this.manager.logger.log(`Triggering state recovery sync (${reason})...`, 'info');
             await this.manager.fetchAccountTotals(this.accountId);
-            const openOrders = await chainOrders.readOpenOrders(this.accountId, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
+            const openOrders = await chainOrders.readOpenOrders(this.accountId);
             await this.manager.syncFromOpenOrders(openOrders, { skipAccounting: false });
         } finally {
             this._recoverySyncInFlight = false;
@@ -606,7 +596,7 @@ class DEXBot {
             }
 
             // Use this.accountId which was set during initialize()
-            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
+            const chainOpenOrders = this.config.dryRun ? [] : await chainOrders.readOpenOrders(this.accountId);
 
             let shouldRegenerate = false;
             if (!persistedGrid || persistedGrid.length === 0) {
@@ -930,7 +920,7 @@ class DEXBot {
                             }
                         } else {
                             this.manager.logger.log(`Syncing ${fillsToSync.length} fill(s) (open orders mode)`, 'info');
-                            const chainOpenOrders = await chainOrders.readOpenOrders(this.account, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
+                            const chainOpenOrders = await chainOrders.readOpenOrders(this.account);
                             const resultOpenOrders = await this.manager.syncFromOpenOrders(chainOpenOrders);
                             if (resultOpenOrders.filledOrders) resolvedOrders.push(...resultOpenOrders.filledOrders);
                             if (resultOpenOrders.ordersNeedingCorrection) ordersNeedingCorrection.push(...resultOpenOrders.ordersNeedingCorrection);
@@ -2154,7 +2144,7 @@ class DEXBot {
                     let confirmedMissing = false;
                     try {
                         const accountRef = this.accountId || this.account;
-                        const freshOpenOrders = await chainOrders.readOpenOrders(accountRef, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
+                        const freshOpenOrders = await chainOrders.readOpenOrders(accountRef);
                         const stillExists = Array.isArray(freshOpenOrders)
                             && freshOpenOrders.some(o => String(o?.id) === String(oldOrder.orderId));
 
@@ -2365,7 +2355,7 @@ class DEXBot {
             }
 
             // 2. Perform the actual grid recalculation
-            const readFn = () => chainOrders.readOpenOrders(this.accountId, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
+            const readFn = () => chainOrders.readOpenOrders(this.accountId);
             await Grid.recalculateGrid(this.manager, {
                 readOpenOrdersFn: readFn,
                 chainOrders,
@@ -2578,7 +2568,7 @@ class DEXBot {
                         if (!this.manager._fillProcessingLock.isLocked() &&
                             this.manager._fillProcessingLock.getQueueLength() === 0) {
                             await this.manager._fillProcessingLock.acquire(async () => {
-                                const chainOpenOrders = await chainOrders.readOpenOrders(this.accountId, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
+                                const chainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
                                 const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
 
                                 if (syncResult?.filledOrders && syncResult.filledOrders.length > 0) {
@@ -2669,7 +2659,7 @@ class DEXBot {
                     let chainOpenOrders = [];
                     if (!this.config.dryRun) {
                         try {
-                            chainOpenOrders = await chainOrders.readOpenOrders(this.accountId, TIMING.CONNECTION_TIMEOUT_MS, true, this._getMarketAssets());
+                            chainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
                             const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'periodicBlockchainFetch');
 
                             // Log and process fills discovered during periodic sync
