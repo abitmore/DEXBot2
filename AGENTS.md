@@ -11,11 +11,9 @@
 ⚠️ **KEY RULE**: See **Absolute Git Action Gate** below for all write-action authorization rules.
 ⚠️ **KEY RULE**: Default to manual merge/push flow for branch promotion when requested, unless the user specifically asks to use one of the sync scripts.
 
-## Absolute Git Action Gate (No Inference)
+## Absolute Git Action Gate (User-Directed Writes)
 
-The agent must NEVER run any git write action unless the user explicitly names that action in the current message.
-
-The agent must NEVER run branch-promotion scripts unless the user explicitly names the script in the current message.
+The agent may run git write actions when the user clearly requests them.
 
 Git write actions include:
 - `git add`
@@ -35,14 +33,12 @@ Branch-promotion scripts include:
 
 Read-only git commands are always allowed (for example: `git status`, `git diff`, `git log`, `git show`).
 
-Strict interpretation rules:
-1. Replies like "yes", "ok", "okay", "do it", "y", "go ahead", or "auth" are sufficient only when the immediately previous assistant message requested one single explicit low-risk git write action and no other interpretation is possible.
-   - Low-risk actions for shorthand approval: `git add`, `git commit`, `git commit --amend`, `git rm --cached <path>`.
-   - High-risk actions always require explicit command text from the user: `git reset`, `git rebase`, `git merge`, `git push`, `git tag`, `git checkout` / `git switch`.
-2. Requests like "update changelog", "include in patch notes", or "merge into patch17" mean file-content edits only, not commit/amend/push.
-3. Never amend unless the user explicitly says "amend" or "merge with last commit".
-4. If wording is ambiguous, do file edits only and stop before any git write action.
-5. Before any git write action, the assistant should restate the exact user authorization phrase in its reply.
+Interpretation rules:
+1. If a user clearly asks for a git write action, execute it.
+2. Short approvals like "yes", "ok", "do it", or "go ahead" are valid confirmation when they clearly refer to the immediately previous proposed action.
+3. If wording is ambiguous, ask one clarifying question before running destructive actions.
+4. `git commit --amend` is allowed when explicitly requested by the user.
+5. Before a git write action, restate the user authorization in one short line.
 
 See `docs/WORKFLOW.md` for detailed workflow guide.
 
