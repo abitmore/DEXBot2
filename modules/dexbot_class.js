@@ -549,7 +549,7 @@ class DEXBot {
                     await this.manager.recalculateFunds();
                     const spreadResult = await this.manager.checkSpreadCondition(
                         BitShares,
-                        this.updateOrdersOnChainBatch.bind(this)
+                        this.updateOrdersOnChainPlan.bind(this)
                     );
                     if (spreadResult && spreadResult.ordersPlaced > 0) {
                         this._log(`✓ Spread correction after trigger reset: ${spreadResult.ordersPlaced} order(s) placed`);
@@ -1065,7 +1065,7 @@ class DEXBot {
                             const pipelineStatus = this.manager.isPipelineEmpty(this._getPipelineSignals());
                             if (pipelineStatus.isEmpty) {
                                 const healthResult = await this.manager.checkGridHealth(
-                                    this.updateOrdersOnChainBatch.bind(this)
+                                    this.updateOrdersOnChainPlan.bind(this)
                                 );
                                 if (healthResult.buyDust && healthResult.sellDust) {
                                     await this.manager.persistGrid();
@@ -1337,7 +1337,7 @@ class DEXBot {
             if (ordersToPlace.length > 0) {
                 const sizes = ordersToPlace.map(o => `${o.type}:${Format.formatAmount8(o.size)}`).join(' ');
                 this._log(`[BOOTSTRAP] Broadcasting ${ordersToPlace.length} rotation order(s) - sizes: ${sizes}`, 'info');
-                await this.updateOrdersOnChainBatch(ordersToPlace);
+                await this.updateOrdersOnChainPlan({ ordersToPlace });
             }
 
             this._metrics.fillsProcessed += validFills.length;
@@ -1470,7 +1470,7 @@ class DEXBot {
         }
 
         for (const group of orderGroups) {
-            await this.updateOrdersOnChainBatch({ ordersToPlace: group });
+            await this.updateOrdersOnChainPlan({ ordersToPlace: group });
         }
 
         await this.manager.persistGrid();
@@ -1632,71 +1632,127 @@ class DEXBot {
     /**
      * Executes a batch of order operations on the blockchain using COW pattern.
      * Master grid is only updated after successful blockchain confirmation.
-     * @param {Object} rebalanceResult - The result of a rebalance operation.
+     * @param {Object} rebalanceResult - COW result containing workingGrid + actions.
      * @returns {Promise<Object>} The batch result.
      */
     async updateOrdersOnChainBatch(rebalanceResult) {
-        // COW path: if workingGrid is present, use full COW broadcast
-        if (rebalanceResult.workingGrid) {
-            return await this._updateOrdersOnChainBatchCOW(rebalanceResult);
+        if (!rebalanceResult || !rebalanceResult.workingGrid) {
+            const reason = 'NON_COW_PAYLOAD';
+            this.manager?.logger?.log?.(
+                `[COW] Rejected non-COW batch payload. Use updateOrdersOnChainPlan() for plan inputs.`,
+                'error'
+            );
+            return { executed: false, aborted: true, reason };
         }
 
-        // Legacy path for simple operations (no COW data)
-        // Create temporary working grid for consistency
+        return await this._updateOrdersOnChainBatchCOW(rebalanceResult);
+    }
+
+    /**
+     * Converts simple plan payloads (place/update/rotate/cancel) into a COW batch.
+     * Used by spread/divergence maintenance and bootstrap helpers.
+     * @param {Object|Array} plan - Plan object or array of ordersToPlace
+     * @returns {Promise<Object>} Batch execution result
+     */
+    async updateOrdersOnChainPlan(plan) {
+        const cowResult = this._buildCowResultFromPlan(plan);
+        return await this._updateOrdersOnChainBatchCOW(cowResult);
+    }
+
+    _buildActionsFromPlan(plan) {
+        const normalizedPlan = Array.isArray(plan)
+            ? { ordersToPlace: plan }
+            : (plan || {});
+
+        const {
+            ordersToPlace = [],
+            ordersToRotate = [],
+            ordersToUpdate = [],
+            ordersToCancel = []
+        } = normalizedPlan;
+
+        const actions = [];
+
+        for (const o of ordersToCancel) {
+            if (o?.orderId) {
+                actions.push({ type: COW_ACTIONS.CANCEL, id: o.id, orderId: o.orderId });
+            }
+        }
+
+        for (const o of ordersToPlace) {
+            if (!o?.id) continue;
+            actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
+        }
+
+        for (const r of ordersToRotate) {
+            const oldOrder = r?.oldOrder || r;
+            const id = oldOrder?.id || r?.id;
+            const orderId = oldOrder?.orderId || r?.orderId;
+            const newGridId = r?.newGridId || id;
+            const newSize = Number.isFinite(Number(r?.newSize))
+                ? Number(r.newSize)
+                : Number(r?.size || oldOrder?.size || 0);
+            const newPrice = Number.isFinite(Number(r?.newPrice))
+                ? Number(r.newPrice)
+                : Number(r?.price || oldOrder?.price);
+            const orderType = r?.type || oldOrder?.type;
+
+            if (!id || !orderId || !newGridId || !orderType || !Number.isFinite(newPrice) || !(newSize > 0)) continue;
+
+            actions.push({
+                type: COW_ACTIONS.UPDATE,
+                id,
+                orderId,
+                newGridId,
+                newSize,
+                newPrice,
+                order: {
+                    id: newGridId,
+                    type: orderType,
+                    price: newPrice,
+                    size: newSize
+                }
+            });
+        }
+
+        for (const o of ordersToUpdate) {
+            const partialOrder = o?.partialOrder || o;
+            const id = o?.id || partialOrder?.id;
+            const orderId = o?.orderId || partialOrder?.orderId;
+            const orderType = o?.type || partialOrder?.type;
+            const newSize = Number.isFinite(Number(o?.newSize))
+                ? Number(o.newSize)
+                : Number(partialOrder?.size || 0);
+
+            if (!id || !orderId) continue;
+
+            actions.push({
+                type: COW_ACTIONS.UPDATE,
+                id,
+                orderId,
+                newSize,
+                order: {
+                    ...(partialOrder || {}),
+                    id,
+                    orderId,
+                    type: orderType,
+                    size: newSize
+                }
+            });
+        }
+
+        return actions;
+    }
+
+    _buildCowResultFromPlan(plan) {
         const { WorkingGrid } = require('./order/working_grid');
         const workingGrid = new WorkingGrid(this.manager.orders, {
             baseVersion: Number.isFinite(Number(this.manager._gridVersion)) ? this.manager._gridVersion : 0
         });
         const workingBoundary = this.manager.boundaryIdx;
-        
-        // Convert simple operations to actions
-        const { ordersToPlace, ordersToRotate = [], ordersToUpdate = [], ordersToCancel = [] } = rebalanceResult;
-        const actions = [];
-        
-        if (ordersToCancel) {
-            for (const o of ordersToCancel) {
-                if (o?.orderId) {
-                    actions.push({ type: COW_ACTIONS.CANCEL, id: o.id, orderId: o.orderId });
-                }
-            }
-        }
-        
-        if (ordersToPlace) {
-            for (const o of ordersToPlace) {
-                actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
-            }
-        }
-        
-        if (ordersToUpdate) {
-            for (const o of ordersToUpdate) {
-                const partialOrder = o?.partialOrder || o;
-                const id = o?.id || partialOrder?.id;
-                const orderId = o?.orderId || partialOrder?.orderId;
-                const orderType = o?.type || partialOrder?.type;
-                const newSize = Number.isFinite(Number(o?.newSize))
-                    ? Number(o.newSize)
-                    : Number(partialOrder?.size || 0);
+        const actions = this._buildActionsFromPlan(plan);
 
-                if (!id || !orderId) continue;
-
-                actions.push({
-                    type: COW_ACTIONS.UPDATE,
-                    id,
-                    orderId,
-                    newSize,
-                    order: {
-                        ...(partialOrder || {}),
-                        id,
-                        orderId,
-                        type: orderType,
-                        size: newSize
-                    }
-                });
-            }
-        }
-
-        // Legacy compatibility: project planned actions into working grid so COW commit
-        // contains the pre-broadcast intent (type/size/orderId transitions).
+        // Project planned actions into working grid so COW commit carries intended transitions.
         for (const action of actions) {
             if (action.type === COW_ACTIONS.CANCEL) {
                 const current = workingGrid.get(action.id);
@@ -1713,6 +1769,33 @@ class DEXBot {
                     orderId: null
                 });
             } else if (action.type === COW_ACTIONS.UPDATE) {
+                if (action.newGridId && action.newGridId !== action.id) {
+                    const current = workingGrid.get(action.id);
+                    if (current) {
+                        workingGrid.set(action.id, convertToSpreadPlaceholder(current));
+                    }
+
+                    const targetId = action.newGridId;
+                    const targetCurrent = workingGrid.get(targetId) || { id: targetId };
+                    const rotatedSize = Number.isFinite(Number(action.newSize))
+                        ? Number(action.newSize)
+                        : Number(targetCurrent.size || 0);
+                    const rotatedPrice = Number.isFinite(Number(action.newPrice))
+                        ? Number(action.newPrice)
+                        : Number(action.order?.price ?? targetCurrent.price);
+
+                    workingGrid.set(targetId, {
+                        ...targetCurrent,
+                        ...(action.order || {}),
+                        id: targetId,
+                        size: rotatedSize,
+                        price: rotatedPrice,
+                        state: ORDER_STATES.VIRTUAL,
+                        orderId: null
+                    });
+                    continue;
+                }
+
                 const current = workingGrid.get(action.id);
                 if (!current) continue;
                 const newSize = Number.isFinite(Number(action.newSize))
@@ -1728,17 +1811,12 @@ class DEXBot {
             }
         }
 
-        const workingIndexes = workingGrid.getIndexes();
-
-        const cowResult = {
+        return {
             workingGrid,
-            workingIndexes,
+            workingIndexes: workingGrid.getIndexes(),
             workingBoundary,
-            actions,
-            stateUpdates: rebalanceResult.stateUpdates || []
+            actions
         };
-        
-        return await this._updateOrdersOnChainBatchCOW(cowResult);
     }
 
     /**
@@ -1749,7 +1827,7 @@ class DEXBot {
      * @private
      */
     async _updateOrdersOnChainBatchCOW(cowResult) {
-        const { workingGrid, workingIndexes, workingBoundary, actions, stateUpdates } = cowResult;
+        const { workingGrid, workingIndexes, workingBoundary, actions } = cowResult;
 
         if (this.config.dryRun) {
             const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
@@ -1823,6 +1901,50 @@ class DEXBot {
                     }
                 } else if (action.type === COW_ACTIONS.UPDATE) {
                     try {
+                        // Rotation update: move existing on-chain order to a new slot/price.
+                        if (action.newGridId && action.newGridId !== action.id) {
+                            const masterOrder = this.manager.orders.get(action.id);
+                            const orderType = action.order?.type || masterOrder?.type;
+                            const newPrice = Number.isFinite(Number(action.newPrice))
+                                ? Number(action.newPrice)
+                                : Number(action.order?.price);
+                            const newSize = Number.isFinite(Number(action.newSize))
+                                ? Number(action.newSize)
+                                : Number(action.order?.size || 0);
+
+                            if (!masterOrder || !action.orderId || !orderType || !Number.isFinite(newPrice) || newSize <= 0) {
+                                continue;
+                            }
+
+                            const { amountToSell, minToReceive } = buildCreateOrderArgs(
+                                { type: orderType, size: newSize, price: newPrice },
+                                assetA,
+                                assetB
+                            );
+
+                            const buildResult = await chainOrders.buildUpdateOrderOp(
+                                this.account,
+                                action.orderId,
+                                { amountToSell, minToReceive, newPrice, orderType },
+                                masterOrder.rawOnChain || null
+                            );
+                            if (!buildResult) continue;
+
+                            operations.push(buildResult.op);
+                            opContexts.push({
+                                kind: 'rotation',
+                                rotation: {
+                                    oldOrder: { ...masterOrder },
+                                    newGridId: action.newGridId,
+                                    newPrice,
+                                    newSize,
+                                    type: orderType
+                                },
+                                finalInts: buildResult.finalInts
+                            });
+                            continue;
+                        }
+
                         const newSize = Number.isFinite(Number(action.newSize))
                             ? Number(action.newSize)
                             : Number(action.order?.size || 0);
@@ -2204,10 +2326,37 @@ class DEXBot {
 
             if (ctx.kind === 'cancel') {
                 this.manager.logger.log(`Cancelled surplus order ${ctx.order.id} (${ctx.order.orderId})`, 'info');
-                // Synchronization handled by rebalance result stateUpdates applied in caller
+                const oldOrder = ctx.order;
+                const committedOrder = oldOrder?.id ? this.manager.orders.get(oldOrder.id) : null;
+
+                // The COW commit already updated manager.orders. Apply ONLY the optimistic
+                // accounting transition using pre-commit -> committed order states.
+                if (oldOrder && committedOrder && this.manager.accountant) {
+                    await this.manager.accountant.updateOptimisticFreeBalance(
+                        oldOrder,
+                        committedOrder,
+                        'fill-cancel',
+                        0,
+                        false
+                    );
+                }
             }
             else if (ctx.kind === 'size-update') {
-                const ord = this.manager.orders.get(ctx.updateInfo.partialOrder.id);
+                const oldOrder = ctx.updateInfo.partialOrder;
+                const ord = this.manager.orders.get(oldOrder.id);
+
+                // Apply optimistic accounting from pre-commit -> committed state,
+                // including blockchain update fee deduction.
+                if (oldOrder && ord && this.manager.accountant) {
+                    await this.manager.accountant.updateOptimisticFreeBalance(
+                        oldOrder,
+                        ord,
+                        'order-update',
+                        btsFeeData.updateFee,
+                        false
+                    );
+                }
+
                 if (ord) {
                     const updatedSlot = { ...ord, size: ctx.updateInfo.newSize };
                     // Update rawOnChain cache with new integers
@@ -2221,7 +2370,7 @@ class DEXBot {
                             }
                         };
                     }
-                    updatesToApply.push({ order: updatedSlot, context: 'order-update', fee: btsFeeData.updateFee });
+                    updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
                 }
                 this.manager.logger.log(`Size update complete: ${ctx.updateInfo.partialOrder.orderId}`, 'info');
                 updateOperationCount++;
@@ -2266,6 +2415,19 @@ class DEXBot {
                 if (!newGridId) {
                     // Size correction only
                     const ord = this.manager.orders.get(oldOrder.id || rotation.id);
+
+                    // Apply optimistic accounting from pre-commit -> committed state,
+                    // including blockchain update fee deduction.
+                    if (oldOrder && ord && this.manager.accountant) {
+                        await this.manager.accountant.updateOptimisticFreeBalance(
+                            oldOrder,
+                            ord,
+                            'order-update',
+                            btsFeeData.updateFee,
+                            false
+                        );
+                    }
+
                     if (ord) {
                         const updatedSlot = { ...ord, size: newSize };
                         // Update rawOnChain cache with new integers
@@ -2279,20 +2441,34 @@ class DEXBot {
                                 }
                             };
                         }
-                        updatesToApply.push({ order: updatedSlot, context: 'order-update', fee: btsFeeData.updateFee });
+                        updatesToApply.push({ order: updatedSlot, context: 'post-update-metadata' });
                     }
                     updateOperationCount++;
                     continue;
                 }
 
-                // Full rotation
-                const slot = this.manager.orders.get(newGridId) || { id: newGridId, type, price: newPrice, size: 0, state: ORDER_STATES.VIRTUAL };
-                const updatedSlot = { ...slot, id: newGridId, type, size: newSize, price: newPrice, state: ORDER_STATES.VIRTUAL, orderId: null };
+                // Full rotation: old slot was virtualized in the committed working grid.
+                // Activate the destination slot with the existing on-chain orderId.
+                const slot = this.manager.orders.get(newGridId) || {
+                    id: newGridId,
+                    type,
+                    price: newPrice,
+                    size: 0,
+                    state: ORDER_STATES.VIRTUAL
+                };
+                const updatedSlot = {
+                    ...slot,
+                    id: newGridId,
+                    type,
+                    size: newSize,
+                    price: newPrice,
+                    state: ORDER_STATES.ACTIVE,
+                    orderId: oldOrder?.orderId || slot.orderId || null
+                };
 
-                // Update rawOnChain cache for the rotated order
                 if (ctx.finalInts) {
                     updatedSlot.rawOnChain = {
-                        id: null, // Still virtual
+                        id: updatedSlot.orderId,
                         for_sale: String(ctx.finalInts.sell),
                         sell_price: {
                             base: { amount: String(ctx.finalInts.sell), asset_id: ctx.finalInts.sellAssetId },
@@ -2300,7 +2476,18 @@ class DEXBot {
                         }
                     };
                 }
-                updatesToApply.push({ order: updatedSlot, context: 'rotation-metadata' });
+
+                if (oldOrder && updatedSlot && this.manager.accountant) {
+                    await this.manager.accountant.updateOptimisticFreeBalance(
+                        oldOrder,
+                        updatedSlot,
+                        'order-update',
+                        btsFeeData.updateFee,
+                        false
+                    );
+                }
+
+                updatesToApply.push({ order: updatedSlot, context: 'post-rotation-metadata' });
             }
         }
 
@@ -2308,7 +2495,8 @@ class DEXBot {
         if (updatesToApply.length > 0) {
             await this.manager.applyGridUpdateBatch(
                 updatesToApply.map(u => u.order), 
-                'batch-results-process'
+                'batch-results-process',
+                true
             );
         }
 
@@ -2775,7 +2963,7 @@ class DEXBot {
             // STEP 1: HEALTH CHECK
             // ================================================================================
             const healthResult = await this.manager.checkGridHealth(
-                this.updateOrdersOnChainBatch.bind(this)
+                this.updateOrdersOnChainPlan.bind(this)
             );
             if (await this._abortFlowIfIllegalState(`${context} health check`)) return;
             if (healthResult.buyDust && healthResult.sellDust) {
@@ -2820,7 +3008,7 @@ class DEXBot {
                                 this.manager,
                                 this.accountOrders,
                                 this.config.botKey,
-                                this.updateOrdersOnChainBatch.bind(this)
+                                this.updateOrdersOnChainPlan.bind(this)
                             );
                             if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
                             this._log(`Grid divergence corrections applied during ${context}`);
@@ -2850,7 +3038,7 @@ class DEXBot {
             } else {
                 const spreadResult = await this.manager.checkSpreadCondition(
                     BitShares,
-                    this.updateOrdersOnChainBatch.bind(this)
+                    this.updateOrdersOnChainPlan.bind(this)
                 );
                 if (await this._abortFlowIfIllegalState(`${context} spread check`)) return;
                 if (spreadResult && spreadResult.ordersPlaced > 0) {

@@ -411,10 +411,10 @@ let FILL_PROCESSING = {
     // Instead of processing fills one-at-a-time (each requiring a separate broadcast),
     // multiple fills are grouped into a single processFilledOrders + broadcast cycle.
     // The batch size scales with queue depth:
-    //   queueDepth 1-2  → batch of 1 (normal operation)
-    //   queueDepth 3-5  → batch of 2
-    //   queueDepth 6-14 → batch of 3
-    //   queueDepth 15+  → batch of MAX_FILL_BATCH_SIZE
+    //   queueDepth 1-2  -> batch of 1 (normal operation)
+    //   queueDepth 3-5  -> batch of 2
+    //   queueDepth 6-14 -> batch of 3
+    //   queueDepth 15+  -> batch of MAX_FILL_BATCH_SIZE
     // Set to 1 to disable batching (legacy sequential behavior).
     MAX_FILL_BATCH_SIZE: 4,
 
@@ -422,10 +422,10 @@ let FILL_PROCESSING = {
     // Array of [minQueueDepth, batchSize] pairs, evaluated in order.
     // The first matching threshold determines the batch size.
     BATCH_STRESS_TIERS: [
-        [15, 4],  // 15+ fills queued → batch of 4
-        [6,  3],  // 6-14 fills queued → batch of 3
-        [3,  2],  // 3-5 fills queued  → batch of 2
-        [0,  1]   // 0-2 fills queued  → sequential (1-at-a-time)
+        [15, 4],  // 15+ fills queued -> batch of 4
+        [6,  3],  // 6-14 fills queued -> batch of 3
+        [3,  2],  // 3-5 fills queued  -> batch of 2
+        [0,  1]   // 0-2 fills queued  -> sequential (1-at-a-time)
     ]
 };
 

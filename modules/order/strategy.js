@@ -12,7 +12,7 @@
  * - Handles partial fills and order consolidation
  *
  * ===============================================================================
- * TABLE OF CONTENTS - StrategyEngine Class (5 methods)
+ * TABLE OF CONTENTS - StrategyEngine Class
  * ===============================================================================
  *
  * INITIALIZATION (1 method)
@@ -24,17 +24,13 @@
  *      Returns: { targetGrid: Map, boundaryIdx: number }
  *      No side effects.
  *
- * ORDER PROCESSING (2 methods)
+ * ORDER PROCESSING (1 method)
  *   3. processFillsOnly(filledOrders, excludeOrderIds) - Process filled orders (async)
  *      Handles order fill events, fee accounting, and grid updates
  *      Consolidates partial fills, updates fund state. Does NOT trigger rebalancing.
- *
- *   4. processFilledOrders(filledOrders, excludeOrderIds, options) - Legacy entry point (async)
- *      Now delegates to processFillsOnly and returns empty actions.
- *      The manager is responsible for calling performSafeRebalance().
- *
+
  * HEALTH CHECK (1 method)
- *   5. hasAnyDust(partials, side) - Check for dust (unhealthy) partial orders
+ *   4. hasAnyDust(partials, side) - Check for dust (unhealthy) partial orders
  *      Detects partial orders below minimum size threshold
  *      Returns true if dust detected on side
  *
@@ -62,8 +58,7 @@ const {
 const {
     virtualizeOrder,
     hasOnChainId,
-    isOrderPlaced,
-    convertToSpreadPlaceholder
+    isOrderPlaced
 } = require("./utils/order");
 const Grid = require('./grid');
 
@@ -131,8 +126,7 @@ class StrategyEngine {
      * Does NOT trigger rebalancing (now decoupled from rebalance logic).
      * 
      * This method handles the accounting side of fills without modifying
-     * the grid structure. It is called by processFilledOrders() as the first
-     * phase of the two-phase fill processing pipeline.
+     * the grid structure. OrderManager invokes it before running COW rebalance.
      *
      * OPERATIONS PERFORMED:
      * 1. Validates and filters filled orders
@@ -431,59 +425,6 @@ class StrategyEngine {
         return Grid.hasAnyDust(mgr, partials, side);
     }
 
-    /**
-     * LEGACY ENTRY POINT: Process filled orders (now decoupled from rebalancing).
-     *
-     * This method is maintained for backward compatibility but now follows a
-     * decoupled architecture where fill processing and rebalancing are separate phases.
-     *
-     * NEW ARCHITECTURE:
-     * 1. This method ONLY processes fills (accounting, virtualization)
-     * 2. It delegates to processFillsOnly() for actual fill handling
-     * 3. It NO LONGER triggers rebalancing directly
-     * 4. The caller (OrderManager) is responsible for calling performSafeRebalance()
-     *
-     * RETURN VALUE:
-     * Always returns empty actions/stateUpdates because rebalancing happens separately.
-     * The manager calls this method, then decides whether to rebalance based on results.
-     *
-     * @param {Array<Object>} filledOrders - Array of filled order objects from blockchain
-     *   - id {string}: Order slot ID
-     *   - orderId {string}: Blockchain order ID
-     *   - type {string}: 'BUY' or 'SELL'
-     *   - price {number}: Order price
-     *   - size {number}: Filled size
-     *   - isPartial {boolean}: Whether this is a partial fill
-     *   - isMaker {boolean}: Whether fill was maker or taker
-     * @param {Set<string>} [excludeOrderIds=new Set()] - Order IDs to skip during processing
-     * @param {Object} [_options={}] - Legacy processing options (now ignored)
-     * @returns {Promise<Object>} Empty result object for compatibility:
-     *   - actions {Array}: Always empty []
-     *   - stateUpdates {Array}: Always empty []
-     *   - hadRotation {boolean}: Always false
-     * @async
-     * @deprecated Use processFillsOnly() for fill processing. Rebalancing is now handled
-     *   separately by OrderManager.performSafeRebalance().
-     */
-    async processFilledOrders(filledOrders, excludeOrderIds = new Set(), _options = {}) {
-        const mgr = this.manager;
-        if (!filledOrders || filledOrders.length === 0) return { actions: [], stateUpdates: [], hadRotation: false };
-
-        mgr.logger.log(`>>> processFilledOrders() with ${filledOrders.length} orders`, "info");
-
-        // Use the new decoupled fill processor
-        await this.processFillsOnly(filledOrders, excludeOrderIds);
-
-        // --- NEW ARCHITECTURE: DECOUPLED REBALANCE ---
-        // Instead of calling this.rebalance() directly, we return empty results.
-        // The manager is now responsible for calling performSafeRebalance() 
-        // immediately after this method returns.
-        return { 
-            actions: [], 
-            stateUpdates: [], 
-            hadRotation: false 
-        };
-    }
 }
 
 module.exports = StrategyEngine;

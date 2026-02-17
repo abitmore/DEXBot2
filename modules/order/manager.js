@@ -54,6 +54,7 @@ const {
     validateWorkingGridFunds,
     checkFundDrift,
     reconcileGrid,
+    optimizeRebalanceActions,
     summarizeActions,
     projectTargetToWorkingGrid,
     buildStateUpdates,
@@ -142,7 +143,8 @@ class COWRebalanceEngine {
             return buildAbortedResult(reason);
         }
 
-        const stateUpdates = buildStateUpdates(reconcileResult.actions, masterGrid);
+        const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
+        const stateUpdates = buildStateUpdates(optimizedActions, masterGrid);
 
         const duration = Date.now() - startTime;
         if (duration > 100) {
@@ -150,12 +152,12 @@ class COWRebalanceEngine {
         }
 
         this.logger?.log(
-            `[COW] Plan: Actions=${reconcileResult.actions.length}, StateUpdates=${stateUpdates.length}`,
+            `[COW] Plan: Actions=${optimizedActions.length}, StateUpdates=${stateUpdates.length}`,
             'info'
         );
 
         return buildSuccessResult({
-            actions: reconcileResult.actions,
+            actions: optimizedActions,
             stateUpdates,
             workingGrid,
             workingBoundary: targetBoundary,
@@ -847,7 +849,7 @@ class OrderManager {
 
     async processFilledOrders(orders, excl, options) {
         // Step 1: Handle Fills (Accounting & State Updates)
-        await this.strategy.processFilledOrders(orders, excl, options);
+        await this.strategy.processFillsOnly(orders, excl);
 
         // Step 2: Trigger Safe Rebalance
         // Criteria for rebalance:
@@ -878,10 +880,6 @@ class OrderManager {
         }
 
         return { actions: [], stateUpdates: [], hadRotation: false };
-    }
-
-    completeOrderRotation(oldInfo) {
-        return this.strategy.completeOrderRotation(oldInfo);
     }
 
     getInitialOrdersToActivate() {

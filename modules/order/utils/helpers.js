@@ -394,7 +394,10 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         if (masterOrder.size !== targetOrder.size) {
             if (targetOrder.size === 0) {
                 actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
-            } else {
+            } else if (masterOrder.state === ORDER_STATES.PARTIAL) {
+                // Keep ACTIVE size stable during normal boundary-crawl rebalances.
+                // Main branch semantics resize PARTIAL orders in-place, while ACTIVE
+                // orders are typically moved via rotation/place flows.
                 actions.push({ 
                     type: COW_ACTIONS.UPDATE, 
                     id, 
@@ -418,6 +421,93 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         boundaryIdx: validatedBoundary,
         summary: summarizeActions(actions)
     };
+}
+
+/**
+ * Pair same-side CREATE+CANCEL actions into rotation-style UPDATE actions.
+ * This reduces churn and matches boundary-crawl behavior where an on-chain
+ * order is moved to a new slot instead of cancel+recreate.
+ *
+ * @param {Array<Object>} actions - Reconcile action list
+ * @param {Map} masterGrid - Current master grid
+ * @returns {Array<Object>} Optimized action list
+ */
+function optimizeRebalanceActions(actions, masterGrid) {
+    if (!Array.isArray(actions) || actions.length === 0) return [];
+
+    const creates = [];
+    const cancels = [];
+    const passthrough = [];
+
+    for (const action of actions) {
+        if (action?.type === COW_ACTIONS.CREATE) {
+            creates.push(action);
+        } else if (action?.type === COW_ACTIONS.CANCEL) {
+            cancels.push(action);
+        } else {
+            passthrough.push(action);
+        }
+    }
+
+    if (creates.length === 0 || cancels.length === 0) {
+        return actions;
+    }
+
+    const remainingCreates = [...creates];
+    const optimized = [...passthrough];
+
+    for (const cancelAction of cancels) {
+        const masterOrder = masterGrid.get(cancelAction.id);
+        const cancelType = masterOrder?.type;
+
+        if (!masterOrder || !cancelAction.orderId || !cancelType) {
+            optimized.push(cancelAction);
+            continue;
+        }
+
+        let bestIdx = -1;
+        let bestDistance = Infinity;
+
+        for (let i = 0; i < remainingCreates.length; i++) {
+            const createAction = remainingCreates[i];
+            const createType = createAction?.order?.type;
+            if (createType !== cancelType) continue;
+
+            const fromPrice = Number(masterOrder.price);
+            const toPrice = Number(createAction?.order?.price);
+            const distance = (Number.isFinite(fromPrice) && Number.isFinite(toPrice))
+                ? Math.abs(toPrice - fromPrice)
+                : 0;
+
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestIdx = i;
+            }
+        }
+
+        if (bestIdx === -1) {
+            optimized.push(cancelAction);
+            continue;
+        }
+
+        const createAction = remainingCreates.splice(bestIdx, 1)[0];
+        optimized.push({
+            type: COW_ACTIONS.UPDATE,
+            id: cancelAction.id,
+            orderId: cancelAction.orderId,
+            newGridId: createAction.id,
+            newSize: Number.isFinite(Number(createAction?.order?.size)) ? Number(createAction.order.size) : 0,
+            newPrice: Number.isFinite(Number(createAction?.order?.price)) ? Number(createAction.order.price) : null,
+            order: createAction.order,
+            isRotation: true
+        });
+    }
+
+    for (const createAction of remainingCreates) {
+        optimized.push(createAction);
+    }
+
+    return optimized;
 }
 
 /**
@@ -813,6 +903,7 @@ module.exports = {
 
     // Grid reconciliation (COW pipeline)
     reconcileGrid,
+    optimizeRebalanceActions,
     summarizeActions,
     projectTargetToWorkingGrid,
     buildStateUpdates,

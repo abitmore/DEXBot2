@@ -154,12 +154,13 @@ assert(mgr.funds && typeof mgr.funds.available.buy === 'number', 'manager should
     // performSafeRebalance expects fills
     const rotateRes = await rotateMgr.performSafeRebalance(mockFills);
     
-    // In COW, rotation is cancel + create
-    const cancel = rotateRes.actions.find(a => a.type === 'cancel' && a.id === 'slot-0');
-    const create = rotateRes.actions.find(a => a.type === 'create' && a.id === 'slot-51');
-    
-    assert(cancel, 'Should cancel the furthest outlier');
-    assert(create, 'Should create new order in the hole (slot-51)');
+    // Rotation optimization: boundary crawl should pair same-side cancel+create
+    // into a single update-style rotation action.
+    const rotation = rotateRes.actions.find(
+        a => a.type === 'update' && a.id === 'slot-0' && a.newGridId === 'slot-51'
+    );
+
+    assert(rotation, 'Should rotate furthest outlier to new hole (slot-0 -> slot-51)');
 
     console.log('rotation behavior tests (COW) passed');
     process.exit(0);
