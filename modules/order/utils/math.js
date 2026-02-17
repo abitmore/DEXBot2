@@ -2,11 +2,71 @@
  * modules/order/utils/math.js - Mathematical and Numeric Utilities
  * 
  * Pure numeric calculations, blockchain conversions, fee math, and fund allocation.
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS (37 exported functions)
+ * ===============================================================================
+ *
+ * SECTION 1: PARSING & VALIDATION (4 functions)
+ *   - isExplicitZeroAllocation(value) - Check if value is explicitly zero
+ *   - isPercentageString(v) - Check if value is percentage string
+ *   - parsePercentageString(v) - Parse percentage string to decimal
+ *   - resolveRelativePrice(value, startPrice, mode) - Resolve relative price values
+ *
+ * SECTION 2: FUND CALCULATIONS (4 functions)
+ *   - computeChainFundTotals(accountTotals, committedChain) - Compute total funds
+ *   - calculateAvailableFundsValue(side, accountTotals, funds, ...) - Calculate available funds
+ *   - calculateSpreadFromOrders(activeBuys, activeSells) - Calculate spread percentage
+ *   - resolveConfigValue(value, total) - Resolve percentage or absolute config value
+ *
+ * SECTION 3: BLOCKCHAIN CONVERSIONS (5 functions)
+ *   - blockchainToFloat(intValue, precision) - Convert blockchain int to float
+ *   - floatToBlockchainInt(floatValue, precision) - Convert float to blockchain int
+ *   - quantizeFloat(value, precision) - Round float to blockchain precision
+ *   - normalizeInt(value, precision) - Normalize int within precision bounds
+ *   - hasValidAccountTotals(accountTotals, checkFree) - Validate account totals structure
+ *
+ * SECTION 4: PRECISION UTILITIES (5 functions)
+ *   - getPrecision(assets, orderType) - Get precision for order type
+ *   - getPrecisionByOrderType(assets, orderType) - Alias for getPrecision
+ *   - getPrecisionForSide(assets, side) - Get precision by side (buy/sell)
+ *   - getPrecisionsForManager(manager) - Get both asset precisions
+ *   - getPrecisionSlack(precision) - Calculate tolerance for precision
+ *
+ * SECTION 5: ORDER SIZE VALIDATION (7 functions)
+ *   - calculatePriceTolerance(price, size, type, assets) - Calculate price match tolerance
+ *   - validateOrderAmountsWithinLimits(amountToSell, minToReceive) - Validate order limits
+ *   - getMinOrderSize(assets, type) - Get minimum order size for type
+ *   - getDustThresholdFactor() - Get dust threshold multiplier
+ *   - getSingleDustThreshold(assets, orderType) - Get single dust threshold
+ *   - getDoubleDustThreshold(assets, orderType) - Get double dust threshold
+ *   - getMinAbsoluteOrderSize(assets, orderType) - Get minimum absolute order size
+ *   - validateOrderSize(manager, size, type, context) - Validate order size against minimums
+ *
+ * SECTION 6: FEE CALCULATIONS (2 functions + 2 internal)
+ *   - getAssetFees(assetSymbol, assetAmount, isMaker) - Get fee info for asset
+ *   - _setFeeCache(cache) - Set internal fee cache (internal)
+ *   - _getFeeCache() - Get internal fee cache (internal)
+ *
+ * SECTION 7: FUND ALLOCATION (4 functions)
+ *   - allocateFundsByWeights(available, targetCount) - Allocate funds by weight
+ *   - calculateOrderSizes(manager, orderType) - Calculate order sizes for placement
+ *   - calculateRotationOrderSizes(manager, orderType, fillAmount) - Calculate rotation sizes
+ *   - calculateGridSideDivergenceMetric(manager, orderType, threshold) - Calculate divergence
+ *
+ * SECTION 8: FEE DEDUCTION (2 functions)
+ *   - calculateOrderCreationFees(count, btsFeeData) - Calculate total creation fees
+ *   - deductOrderFeesFromFunds(available, count, btsFeeData, btsSide) - Deduct fees from funds
+ *
+ * SECTION 9: GRID UTILITIES (1 function)
+ *   - calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate gap slots count
+ *
+ * ===============================================================================
  */
 
 const { ORDER_TYPES, FEE_PARAMETERS, DEFAULT_CONFIG } = require('../../constants');
 const Format = require('../format');
-const { isValidNumber, toFiniteNumber } = Format;
+const { isValidNumber, toFiniteNumber, isNumeric } = Format;
 
 const MAX_INT64 = 9223372036854775807;
 const MIN_INT64 = -9223372036854775808;
@@ -36,17 +96,6 @@ function isExplicitZeroAllocation(value) {
 
     const numeric = parseFloat(trimmed);
     return Number.isFinite(numeric) && numeric === 0;
-}
-
-/**
- * Check if a value can be converted to a number.
- * Accepts numbers and numeric strings that are not empty or NaN.
- * 
- * @param {*} val - Value to test
- * @returns {boolean} True if val is a number or can be parsed as one
- */
-function isNumeric(val) {
-    return typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val)));
 }
 
 /**
@@ -929,7 +978,6 @@ function calculateGapSlots(incrementPercent, targetSpreadPercent, GRID_LIMITS = 
 
 module.exports = {
     calculateGapSlots,
-    isNumeric,
     isPercentageString,
     parsePercentageString,
     resolveRelativePrice,

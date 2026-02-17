@@ -64,6 +64,8 @@ const path = require('path');
 const { ORDER_TYPES, ORDER_STATES } = require('./constants');
 const AsyncLock = require('./order/async_lock');
 const { isPhantomOrder } = require('./order/utils/order');
+const Format = require('./order/format');
+const { toFiniteNumber } = Format;
 
 /**
  * Ensures that the directory for the given file path exists.
@@ -779,7 +781,7 @@ class AccountOrders {
     };
 
     for (const o of grid) {
-      const size = Number(o && o.size) || 0;
+      const size = toFiniteNumber(o?.size);
       const state = o && o.state || '';
       const typ = o && o.type || '';
 
@@ -802,8 +804,8 @@ class AccountOrders {
    * @private
    */
   _serializeOrder(order = {}) {
-    const priceValue = Number(order.price !== undefined && order.price !== null ? order.price : 0);
-    const sizeValue = Number(order.size !== undefined && order.size !== null ? order.size : 0);
+    const priceValue = toFiniteNumber(order.price);
+    const sizeValue = toFiniteNumber(order.size);
     
     // SANITY CHECK: If order is ACTIVE/PARTIAL but has no orderId, it's corrupted.
     // Downgrade to VIRTUAL to prevent persisting phantom active orders.

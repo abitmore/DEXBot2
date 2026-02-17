@@ -2,6 +2,41 @@
  * modules/order/utils/system.js - System and I/O Utilities
  * 
  * Price derivation, persistence, grid correction, and UI/interactive utilities.
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS (16 exported functions)
+ * ===============================================================================
+ *
+ * SECTION 1: PRICE DERIVATION (4 functions)
+ *   - lookupAsset(BitShares, symbol) - Lookup asset metadata from blockchain
+ *   - deriveMarketPrice(BitShares, symA, symB) - Derive price from order book
+ *   - derivePoolPrice(BitShares, symA, symB) - Derive price from liquidity pool
+ *   - derivePrice(BitShares, symA, symB, mode) - Derive price with fallback chain
+ *
+ * SECTION 2: FEE MANAGEMENT (1 function)
+ *   - initializeFeeCache(botsConfig, BitShares) - Initialize fee cache from blockchain
+ *
+ * SECTION 3: GRID STATE MANAGEMENT (3 functions)
+ *   - persistGridSnapshot(manager, accountOrders, botKey) - Persist grid to storage
+ *   - retryPersistenceIfNeeded(manager) - Retry persistence if previous failed
+ *   - applyGridDivergenceCorrections(manager, ...) - Apply grid divergence corrections
+ *
+ * SECTION 4: GRID UTILITIES (1 function)
+ *   - syncBoundaryToFunds(manager) - Sync boundary position to available funds
+ *
+ * SECTION 5: UI & INTERACTIVE UTILITIES (5 functions)
+ *   - ensureProfilesDirectory(profilesDir) - Ensure profiles directory exists
+ *   - sleep(ms) - Pause execution for specified duration
+ *   - readInput(prompt, options) - Read user input from stdin
+ *   - readPassword(prompt) - Read password with masked echo
+ *   - withRetry(fn, options) - Execute async function with exponential backoff
+ *
+ * SECTION 6: GENERAL UTILITIES (2 functions)
+ *   - resolveAccountRef(manager, account) - Resolve best account reference
+ *   - deepFreeze(obj) - Recursively freeze object for immutability
+ *   - cloneMap(map) - Create shallow clone of Map
+ *
+ * ===============================================================================
  */
 
 const fs = require('fs');
@@ -79,8 +114,8 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
         if (typeof BitShares.db?.get_order_book === 'function') {
             try {
                 const ob = await BitShares.db.get_order_book(baseId, quoteId, API_LIMITS.ORDERBOOK_DEPTH);
-                const bestBid = isValidNumber(ob.bids?.[0]?.price) ? Number(ob.bids[0].price) : null;
-                const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? Number(ob.asks[0].price) : null;
+                const bestBid = isValidNumber(ob.bids?.[0]?.price) ? toFiniteNumber(ob.bids[0].price) : null;
+                const bestAsk = isValidNumber(ob.asks?.[0]?.price) ? toFiniteNumber(ob.asks[0].price) : null;
                 if (bestBid !== null && bestAsk !== null) mid = (bestBid + bestAsk) / 2;
             } catch (e) {}
         }
@@ -88,7 +123,7 @@ const deriveMarketPrice = async (BitShares, symA, symB) => {
         if (mid === null && typeof BitShares.db?.get_ticker === 'function') {
             try {
                 const t = await BitShares.db.get_ticker(baseId, quoteId);
-                mid = isValidNumber(t?.latest) ? Number(t.latest) : (isValidNumber(t?.latest_price) ? Number(t.latest_price) : null);
+                mid = isValidNumber(t?.latest) ? toFiniteNumber(t.latest) : (isValidNumber(t?.latest_price) ? toFiniteNumber(t.latest_price) : null);
             } catch (err) {}
         }
 
@@ -178,7 +213,7 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
                     if (allMatches.length) {
                         // Select pool with highest balance for our assetA
                         chosen = allMatches.sort((a, b) => {
-                            const getBal = p => Number(String(p.asset_a) === String(aMeta.id) ? p.balance_a : p.balance_b);
+                            const getBal = p => toFiniteNumber(String(p.asset_a) === String(aMeta.id) ? p.balance_a : p.balance_b);
                             return getBal(b) - getBal(a);
                         })[0];
                         poolIdCache.set(cacheKey, chosen.id);
@@ -201,18 +236,18 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
         let amtA = null, amtB = null;
         if (isValidNumber(chosen.balance_a) && isValidNumber(chosen.balance_b)) {
             // Pools store assets ordered by ID: lower ID is always first (asset_a)
-            const aIdNum = Number(String(aMeta.id).split('.')[2]);
-            const bIdNum = Number(String(bMeta.id).split('.')[2]);
+            const aIdNum = toFiniteNumber(String(aMeta.id).split('.')[2]);
+            const bIdNum = toFiniteNumber(String(bMeta.id).split('.')[2]);
             const aIsFirst = aIdNum < bIdNum;
 
             // If config's assetA has lower ID, it's the pool's first asset (asset_a)
             // Otherwise, our assetA corresponds to pool's second asset (asset_b)
             if (aIsFirst) {
-                amtA = Number(chosen.balance_a);
-                amtB = Number(chosen.balance_b);
+                amtA = toFiniteNumber(chosen.balance_a);
+                amtB = toFiniteNumber(chosen.balance_b);
             } else {
-                amtA = Number(chosen.balance_b);
-                amtB = Number(chosen.balance_a);
+                amtA = toFiniteNumber(chosen.balance_b);
+                amtB = toFiniteNumber(chosen.balance_a);
             }
         } else if (Array.isArray(chosen.reserves)) {
             const resA = chosen.reserves.find(r => String(r.asset_id) === String(aMeta.id));
@@ -223,7 +258,7 @@ const derivePoolPrice = async (BitShares, symA, symB) => {
             }
         }
 
-        if (!isValidNumber(amtA) || !isValidNumber(amtB) || Number(amtB) === 0) return null;
+        if (!isValidNumber(amtA) || !isValidNumber(amtB) || toFiniteNumber(amtB) === 0) return null;
 
         const floatA = MathUtils.blockchainToFloat(amtA, aMeta.precision);
         const floatB = MathUtils.blockchainToFloat(amtB, bMeta.precision);
@@ -476,7 +511,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 const slot = workingGrid.get(onChainOrder.id);
                 const isDesired = desiredSlotIds.has(onChainOrder.id);
 
-                if (!isDesired || !slot || !(Number(slot.size) > 0)) {
+                if (!isDesired || !slot || !(toFiniteNumber(slot.size) > 0)) {
                     removeActionsForOrder(actions, COW_ACTIONS.UPDATE, onChainOrder);
                     const hasQueuedCancel = hasActionForOrder(actions, COW_ACTIONS.CANCEL, onChainOrder);
 
@@ -502,8 +537,8 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                     continue;
                 }
 
-                const newSize = Number(slot.size || 0);
-                const currentSize = Number(onChainOrder.size || 0);
+                const newSize = toFiniteNumber(slot.size);
+                const currentSize = toFiniteNumber(onChainOrder.size);
                 const sizeChanged = Number.isFinite(sidePrecision)
                     ? MathUtils.floatToBlockchainInt(newSize, sidePrecision) !== MathUtils.floatToBlockchainInt(currentSize, sidePrecision)
                     : newSize !== currentSize;

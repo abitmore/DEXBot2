@@ -242,6 +242,17 @@ function isValidNumber(value) {
 }
 
 /**
+ * Check if a value can be converted to a number.
+ * Accepts numbers and numeric strings that are not empty or NaN.
+ * 
+ * @param {*} val - Value to test
+ * @returns {boolean} True if val is a number or can be parsed as one
+ */
+function isNumeric(val) {
+	return typeof val === 'number' || (typeof val === 'string' && val.trim() !== '' && !Number.isNaN(Number(val)));
+}
+
+/**
  * Safely convert a value to a finite number with fallback.
  * @param {*} value - Value to convert
  * @param {number} defaultValue - Fallback if not finite (default: 0)
@@ -300,6 +311,7 @@ module.exports = {
 
 	// Helper utilities
 	isValidNumber,
+	isNumeric,
 	toFiniteNumber,
 	safeFormat,
 };

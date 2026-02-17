@@ -18,18 +18,15 @@
  *
  * SECTION 3: GRID RECONCILIATION (COW Pipeline)
  *   - reconcileGrid()
+ *   - optimizeRebalanceActions()
  *   - summarizeActions()
+ *   - hasActionForOrder()
+ *   - removeActionsForOrder()
  *   - projectTargetToWorkingGrid()
  *   - buildStateUpdates()
  *   - buildAbortedResult()
  *   - buildSuccessResult()
  *   - evaluateCommit()
- *
- * SECTION 4: GRID MUTATIONS (Immutable Operations)
- *   - applyOrderUpdate()
- *   - applyOrderUpdatesBatch()
- *   - buildIndices()
- *   - swapMasterGrid()
  *
  * ===============================================================================
  */
@@ -46,6 +43,7 @@ const {
 } = require('../../constants');
 const {
     floatToBlockchainInt,
+    blockchainToFloat,
     getPrecisionSlack
 } = require('./math');
 const {
@@ -55,6 +53,7 @@ const {
     convertToSpreadPlaceholder
 } = require('./order');
 const Format = require('../format');
+const { isValidNumber, toFiniteNumber } = Format;
 const { deepFreeze, cloneMap } = require('./system');
 
 // Pre-computed valid sets
@@ -83,7 +82,7 @@ function validateOrder(order, oldOrder = null, context = 'validate') {
     }
 
     if (!normalizedOrder.type && normalizedOrder.state === ORDER_STATES.VIRTUAL) {
-        const placeholderSize = Number(normalizedOrder.size || 0);
+        const placeholderSize = toFiniteNumber(normalizedOrder.size);
         if (placeholderSize === 0) {
             normalizedOrder.type = ORDER_TYPES.SPREAD;
         }
@@ -103,7 +102,7 @@ function validateOrder(order, oldOrder = null, context = 'validate') {
         });
     }
 
-    if (normalizedOrder.type === ORDER_TYPES.SPREAD && Number(normalizedOrder.size || 0) !== 0) {
+    if (normalizedOrder.type === ORDER_TYPES.SPREAD && toFiniteNumber(normalizedOrder.size) !== 0) {
         warnings.push({
             code: 'SPREAD_SIZE_NORMALIZED',
             message: `[INVARIANT] Normalizing SPREAD order ${order.id} size ${normalizedOrder.size} -> 0 (context: ${context})`
@@ -166,7 +165,7 @@ function validateGridForPersistence(orders, accountTotals) {
         }
     }
 
-    if (!accountTotals || !Number.isFinite(accountTotals.buy) || !Number.isFinite(accountTotals.sell)) {
+    if (!accountTotals || !isValidNumber(accountTotals.buy) || !isValidNumber(accountTotals.sell)) {
         return {
             isValid: false,
             reason: 'Account totals not initialized'
@@ -183,20 +182,14 @@ function validateGridForPersistence(orders, accountTotals) {
  * @returns {Object} Required funds { buyInt, sellInt, buy, sell }
  */
 function calculateRequiredFunds(grid, precisions = {}) {
-    const buyPrecision = Number.isFinite(Number(precisions.buyPrecision)) 
-        ? Number(precisions.buyPrecision) 
-        : 8;
-    const sellPrecision = Number.isFinite(Number(precisions.sellPrecision)) 
-        ? Number(precisions.sellPrecision) 
-        : 8;
+    const buyPrecision = toFiniteNumber(precisions.buyPrecision, 8);
+    const sellPrecision = toFiniteNumber(precisions.sellPrecision, 8);
 
     let buyRequiredInt = 0;
     let sellRequiredInt = 0;
 
     for (const order of grid.values()) {
-        const size = Number.isFinite(Number(order.size))
-            ? Math.max(0, Number(order.size))
-            : Number(order.amount || 0);
+        const size = toFiniteNumber(order.size || order.amount);
 
         const state = order.state;
         const isActive = state === 'active' || state === 'partial';
@@ -213,8 +206,8 @@ function calculateRequiredFunds(grid, precisions = {}) {
     return {
         buyInt: buyRequiredInt,
         sellInt: sellRequiredInt,
-        buy: buyRequiredInt / Math.pow(10, buyPrecision),
-        sell: sellRequiredInt / Math.pow(10, sellPrecision)
+        buy: blockchainToFloat(buyRequiredInt, buyPrecision),
+        sell: blockchainToFloat(sellRequiredInt, sellPrecision)
     };
 }
 
@@ -227,28 +220,22 @@ function calculateRequiredFunds(grid, precisions = {}) {
  * @returns {Object} Validation result
  */
 function validateWorkingGridFunds(workingGrid, projectedFunds, precisions = {}, assets = null) {
-    const buyPrecision = Number.isFinite(Number(precisions.buyPrecision))
-        ? Number(precisions.buyPrecision)
-        : (assets?.assetB?.precision || 8);
-    const sellPrecision = Number.isFinite(Number(precisions.sellPrecision))
-        ? Number(precisions.sellPrecision)
-        : (assets?.assetA?.precision || 8);
-
-    const intToFloat = (value, precision) => Number(value || 0) / Math.pow(10, precision);
+    const buyPrecision = toFiniteNumber(precisions.buyPrecision, assets?.assetB?.precision || 8);
+    const sellPrecision = toFiniteNumber(precisions.sellPrecision, assets?.assetA?.precision || 8);
     
     const required = calculateRequiredFunds(workingGrid, { buyPrecision, sellPrecision });
     
-    const availableBuy = Number.isFinite(Number(projectedFunds?.allocatedBuy))
+    const availableBuy = isValidNumber(projectedFunds?.allocatedBuy)
         ? Number(projectedFunds.allocatedBuy)
-        : Number.isFinite(Number(projectedFunds?.chainTotalBuy))
+        : isValidNumber(projectedFunds?.chainTotalBuy)
             ? Number(projectedFunds.chainTotalBuy)
-            : Number(projectedFunds?.freeBuy || projectedFunds?.chainFreeBuy || 0);
+            : toFiniteNumber(projectedFunds?.freeBuy || projectedFunds?.chainFreeBuy);
     
-    const availableSell = Number.isFinite(Number(projectedFunds?.allocatedSell))
+    const availableSell = isValidNumber(projectedFunds?.allocatedSell)
         ? Number(projectedFunds.allocatedSell)
-        : Number.isFinite(Number(projectedFunds?.chainTotalSell))
+        : isValidNumber(projectedFunds?.chainTotalSell)
             ? Number(projectedFunds.chainTotalSell)
-            : Number(projectedFunds?.freeSell || projectedFunds?.chainFreeSell || 0);
+            : toFiniteNumber(projectedFunds?.freeSell || projectedFunds?.chainFreeSell);
 
     const shortfalls = [];
 
@@ -256,24 +243,24 @@ function validateWorkingGridFunds(workingGrid, projectedFunds, precisions = {}, 
     const availableSellInt = floatToBlockchainInt(availableSell, sellPrecision);
 
     if (required.buyInt > availableBuyInt) {
-        const requiredBuyFloat = intToFloat(required.buyInt, buyPrecision);
-        const availableBuyFloat = intToFloat(availableBuyInt, buyPrecision);
+        const requiredBuyFloat = blockchainToFloat(required.buyInt, buyPrecision);
+        const availableBuyFloat = blockchainToFloat(availableBuyInt, buyPrecision);
         shortfalls.push({
             asset: assets?.assetB?.symbol || 'buyAsset',
             required: requiredBuyFloat,
             available: availableBuyFloat,
-            deficit: intToFloat(required.buyInt - availableBuyInt, buyPrecision)
+            deficit: blockchainToFloat(required.buyInt - availableBuyInt, buyPrecision)
         });
     }
 
     if (required.sellInt > availableSellInt) {
-        const requiredSellFloat = intToFloat(required.sellInt, sellPrecision);
-        const availableSellFloat = intToFloat(availableSellInt, sellPrecision);
+        const requiredSellFloat = blockchainToFloat(required.sellInt, sellPrecision);
+        const availableSellFloat = blockchainToFloat(availableSellInt, sellPrecision);
         shortfalls.push({
             asset: assets?.assetA?.symbol || 'sellAsset',
             required: requiredSellFloat,
             available: availableSellFloat,
-            deficit: intToFloat(required.sellInt - availableSellInt, sellPrecision)
+            deficit: blockchainToFloat(required.sellInt - availableSellInt, sellPrecision)
         });
     }
 
@@ -296,7 +283,7 @@ function validateWorkingGridFunds(workingGrid, projectedFunds, precisions = {}, 
 function checkFundDrift(orders, accountTotals, assets = null) {
     let gridBuy = 0, gridSell = 0;
     for (const order of Array.from(orders.values())) {
-        const size = Number(order.size) || 0;
+        const size = toFiniteNumber(order.size);
         if (size <= 0 || !isOrderOnChain(order)) continue;
 
         if (order.type === 'buy') gridBuy += size;
@@ -317,7 +304,7 @@ function checkFundDrift(orders, accountTotals, assets = null) {
     const buyPrecision = assets?.assetB?.precision;
     const sellPrecision = assets?.assetA?.precision;
     
-    if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
+    if (!isValidNumber(buyPrecision) || !isValidNumber(sellPrecision)) {
         return { isValid: true, reason: 'Skipped: precision not available', driftBuy, driftSell };
     }
 
@@ -540,11 +527,9 @@ function optimizeRebalanceActions(actions, masterGrid) {
             const createType = createAction?.order?.type;
             if (createType !== cancelType) continue;
 
-            const fromPrice = Number(masterOrder.price);
-            const toPrice = Number(createAction?.order?.price);
-            const distance = (Number.isFinite(fromPrice) && Number.isFinite(toPrice))
-                ? Math.abs(toPrice - fromPrice)
-                : 0;
+            const fromPrice = toFiniteNumber(masterOrder.price);
+            const toPrice = toFiniteNumber(createAction?.order?.price);
+            const distance = Math.abs(toPrice - fromPrice);
 
             if (distance < bestDistance) {
                 bestDistance = distance;
@@ -563,8 +548,8 @@ function optimizeRebalanceActions(actions, masterGrid) {
             id: cancelAction.id,
             orderId: cancelAction.orderId,
             newGridId: createAction.id,
-            newSize: Number.isFinite(Number(createAction?.order?.size)) ? Number(createAction.order.size) : 0,
-            newPrice: Number.isFinite(Number(createAction?.order?.price)) ? Number(createAction.order.price) : null,
+            newSize: toFiniteNumber(createAction?.order?.size),
+            newPrice: toFiniteNumber(createAction?.order?.price),
             order: createAction.order,
             isRotation: true
         });
@@ -656,7 +641,7 @@ function projectTargetToWorkingGrid(workingGrid, targetGrid) {
         targetIds.add(id);
 
         const current = workingGrid.get(id);
-        const targetSize = Number.isFinite(Number(targetOrder?.size)) ? Number(targetOrder.size) : 0;
+        const targetSize = toFiniteNumber(targetOrder?.size);
 
         if (!current) {
             // New orders start as VIRTUAL - transition to ACTIVE happens in synchronizeWithChain
@@ -724,9 +709,7 @@ function buildStateUpdates(actions, masterGrid) {
         } else if (action.type === COW_ACTIONS.UPDATE) {
             const masterOrder = masterGrid.get(action.id);
             if (masterOrder) {
-                const newSize = Number.isFinite(Number(action.newSize))
-                    ? Number(action.newSize)
-                    : Number(action.order?.size || 0);
+                const newSize = toFiniteNumber(action.newSize || action.order?.size);
                 stateUpdates.push({ ...masterOrder, size: newSize });
             }
         }
@@ -786,9 +769,7 @@ function buildSuccessResult({
  */
 function evaluateCommit(workingGrid, options = {}) {
     const hasLock = typeof options === 'boolean' ? options : !!options?.hasLock;
-    const currentVersion = typeof options === 'object' && Number.isFinite(Number(options.currentVersion))
-        ? Number(options.currentVersion)
-        : null;
+    const currentVersion = toFiniteNumber(options?.currentVersion, null);
     const masterGrid = typeof options === 'object' ? options.masterGrid : null;
 
     if (!workingGrid) {
@@ -819,7 +800,7 @@ function evaluateCommit(workingGrid, options = {}) {
         };
     }
 
-    if (currentVersion !== null && Number.isFinite(Number(baseVersion)) && Number(baseVersion) !== currentVersion) {
+    if (currentVersion !== null && isValidNumber(baseVersion) && Number(baseVersion) !== currentVersion) {
         return {
             canCommit: false,
             reason: `Refusing working grid commit: base version ${Number(baseVersion)} != current ${currentVersion}`,
@@ -853,161 +834,6 @@ function evaluateCommit(workingGrid, options = {}) {
 }
 
 // ===============================================================================
-// SECTION 4: GRID MUTATIONS (Immutable Operations)
-// ===============================================================================
-
-/**
- * Apply an order update immutably
- * @param {Map} masterGrid - Current master grid
- * @param {Object} orderUpdate - Order update to apply
- * @param {Object} indices - Current indices object
- * @returns {Object} { newGrid, newIndices, updatedOrder }
- */
-function applyOrderUpdate(masterGrid, orderUpdate, indices) {
-    const id = orderUpdate.id;
-    const oldOrder = masterGrid.get(id);
-    const nextOrder = { ...(oldOrder || {}), ...orderUpdate };
-
-    const updatedOrder = deepFreeze({ ...nextOrder });
-
-    const newIndices = {
-        byState: {},
-        byType: {}
-    };
-
-    for (const [state, set] of Object.entries(indices.byState || {})) {
-        newIndices.byState[state] = new Set(set);
-    }
-    for (const [type, set] of Object.entries(indices.byType || {})) {
-        newIndices.byType[type] = new Set(set);
-    }
-
-    if (oldOrder) {
-        for (const set of Object.values(newIndices.byState)) {
-            set.delete(id);
-        }
-        for (const set of Object.values(newIndices.byType)) {
-            set.delete(id);
-        }
-    }
-
-    if (newIndices.byState[updatedOrder.state]) {
-        newIndices.byState[updatedOrder.state].add(id);
-    }
-    if (newIndices.byType[updatedOrder.type]) {
-        newIndices.byType[updatedOrder.type].add(id);
-    }
-
-    const newGrid = cloneMap(masterGrid);
-    newGrid.set(id, updatedOrder);
-
-    return {
-        newGrid: Object.freeze(newGrid),
-        newIndices,
-        updatedOrder
-    };
-}
-
-/**
- * Apply multiple order updates as a batch
- * @param {Map} masterGrid - Current master grid
- * @param {Array<Object>} updates - Array of order updates
- * @param {Object} indices - Current indices
- * @returns {Object} { newGrid, newIndices, updatedOrders }
- */
-function applyOrderUpdatesBatch(masterGrid, updates, indices) {
-    const newGrid = cloneMap(masterGrid);
-    const newIndices = {
-        byState: {},
-        byType: {}
-    };
-    const updatedOrders = [];
-
-    for (const [state, set] of Object.entries(indices.byState || {})) {
-        newIndices.byState[state] = new Set(set);
-    }
-    for (const [type, set] of Object.entries(indices.byType || {})) {
-        newIndices.byType[type] = new Set(set);
-    }
-
-    for (const update of updates) {
-        const id = update.id;
-        const oldOrder = newGrid.get(id);
-        const nextOrder = { ...(oldOrder || {}), ...update };
-        const updatedOrder = deepFreeze({ ...nextOrder });
-
-        if (oldOrder) {
-            for (const set of Object.values(newIndices.byState)) {
-                set.delete(id);
-            }
-            for (const set of Object.values(newIndices.byType)) {
-                set.delete(id);
-            }
-        }
-
-        if (newIndices.byState[updatedOrder.state]) {
-            newIndices.byState[updatedOrder.state].add(id);
-        }
-        if (newIndices.byType[updatedOrder.type]) {
-            newIndices.byType[updatedOrder.type].add(id);
-        }
-
-        newGrid.set(id, updatedOrder);
-        updatedOrders.push(updatedOrder);
-    }
-
-    return {
-        newGrid: Object.freeze(newGrid),
-        newIndices,
-        updatedOrders
-    };
-}
-
-/**
- * Build indices from a grid
- * @param {Map} grid - Grid to index
- * @param {Array<string>} states - Valid states
- * @param {Array<string>} types - Valid types
- * @returns {Object} { byState, byType }
- */
-function buildIndices(grid, states, types) {
-    const byState = {};
-    const byType = {};
-
-    for (const state of states) {
-        byState[state] = new Set();
-    }
-    for (const type of types) {
-        byType[type] = new Set();
-    }
-
-    for (const [id, order] of grid) {
-        if (byState[order.state]) {
-            byState[order.state].add(id);
-        }
-        if (byType[order.type]) {
-            byType[order.type].add(id);
-        }
-    }
-
-    return { byState, byType };
-}
-
-/**
- * Swap master grid atomically
- * @param {Map} newGrid - New grid to swap in
- * @param {Object} indices - New indices
- * @returns {Object} { grid, ordersByState, ordersByType }
- */
-function swapMasterGrid(newGrid, indices) {
-    return {
-        grid: Object.freeze(newGrid),
-        ordersByState: indices.byState,
-        ordersByType: indices.byType
-    };
-}
-
-// ===============================================================================
 // EXPORTS
 // ===============================================================================
 
@@ -1031,11 +857,5 @@ module.exports = {
     buildStateUpdates,
     buildAbortedResult,
     buildSuccessResult,
-    evaluateCommit,
-
-    // Grid mutations (immutable)
-    applyOrderUpdate,
-    applyOrderUpdatesBatch,
-    buildIndices,
-    swapMasterGrid
+    evaluateCommit
 };

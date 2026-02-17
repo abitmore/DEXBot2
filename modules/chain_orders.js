@@ -93,6 +93,8 @@
 const { BitShares, createAccountClient, waitForConnected } = require('./bitshares_client');
 const { floatToBlockchainInt, blockchainToFloat, normalizeInt, validateOrderAmountsWithinLimits } = require('./order/utils/math');
 const { FILL_PROCESSING, TIMING } = require('./constants');
+const Format = require('./order/format');
+const { toFiniteNumber } = Format;
 const AsyncLock = require('./order/async_lock');
 const { readInput } = require('./order/utils/system');
 const crypto = require('crypto');
@@ -489,7 +491,7 @@ async function buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder =
     const sellPrecision = await _getAssetPrecision(sellAssetId);
     const receivePrecision = await _getAssetPrecision(receiveAssetId);
 
-    const currentSellInt = Number(order.for_sale);
+    const currentSellInt = toFiniteNumber(order.for_sale);
     const currentSellFloat = blockchainToFloat(currentSellInt, sellPrecision);
 
     const priceRatioBase = order.sell_price.base.amount;
@@ -521,7 +523,7 @@ async function buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder =
     if (newParams.minToReceive !== undefined && newParams.minToReceive !== null) {
         candidateReceiveInt = floatToBlockchainInt(newParams.minToReceive, receivePrecision);
     } else if (newParams.newPrice !== undefined && newParams.newPrice !== null) {
-        const price = Number(newParams.newPrice);
+        const price = toFiniteNumber(newParams.newPrice);
         const sellFloat = (newParams.amountToSell !== undefined && newParams.amountToSell !== null) ? newParams.amountToSell : currentSellFloat;
         const receiveFloat = (newParams.orderType === 'sell')
             ? (sellFloat * price)
@@ -568,7 +570,7 @@ async function buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder =
     if (newParams.minToReceive !== undefined && newParams.minToReceive !== null) {
         newReceiveInt = floatToBlockchainInt(newParams.minToReceive, receivePrecision);
     } else if (newParams.newPrice !== undefined && newParams.newPrice !== null) {
-        const price = Number(newParams.newPrice);
+        const price = toFiniteNumber(newParams.newPrice);
         const receiveFloat = (newParams.orderType === 'sell')
             ? (newSellFloat * price)
             : (newSellFloat / price);
@@ -614,7 +616,7 @@ async function buildUpdateOrderOp(accountName, orderId, newParams, cachedOrder =
     if (newParams.minToReceive !== undefined && newParams.minToReceive !== null) {
         newReceiveInt = floatToBlockchainInt(newParams.minToReceive, receivePrecision);
     } else if (newParams.newPrice !== undefined && newParams.newPrice !== null) {
-        const price = Number(newParams.newPrice);
+        const price = toFiniteNumber(newParams.newPrice);
         const adjustedSellFloat = blockchainToFloat(adjustedSellInt, sellPrecision);
         const receiveFloat = (newParams.orderType === 'sell')
             ? (adjustedSellFloat * price)
@@ -916,7 +918,7 @@ async function getOnChainAssetBalances(accountRef, assets) {
         const freeInt = new Map();
         for (const b of balances) {
             const aid = String(b.asset_type || b.asset_id || b.asset);
-            const val = Number(b.balance || b.amount || 0);
+            const val = toFiniteNumber(b.balance || b.amount);
             freeInt.set(aid, (freeInt.get(aid) || 0) + val);
         }
 
@@ -925,7 +927,7 @@ async function getOnChainAssetBalances(accountRef, assets) {
         for (const o of limitOrders) {
             if (!o || !o.sell_price || !o.sell_price.base) continue;
             const baseId = String(o.sell_price.base.asset_id);
-            const forSale = Number(o.for_sale || 0);
+            const forSale = toFiniteNumber(o.for_sale);
             lockedInt.set(baseId, (lockedInt.get(baseId) || 0) + forSale);
         }
 

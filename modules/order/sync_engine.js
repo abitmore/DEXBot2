@@ -86,6 +86,8 @@
  */
 
 const { ORDER_TYPES, ORDER_STATES, TIMING, GRID_LIMITS } = require('../constants');
+const Format = require('./format');
+const { toFiniteNumber } = Format;
 const {
     blockchainToFloat,
     floatToBlockchainInt,
@@ -444,16 +446,16 @@ class SyncEngine {
             }
         };
 
-        const configuredRestoreRatio = Number(GRID_LIMITS.PARTIAL_ACTIVE_RESTORE_RATIO);
+        const configuredRestoreRatio = toFiniteNumber(GRID_LIMITS.PARTIAL_ACTIVE_RESTORE_RATIO);
         const restoreRatio = (Number.isFinite(configuredRestoreRatio) && configuredRestoreRatio > 0)
             ? Math.min(configuredRestoreRatio, 1.0)
             : 0.95;
 
         const resolveStateFromChainSize = (priorState, chainSize, idealSize) => {
-            const chainNumeric = Number.isFinite(Number(chainSize)) ? Number(chainSize) : 0;
+            const chainNumeric = toFiniteNumber(chainSize);
             if (chainNumeric <= 0) return ORDER_STATES.VIRTUAL;
 
-            const idealNumeric = Number.isFinite(Number(idealSize)) ? Number(idealSize) : 0;
+            const idealNumeric = toFiniteNumber(idealSize);
             const ratio = idealNumeric > 0 ? (chainNumeric / idealNumeric) : 1;
 
             if (priorState === ORDER_STATES.PARTIAL || priorState === ORDER_STATES.ACTIVE) {
@@ -656,9 +658,9 @@ class SyncEngine {
         const isMaker = fillOp.is_maker !== false;  // Default missing flag to maker for consistency with accounting
         const orderId = fillOp.order_id;
 
-        const paysAmountRaw = fillOp.pays ? Number(fillOp.pays.amount) : 0;
+        const paysAmountRaw = toFiniteNumber(fillOp.pays?.amount);
         const paysAssetId = fillOp.pays ? fillOp.pays.asset_id : null;
-        const receivesAmountRaw = fillOp.receives ? Number(fillOp.receives.amount) : 0;
+        const receivesAmountRaw = toFiniteNumber(fillOp.receives?.amount);
         const receivesAssetId = fillOp.receives ? fillOp.receives.asset_id : null;
 
         mgr.logger.log(`[SYNC] Processing fill ${historyId} at block ${blockNum} for order ${orderId} (maker=${isMaker}). Pays=${paysAmountRaw}@${paysAssetId}, Receives=${receivesAmountRaw}@${receivesAssetId}`, 'debug');
@@ -699,7 +701,7 @@ class SyncEngine {
                 }
 
                 const orderType = matchedGridOrder.type;
-                const currentSize = Number(matchedGridOrder.size || 0);
+                const currentSize = toFiniteNumber(matchedGridOrder.size);
                 
                 // CRITICAL: Sells are sized in AssetA, Buys are sized in AssetB
                 const precision = (orderType === ORDER_TYPES.SELL) ? assetAPrecision : assetBPrecision;
@@ -776,7 +778,7 @@ class SyncEngine {
 
                     // Update cached raw order integer instead of deleting it
                     if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
-                        const currentForSale = Number(updatedOrder.rawOnChain.for_sale);
+                        const currentForSale = toFiniteNumber(updatedOrder.rawOnChain.for_sale);
                         updatedOrder.rawOnChain.for_sale = String(Math.max(0, currentForSale - filledAmountInt));
                     }
 

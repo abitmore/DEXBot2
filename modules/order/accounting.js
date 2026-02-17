@@ -79,6 +79,7 @@ const {
 } = require('./utils/math');
 const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
+const { toFiniteNumber } = Format;
 
 /**
  * Accountant engine - Specialized handler for fund tracking and calculations
@@ -172,7 +173,7 @@ class Accountant {
          for (const order of orderSnapshot) {
              const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
              const isVirtual = (order.state === ORDER_STATES.VIRTUAL);
-             const size = Number(order.size) || 0;
+             const size = toFiniteNumber(order.size);
              if (size <= 0) continue;
 
              // SIDE DETERMINATION:
@@ -503,7 +504,7 @@ class Accountant {
 
          if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
 
-         const current = Number(mgr.accountTotals[key]) || 0;
+         const current = toFiniteNumber(mgr.accountTotals[key]);
          if (current < size) {
              mgr.logger.log(`[chainFree] ${orderType} ${operation}: INSUFFICIENT FUNDS (have ${Format.formatAmount8(current)}, need ${Format.formatAmount8(size)})`, 'warn');
              return false;
@@ -529,7 +530,7 @@ class Accountant {
 
          if (!mgr.accountTotals || mgr.accountTotals[key] === undefined) return false;
 
-         const oldFree = Number(mgr.accountTotals[key]) || 0;
+         const oldFree = toFiniteNumber(mgr.accountTotals[key]);
          mgr.accountTotals[key] = oldFree + size;
 
          if (mgr.logger && mgr.logger.level === 'debug') {
@@ -577,8 +578,8 @@ class Accountant {
             const mgr = this.manager;
             if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
 
-            const oldValue = Number(mgr.funds.cacheFunds[side]) || 0;
-            const nextValue = Math.max(0, Number.isFinite(Number(absoluteValue)) ? Number(absoluteValue) : 0);
+            const oldValue = toFiniteNumber(mgr.funds.cacheFunds[side]);
+            const nextValue = toFiniteNumber(absoluteValue);
             mgr.funds.cacheFunds[side] = nextValue;
 
             if (mgr.logger && mgr.logger.level === 'debug') {
@@ -626,7 +627,7 @@ class Accountant {
         if (!mgr.accountTotals) return;
 
         if (!totalOnly) {
-            const oldFree = Number(mgr.accountTotals[freeKey]) || 0;
+            const oldFree = toFiniteNumber(mgr.accountTotals[freeKey]);
             // IMPORTANT: No clamping to 0 here. Allowing temporary negative Free balance
             // ensures the invariant Total = Free + Committed remains stable during
             // the short race between Fill detection and Order state update.
@@ -634,7 +635,7 @@ class Accountant {
         }
 
         if (mgr.accountTotals[totalKey] !== undefined && mgr.accountTotals[totalKey] !== null) {
-            const oldTotal = Number(mgr.accountTotals[totalKey]) || 0;
+            const oldTotal = toFiniteNumber(mgr.accountTotals[totalKey]);
             mgr.accountTotals[totalKey] = Math.max(0, oldTotal + delta);
         }
 
@@ -686,8 +687,8 @@ class Accountant {
         if (!skipAssetAccounting) {
             const oldIsActive = (oldOrder.state === ORDER_STATES.ACTIVE || oldOrder.state === ORDER_STATES.PARTIAL);
             const newIsActive = (newOrder.state === ORDER_STATES.ACTIVE || newOrder.state === ORDER_STATES.PARTIAL);
-            const oldSize = Number(oldOrder.size) || 0;
-            const newSize = Number(newOrder.size) || 0;
+            const oldSize = toFiniteNumber(oldOrder.size);
+            const newSize = toFiniteNumber(newOrder.size);
 
             // 1. Handle Capital Commitment (Moves between FREE and LOCKED)
             // For COMMITMENT: Use GRID state (isActive), not blockchain ID
@@ -838,7 +839,7 @@ class Accountant {
 
         // 1. Sum up requirements for the new grid
         for (const order of targetGrid.values()) {
-            const size = Number(order.size) || 0;
+            const size = toFiniteNumber(order.size);
             if (size <= 0) continue;
 
             if (order.type === ORDER_TYPES.BUY) {
@@ -889,17 +890,9 @@ class Accountant {
      }
 
     async modifyCacheFunds(side, delta, operation = 'update') {
-         const mgr = this.manager;
-         
-         return await mgr._fundLock.acquire(async () => {
-             if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
-             const oldValue = mgr.funds.cacheFunds[side] || 0;
-             const newValue = Math.max(0, oldValue + delta);
-             mgr.funds.cacheFunds[side] = newValue;
-             if (mgr.logger && mgr.logger.level === 'debug') {
-                 mgr.logger.log(`[CACHEFUNDS] ${side} ${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
-             }
-             return newValue;
+         return await this.manager._fundLock.acquire(async () => {
+             await this._modifyCacheFunds(side, delta, operation);
+             return this.manager.funds.cacheFunds[side];
          });
     }
 
@@ -929,8 +922,8 @@ class Accountant {
         // Fail-safe: if fee cache is missing/stale, do not crash fill processing.
         try {
             const feeInfo = getAssetFees(assetSymbol, rawAmount, isMaker);
-            const netProceeds = Number(feeInfo?.netProceeds);
-            if (!Number.isFinite(netProceeds)) {
+            const netProceeds = toFiniteNumber(feeInfo?.netProceeds, null);
+            if (netProceeds === null) {
                 throw new Error('netProceeds is not finite');
             }
             return netProceeds;

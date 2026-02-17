@@ -65,7 +65,7 @@ const Grid = require('./grid');
 const { readBotsFileSync } = require('../bots_file_lock');
 const { parseJsonWithComments } = require('../account_bots');
 const { derivePrice } = require('./utils/system');
-const { isNumeric } = require('./utils/math');
+const { isNumeric } = require('./format');
 
 /**
  * Run a standalone order grid calculation for testing.

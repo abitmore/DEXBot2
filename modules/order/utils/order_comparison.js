@@ -3,13 +3,15 @@
  * Replaces fragile JSON.stringify comparisons
  */
 
+const Format = require('../format');
+const { toFiniteNumber } = Format;
+
 const EPSILON = 1e-6;
 
 function getOrderSize(order) {
-    const size = Number(order?.size);
-    if (Number.isFinite(size)) return size;
-    const amount = Number(order?.amount);
-    return Number.isFinite(amount) ? amount : 0;
+    const size = toFiniteNumber(order?.size, null);
+    if (size !== null) return size;
+    return toFiniteNumber(order?.amount);
 }
 
 /**

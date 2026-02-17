@@ -123,6 +123,77 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
 - Added `PIPELINE_TIMING.MAX_FEE_EVENT_CACHE_SIZE: 10000`
 - Added `PIPELINE_TIMING.FEE_EVENT_DEDUP_TTL_MS: 21600000`
 
+**COW State/Action Semantics Centralization** - commit 4312230
+- Added `REBALANCE_STATES` and `COW_ACTIONS` constants for shared contract
+- Extracted `isRebalancing`/`isBroadcasting`/`isPlanningActive` helpers
+- Centralized `_syncWorkingGridFromMasterMutation`, `_buildAbortedCOWResult`, and `_summarizeCowActions`
+- Unified commit gate evaluation in `_evaluateWorkingGridCommit`
+- Updated docs with COW state-machine cheat sheet
+
+**Fill Rebalance Sizing and COW Consistency** - commit c620098
+- Fixed target sizing distribution across full side topology (was concentrated in active window only)
+- Fixed create args reusing stale `rawOnChain.for_sale` metadata
+- Added precision-aware fund validation in blockchain integer space
+- Normalized batch result envelope parsing
+- Reordered maintenance: spread correction now runs after health/divergence
+
+**OrderManager Refactoring** - commit b01f40f
+- Extracted pure functions to `helpers.js` (~834 lines): `validateOrder()`, `reconcileGrid()`, `projectTargetToWorkingGrid()`, etc.
+- Introduced `StateManager` class encapsulating rebalance/recovery/bootstrap flags
+- Reduced `manager.js` from ~2,850 to ~1,200 lines
+
+**Helpers Reorganization** - commit 18611c7
+- Consolidated 7 scattered sections into 4 cohesive groups: DEPENDENCIES, VALIDATION, RECONCILIATION, MUTATIONS
+- No logic changes - only section headers, TOC, and export groupings
+
+**Critical Fill Handling Restoration** - commit f56e0c3
+- Restored `processFilledOrders` two-step logic: accounting via strategy, then `performSafeRebalance()` for non-partial fills
+- Restored `finishBootstrap` fund drift validation
+- Restored `isPipelineEmpty` shadow locks and external broadcasting signal handling
+
+**Deep Market Scan Revert** - commit 25a317c
+- Reverted deep market scan feature to restore simpler `get_full_accounts` based order fetching
+- Removed `_readMarketOrders()`, `_readOpenOrdersPaginated()`, and `marketAssets` parameters
+
+**COW Accounting Invariant Fix** - commit fce0f0b
+- Fixed fund invariant violation where new orders were set to ACTIVE immediately
+- New orders now remain VIRTUAL until blockchain confirms placement
+- Rotation orders get orderId cleared and state set to VIRTUAL
+- Added 4 regression tests: COW-012 through COW-015
+
+**COW Fill Rebalance Alignment** - commit 9022942
+- Restricted in-place size updates to PARTIAL orders only
+- Added action optimization pairing same-side CANCEL+CREATE into rotation-style UPDATE
+- Added explicit `updateOrdersOnChainPlan()` + plan-to-COW projection helpers
+- Manager now calls `processFillsOnly()` directly, removing legacy pass-through methods
+
+**COW Rotation Accounting Stabilization** - commit 766fe37
+- Reconcile now treats fill-driven updates as rotation-oriented (emit UPDATE only as rotations)
+- Fixed `_processBatchResults` using wrong `getAssetFees` mode (proceeds vs schedule)
+- Fixed rotation source slots remaining ACTIVE after successful rotation
+
+**Post-Fill Maintenance and Divergence Alignment** - commit a4c4880
+- Gated post-fill checks behind `shouldRunPostFillChecks` (requires full fill + rotation)
+- Added explicit broadcasting state lifecycle calls around COW batch broadcast
+- Cleaned up divergence trigger model (removed cooldown/re-arm state dependencies)
+
+**Divergence COW Migration** - commit d322445
+- Migrated divergence handling to full COW planning/execution with working-grid-first semantics
+- Extended `_recalculateGridOrderSizesFromBlockchain` to support COW action collection
+- Made `updateGridFromBlockchainSnapshot` return COW result instead of mutating master
+- Added shared helpers `hasActionForOrder` and `removeActionsForOrder`
+
+**Numeric Validation Unification and Legacy Pruning** - commit 3ea3be7
+- Removed unused legacy functions: `applyOrderUpdate`, `applyOrderUpdatesBatch`, `buildIndices`, `swapMasterGrid`
+- Unified `isNumeric` in `format.js`, removed duplicate from `math.js`
+- Standardized utility usage across 8 modules (eliminated fragile `Number()` casts)
+- Added TABLE OF CONTENTS to `math.js`, `order.js`, and `system.js`
+- Consolidated duplicated `modifyCacheFunds` logic in `accounting.js`
+
+**Documentation Updates** - commit b834192
+- Relaxed git action gate policy from strict inference to user-directed writes
+- Simplified interpretation rules while maintaining safety guardrails
+
 ---
 
 ## [0.6.0-patch.18] - 2026-02-08 - Batching Hardening, Accounting Precision & Telemetry Optimization

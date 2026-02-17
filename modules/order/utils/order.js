@@ -2,6 +2,52 @@
  * modules/order/utils/order.js - Order Domain Utilities
  * 
  * Business rules for orders, state predicates, filtering, and reconciliation.
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS (27 exported functions)
+ * ===============================================================================
+ *
+ * SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION (5 functions)
+ *   - parseChainOrder(chainOrder, assets) - Parse blockchain order to grid format
+ *   - findMatchingGridOrderByOpenOrder(parsedChainOrder, opts) - Find matching grid order
+ *   - applyChainSizeToGridOrder(manager, gridOrder, chainSize) - Apply chain size to grid
+ *   - correctOrderPriceOnChain(manager, correctionInfo, ...) - Correct order price on chain
+ *   - correctAllPriceMismatches(manager, accountName, ...) - Correct all price mismatches
+ *
+ * SECTION 2: ORDER CONSTRUCTION (3 functions)
+ *   - buildCreateOrderArgs(order, assetA, assetB) - Build create order arguments
+ *   - getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated) - Get type from update flags
+ *   - resolveConfiguredPriceBound(value, fallback, startPrice, mode) - Resolve price bounds
+ *
+ * SECTION 3: STATE TRANSITIONS (2 functions)
+ *   - virtualizeOrder(order) - Convert order to VIRTUAL state
+ *   - convertToSpreadPlaceholder(order) - Convert order to SPREAD placeholder
+ *
+ * SECTION 4: FILTERING & COUNTING (3 functions)
+ *   - filterOrdersByType(orders, orderType) - Filter orders by type
+ *   - getPartialsByType(orders) - Get partials grouped by type
+ *   - countOrdersByType(orderType, ordersMap) - Count orders by type
+ *
+ * SECTION 5: STATE PREDICATES (7 functions)
+ *   - isOrderOnChain(order) - Check if order is ACTIVE or PARTIAL
+ *   - isOrderVirtual(order) - Check if order is VIRTUAL
+ *   - hasOnChainId(order) - Check if order has blockchain orderId
+ *   - isOrderPlaced(order) - Check if order is placed on chain
+ *   - isPhantomOrder(order) - Check if order is phantom (ACTIVE without orderId)
+ *   - isSlotAvailable(order) - Check if slot is available for placement
+ *   - isOrderHealthy(order, context) - Comprehensive order health check
+ *
+ * SECTION 6: SIZE VALIDATION (2 functions)
+ *   - checkSizeThreshold(size, threshold) - Check if size exceeds threshold
+ *   - checkSizesBeforeMinimum(sizes, minSize) - Check sizes against minimum
+ *
+ * SECTION 7: GRID BOUNDARY & ROLES (4 functions)
+ *   - calculateIdealBoundary(allSlots, startPrice, gapSlots) - Calculate ideal boundary
+ *   - calculateFundDrivenBoundary(allSlots, availA, availB, startPrice, gapSlots) - Fund-driven boundary
+ *   - assignGridRoles(allSlots, boundaryIdx, gapSlots, ...) - Assign BUY/SELL roles
+ *   - shouldFlagOutOfSpread(order, startPrice, configSpread) - Check if order is out of spread
+ *
+ * ===============================================================================
  */
 
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../../constants');
@@ -50,7 +96,7 @@ function parseChainOrder(chainOrder, assets) {
     try {
         if (chainOrder.for_sale !== undefined && chainOrder.for_sale !== null) {
             const prec = (type === ORDER_TYPES.SELL) ? assets.assetA.precision : assets.assetB.precision;
-            size = blockchainToFloat(Number(chainOrder.for_sale), prec);
+            size = blockchainToFloat(toFiniteNumber(chainOrder.for_sale), prec);
         }
     } catch (e) { return null; }
 
@@ -134,18 +180,18 @@ async function applyChainSizeToGridOrder(manager, gridOrder, chainSize) {
 
     const precision = (gridOrder.type === ORDER_TYPES.SELL) ? manager.assets?.assetA?.precision : manager.assets?.assetB?.precision;
 
-    if (Number.isFinite(precision) && Number.isFinite(Number(chainSize))) {
+    if (isValidNumber(precision) && isValidNumber(chainSize)) {
         const SUSPICIOUS_SATOSHI_LIMIT = 1e15;
         const suspiciousThreshold = SUSPICIOUS_SATOSHI_LIMIT / Math.pow(10, precision);
-        if (Math.abs(Number(chainSize)) > suspiciousThreshold) {
+        if (Math.abs(toFiniteNumber(chainSize)) > suspiciousThreshold) {
             const msg = `CRITICAL: suspicious chainSize=${chainSize} exceeds limit ${suspiciousThreshold}. Possible blockchain sync error or data corruption.`;
             manager.logger?.log?.(msg, 'error');
             throw new Error(msg);
         }
     }
 
-    const oldSize = Number(gridOrder.size || 0);
-    const newSize = Number.isFinite(Number(chainSize)) ? Number(chainSize) : oldSize;
+    const oldSize = toFiniteNumber(gridOrder.size);
+    const newSize = isValidNumber(chainSize) ? toFiniteNumber(chainSize) : oldSize;
 
     if (gridOrder.isDustRefill && newSize < oldSize) {
         const oldInt = floatToBlockchainInt(oldSize, precision);

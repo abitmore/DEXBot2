@@ -70,6 +70,7 @@ const StrategyEngine = require('./strategy');
 const SyncEngine = require('./sync_engine');
 const Grid = require('./grid');
 const Format = require('./format');
+const { toFiniteNumber, isValidNumber } = Format;
 
 const SYNC_SOURCES_MANAGE_OWN_GRID_LOCK = new Set(['readOpenOrders', 'periodicBlockchainFetch']);
 
@@ -564,8 +565,8 @@ class OrderManager {
 
     getChainFundsSnapshot() {
         const totals = computeChainFundTotals(this.accountTotals, this.funds?.committed?.chain);
-        const allocatedBuy = Number.isFinite(Number(this.funds?.allocated?.buy)) ? Number(this.funds.allocated.buy) : totals.chainTotalBuy;
-        const allocatedSell = Number.isFinite(Number(this.funds?.allocated?.sell)) ? Number(this.funds.allocated.sell) : totals.chainTotalSell;
+        const allocatedBuy = toFiniteNumber(this.funds?.allocated?.buy, totals.chainTotalBuy);
+        const allocatedSell = toFiniteNumber(this.funds?.allocated?.sell, totals.chainTotalSell);
         return { ...totals, allocatedBuy, allocatedSell };
     }
 
@@ -884,8 +885,8 @@ class OrderManager {
 
     getInitialOrdersToActivate() {
         // Apply activeOrders limit from config
-        const sellCountRaw = Math.max(0, Number(this.config.activeOrders?.sell || 1));
-        const buyCountRaw = Math.max(0, Number(this.config.activeOrders?.buy || 1));
+        const sellCountRaw = Math.max(0, toFiniteNumber(this.config.activeOrders?.sell, 1));
+        const buyCountRaw = Math.max(0, toFiniteNumber(this.config.activeOrders?.buy, 1));
 
         // Reduce target by 1 on doubled sides to maintain grid balance
         const sellCount = this.sellSideIsDoubled ? Math.max(1, sellCountRaw - 1) : sellCountRaw;
@@ -1062,8 +1063,8 @@ class OrderManager {
             ? { incomingFillQueueLength: pipelineSignals }
             : (pipelineSignals || {});
 
-        const incomingFillQueueLength = Number(normalizedSignals.incomingFillQueueLength) || 0;
-        const shadowLocks = Number(normalizedSignals.shadowLocks) || 0;
+        const incomingFillQueueLength = toFiniteNumber(normalizedSignals.incomingFillQueueLength);
+        const shadowLocks = toFiniteNumber(normalizedSignals.shadowLocks);
         const batchInFlight = !!normalizedSignals.batchInFlight;
         const retryInFlight = !!normalizedSignals.retryInFlight;
         const recoveryInFlight = !!normalizedSignals.recoveryInFlight;
