@@ -10,6 +10,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *The blueprint of the system.*
 - **System Design**: High-level overview of how the bot components interact.
 - **Module Responsibilities**: Detailed breakdown of the **Manager**, **Accountant**, **Strategy**, and **Grid** modules.
+- **Copy-on-Write Pattern**: Safe concurrent rebalancing with isolated working grids (see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md))
 - **Fund-Driven Boundary Sync**: Automatic grid alignment with inventory distribution (Patch 8)
 - **Scaled Spread Correction**: Dynamic spread correction with double-dust safety (Patch 8)
 - **Periodic Market Price Refresh**: Background 4-hour price updates (Patch 8)
@@ -63,9 +64,18 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ## 📂 Source Code Map
 
-While these docs explain the *why*, the *how* lives in the code:
-- **`modules/dexbot_class.js`**: The main entry point and orchestration layer.
-- **`modules/order/manager.js`**: Central controller for the order lifecycle.
-- **`modules/order/accounting.js`**: The engine for fund tracking and invariant checks.
-- **`modules/order/strategy.js`**: The brains behind order placement and grid logic.
-- **`modules/order/utils.js`**: A centralized library of 10+ categories of helper functions.
+While these docs explain the *why*, the *how* lives in the code. See [root README 📦 Modules section](../README.md#-modules) for comprehensive module documentation:
+
+**Core Modules:**
+- **`modules/dexbot_class.js`**: Bot initialization, account setup, order placement, fill processing, and rebalancing
+- **`modules/order/manager.js`**: Central controller with Copy-on-Write rebalancing pattern (see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md))
+- **`modules/order/working_grid.js`**: COW grid wrapper enabling safe concurrent rebalancing with isolated modifications
+- **`modules/order/accounting.js`**: Fund tracking, available balance calculation, fee deduction, and committed fund management
+- **`modules/order/strategy.js`**: Grid rebalancing, order activation, consolidation, rotation, and spread management
+- **`modules/order/sync_engine.js`**: Blockchain synchronization, fill detection, order reconciliation
+
+**Utilities & Support:**
+- **`modules/order/utils/math.js`**: Precision conversions, RMS divergence calculation, fund allocation math
+- **`modules/order/utils/order.js`**: Order state predicates, reconciliation helpers, grid role assignment
+- **`modules/order/utils/validate.js`**: Order validation, grid reconciliation, COW action building
+- **`modules/order/startup_reconcile.js`**: Startup grid reconciliation and offline fill detection

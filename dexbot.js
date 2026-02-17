@@ -16,6 +16,8 @@
  * - Dynamic spread zone around market price
  * - Automatic order replacement when fills occur
  * - Fund allocation controls (percentage of wallet)
+ * - Copy-on-Write rebalancing: Safe concurrent updates with isolated working grids
+ * - Automatic grid reconciliation: Detects offline fills and syncs with blockchain
  *
  * SECURITY:
  * - Master password encryption for stored private keys (AES-256-GCM)

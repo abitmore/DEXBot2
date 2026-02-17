@@ -395,10 +395,11 @@ function hasValidAccountTotals(accountTotals, checkFree = true) {
 /**
  * Convert blockchain integer to float using asset precision.
  * Divides by 10^precision to convert satoshi-level units to human-readable float.
- * 
- * @param {number} intValue - Integer value from blockchain
- * @param {number} precision - Asset precision (satoshis, typically 5 or 8)
- * @returns {number} Float representation
+ * Formula: float = blockchain_int / (10^precision)
+ *
+ * @param {number} intValue - Integer value from blockchain (satoshi units)
+ * @param {number} precision - Asset precision level (exponent: 5, 8, 4, etc)
+ * @returns {number} Float representation in human-readable units
  * @throws {Error} If precision is invalid
  */
 function blockchainToFloat(intValue, precision) {
@@ -412,10 +413,14 @@ function blockchainToFloat(intValue, precision) {
  * Convert float to blockchain integer using asset precision.
  * Multiplies by 10^precision and rounds to satoshi-level units.
  * Clamps to MAX_INT64/MIN_INT64 to prevent overflow.
- * 
- * @param {number} floatValue - Float value to convert
- * @param {number} precision - Asset precision (satoshis, typically 5 or 8)
- * @returns {number} Blockchain integer representation
+ * Formula: blockchain_int = round(float * (10^precision))
+ *
+ * Round-trip (float → int → float) eliminates floating-point accumulation errors.
+ * Overflow protection: Blockchain integers must fit in signed 64-bit range.
+ *
+ * @param {number} floatValue - Float value to convert (human-readable units)
+ * @param {number} precision - Asset precision level (exponent: 5, 8, 4, etc)
+ * @returns {number} Blockchain integer representation (satoshi units)
  * @throws {Error} If precision is invalid
  */
 function floatToBlockchainInt(floatValue, precision) {
@@ -858,7 +863,11 @@ function calculateRotationOrderSizes(availableFunds, totalGridAllocation, orderC
  * Calculate RMS (Root Mean Square) divergence between calculated and persisted grids.
  * Measures how much the current grid differs from the calculated ideal.
  * Used to determine if grid recalculation is needed.
- * 
+ *
+ * RMS quadratically penalizes large errors and unmatched orders (treated as 100% error).
+ * Default 14.3% RMS threshold allows ~3.2% average error concentrated in few orders.
+ * See README GRID RECALCULATION section for threshold interpretation table.
+ *
  * @param {Array<Object>} calculatedOrders - Ideal/calculated order grid
  * @param {Array<Object>} persistedOrders - Current/persisted order grid
  * @param {string} [sideName='unknown'] - Side name for logging (buy/sell)
@@ -885,7 +894,9 @@ function calculateGridSideDivergenceMetric(calculatedOrders, persistedOrders, si
             } else if (currentSize > 0) {
                 sumSquaredDiff += 1.0;
                 matchCount++;
-            } else matchCount++;
+            } else {
+                matchCount++;
+            }
         } else {
             sumSquaredDiff += 1.0;
             unmatchedCount++;

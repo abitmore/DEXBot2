@@ -65,11 +65,13 @@ node scripts/validate_bots.js
 
 ### Grid Divergence Audit
 **File:** `divergence-calc.js`
-**Purpose:** Measure the "drift" between in-memory grid and disk state.
+**Purpose:** Measure the "drift" between in-memory grid and disk state using RMS divergence metric.
 ```bash
 # Calculates RMS Error (Default threshold is 14.3%)
+# RMS quadratically penalizes large errors - see docs/README.md for threshold interpretation
 node scripts/divergence-calc.js
 ```
+**Reference:** RMS threshold explanation in [root README GRID RECALCULATION section](../README.md#-automatic-grid-recalculation-via-threshold-detection)
 
 ### Grid Trading Analysis
 **File:** `analyze-orders.js`
@@ -185,6 +187,17 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 | `npm run pdev` | Sync local test → dev |
 | `npm run pmain` | Sync local test → dev → main |
 | `npm test` | Run full test suite (35+ test cases) |
+
+---
+
+## 📚 DOCUMENTATION REFERENCES
+
+For understanding the systems these scripts interact with:
+- **Module Architecture**: See [root README 📦 Modules section](../README.md#-modules)
+- **Copy-on-Write Pattern**: See [docs/COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md) for rebalancing architecture
+- **Fund Accounting**: See [docs/FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
+- **Grid Divergence**: See [docs/README.md](../docs/README.md) for RMS threshold explanations
+- **Logging System**: See [docs/LOGGING.md](../docs/LOGGING.md) for log configuration and levels
 
 ---
 

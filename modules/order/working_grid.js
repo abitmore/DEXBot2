@@ -1,6 +1,75 @@
 /**
- * WorkingGrid - Copy-on-Write grid wrapper
- * Tracks modifications and builds deltas from master
+ * modules/order/working_grid.js - WorkingGrid Copy-on-Write Engine
+ *
+ * Efficient grid modification tracking for Copy-on-Write (COW) pattern.
+ * Enables safe concurrent rebalancing by detecting changes without mutating master grid.
+ *
+ * Purpose:
+ * - Clone master grid for isolated modifications
+ * - Track which orders were modified (Modified Set)
+ * - Build delta actions (create/update/delete) from master vs working
+ * - Support price/index calculations for modified state
+ * - Sync fills that arrive during rebalancing back to working grid
+ *
+ * Copy-on-Write Benefits:
+ * - Master grid remains immutable during rebalancing
+ * - Fills that arrive during rebalancing can sync to working grid without conflicts
+ * - If rebalance fails, working grid is discarded (no cleanup needed)
+ * - If rebalance succeeds, delta is applied atomically to master
+ *
+ * ===============================================================================
+ * TABLE OF CONTENTS - WorkingGrid Class (13 methods)
+ * ===============================================================================
+ *
+ * INITIALIZATION (2 methods)
+ *   1. constructor(masterGrid, options) - Clone master grid and initialize tracking
+ *      options.baseVersion: Track version synced from master
+ *
+ *   2. _cloneGrid(source) - Deep clone grid Map (internal)
+ *   3. _cloneOrder(order) - Clone single order object with nested payload cloning (internal)
+ *
+ * GRID OPERATIONS (6 methods)
+ *   4. get(id) - Get order by ID
+ *   5. set(id, order) - Set order and mark as modified
+ *   6. delete(id) - Delete order and mark as modified
+ *   7. has(id) - Check if order exists
+ *   8. toMap() - Convert to plain Map (for commit)
+ *
+ * ITERATION & PROPERTIES (4 methods)
+ *   9. values() - Iterate order values
+ *   10. entries() - Iterate [id, order] pairs
+ *   11. keys() - Iterate order IDs
+ *   12. size - Get grid size property
+ *
+ * DELTA & DIFF CALCULATION (2 methods)
+ *   13. buildDelta(masterGrid) - Calculate actions between master and working grids
+ *       Returns: Array of {type, id, order} actions (create/update/delete)
+ *   14. getIndexes() - Get lazy-computed price/type/state indexes
+ *
+ * MODIFICATION TRACKING (3 methods)
+ *   15. getModifiedIds() - Get array of modified order IDs
+ *   16. isModified() - Check if any modifications made
+ *
+ * SYNCHRONIZATION (1 method)
+ *   17. syncFromMaster(masterGrid, orderId, masterVersion) - Sync specific order from master
+ *       Used when fills arrive during rebalancing
+ *
+ * STALENESS & DIAGNOSTICS (3 methods)
+ *   18. markStale(reason) - Mark working grid as stale (version mismatch)
+ *   19. isStale() - Check if grid is stale
+ *   20. getStaleReason() - Get reason for staleness
+ *   21. getMemoryStats() - Get memory usage estimate
+ *
+ * ===============================================================================
+ *
+ * KEY PROPERTIES:
+ * - grid: Map<orderId, order> - The working copy (cloned from master)
+ * - modified: Set<orderId> - Tracks which orders were changed
+ * - baseVersion: number - Version synced from master (for atomic commit check)
+ * - _stale: boolean - Flag indicating grid has diverged from master version
+ * - _indexes: Object - Lazy-computed indexes (price lookup, type/state filters)
+ *
+ * ===============================================================================
  */
 
 const { buildDelta, buildIndexes } = require('./utils/order');

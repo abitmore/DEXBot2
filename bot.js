@@ -31,10 +31,12 @@
  *
  * 4. GRID INITIALIZATION OR RESUME
  *    - Loads persisted grid snapshot if it exists and matches on-chain orders
- *    - Validates persisted grid against current blockchain state
+ *    - Validates persisted grid against current blockchain state (reconciliation)
+ *    - Detects offline fills and updates fund accounting automatically
  *    - Creates fresh grid if no valid persisted state found
  *    - Synchronizes grid state with BitShares blockchain
  *    - Places initial orders to reach target count
+ *    - Note: Grid uses Copy-on-Write pattern for safe rebalancing (isolated working copies)
  *
  * 5. TRADING LOOP
  *    - Continuously monitors for fill events via blockchain subscriptions

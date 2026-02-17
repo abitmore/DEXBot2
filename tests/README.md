@@ -2,6 +2,16 @@
 
 This directory contains the test suite for DEXBot2, covering unit tests, integration tests, strategy logic verification, and infrastructure checks.
 
+## Overview
+
+The test suite validates:
+- **Core Infrastructure**: Blockchain connectivity, state management, subscriptions
+- **Fund Accounting**: Balance calculations, fee deduction, fund invariant checks
+- **Grid Management**: Order generation, sizing, divergence detection, reconciliation
+- **Copy-on-Write Rebalancing**: Safe concurrent rebalancing with isolated working grids (see [docs/COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md))
+- **Fill Processing**: Partial fills, consolidation, rotation order sizing
+- **Market Scenarios**: Realistic trading conditions, edge cases, recovery mechanisms
+
 ## Unit Tests
 
 Unit tests are located in the `unit/` directory. They focus on testing individual modules in isolation.
@@ -11,6 +21,8 @@ See [unit/README.md](unit/README.md) for more details.
 
 The tests in this directory are generally run using Node.js directly.
 Example: `node tests/test_market_price.js`
+
+**Module References:** For understanding the code being tested, see [root README 📦 Modules section](../README.md#-modules)
 
 ### 1. Core Infrastructure & Connection
 Tests ensuring the bot can connect to the blockchain and manage local state.
@@ -105,6 +117,48 @@ Tests for shared utility functions and helper modules.
 *   `test_precision_quantization.js` - Tests logic for quantizing values to asset precision.
 *   `test_fund_cycling_trigger.js` - Tests triggers for fund cycling.
 *   `test_manager.js` - Tests for the OrderManager module.
+
+---
+
+## 🏗️ Key Architectural Patterns Tested
+
+### Copy-on-Write (COW) Rebalancing
+Tests verify that:
+- Master grid remains immutable during rebalancing
+- Working grids are isolated copies for planning
+- Fills arriving during rebalance are properly synchronized
+- Delta building correctly identifies changes between grids
+- Atomic commits apply changes only on success
+
+**Reference:** [docs/COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md)
+
+### RMS Divergence Checking
+Tests validate:
+- Quadratic penalty for large errors (not just average error)
+- Concentrated errors require higher RMS thresholds
+- Grid recalculation triggers at correct divergence levels
+- Threshold interpretation matches README documentation
+
+**Reference:** [docs/README.md](../docs/README.md) - GRID RECALCULATION section
+
+### Fund Invariants
+Tests ensure:
+- Available funds never exceed free blockchain balance
+- Committed funds correctly tracked across states
+- Fee deductions and refunds maintain consistency
+- No double-spending between orders
+
+**Reference:** [docs/FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
+
+---
+
+## 📚 Documentation References
+
+- **Module Architecture**: [root README 📦 Modules](../README.md#-modules)
+- **Copy-on-Write Pattern**: [COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md)
+- **Fund Accounting**: [FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
+- **Logging System**: [LOGGING.md](../docs/LOGGING.md)
+- **Developer Guide**: [developer_guide.md](../docs/developer_guide.md)
 
 ---
 

@@ -77,6 +77,45 @@ const SYNC_SOURCES_MANAGE_OWN_GRID_LOCK = new Set(['readOpenOrders', 'periodicBl
 // ===============================================================================
 // SECTION 2: COW REBALANCE ENGINE
 // ===============================================================================
+//
+// COPY-ON-WRITE (COW) PATTERN FOR SAFE REBALANCING
+//
+// Problem Solved:
+// Traditional approach: Modify orders in-place while calculating new grid
+// Issue: If fills arrive DURING rebalance, they corrupt the working state
+//
+// Solution: Copy-on-Write pattern isolates rebalancing from incoming fills
+//
+// WORKFLOW:
+// 1. Clone master grid → WorkingGrid (immutable during rebalance)
+// 2. Calculate target state from strategy engine
+// 3. Reconcile master vs target → generate COW_ACTIONS (CREATE/UPDATE/CANCEL/ROTATE)
+// 4. Project target to working grid (working becomes target)
+// 5. Validate funds and check for staleness (abort if fills arrived)
+// 6. Build blockchain operations from delta
+// 7. Atomic commit to master on broadcast success (or discard on failure)
+//
+// KEY INVARIANTS:
+// 1. Master grid NEVER modified during planning (immutable during rebalance)
+// 2. Fills that arrive during rebalance are QUEUED, not lost
+// 3. Working grid is DISPOSABLE - if rebalance fails, discard it
+// 4. Only ONE rebalance plan active at a time (StateManager.rebalance)
+// 5. Staleness detection aborts if master changes (fills, manual commands)
+//
+// FILL HANDLING DURING REBALANCE:
+// - SyncEngine.syncFromFillHistory() is called immediately on fill arrival
+// - Updates to master grid only (not working grid)
+// - Sets workingGrid.markStale() to signal version mismatch
+// - Rebalance detects staleness → aborts → retries on next cycle
+// - Fills are NEVER lost, just deferred until next rebalance cycle
+//
+// PERFORMANCE OPTIMIZATION:
+// - COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER estimated memory per order
+// - Modified Set only tracks changed order IDs (delta compression)
+// - Lazy index calculation (prices, types, states) only on demand
+// - Delta building is O(n) where n = modified orders count
+//
+// ===============================================================================
 
 class COWRebalanceEngine {
     constructor(deps) {
