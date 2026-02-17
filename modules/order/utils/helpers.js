@@ -360,6 +360,12 @@ function checkFundDrift(orders, accountTotals, assets = null) {
 function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
     const { logger = null } = options;
     const actions = [];
+    
+    // Track surpluses (on-chain orders that should be VIRTUAL) and holes (need ACTIVE but empty)
+    const surplusesBuy = [];  // Orders to potentially rotate FROM
+    const surplusesSell = [];
+    const holesBuy = [];      // Slots to potentially rotate TO
+    const holesSell = [];
 
     let validatedBoundary = targetBoundary;
     if (targetBoundary !== null) {
@@ -377,16 +383,33 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         const masterOrder = masterGrid.get(id);
 
         if (!masterOrder || masterOrder.state === ORDER_STATES.VIRTUAL) {
-            if (targetOrder.size > 0) {
-                actions.push({ type: COW_ACTIONS.CREATE, id, order: targetOrder });
+            // Slot is empty or virtual - check if we need to fill it
+            if (targetOrder.size > 0 && targetOrder.state === ORDER_STATES.ACTIVE) {
+                // This is a hole that needs filling
+                if (targetOrder.type === ORDER_TYPES.BUY) {
+                    holesBuy.push({ id, order: targetOrder });
+                } else if (targetOrder.type === ORDER_TYPES.SELL) {
+                    holesSell.push({ id, order: targetOrder });
+                }
             }
             continue;
         }
 
         if (masterOrder.type !== targetOrder.type) {
             actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
-            if (targetOrder.size > 0) {
+            if (targetOrder.size > 0 && targetOrder.state === ORDER_STATES.ACTIVE) {
                 actions.push({ type: COW_ACTIONS.CREATE, id, order: targetOrder });
+            }
+            continue;
+        }
+
+        // If master is on-chain but target should be VIRTUAL (outside window),
+        // this is a surplus candidate for rotation.
+        if (isOrderOnChain(masterOrder) && targetOrder.state === ORDER_STATES.VIRTUAL) {
+            if (masterOrder.type === ORDER_TYPES.BUY) {
+                surplusesBuy.push({ id, master: masterOrder, target: targetOrder });
+            } else if (masterOrder.type === ORDER_TYPES.SELL) {
+                surplusesSell.push({ id, master: masterOrder, target: targetOrder });
             }
             continue;
         }
@@ -394,20 +417,64 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         if (masterOrder.size !== targetOrder.size) {
             if (targetOrder.size === 0) {
                 actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
-            } else if (masterOrder.state === ORDER_STATES.PARTIAL) {
-                // Keep ACTIVE size stable during normal boundary-crawl rebalances.
-                // Main branch semantics resize PARTIAL orders in-place, while ACTIVE
-                // orders are typically moved via rotation/place flows.
-                actions.push({ 
-                    type: COW_ACTIONS.UPDATE, 
-                    id, 
-                    orderId: masterOrder.orderId, 
-                    newSize: targetOrder.size, 
-                    order: targetOrder 
-                });
             }
+            // Intentionally no in-place size UPDATE here.
+            // Fill-driven COW rebalance keeps updates rotation-only (newGridId path).
+            // Non-rotation size corrections are handled by dedicated maintenance flows
+            // (divergence/surplus cache-funds correction plans).
         }
     }
+
+    // Handle rotations: pair surpluses with holes of the same type
+    // Rotation = UPDATE with newGridId and newPrice (move order to different slot)
+    const pairRotations = (surpluses, holes) => {
+        if (holes.length === 0) return;
+        
+        // If no surpluses, all holes become CREATEs (initial placement)
+        if (surpluses.length === 0) {
+            for (const hole of holes) {
+                actions.push({ type: COW_ACTIONS.CREATE, id: hole.id, order: hole.order });
+            }
+            return;
+        }
+        
+        const isBuy = surpluses[0]?.master?.type === ORDER_TYPES.BUY;
+        
+        // Holes: closest to market first (for BUY: highest price, for SELL: lowest price)
+        holes.sort((a, b) => isBuy ? b.order.price - a.order.price : a.order.price - b.order.price);
+        
+        // Surpluses: furthest from market first (for BUY: lowest price, for SELL: highest price)
+        surpluses.sort((a, b) => isBuy ? a.master.price - b.master.price : b.master.price - a.master.price);
+        
+        const rotationCount = Math.min(surpluses.length, holes.length);
+        for (let i = 0; i < rotationCount; i++) {
+            const surplus = surpluses[i];
+            const hole = holes[i];
+            
+            // Generate rotation: UPDATE the surplus order to the hole's location
+            actions.push({
+                type: COW_ACTIONS.UPDATE,
+                id: surplus.id,
+                orderId: surplus.master.orderId,
+                newGridId: hole.id,
+                newSize: hole.order.size,
+                newPrice: hole.order.price,
+                order: hole.order,
+                isRotation: true
+            });
+        }
+        
+        // Remaining holes become CREATEs
+        for (let i = rotationCount; i < holes.length; i++) {
+            actions.push({ type: COW_ACTIONS.CREATE, id: holes[i].id, order: holes[i].order });
+        }
+        
+        // Remaining surpluses stay in place (no action needed - we don't cancel them)
+        // They're outside the window but we keep them for fund accounting
+    };
+    
+    pairRotations(surplusesBuy, holesBuy);
+    pairRotations(surplusesSell, holesSell);
 
     for (const [id, masterOrder] of masterGrid) {
         if (!targetGrid.has(id) && isOrderOnChain(masterOrder)) {

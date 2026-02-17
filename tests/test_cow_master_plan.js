@@ -7,7 +7,7 @@ const assert = require('assert');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { ordersEqual, buildDelta } = require('../modules/order/utils/order_comparison');
 const { buildIndexes, validateIndexes } = require('../modules/order/utils/grid_indexes');
-const { projectTargetToWorkingGrid } = require('../modules/order/utils/helpers');
+const { projectTargetToWorkingGrid, reconcileGrid } = require('../modules/order/utils/helpers');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 function createTestOrder(id, type, state, price, amount, orderId = null) {
@@ -539,6 +539,94 @@ async function testCOW015_FullAccountingFlowSimulation() {
     console.log('✓ COW-015 passed');
 }
 
+/**
+ * COW-016: Fill-driven reconcile must be rotation-only for updates
+ *
+ * Regression guard for post-fill churn:
+ * - Plain in-place ACTIVE size mismatches must NOT emit UPDATE actions.
+ * - Rotation candidates (surplus -> hole) must still emit UPDATE with newGridId.
+ */
+async function testCOW016_RotationOnlyUpdatesInReconcile() {
+    console.log('\n[COW-016] Testing reconcile emits rotation-only updates...');
+
+    // Case A: Active size mismatch only -> no UPDATE action
+    const masterA = new Map([
+        ['slot-a', {
+            id: 'slot-a',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 10,
+            orderId: '1.7.1001'
+        }]
+    ]);
+    const targetA = new Map([
+        ['slot-a', {
+            id: 'slot-a',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 12
+        }]
+    ]);
+
+    const resultA = reconcileGrid(masterA, targetA, null);
+    assert.strictEqual(resultA.actions.length, 0, 'In-place ACTIVE size mismatch should not emit actions');
+    assert.strictEqual(resultA.actions.filter(a => a.type === 'update').length, 0, 'In-place ACTIVE size mismatch should not emit UPDATE');
+
+    // Case B: Surplus + hole -> rotation UPDATE with newGridId
+    const masterB = new Map([
+        ['slot-1', {
+            id: 'slot-1',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 99,
+            size: 10,
+            orderId: '1.7.2001'
+        }],
+        ['slot-2', {
+            id: 'slot-2',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 10,
+            orderId: '1.7.2002'
+        }]
+    ]);
+    const targetB = new Map([
+        ['slot-1', {
+            id: 'slot-1',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.VIRTUAL,
+            price: 99,
+            size: 10
+        }],
+        ['slot-2', {
+            id: 'slot-2',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 10
+        }],
+        ['slot-3', {
+            id: 'slot-3',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 101,
+            size: 12
+        }]
+    ]);
+
+    const resultB = reconcileGrid(masterB, targetB, null);
+    const updatesB = resultB.actions.filter(a => a.type === 'update');
+    assert.strictEqual(updatesB.length, 1, 'Surplus->hole pairing should emit exactly one rotation UPDATE');
+    assert.strictEqual(updatesB[0].id, 'slot-1', 'Rotation source should be surplus slot');
+    assert.strictEqual(updatesB[0].newGridId, 'slot-3', 'Rotation destination should be hole slot');
+    assert.strictEqual(typeof updatesB[0].newGridId, 'string', 'Rotation UPDATE must carry newGridId');
+
+    console.log('✓ COW-016 passed');
+}
+
 async function runAllTests() {
     console.log('=== Copy-on-Write Master Plan Test Suite ===\n');
     
@@ -557,6 +645,7 @@ async function runAllTests() {
     await testCOW013_TypeChangeOrdersRemainVirtual();
     await testCOW014_ZeroSizeOrdersBecomeVirtual();
     await testCOW015_FullAccountingFlowSimulation();
+    await testCOW016_RotationOnlyUpdatesInReconcile();
     
     console.log('\n=== All COW tests passed! ===');
 }

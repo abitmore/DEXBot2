@@ -197,8 +197,6 @@ class DEXBot {
         this._batchRetryInFlight = false;
         this._recoverySyncInFlight = false;
         this._maintenanceCooldownCycles = 0;
-        this._spreadCorrectionCooldownCycles = 0;
-        this._divergenceResizeCooldownCycles = 0;
     }
 
     /**
@@ -1057,7 +1055,12 @@ class DEXBot {
                         // immediately after creates new orders that may get filled by market before next cycle,
                         // causing cascading fills and potentially SPREAD slots becoming PARTIAL (error condition).
                         // Spread correction runs in the main loop instead.
-                        if (!abortedFillCycle && (anyRotations || allFilledOrders.length > 0)) {
+                        const fullFillCount = allFilledOrders.filter(o =>
+                            o && o.isPartial !== true
+                        ).length;
+                        const shouldRunPostFillChecks = !abortedFillCycle && fullFillCount > 0 && anyRotations;
+
+                        if (shouldRunPostFillChecks) {
                             // SAFE: Called inside _fillProcessingLock.acquire(), no concurrent fund modifications
                             await this.manager.recalculateFunds();
 
@@ -1087,33 +1090,8 @@ class DEXBot {
                         // _runGridMaintenance call to ensure pipeline protection applies consistently.
                         // Before: Divergence checks ran immediately after fills, causing race-to-resize
                         // After: Grid maintenance waits for isPipelineEmpty() before structural changes
-                        // Also run when rotations failed (allFilledOrders > 0) so divergence/spread correction
-                        // can attempt grid recovery even when fill-triggered rotations didn't complete.
-                        // Defer post-fill spread/divergence maintenance when transient
-                        // one-sided depletion is likely, to avoid false corrections.
-                        // Triggers: burst fills (2+) OR partial-only fills (no full fills).
-                        const fullFillCount = allFilledOrders.filter(o =>
-                            o && o.isPartial !== true
-                        ).length;
-                        const partialFillCount = allFilledOrders.filter(o =>
-                            o && o.isPartial === true
-                        ).length;
-                        const isBurst = allFilledOrders.length >= 2;
-                        const isPartialOnly = partialFillCount > 0 && fullFillCount === 0;
-
-                        if (isBurst || isPartialOnly) {
-                            this._spreadCorrectionCooldownCycles = Math.max(this._spreadCorrectionCooldownCycles, 1);
-                            this._divergenceResizeCooldownCycles = Math.max(this._divergenceResizeCooldownCycles, 1);
-                            const reason = isBurst
-                                ? `burst (${allFilledOrders.length} fills, full=${fullFillCount}, partial=${partialFillCount})`
-                                : `partial-only (${partialFillCount} partial, 0 full)`;
-                            this.manager.logger.log(
-                                `[FILL-GATE] ${reason} fill cycle detected. Deferring spread correction and divergence resize for one maintenance cycle.`,
-                                'warn'
-                            );
-                        }
-
-                        if (!abortedFillCycle && (anyRotations || allFilledOrders.length > 0)) {
+                        // Run only when the cycle contains at least one full fill.
+                        if (shouldRunPostFillChecks) {
                             await this._runGridMaintenance('post-fill', true);
                         }
                     }
@@ -1863,6 +1841,7 @@ class DEXBot {
         try {
             this._batchInFlight = true;
             this.manager._setRebalanceState(REBALANCE_STATES.BROADCASTING);
+            this.manager.startBroadcasting();
 
             // Build operations from actions
             for (const action of actions) {
@@ -2002,6 +1981,43 @@ class DEXBot {
                     this.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
                     await this.manager._commitWorkingGrid(workingGrid, workingIndexes, workingBoundary);
                     
+                    // Deduct cacheFunds for new placements (CREATE) and rotations (UPDATE with newGridId)
+                    // This prevents fund invariant violations from double-counting fill proceeds
+                    let newPlacementBuy = 0;
+                    let newPlacementSell = 0;
+                    
+                    for (const ctx of opContexts) {
+                        if (ctx.kind === 'create' && ctx.order) {
+                            const orderType = ctx.order.type;
+                            const size = Number(ctx.order.size) || 0;
+                            if (orderType === ORDER_TYPES.BUY) {
+                                newPlacementBuy += size;
+                            } else if (orderType === ORDER_TYPES.SELL) {
+                                newPlacementSell += size;
+                            }
+                        } else if (ctx.kind === 'rotation' && ctx.rotation) {
+                            // Rotation uses cacheFunds to fund the new position
+                            const orderType = ctx.rotation.type;
+                            const newSize = Number(ctx.rotation.newSize) || 0;
+                            const oldSize = Number(ctx.rotation.oldOrder?.size) || 0;
+                            // Only the size increase comes from cacheFunds
+                            const sizeIncrease = Math.max(0, newSize - oldSize);
+                            if (orderType === ORDER_TYPES.BUY) {
+                                newPlacementBuy += sizeIncrease;
+                            } else if (orderType === ORDER_TYPES.SELL) {
+                                newPlacementSell += sizeIncrease;
+                            }
+                        }
+                    }
+                    
+                    // Deduct from cacheFunds (fill proceeds are consumed by placements)
+                    if (newPlacementBuy > 0) {
+                        await this.manager.modifyCacheFunds('buy', -newPlacementBuy, 'cow-placements');
+                    }
+                    if (newPlacementSell > 0) {
+                        await this.manager.modifyCacheFunds('sell', -newPlacementSell, 'cow-placements');
+                    }
+                    
                     // Process batch results for logging/metrics
                     const batchResult = await this._processBatchResults(result, opContexts);
                     
@@ -2020,7 +2036,10 @@ class DEXBot {
                 }
             } finally {
                 this.manager._throwOnIllegalState = false;
+                // Keep _isBroadcasting true during resumeFundRecalc to skip invariant checks
+                // that would fail due to stale accountTotals (not yet refreshed from blockchain)
                 await this.manager.resumeFundRecalc();
+                this.manager.stopBroadcasting();
                 const createCount = actions.filter(a => a.type === COW_ACTIONS.CREATE).length;
                 const cancelCount = actions.filter(a => a.type === COW_ACTIONS.CANCEL).length;
                 this.manager.logger.logFundsStatus(this.manager, `AFTER COW batch (created=${createCount}, cancelled=${cancelCount})`);
@@ -2028,6 +2047,7 @@ class DEXBot {
 
         } catch (err) {
             this.manager.logger.log(`[COW] Batch transaction failed: ${err.message}`, 'error');
+            this.manager.stopBroadcasting();
             this.manager._clearWorkingGridRef();
 
             // Handle hard abort
@@ -2314,7 +2334,9 @@ class DEXBot {
             (result && Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results) ||
             [];
         const { getAssetFees } = require('./order/utils/math');
-        const btsFeeData = getAssetFees('BTS', 1);
+        // IMPORTANT: Call without amount to get fee schedule fields
+        // ({ createFee, updateFee, ... }), not proceeds projection fields.
+        const btsFeeData = getAssetFees('BTS');
         let hadRotation = false;
         let updateOperationCount = 0;
 
@@ -2485,6 +2507,25 @@ class DEXBot {
                         btsFeeData.updateFee,
                         false
                     );
+                }
+
+                // Ensure rotation source slot is cleared in master state.
+                // COW projection may keep source slots ACTIVE when target keeps a non-zero
+                // virtual size, but after a successful on-chain rotation the source orderId
+                // must no longer remain attached to the old slot.
+                if (oldOrder?.id && oldOrder.id !== newGridId) {
+                    const currentSource = this.manager.orders.get(oldOrder.id);
+                    if (currentSource && currentSource.orderId) {
+                        updatesToApply.push({
+                            order: {
+                                ...currentSource,
+                                state: ORDER_STATES.VIRTUAL,
+                                orderId: null,
+                                rawOnChain: null
+                            },
+                            context: 'post-rotation-source-clear'
+                        });
+                    }
                 }
 
                 updatesToApply.push({ order: updatedSlot, context: 'post-rotation-metadata' });
@@ -2977,48 +3018,38 @@ class DEXBot {
             // the final post-resize grid state.
             // Only performed when pipeline is empty to prevent premature resizing.
 
-            const shouldSkipDivergenceResize =
-                context === 'post-fill' && this._divergenceResizeCooldownCycles > 0;
-            if (shouldSkipDivergenceResize) {
-                this._divergenceResizeCooldownCycles--;
-                this._log(
-                    `[DIVERGENCE-GATE] Skipping divergence resize during ${context} (remaining cooldown=${this._divergenceResizeCooldownCycles})`,
-                    'warn'
-                );
-            } else {
-                // Perform unified divergence monitoring (Ratio + RMS)
-                try {
-                    const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
-                    const calculatedGrid = Array.from(this.manager.orders.values());
-                    const divergence = await Grid.monitorDivergence(this.manager, calculatedGrid, persistedGridData);
+            // Perform unified divergence monitoring (Ratio + RMS)
+            try {
+                const persistedGridData = this.accountOrders.loadBotGrid(this.config.botKey, true) || [];
+                const calculatedGrid = Array.from(this.manager.orders.values());
+                const divergence = await Grid.monitorDivergence(this.manager, calculatedGrid, persistedGridData);
 
-                    if (divergence.needsUpdate) {
-                        if (divergence.buy.ratio || divergence.sell.ratio) {
-                            this._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}, sell: ${divergence.sell.ratio})`);
-                        }
-                        if (divergence.buy.rms || divergence.sell.rms) {
-                            this._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
-                        }
-
-                        await Grid.updateGridFromBlockchainSnapshot(this.manager, divergence.orderType, true);
-                        await this._persistAndRecoverIfNeeded();
-
-                        try {
-                            await applyGridDivergenceCorrections(
-                                this.manager,
-                                this.accountOrders,
-                                this.config.botKey,
-                                this.updateOrdersOnChainPlan.bind(this)
-                            );
-                            if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
-                            this._log(`Grid divergence corrections applied during ${context}`);
-                        } catch (err) {
-                            this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
-                        }
+                if (divergence.needsUpdate) {
+                    if (divergence.buy.ratio || divergence.sell.ratio) {
+                        this._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}, sell: ${divergence.sell.ratio})`);
                     }
-                } catch (err) {
-                    this._warn(`Error running divergence check during ${context}: ${err.message}`);
+                    if (divergence.buy.rms || divergence.sell.rms) {
+                        this._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
+                    }
+
+                    await Grid.updateGridFromBlockchainSnapshot(this.manager, divergence.orderType, true);
+                    await this._persistAndRecoverIfNeeded();
+
+                    try {
+                        await applyGridDivergenceCorrections(
+                            this.manager,
+                            this.accountOrders,
+                            this.config.botKey,
+                            this.updateOrdersOnChainPlan.bind(this)
+                        );
+                        if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
+                        this._log(`Grid divergence corrections applied during ${context}`);
+                    } catch (err) {
+                        this._warn(`Error applying divergence corrections during ${context}: ${err.message}`);
+                    }
                 }
+            } catch (err) {
+                this._warn(`Error running divergence check during ${context}: ${err.message}`);
             }
 
             // ================================================================================
@@ -3027,24 +3058,14 @@ class DEXBot {
             // Run spread correction after health + divergence work so it uses the
             // final stabilized grid state for this maintenance cycle.
 
-            const shouldSkipSpreadCorrection =
-                context === 'post-fill' && this._spreadCorrectionCooldownCycles > 0;
-            if (shouldSkipSpreadCorrection) {
-                this._spreadCorrectionCooldownCycles--;
-                this._log(
-                    `[SPREAD-GATE] Skipping spread correction during ${context} (remaining cooldown=${this._spreadCorrectionCooldownCycles})`,
-                    'warn'
-                );
-            } else {
-                const spreadResult = await this.manager.checkSpreadCondition(
-                    BitShares,
-                    this.updateOrdersOnChainPlan.bind(this)
-                );
-                if (await this._abortFlowIfIllegalState(`${context} spread check`)) return;
-                if (spreadResult && spreadResult.ordersPlaced > 0) {
-                    this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
-                    await this._persistAndRecoverIfNeeded();
-                }
+            const spreadResult = await this.manager.checkSpreadCondition(
+                BitShares,
+                this.updateOrdersOnChainPlan.bind(this)
+            );
+            if (await this._abortFlowIfIllegalState(`${context} spread check`)) return;
+            if (spreadResult && spreadResult.ordersPlaced > 0) {
+                this._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
+                await this._persistAndRecoverIfNeeded();
             }
         }
     }
