@@ -134,32 +134,6 @@ class SyncEngine {
     }
 
     /**
-     * Detect and sanitize phantom orders.
-     * A phantom order is an order in ACTIVE/PARTIAL state that lacks a blockchain orderId.
-     * Sanitization downgrades the order to VIRTUAL to prevent fund tracking corruption.
-     * 
-     * @param {Object} order - Order to check and sanitize
-     * @param {string} context - Operation context for logging
-     * @returns {boolean} True if order was sanitized (modified)
-     */
-    sanitizePhantomOrder(order, context) {
-        if (!order) return false;
-        if (isPhantomOrder(order)) {
-            this.manager.logger?.log?.(
-                `ILLEGAL STATE: Sanitizing order ${order.id}: ${order.state} without orderId. ` +
-                `Context: ${context}. Downgrading to VIRTUAL to prevent fund tracking corruption.`,
-                'error'
-            );
-            // Auto-correct to VIRTUAL to prevent fund tracking corruption
-            // NOTE: Keep the size - VIRTUAL orders can have non-zero sizes (planned placements)
-            // Only SPREAD orders should have size 0
-            order.state = ORDER_STATES.VIRTUAL;
-            return true;
-        }
-        return false;
-    }
-
-    /**
      * Reconcile grid orders against fresh blockchain open orders snapshot.
      * This is the MAIN SYNCHRONIZATION MECHANISM that corrects the grid state when
      * the blockchain state diverges from our local expectations.
@@ -484,7 +458,7 @@ class SyncEngine {
 
             if (gridOrder.orderId && parsedChainOrders.has(gridOrder.orderId)) {
                 const chainOrder = parsedChainOrders.get(gridOrder.orderId);
-                const updatedOrder = { ...gridOrder };
+                let updatedOrder = { ...gridOrder };
                 chainOrderIdsOnGrid.add(gridOrder.orderId);
                 // Store raw blockchain data in grid slot for later update calculation
                 updatedOrder.rawOnChain = rawChainOrders.get(gridOrder.orderId);
@@ -538,7 +512,7 @@ class SyncEngine {
                         const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
                         if (nextOrder) {
                             // Merge updated state if size actually changed
-                            Object.assign(updatedOrder, nextOrder);
+                            updatedOrder = { ...updatedOrder, ...nextOrder };
                         }
                         updatedOrder.state = resolveStateFromChainSize(
                             gridOrder.state,
@@ -596,7 +570,7 @@ class SyncEngine {
             );
 
             if (match && !matchedGridOrderIds.has(match.id)) {
-                const bestMatch = { ...match };
+                let bestMatch = { ...match };
                 const wasVirtual = match.state === ORDER_STATES.VIRTUAL;
                 const wasPartial = match.state === ORDER_STATES.PARTIAL;
                 bestMatch.orderId = chainOrderId;
@@ -609,7 +583,7 @@ class SyncEngine {
                 const chainInt = floatToBlockchainInt(chainOrder.size, precision);
                 if (targetInt !== chainInt) {
                     const updated = await applyChainSizeToGridOrder(mgr, bestMatch, chainOrder.size);
-                    if (updated) Object.assign(bestMatch, updated);
+                    if (updated) bestMatch = { ...bestMatch, ...updated };
 
                     if (chainInt > 0) {
                         if (wasVirtual) {
@@ -784,18 +758,20 @@ class SyncEngine {
                         historyId: historyId,
                         isMaker: isMaker  // Preserve maker/taker flag for accurate fee calculation
                     };
-                    const updatedOrder = { ...matchedGridOrder };
-                    updatedOrder.state = ORDER_STATES.PARTIAL;
+                    let updatedOrder = { ...matchedGridOrder, state: ORDER_STATES.PARTIAL };
 
                     // Update cached raw order integer instead of deleting it
                     if (updatedOrder.rawOnChain && updatedOrder.rawOnChain.for_sale !== undefined) {
                         const currentForSale = toFiniteNumber(updatedOrder.rawOnChain.for_sale);
-                        updatedOrder.rawOnChain.for_sale = String(Math.max(0, currentForSale - filledAmountInt));
+                        updatedOrder.rawOnChain = {
+                            ...updatedOrder.rawOnChain,
+                            for_sale: String(Math.max(0, currentForSale - filledAmountInt))
+                        };
                     }
 
                     const nextOrder = await applyChainSizeToGridOrder(mgr, updatedOrder, newSize);
                     if (nextOrder) {
-                        Object.assign(updatedOrder, nextOrder);
+                        updatedOrder = { ...updatedOrder, ...nextOrder };
                     }
 
                     // NEW: Simplified Double-Side Strategy (Partial Fill)

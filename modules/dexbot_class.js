@@ -415,17 +415,20 @@ class DEXBot {
         const persistedGrid = this.accountOrders.loadBotGrid(this.config.botKey);
 
         // CRITICAL REPAIR: Strip fake orderIds where orderId === id (e.g. "slot-0")
+        let repairedGrid = persistedGrid;
         if (persistedGrid && persistedGrid.length > 0) {
             let repairCount = 0;
-            for (const order of persistedGrid) {
+            repairedGrid = persistedGrid.map(order => {
                 if (order && order.orderId && order.orderId === order.id) {
-                    order.orderId = '';
-                    if (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) {
-                        order.state = ORDER_STATES.VIRTUAL;
-                    }
                     repairCount++;
+                    const repairedOrder = { ...order, orderId: '' };
+                    if (repairedOrder.state === ORDER_STATES.ACTIVE || repairedOrder.state === ORDER_STATES.PARTIAL) {
+                        repairedOrder.state = ORDER_STATES.VIRTUAL;
+                    }
+                    return repairedOrder;
                 }
-            }
+                return order;
+            });
             if (repairCount > 0) {
                 this._log(`[REPAIR] Stripped ${repairCount} fake orderId(s) from persisted grid to restore rebalancing logic.`);
             }
@@ -437,7 +440,7 @@ class DEXBot {
         const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
 
         return {
-            persistedGrid,
+            persistedGrid: repairedGrid,
             persistedCacheFunds,
             persistedBtsFeesOwed,
             persistedBoundaryIdx,

@@ -296,10 +296,10 @@ class StrategyEngine {
         const newBoundaryIdx = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots);
 
         // 2. Assign Roles (Buy/Sell/Spread)
-        assignGridRoles(allSlots, newBoundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
+        const updatedSlots = assignGridRoles(allSlots, newBoundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
 
-        this.manager.logger.log(`[DEBUG] calculateTargetGrid: boundary=${newBoundaryIdx}, gap=${gapSlots}, allSlots=${allSlots.length}`, 'debug');
-        allSlots.forEach((s, i) => this.manager.logger.log(`  Slot ${i}: id=${s.id}, price=${s.price}, type=${s.type}`, 'debug'));
+        this.manager.logger.log(`[DEBUG] calculateTargetGrid: boundary=${newBoundaryIdx}, gap=${gapSlots}, allSlots=${updatedSlots.length}`, 'debug');
+        updatedSlots.forEach((s, i) => this.manager.logger.log(`  Slot ${i}: id=${s.id}, price=${s.price}, type=${s.type}`, 'debug'));
 
         // 3. Calculate Ideal Sizes (Budgeting)
         const totalTarget = Math.max(0, config.activeOrders?.buy || 1) + Math.max(0, config.activeOrders?.sell || 1);
@@ -307,8 +307,8 @@ class StrategyEngine {
         const budgetSell = getSideBudget('sell', funds, config, totalTarget);
         
         // Filter slots into BUY/SELL
-        const allBuySlots = allSlots.filter(o => o.type === ORDER_TYPES.BUY);
-        const allSellSlots = allSlots.filter(o => o.type === ORDER_TYPES.SELL);
+        const allBuySlots = updatedSlots.filter(o => o.type === ORDER_TYPES.BUY);
+        const allSellSlots = updatedSlots.filter(o => o.type === ORDER_TYPES.SELL);
 
         // Apply Window Discipline (activeOrders count)
         const targetCountBuy = Math.max(1, config.activeOrders?.buy || 1);
@@ -380,7 +380,7 @@ class StrategyEngine {
         // not the grid's fund allocation. Virtual orders must retain their
         // sizes so that funds.virtual reflects the full grid commitment.
         const windowIds = new Set([...buySlots, ...sellSlots].map(s => s.id));
-        allSlots.forEach(slot => {
+        updatedSlots.forEach(slot => {
             if (!windowIds.has(slot.id)) {
                 // Use calculated size from full-rail sizing (preserves fund allocation)
                 const calculatedSize = buySizeById.get(slot.id) ?? sellSizeById.get(slot.id) ?? slot.size ?? 0;

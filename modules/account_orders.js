@@ -690,11 +690,13 @@ class AccountOrders {
 
       // Merge fills
       if (fills instanceof Map) {
+        const updatedFills = { ...(this.data.bots[botKey].processedFills || {}) };
         for (const [key, timestamp] of fills) {
-          this.data.bots[botKey].processedFills[key] = timestamp;
+          updatedFills[key] = timestamp;
         }
+        this.data.bots[botKey].processedFills = updatedFills;
       } else {
-        Object.assign(this.data.bots[botKey].processedFills, fills);
+        this.data.bots[botKey].processedFills = { ...(this.data.bots[botKey].processedFills || {}), ...fills };
       }
 
       this.data.lastUpdated = nowIso();

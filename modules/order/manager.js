@@ -630,11 +630,7 @@ class OrderManager {
     }
 
     async _setAccountTotals(totals) {
-        if (!this.accountTotals) {
-            this.accountTotals = { ...totals };
-        } else {
-            Object.assign(this.accountTotals, totals);
-        }
+        this.accountTotals = { ...(this.accountTotals || {}), ...totals };
         if (!this.funds) this.resetFunds();
 
         await this._recalculateFunds();
@@ -1275,7 +1271,16 @@ class OrderManager {
                 'debug'
             );
 
-            this.orders = Object.freeze(workingGrid.toMap());
+            const finalMap = workingGrid.toMap();
+            // RC-4: Deep-freeze all modified orders before committing to master state
+            // Ensures COW immutability invariants are maintained for all grid entries.
+            for (const [id, order] of finalMap.entries()) {
+                if (order && !Object.isFrozen(order)) {
+                    deepFreeze(order);
+                }
+            }
+
+            this.orders = Object.freeze(finalMap);
             this.boundaryIdx = workingBoundary;
             this._gridVersion++;
 

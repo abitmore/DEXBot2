@@ -456,7 +456,12 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 : ORDER_TYPES.SELL;
 
         // If out-of-spread correction moves boundary, recompute both sides.
-        if (manager.outOfSpread > 0 && syncBoundaryToFunds(manager)) {
+        const boundarySync = syncBoundaryToFunds(manager);
+        if (manager.outOfSpread > 0 && boundarySync.changed) {
+            manager.boundaryIdx = boundarySync.newIdx;
+            if (boundarySync.updatedSlots?.length > 0) {
+                await manager.applyGridUpdateBatch(boundarySync.updatedSlots, 'boundary-sync', true);
+            }
             resizeOrderType = 'both';
             manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
             manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
@@ -660,14 +665,17 @@ function syncBoundaryToFunds(manager) {
     const gapSlots = Grid.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent);
     const newIdx = OrderUtils.calculateFundDrivenBoundary(allSlots, availA, availB, manager.config.startPrice, gapSlots);
     if (newIdx !== manager.boundaryIdx) {
-        manager.boundaryIdx = newIdx;
-        OrderUtils.assignGridRoles(allSlots, newIdx, gapSlots, ORDER_TYPES, ORDER_STATES, {
+        const updatedSlots = OrderUtils.assignGridRoles(allSlots, newIdx, gapSlots, ORDER_TYPES, ORDER_STATES, {
             assignOnChain: false,
             getCurrentSlot: (id) => manager.orders.get(id)
         });
-        return true;
+        // Filter to only changed slots to minimize batch size.
+        // assignGridRoles returns the original frozen reference when unchanged,
+        // so object identity reliably distinguishes cloned (changed) slots.
+        const changedSlots = updatedSlots.filter(s => s !== manager.orders.get(s.id));
+        return { changed: true, newIdx, updatedSlots: changedSlots };
     }
-    return false;
+    return { changed: false };
 }
 
 // ================================================================================

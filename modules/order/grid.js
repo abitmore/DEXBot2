@@ -396,10 +396,10 @@ class Grid {
             size: 0
         }));
 
-        assignGridRoles(orders, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES);
+        const updatedOrders = assignGridRoles(orders, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES);
 
-        const buyCount = orders.filter(o => o.type === ORDER_TYPES.BUY).length;
-        const sellCount = orders.filter(o => o.type === ORDER_TYPES.SELL).length;
+        const buyCount = updatedOrders.filter(o => o.type === ORDER_TYPES.BUY).length;
+        const sellCount = updatedOrders.filter(o => o.type === ORDER_TYPES.SELL).length;
         if (buyCount === 0 || sellCount === 0) {
             throw new Error(
                 `Grid generation produced an imbalanced rail (buy=${buyCount}, sell=${sellCount}) for ` +
@@ -413,7 +413,7 @@ class Grid {
             sell: gapSlots - Math.floor(gapSlots / 2)
         };
 
-        return { orders, boundaryIdx, initialSpreadCount };
+        return { orders: updatedOrders, boundaryIdx, initialSpreadCount };
     }
 
     /**
@@ -482,13 +482,13 @@ class Grid {
             try {
                 // RC-2: Use applyOrderUpdate (PRIVATE/UNLOCKED)
                 for (const order of grid) {
+                    let currentOrder = order;
                     if (isPhantomOrder(order)) {
                         manager.logger?.log?.(`Sanitizing corrupted order ${order.id}: ACTIVE/PARTIAL without orderId -> VIRTUAL`, 'warn');
-                        order.state = ORDER_STATES.VIRTUAL;
+                        currentOrder = { ...order, state: ORDER_STATES.VIRTUAL };
                     }
-                    await manager._applyOrderUpdate(order, 'grid-load', true);
+                    await manager._applyOrderUpdate(currentOrder, 'grid-load', true);
                 }
-                
                  const spreadCount = grid.filter(o => o.type === ORDER_TYPES.SPREAD).length;
                  manager.targetSpreadCount = spreadCount;
                  manager.currentSpreadCount = spreadCount;

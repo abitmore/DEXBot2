@@ -602,16 +602,18 @@ function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STA
     const getCurrentSlot = (typeof options.getCurrentSlot === 'function') ? options.getCurrentSlot : null;
     const buyEndIdx = boundaryIdx;
     const sellStartIdx = boundaryIdx + gapSlots + 1;
-    allSlots.forEach((slot, i) => {
+
+    return allSlots.map((slot, i) => {
         const liveSlot = getCurrentSlot ? (getCurrentSlot(slot.id) || slot) : slot;
         const canAssign = assignOnChain || !isOrderOnChain(liveSlot);
         if (canAssign) {
-            if (i <= buyEndIdx) slot.type = ORDER_TYPES.BUY;
-            else if (i >= sellStartIdx) slot.type = ORDER_TYPES.SELL;
-            else slot.type = ORDER_TYPES.SPREAD;
+            const newType = (i <= buyEndIdx) ? ORDER_TYPES.BUY : (i >= sellStartIdx) ? ORDER_TYPES.SELL : ORDER_TYPES.SPREAD;
+            if (slot.type !== newType) {
+                return { ...slot, type: newType };
+            }
         }
+        return slot;
     });
-    return allSlots;
 }
 
 /**
