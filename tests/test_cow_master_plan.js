@@ -7,6 +7,7 @@ const assert = require('assert');
 const { WorkingGrid } = require('../modules/order/working_grid');
 const { ordersEqual, buildDelta } = require('../modules/order/utils/order_comparison');
 const { buildIndexes, validateIndexes } = require('../modules/order/utils/grid_indexes');
+const { projectTargetToWorkingGrid } = require('../modules/order/utils/helpers');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 function createTestOrder(id, type, state, price, amount, orderId = null) {
@@ -285,6 +286,259 @@ async function testCOW011_NoSpuriousUpdatesOnUnchangedGrid() {
     console.log('✓ COW-011 passed');
 }
 
+/**
+ * COW-012: Verify that projectTargetToWorkingGrid keeps NEW orders as VIRTUAL
+ * 
+ * REGRESSION TEST for invariant violation bug:
+ * - Root cause: projectTargetToWorkingGrid was setting new orders to ACTIVE
+ * - COW commit would then write ACTIVE orders without accounting deduction
+ * - synchronizeWithChain saw ACTIVE->ACTIVE (no transition) = no fund deduction
+ * - Result: Fund invariant violation (trackedTotal > blockchainTotal)
+ * 
+ * Fix: New orders must remain VIRTUAL until synchronizeWithChain confirms
+ * blockchain placement, triggering proper VIRTUAL->ACTIVE transition with
+ * fund deduction via updateOptimisticFreeBalance.
+ */
+async function testCOW012_NewOrdersRemainVirtualUntilSync() {
+    console.log('\n[COW-012] Testing new orders remain VIRTUAL after projection (accounting invariant)...');
+    
+    // Simulate a master grid with one existing ACTIVE order
+    const masterGrid = new Map([
+        ['slot-50', {
+            id: 'slot-50',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 50,
+            orderId: '1.7.12345'  // Has chain ID = already on blockchain
+        }]
+    ]);
+    
+    // Create a target grid that wants to:
+    // 1. Keep slot-50 active (existing order)
+    // 2. Add slot-51 as a NEW order (should be placed on chain)
+    // 3. Add slot-52 as a NEW order (should be placed on chain)
+    const targetGrid = new Map([
+        ['slot-50', {
+            id: 'slot-50',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,  // Target wants it ACTIVE
+            price: 100,
+            size: 50
+        }],
+        ['slot-51', {
+            id: 'slot-51',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,  // Target wants it ACTIVE (but it's NEW!)
+            price: 95,
+            size: 45
+        }],
+        ['slot-52', {
+            id: 'slot-52',
+            type: ORDER_TYPES.SELL,
+            state: ORDER_STATES.ACTIVE,  // Target wants it ACTIVE (but it's NEW!)
+            price: 105,
+            size: 40
+        }]
+    ]);
+    
+    // Create working grid from master and project target onto it
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid);
+    
+    // CRITICAL ASSERTION 1: Existing order with orderId should keep its state
+    const slot50 = workingGrid.get('slot-50');
+    assert(slot50, 'slot-50 should exist in working grid');
+    assert.strictEqual(slot50.state, ORDER_STATES.ACTIVE, 
+        'Existing order with orderId should remain ACTIVE');
+    assert.strictEqual(slot50.orderId, '1.7.12345',
+        'Existing order should keep its orderId');
+    
+    // CRITICAL ASSERTION 2: NEW orders (no orderId in master) must be VIRTUAL
+    const slot51 = workingGrid.get('slot-51');
+    assert(slot51, 'slot-51 should exist in working grid');
+    assert.strictEqual(slot51.state, ORDER_STATES.VIRTUAL,
+        'NEW order slot-51 must be VIRTUAL (not ACTIVE) to ensure accounting deduction happens in synchronizeWithChain');
+    assert.strictEqual(slot51.orderId, null,
+        'NEW order should have null orderId');
+    
+    const slot52 = workingGrid.get('slot-52');
+    assert(slot52, 'slot-52 should exist in working grid');
+    assert.strictEqual(slot52.state, ORDER_STATES.VIRTUAL,
+        'NEW order slot-52 must be VIRTUAL (not ACTIVE) to ensure accounting deduction happens in synchronizeWithChain');
+    assert.strictEqual(slot52.orderId, null,
+        'NEW order should have null orderId');
+    
+    // CRITICAL ASSERTION 3: Verify sizes are preserved
+    assert.strictEqual(slot51.size, 45, 'slot-51 size should be preserved');
+    assert.strictEqual(slot52.size, 40, 'slot-52 size should be preserved');
+    
+    console.log('✓ COW-012 passed');
+}
+
+/**
+ * COW-013: Verify orders transitioning type (e.g., rotation) remain VIRTUAL
+ * 
+ * When an order slot changes type (BUY->SELL or vice versa), it represents
+ * a rotation where the old order will be cancelled and a new one placed.
+ * The new order must be VIRTUAL until blockchain confirms.
+ */
+async function testCOW013_TypeChangeOrdersRemainVirtual() {
+    console.log('\n[COW-013] Testing type-change orders remain VIRTUAL (rotation scenario)...');
+    
+    // Master grid has an active BUY order
+    const masterGrid = new Map([
+        ['slot-100', {
+            id: 'slot-100',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 50,
+            orderId: '1.7.99999'
+        }]
+    ]);
+    
+    // Target grid wants to change it to SELL (rotation)
+    const targetGrid = new Map([
+        ['slot-100', {
+            id: 'slot-100',
+            type: ORDER_TYPES.SELL,  // Type changed!
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 50
+        }]
+    ]);
+    
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid);
+    
+    const slot100 = workingGrid.get('slot-100');
+    assert(slot100, 'slot-100 should exist');
+    
+    // When type changes, orderId should be cleared (different order on chain)
+    // and state should be VIRTUAL until new order is placed
+    assert.strictEqual(slot100.type, ORDER_TYPES.SELL, 'Type should be updated to SELL');
+    assert.strictEqual(slot100.orderId, null, 
+        'orderId should be cleared when type changes (old order will be cancelled)');
+    assert.strictEqual(slot100.state, ORDER_STATES.VIRTUAL,
+        'Order with cleared orderId must be VIRTUAL until synchronizeWithChain');
+    
+    console.log('✓ COW-013 passed');
+}
+
+/**
+ * COW-014: Verify zero-size orders become VIRTUAL
+ * 
+ * Orders with size 0 represent cancelled/virtualized slots and must
+ * always be VIRTUAL state, regardless of what target grid requests.
+ */
+async function testCOW014_ZeroSizeOrdersBecomeVirtual() {
+    console.log('\n[COW-014] Testing zero-size orders become VIRTUAL...');
+    
+    const masterGrid = new Map([
+        ['slot-200', {
+            id: 'slot-200',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 50,
+            orderId: '1.7.88888'
+        }]
+    ]);
+    
+    // Target grid sets size to 0 (order should be cancelled)
+    const targetGrid = new Map([
+        ['slot-200', {
+            id: 'slot-200',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,  // Target might say ACTIVE, but size=0 overrides
+            price: 100,
+            size: 0  // Zero size = virtualized
+        }]
+    ]);
+    
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid);
+    
+    const slot200 = workingGrid.get('slot-200');
+    assert(slot200, 'slot-200 should exist');
+    assert.strictEqual(slot200.size, 0, 'Size should be 0');
+    assert.strictEqual(slot200.state, ORDER_STATES.VIRTUAL,
+        'Zero-size order must be VIRTUAL regardless of target state');
+    assert.strictEqual(slot200.orderId, null,
+        'Zero-size order should have null orderId');
+    
+    console.log('✓ COW-014 passed');
+}
+
+/**
+ * COW-015: Full accounting flow simulation
+ * 
+ * Simulates the complete COW flow to verify that:
+ * 1. Working grid has new orders as VIRTUAL
+ * 2. After COW commit, orders are still VIRTUAL in the committed map
+ * 3. synchronizeWithChain would see VIRTUAL->ACTIVE transition
+ */
+async function testCOW015_FullAccountingFlowSimulation() {
+    console.log('\n[COW-015] Testing full accounting flow simulation...');
+    
+    // Initial state: empty grid
+    const masterGrid = new Map();
+    
+    // Target wants to place a new order
+    const targetGrid = new Map([
+        ['slot-300', {
+            id: 'slot-300',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,  // Target wants ACTIVE
+            price: 100,
+            size: 83.62424  // The exact size from the original bug
+        }]
+    ]);
+    
+    // Step 1: Create working grid and project
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid);
+    
+    // Verify working grid has VIRTUAL state
+    const workingOrder = workingGrid.get('slot-300');
+    assert.strictEqual(workingOrder.state, ORDER_STATES.VIRTUAL,
+        'Working grid order must be VIRTUAL before commit');
+    
+    // Step 2: Simulate COW commit (toMap)
+    const committedGrid = workingGrid.toMap();
+    const committedOrder = committedGrid.get('slot-300');
+    
+    assert.strictEqual(committedOrder.state, ORDER_STATES.VIRTUAL,
+        'Committed grid order must still be VIRTUAL');
+    assert.strictEqual(committedOrder.orderId, null,
+        'Committed grid order must have null orderId');
+    
+    // Step 3: Verify the state transition that synchronizeWithChain would perform
+    // (This is what triggers updateOptimisticFreeBalance with proper deduction)
+    const oldState = committedOrder.state;
+    const newState = ORDER_STATES.ACTIVE;  // What sync would set
+    
+    assert.strictEqual(oldState, ORDER_STATES.VIRTUAL, 'Old state must be VIRTUAL');
+    assert.strictEqual(newState, ORDER_STATES.ACTIVE, 'New state would be ACTIVE');
+    assert.notStrictEqual(oldState, newState, 
+        'State transition must occur (VIRTUAL->ACTIVE) for accounting to work');
+    
+    // Calculate what the commitment delta would be
+    const oldIsActive = (oldState === ORDER_STATES.ACTIVE || oldState === ORDER_STATES.PARTIAL);
+    const newIsActive = (newState === ORDER_STATES.ACTIVE || newState === ORDER_STATES.PARTIAL);
+    const oldCommitted = oldIsActive ? committedOrder.size : 0;
+    const newCommitted = newIsActive ? committedOrder.size : 0;
+    const commitmentDelta = newCommitted - oldCommitted;
+    
+    assert.strictEqual(oldCommitted, 0, 'Old committed should be 0 (VIRTUAL)');
+    assert.strictEqual(newCommitted, 83.62424, 'New committed should be order size');
+    assert.strictEqual(commitmentDelta, 83.62424, 
+        'Commitment delta must equal order size for proper fund deduction');
+    
+    console.log('✓ COW-015 passed');
+}
+
 async function runAllTests() {
     console.log('=== Copy-on-Write Master Plan Test Suite ===\n');
     
@@ -299,6 +553,10 @@ async function runAllTests() {
     await testCOW009_EmptyGridHandling();
     await testCOW010_MemoryStats();
     await testCOW011_NoSpuriousUpdatesOnUnchangedGrid();
+    await testCOW012_NewOrdersRemainVirtualUntilSync();
+    await testCOW013_TypeChangeOrdersRemainVirtual();
+    await testCOW014_ZeroSizeOrdersBecomeVirtual();
+    await testCOW015_FullAccountingFlowSimulation();
     
     console.log('\n=== All COW tests passed! ===');
 }

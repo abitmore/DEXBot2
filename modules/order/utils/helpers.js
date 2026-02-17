@@ -449,10 +449,12 @@ function projectTargetToWorkingGrid(workingGrid, targetGrid) {
         const targetSize = Number.isFinite(Number(targetOrder?.size)) ? Number(targetOrder.size) : 0;
 
         if (!current) {
+            // New orders start as VIRTUAL - transition to ACTIVE happens in synchronizeWithChain
+            // after blockchain confirms placement. This ensures accounting deduction occurs.
             workingGrid.set(id, {
                 ...targetOrder,
                 size: Math.max(0, targetSize),
-                state: targetSize > 0 ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
+                state: ORDER_STATES.VIRTUAL,
                 orderId: null
             });
             continue;
@@ -460,11 +462,13 @@ function projectTargetToWorkingGrid(workingGrid, targetGrid) {
 
         if (targetSize > 0) {
             const keepOrderId = isOrderOnChain(current) && hasOnChainId(current) && current.type === targetOrder.type;
+            // Orders without on-chain ID remain VIRTUAL until synchronizeWithChain
+            // confirms blockchain placement and triggers accounting deduction.
             workingGrid.set(id, {
                 ...current,
                 ...targetOrder,
                 size: targetSize,
-                state: keepOrderId ? current.state : ORDER_STATES.ACTIVE,
+                state: keepOrderId ? current.state : ORDER_STATES.VIRTUAL,
                 orderId: keepOrderId ? current.orderId : null
             });
         } else {
