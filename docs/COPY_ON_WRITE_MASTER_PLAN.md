@@ -239,13 +239,53 @@ if (fills.length === 0 && rebalanceState === REBALANCE_STATES.NORMAL) {
 - Cache updates must reflect committed state, not speculative working state
 - Prevents race conditions between fill processing and cache invalidation
 
-### Phase 7: Benchmarks ✅
+### Phase 7: Divergence Correction COW Migration ✅
+Migrated `applyGridDivergenceCorrections` from queue-based cancellations to full COW pattern.
+
+**Before (Queue-Based)**:
+```javascript
+// Detect divergence → Queue corrections → Execute batch → Clear queue
+// Master grid stays ACTIVE during entire process (race condition)
+ordersNeedingPriceCorrection.push({ gridOrder, chainOrderId, isSurplus: true });
+// ...later...
+await updateOrdersOnChainBatchFn({ ordersToCancel, ordersToPlace, ordersToRotate });
+```
+
+**After (COW-Based)**:
+```javascript
+// Detect divergence → Create WorkingGrid → Update sizes in working copy
+// → Execute UPDATE/CANCEL/CREATE ops on chain → Commit working grid on success
+const workingGrid = new WorkingGrid(manager.orders);
+workingGrid.set(orderId, convertToSpreadPlaceholder(order)); // Surplus → virtual slot
+const actions = [{ type: COW_ACTIONS.CANCEL, id, orderId }, ...];
+const cowResult = { actions, workingGrid, ... };
+await updateOrdersOnChainBatch(cowResult); // Commit only on success
+```
+
+**Key Changes**:
+1. **Surplus orders**: CANCEL on-chain and virtualize in working grid
+2. **State preservation**: ACTIVE/PARTIAL orders keep their state in working grid
+3. **No race conditions**: Master unchanged until blockchain confirms
+4. **Unified flow**: Same COW pattern as fill rebalancing
+
+**Grid Resizing Also Migrated**:
+`updateGridFromBlockchainSnapshot` now returns COW result:
+```javascript
+// Before: Modified master grid directly
+await Grid.updateGridFromBlockchainSnapshot(manager, 'buy'); // Direct update!
+
+// After: Returns COW result for batch execution
+const cowResult = await Grid.updateGridFromBlockchainSnapshot(manager, 'buy');
+await updateOrdersOnChainBatch(cowResult); // Execute via COW
+```
+
+### Phase 8: Benchmarks ✅
 - 100 orders: ~0.03ms clone
 - 500 orders: ~0.05ms clone
 - 1000 orders: ~0.08ms clone
 - 5000 orders: ~0.5ms clone
 
-### Phase 8: Cleanup ✅
+### Phase 9: Cleanup ✅
 - Removed snapshot/rollback pattern; `performSafeRebalance()` now delegates to `_applySafeRebalanceCOW()`
 - Removed duplicate `_updateOrdersOnChainBatchCOW`
 - Removed legacy rollback references in `dexbot_class.js`
@@ -355,6 +395,7 @@ NEW FILL ARRIVES
 - `tests/test_cow_master_plan.js` - Core COW tests
 - `tests/test_cow_commit_guards.js` - Commit guard regression tests
 - `tests/test_cow_concurrent_fills.js` - Concurrent fill integration tests
+- `tests/test_cow_divergence_correction.js` - Divergence correction COW tests
 - `tests/test_working_grid.js` - WorkingGrid unit tests
 - `tests/benchmark_cow.js` - Performance benchmarks
 
@@ -365,7 +406,8 @@ NEW FILL ARRIVES
 - `modules/dexbot_class.js` - Wired COW broadcast, removed legacy rollback
 - `modules/order/sync_engine.js` - Uses `_applyOrderUpdate` (lock-free) for all sync paths
 - `modules/order/startup_reconcile.js` - Uses `_applySync` (lock-free) when inside `_gridLock`
-- `modules/order/utils/system.js` - Restructured `applyGridDivergenceCorrections` to avoid deadlocks
+- `modules/order/utils/system.js` - Migrated `applyGridDivergenceCorrections` to full COW pattern
+- `modules/order/grid.js` - Migrated `updateGridFromBlockchainSnapshot` to return COW result instead of modifying master directly
 
 ## Test Results
 
@@ -395,6 +437,12 @@ Concurrent Fill Tests (test_cow_concurrent_fills.js):
   ✓ COW-FILL-005: _cloneOrder deep-clones rawOnChain
   ✓ COW-FILL-006: _cloneOrder handles missing rawOnChain
   ✓ COW-FILL-007: Staleness reason includes phase context
+
+Divergence Correction Tests (test_cow_divergence_correction.js):
+  ✓ Surplus orders are CANCELLED (not UPDATE to size=0)
+  ✓ Working grid preserves order states (ACTIVE, PARTIAL)
+  ✓ Orders within target window get size updates
+  ✓ No duplicate UPDATE/CANCEL overlap for same order
 ```
 
 ## Operational Rules
@@ -431,6 +479,7 @@ Run these tests before promotion:
 - `node tests/test_cow_master_plan.js`
 - `node tests/test_cow_commit_guards.js`
 - `node tests/test_cow_concurrent_fills.js`
+- `node tests/test_cow_divergence_correction.js`
 
 ### Additional Checks
 - Unchanged grids do not emit global COW `update` actions

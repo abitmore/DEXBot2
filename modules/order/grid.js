@@ -90,7 +90,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS, TIMING, INCREMENT_BOUNDS, FEE_PARAMETERS } = require('../constants');
+const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, INCREMENT_BOUNDS, FEE_PARAMETERS } = require('../constants');
 const { GRID_COMPARISON } = GRID_LIMITS;
 const Format = require('./format');
 
@@ -125,6 +125,8 @@ const {
     isOrderHealthy,
     isPhantomOrder,
     isSlotAvailable,
+    isOrderOnChain,
+    hasOnChainId,
     getPartialsByType,
     calculateIdealBoundary,
     assignGridRoles
@@ -788,14 +790,18 @@ class Grid {
      *
      * @private
      */
-    static async _recalculateGridOrderSizesFromBlockchain(manager, orderType) {
-        if (!manager.assets) return;
+    static async _recalculateGridOrderSizesFromBlockchain(manager, orderType, options = {}) {
+        if (!manager.assets) return options?.workingGrid ? { actions: [], changed: false } : undefined;
+
+        const workingGrid = options?.workingGrid || null;
+        const collectActions = !!workingGrid;
+
         const isBuy = orderType === ORDER_TYPES.BUY;
         const sideName = isBuy ? 'buy' : 'sell';
 
         // Use centralized sizing context (respects botFunds % allocation)
         const ctx = await Grid._getSizingContext(manager, sideName);
-        if (!ctx) return;
+        if (!ctx) return collectActions ? { actions: [], changed: false } : undefined;
 
         // Get ALL slots for this side, sorted for calculateRotationOrderSizes
         // SELL: sorted ASC (Market to Edge)
@@ -804,7 +810,7 @@ class Grid {
             .filter(o => o.type === orderType)
             .sort((a, b) => a.price - b.price);
 
-        if (allSideSlots.length === 0) return;
+        if (allSideSlots.length === 0) return collectActions ? { actions: [], changed: false } : undefined;
 
         // Calculate geometric sizes for the ENTIRE rail
         const newSizes = calculateRotationOrderSizes(
@@ -817,13 +823,15 @@ class Grid {
             ctx.precision
         );
 
+        const actions = [];
         const appliedSizes = [];
+        let changed = false;
 
-        manager.pauseRecalcLogging();
+        const freeKey = isBuy ? 'buyFree' : 'sellFree';
+        let sideFreeAvailable = Number(manager.accountTotals?.[freeKey] || 0);
+
+        if (!collectActions) manager.pauseRecalcLogging();
         try {
-            const freeKey = isBuy ? 'buyFree' : 'sellFree';
-            let sideFreeAvailable = Number(manager.accountTotals?.[freeKey] || 0);
-
             // Apply new sizes to all slots on the side
             for (let i = 0; i < allSideSlots.length; i++) {
                 const slot = allSideSlots[i];
@@ -832,11 +840,11 @@ class Grid {
                 // FUND CAPPING FOR COMMITTED (ON-CHAIN) ORDERS:
                 // Only ACTIVE/PARTIAL orders are constrained by available funds.
                 // Virtual orders (not yet placed) will be constrained when they are actually placed.
-                // 
+                //
                 // NOTE: BTS update fees are paid from BTS balance (separate from asset balance),
                 // so they don't affect this asset-side size cap. Fee budgets are tracked in
                 // funds.btsFeesOwed and reserved separately via btsFeesReservation.
-                const isCommitted = slot.state === ORDER_STATES.ACTIVE || slot.state === ORDER_STATES.PARTIAL;
+                const isCommitted = isOrderOnChain(slot);
                 if (isCommitted) {
                     const currentSize = Number(slot.size || 0);
                     const delta = newSize - currentSize;
@@ -854,23 +862,54 @@ class Grid {
                         sideFreeAvailable += Math.abs(delta);
                     }
                 }
-                
+
                 // Use integer comparison to avoid redundant updates from float noise
                 const currentSizeInt = floatToBlockchainInt(slot.size || 0, ctx.precision);
                 const newSizeInt = floatToBlockchainInt(newSize, ctx.precision);
 
-                // Update size but preserve existing state and orderId
                 if (slot.size === undefined || currentSizeInt !== newSizeInt) {
-                    // CRITICAL: Set skipAccounting=false to ensure delta is consumed/released from ChainFree
-                    await manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', false, 0);
+                    changed = true;
+
+                    if (collectActions) {
+                        workingGrid.set(slot.id, {
+                            ...slot,
+                            size: newSize
+                        });
+
+                        if (isCommitted && hasOnChainId(slot)) {
+                            actions.push({
+                                type: COW_ACTIONS.UPDATE,
+                                id: slot.id,
+                                orderId: slot.orderId,
+                                newGridId: slot.id,
+                                newSize,
+                                newPrice: slot.price,
+                                order: {
+                                    id: slot.id,
+                                    type: slot.type,
+                                    price: slot.price,
+                                    size: newSize
+                                }
+                            });
+                        }
+                    } else {
+                        // CRITICAL: Set skipAccounting=false to ensure delta is consumed/released from ChainFree
+                        await manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', false, 0);
+                    }
                 }
 
                 appliedSizes[i] = newSize;
             }
 
-            await manager.recalculateFunds();
+            if (!collectActions) {
+                await manager.recalculateFunds();
+            }
         } finally {
-            manager.resumeRecalcLogging();
+            if (!collectActions) manager.resumeRecalcLogging();
+        }
+
+        if (collectActions) {
+            return { actions, changed };
         }
 
         // Calculate remaining cache for this side only
@@ -880,24 +919,55 @@ class Grid {
 
         const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, ctx.precision);
         await Grid._updateCacheFundsAtomic(manager, sideName, newCacheValue);
+
+        return undefined;
     }
 
     /**
-     * High-level entry for resizing grid from snapshot.
-     * FIX: Complete JSDoc with parameter types and return value documentation
+     * High-level entry for resizing grid from snapshot using COW pattern.
+     * Creates working grid, calculates new sizes, generates UPDATE actions.
+     * Master grid is only updated after successful blockchain confirmation.
      *
      * @param {OrderManager} manager - Manager instance
      * @param {string} orderType - 'buy', 'sell', or 'both' - which sides to update
      * @param {boolean} fromBlockchainTimer - If true, skip refetch of account totals (already current)
-     * @returns {Promise<void>}
+     * @returns {Promise<Object|null>} COW result with {workingGrid, actions, workingIndexes, workingBoundary, hasWorkingChanges} or null if no changes
      */
     static async updateGridFromBlockchainSnapshot(manager, orderType = 'both', fromBlockchainTimer = false) {
         if (!fromBlockchainTimer && manager.config?.accountId) {
             await manager.fetchAccountTotals(manager.config.accountId);
         }
-        // RC-1: Await async cacheFunds updates
-        if (orderType === ORDER_TYPES.BUY || orderType === 'both') await Grid._recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.BUY);
-        if (orderType === ORDER_TYPES.SELL || orderType === 'both') await Grid._recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.SELL);
+
+        const { WorkingGrid } = require('./working_grid');
+        const workingGrid = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
+        const allActions = [];
+        let hasWorkingChanges = false;
+
+        // Calculate size updates for each side (via existing sizing function in COW mode)
+        if (orderType === ORDER_TYPES.BUY || orderType === 'both') {
+            const buyResult = await Grid._recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.BUY, { workingGrid });
+            allActions.push(...buyResult.actions);
+            hasWorkingChanges = hasWorkingChanges || buyResult.changed;
+        }
+        if (orderType === ORDER_TYPES.SELL || orderType === 'both') {
+            const sellResult = await Grid._recalculateGridOrderSizesFromBlockchain(manager, ORDER_TYPES.SELL, { workingGrid });
+            allActions.push(...sellResult.actions);
+            hasWorkingChanges = hasWorkingChanges || sellResult.changed;
+        }
+
+        // Return COW result only if there are changes
+        if (allActions.length === 0 && !hasWorkingChanges) {
+            return null;
+        }
+
+        return {
+            actions: allActions,
+            workingGrid,
+            workingIndexes: workingGrid.getIndexes(),
+            workingBoundary: manager.boundaryIdx,
+            hasWorkingChanges,
+            aborted: false
+        };
     }
 
     /**

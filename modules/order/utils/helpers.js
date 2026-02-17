@@ -592,6 +592,59 @@ function summarizeActions(actions) {
 }
 
 /**
+ * Check whether an action targets a given order reference.
+ * Matches by orderId first (when present on both), otherwise by slot id.
+ *
+ * @param {Object} action - Action object
+ * @param {Object} orderRef - Reference with id/orderId
+ * @returns {boolean}
+ */
+function actionMatchesOrder(action, orderRef) {
+    if (!action || !orderRef) return false;
+    if (orderRef.orderId && action.orderId && String(orderRef.orderId) === String(action.orderId)) {
+        return true;
+    }
+    return !!orderRef.id && String(orderRef.id) === String(action.id);
+}
+
+/**
+ * Check if an action list already contains a matching action for an order.
+ *
+ * @param {Array<Object>} actions - Action list
+ * @param {string|null} actionType - Optional action type filter
+ * @param {Object} orderRef - Reference with id/orderId
+ * @returns {boolean}
+ */
+function hasActionForOrder(actions, actionType, orderRef) {
+    if (!Array.isArray(actions)) return false;
+    return actions.some(action => {
+        if (actionType && action?.type !== actionType) return false;
+        return actionMatchesOrder(action, orderRef);
+    });
+}
+
+/**
+ * Remove matching actions for an order from action list in-place.
+ *
+ * @param {Array<Object>} actions - Action list (mutated)
+ * @param {string|null} actionType - Optional action type filter
+ * @param {Object} orderRef - Reference with id/orderId
+ * @returns {number} Number of removed actions
+ */
+function removeActionsForOrder(actions, actionType, orderRef) {
+    if (!Array.isArray(actions)) return 0;
+    let removed = 0;
+    for (let i = actions.length - 1; i >= 0; i--) {
+        const action = actions[i];
+        if (actionType && action?.type !== actionType) continue;
+        if (!actionMatchesOrder(action, orderRef)) continue;
+        actions.splice(i, 1);
+        removed++;
+    }
+    return removed;
+}
+
+/**
  * Project target grid into working grid
  * @param {WorkingGrid} workingGrid - Working grid to modify
  * @param {Map} targetGrid - Target state
@@ -972,6 +1025,8 @@ module.exports = {
     reconcileGrid,
     optimizeRebalanceActions,
     summarizeActions,
+    hasActionForOrder,
+    removeActionsForOrder,
     projectTargetToWorkingGrid,
     buildStateUpdates,
     buildAbortedResult,

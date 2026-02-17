@@ -62,7 +62,7 @@ async function runTests() {
         assert(placements[0].order.size > 0, 'Placement size should be greater than 0');
     }
 
-    console.log(' - Testing PARTIAL Order Update...');
+    console.log(' - Testing PARTIAL Order Handling...');
     {
         const manager = await createManager();
         manager.config.targetSpreadPercent = 0; // Ensure minimal spread gap
@@ -74,9 +74,17 @@ async function runTests() {
         await manager._updateOrder({ id: 'v-boundary-push', type: ORDER_TYPES.BUY, price: 91, size: 0, state: ORDER_STATES.VIRTUAL });
         
         const result = await manager.performSafeRebalance();
-        const dustUpdate = result.actions.find(a => a.type === 'update' && a.id === 'p-d-1');
-        assert(dustUpdate !== undefined, 'Should update dust PARTIAL');
-        assert(dustUpdate.newSize > 5, 'Should increase size from dust');
+
+        // Modern COW planner keeps in-place non-rotation size updates out of strategy
+        // and lets dedicated maintenance flows handle those updates.
+        const partialCancel = result.actions.find(a => a.type === 'cancel' && (a.id === 'p-d-1' || a.orderId === 'c1'));
+        assert(partialCancel === undefined, 'Should not cancel existing PARTIAL in rebalance plan');
+
+        const creates = result.actions.filter(a => a.type === 'create');
+        assert(creates.length > 0, 'Should create nearby target slots while PARTIAL remains managed');
+
+        const partialOrder = manager.orders.get('p-d-1');
+        assert(partialOrder && partialOrder.state === ORDER_STATES.PARTIAL, 'PARTIAL order should remain PARTIAL after planning');
     }
 
     console.log(' - Testing Boundary Index Initialization...');

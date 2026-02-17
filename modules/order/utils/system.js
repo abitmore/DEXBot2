@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { API_LIMITS, TIMING, ORDER_TYPES, ORDER_STATES } = require('../../constants');
+const { API_LIMITS, TIMING, ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../../constants');
 const Format = require('../format');
 const { toFiniteNumber, isValidNumber } = Format;
 const MathUtils = require('./math');
@@ -390,8 +390,11 @@ async function retryPersistenceIfNeeded(manager) {
 
 /**
  * Apply grid corrections for divergence between calculated and active orders.
- * Synchronizes grid with blockchain, adjusts boundary, and corrects prices if needed.
- * Executes rotations, placements, and cancellations atomically.
+ * Uses COW (Copy-on-Write): builds a working grid, plans updates/cancels/creates,
+ * executes blockchain operations, and commits working grid only on success.
+ *
+ * Surplus on-chain orders are cancelled (not resized to zero).
+ * Size updates are emitted only for committed ACTIVE/PARTIAL orders.
  * 
  * @param {Object} manager - OrderManager instance
  * @param {Object} accountOrders - AccountOrders data accessor
@@ -402,114 +405,208 @@ async function retryPersistenceIfNeeded(manager) {
 async function applyGridDivergenceCorrections(manager, accountOrders, botKey, updateOrdersOnChainBatchFn) {
     if (!manager._gridLock) return;
     const Grid = require('../grid');
+    const { WorkingGrid } = require('../working_grid');
+    const { hasActionForOrder, removeActionsForOrder } = require('./helpers');
 
-    // Phase 1: Pre-lock grid resizing (needs _updateOrder which acquires _gridLock)
+    // Phase 1: Pre-lock grid resizing using COW
+    // This calculates new sizes from blockchain state but DOES NOT modify master.
+    let resizeCowResult = null;
     if (manager._gridSidesUpdated && manager._gridSidesUpdated.size > 0) {
-        if (manager.outOfSpread > 0) {
-            if (syncBoundaryToFunds(manager)) {
-                await Grid.updateGridFromBlockchainSnapshot(manager, 'both', true);
-            }
+        const hasBuy = manager._gridSidesUpdated.has(ORDER_TYPES.BUY);
+        const hasSell = manager._gridSidesUpdated.has(ORDER_TYPES.SELL);
+        let resizeOrderType = hasBuy && hasSell
+            ? 'both'
+            : hasBuy
+                ? ORDER_TYPES.BUY
+                : ORDER_TYPES.SELL;
+
+        // If out-of-spread correction moves boundary, recompute both sides.
+        if (manager.outOfSpread > 0 && syncBoundaryToFunds(manager)) {
+            resizeOrderType = 'both';
+            manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
+            manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
         }
+
+        resizeCowResult = await Grid.updateGridFromBlockchainSnapshot(manager, resizeOrderType, true);
     }
 
-    // Phase 2: Lock-protected correction planning
-    let corrections = null;
+    // Phase 2: Create working grid for divergence corrections
+    // Use the resize working grid as starting point if available
+    let cowResult = null;
     await manager._gridLock.acquire(async () => {
         if (!manager._gridSidesUpdated || manager._gridSidesUpdated.size === 0) return;
 
+        // Start from resize result if available, otherwise create fresh working grid
+        const workingGrid = resizeCowResult?.workingGrid 
+            ? resizeCowResult.workingGrid 
+            : new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
+        
+        const actions = resizeCowResult?.actions ? [...resizeCowResult.actions] : [];
+
         for (const orderType of manager._gridSidesUpdated) {
             const sideName = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
-            const currentActiveOrders = Array.from(manager.orders.values())
-                .filter(o => o.type === orderType && o.orderId && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL));
+            const sidePrecision = MathUtils.getPrecisionByOrderType(manager.assets, orderType);
+            
+            // Get current on-chain orders for this side (from master, not working)
+            const currentOnChainOrders = Array.from(manager.orders.values())
+                .filter(o => o.type === orderType && OrderUtils.isOrderPlaced(o));
 
-            const allSideSlots = Array.from(manager.orders.values())
+            // Get all slots for this side from working grid
+            const allSideSlots = Array.from(workingGrid.values())
                 .filter(o => o.type === orderType)
                 .sort((a, b) => sideName === 'buy' ? b.price - a.price : a.price - b.price);
 
+            // Calculate target count
             const baseTargetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName]))
                 ? Math.max(1, manager.config.activeOrders[sideName])
-                : currentActiveOrders.length;
-
+                : currentOnChainOrders.length;
             const isDoubledSide = orderType === ORDER_TYPES.BUY ? manager.buySideIsDoubled : manager.sellSideIsDoubled;
             const targetCount = isDoubledSide ? Math.max(1, baseTargetCount - 1) : baseTargetCount;
+            
+            // Determine desired slots (closest to market)
             const desiredSlots = allSideSlots.slice(0, targetCount);
             const desiredSlotIds = new Set(desiredSlots.map(s => s.id));
-            const activeBySlotId = new Map(currentActiveOrders.map(a => [a.id, a]));
+            const onChainBySlotId = new Map(currentOnChainOrders.map(o => [o.id, o]));
 
-            for (const active of currentActiveOrders) {
-                if (desiredSlotIds.has(active.id)) {
-                    const slot = desiredSlots.find(s => s.id === active.id);
-                    if (slot.size > 0) {
-                        manager.ordersNeedingPriceCorrection.push({
-                            gridOrder: { ...slot },
-                            chainOrderId: active.orderId,
-                            expectedPrice: slot.price,
-                            size: slot.size,
-                            type: slot.type,
-                            sideUpdated: sideName,
-                            newGridId: (active.id !== slot.id) ? slot.id : null
+            // Process on-chain orders:
+            // - In desired window: keep/update committed size (if not already queued by Phase 1)
+            // - Outside desired window: cancel surplus order
+            for (const onChainOrder of currentOnChainOrders) {
+                // Get current slot from working grid (may have been updated in Phase 1)
+                const slot = workingGrid.get(onChainOrder.id);
+                const isDesired = desiredSlotIds.has(onChainOrder.id);
+
+                if (!isDesired || !slot || !(Number(slot.size) > 0)) {
+                    removeActionsForOrder(actions, COW_ACTIONS.UPDATE, onChainOrder);
+                    const hasQueuedCancel = hasActionForOrder(actions, COW_ACTIONS.CANCEL, onChainOrder);
+
+                    if (!hasQueuedCancel) {
+                        manager.logger.log(`[DIVERGENCE-COW] Queueing cancel for surplus ${onChainOrder.id} (chain id ${onChainOrder.orderId})`, 'info');
+                        actions.push({
+                            type: COW_ACTIONS.CANCEL,
+                            id: onChainOrder.id,
+                            orderId: onChainOrder.orderId
                         });
-                    } else {
-                        manager.logger.log(`[DIVERGENCE] Marking surplus for cancellation: slot ${active.id} (chain id ${active.orderId}) has size 0.`, 'info');
-                        manager.ordersNeedingPriceCorrection.push({ gridOrder: { ...active }, chainOrderId: active.orderId, isSurplus: true, sideUpdated: sideName });
                     }
-                } else {
-                    manager.logger.log(`[DIVERGENCE] Marking surplus for cancellation: slot ${active.id} (chain id ${active.orderId}) is outside target count.`, 'info');
-                    manager.ordersNeedingPriceCorrection.push({ gridOrder: { ...active }, chainOrderId: active.orderId, isSurplus: true, sideUpdated: sideName });
+
+                    const current = slot || onChainOrder;
+                    workingGrid.set(onChainOrder.id, OrderUtils.convertToSpreadPlaceholder(current));
+                    continue;
+                }
+
+                // Phase 1 already queued committed size updates. Avoid duplicate UPDATEs.
+                const hasQueuedUpdate = hasActionForOrder(actions, COW_ACTIONS.UPDATE, onChainOrder);
+                const hasQueuedCancel = hasActionForOrder(actions, COW_ACTIONS.CANCEL, onChainOrder);
+
+                if (hasQueuedUpdate || hasQueuedCancel) {
+                    continue;
+                }
+
+                const newSize = Number(slot.size || 0);
+                const currentSize = Number(onChainOrder.size || 0);
+                const sizeChanged = Number.isFinite(sidePrecision)
+                    ? MathUtils.floatToBlockchainInt(newSize, sidePrecision) !== MathUtils.floatToBlockchainInt(currentSize, sidePrecision)
+                    : newSize !== currentSize;
+
+                if (sizeChanged) {
+                    manager.logger.log(`[DIVERGENCE-COW] Queueing size update for ${onChainOrder.id}: ${currentSize} -> ${newSize}`, 'info');
+                    actions.push({
+                        type: COW_ACTIONS.UPDATE,
+                        id: onChainOrder.id,
+                        orderId: onChainOrder.orderId,
+                        newGridId: onChainOrder.id,
+                        newSize,
+                        newPrice: slot.price,
+                        order: {
+                            id: onChainOrder.id,
+                            type: onChainOrder.type,
+                            price: slot.price,
+                            size: newSize
+                        }
+                    });
                 }
             }
 
+            // Process holes: CREATE new orders for empty desired slots
             for (const slot of desiredSlots) {
-                if (!activeBySlotId.has(slot.id) && slot.size > 0) {
-                    manager.ordersNeedingPriceCorrection.push({ gridOrder: { ...slot }, chainOrderId: null, expectedPrice: slot.price, size: slot.size, type: slot.type, sideUpdated: sideName, isNewPlacement: true });
+                const hasCreate = hasActionForOrder(actions, COW_ACTIONS.CREATE, slot);
+                if (!onChainBySlotId.has(slot.id) && slot.size > 0 && !hasCreate) {
+                    manager.logger.log(`[DIVERGENCE-COW] Queueing new placement for slot ${slot.id}`, 'info');
+                    actions.push({
+                        type: COW_ACTIONS.CREATE,
+                        id: slot.id,
+                        order: {
+                            id: slot.id,
+                            price: slot.price,
+                            size: slot.size,
+                            type: slot.type
+                        }
+                    });
                 }
             }
         }
 
-        // Extract corrections to execute outside the lock
-        if (manager.ordersNeedingPriceCorrection.length > 0) {
-            corrections = {
-                ordersToRotate: manager.ordersNeedingPriceCorrection.filter(c => !c.isNewPlacement && !c.isSurplus).map(c => ({
-                    oldOrder: { orderId: c.chainOrderId, id: c.gridOrder.id },
-                    newPrice: c.expectedPrice,
-                    newSize: c.size,
-                    type: c.type,
-                    newGridId: c.newGridId
-                })),
-                ordersToPlace: manager.ordersNeedingPriceCorrection.filter(c => c.isNewPlacement).map(c => ({
-                    id: c.gridOrder.id,
-                    price: c.expectedPrice,
-                    size: c.size,
-                    type: c.type
-                })),
-                ordersToCancel: manager.ordersNeedingPriceCorrection.filter(c => c.isSurplus).map(c => ({
-                    orderId: c.chainOrderId,
-                    id: c.gridOrder.id
-                }))
+        // Build COW result with all actions
+        if (actions.length > 0) {
+            cowResult = {
+                actions,
+                workingGrid,
+                workingIndexes: workingGrid.getIndexes(),
+                workingBoundary: manager.boundaryIdx,
+                aborted: false
+            };
+        } else if (resizeCowResult?.hasWorkingChanges) {
+            // No on-chain operations required, but working grid changed (typically virtual sizing).
+            // Commit locally to keep master in sync with latest sizing context.
+            cowResult = {
+                actions: [],
+                workingGrid,
+                workingIndexes: workingGrid.getIndexes(),
+                workingBoundary: manager.boundaryIdx,
+                localOnly: true,
+                aborted: false
             };
         }
     });
 
-    // Phase 3: Execute corrections outside the lock (updateOrdersOnChainBatchFn acquires its own locks)
-    if (corrections) {
+    // Phase 3: Execute corrections via COW batch
+    if (cowResult && !cowResult.aborted) {
         try {
-            const result = await updateOrdersOnChainBatchFn({ ...corrections, partialMoves: [] });
-            manager.ordersNeedingPriceCorrection = [];
+            let result = null;
+
+            if (cowResult.localOnly) {
+                await manager._commitWorkingGrid(cowResult.workingGrid, cowResult.workingIndexes, cowResult.workingBoundary);
+                if (typeof manager.persistGrid === 'function') {
+                    await manager.persistGrid();
+                } else {
+                    await persistGridSnapshot(manager, accountOrders, botKey);
+                }
+                result = { executed: true, localOnly: true };
+                manager.logger.log(`[DIVERGENCE-COW] Applied local-only sizing updates (no blockchain ops)`, 'info');
+            } else {
+                result = await updateOrdersOnChainBatchFn(cowResult);
+            }
+            
             if (result && result.executed) {
+                manager.logger.log(`[DIVERGENCE-COW] Successfully applied divergence corrections`, 'info');
                 manager.outOfSpread = 0;
                 for (const type of manager._gridSidesUpdated) {
                     if (type === ORDER_TYPES.BUY) manager.buySideIsDoubled = false;
                     if (type === ORDER_TYPES.SELL) manager.sellSideIsDoubled = false;
                 }
                 manager._gridSidesUpdated.clear();
-                await persistGridSnapshot(manager, accountOrders, botKey);
+                // Grid already persisted via _commitWorkingGrid in updateOrdersOnChainBatch
             } else {
+                manager.logger.log(`[DIVERGENCE-COW] Divergence corrections not executed (working grid discarded)`, 'warn');
                 manager._gridSidesUpdated.clear();
             }
         } catch (err) {
-            manager.ordersNeedingPriceCorrection = [];
+            manager.logger.log(`[DIVERGENCE-COW] Error executing divergence corrections: ${err.message}`, 'error');
             manager._gridSidesUpdated.clear();
         }
+    } else {
+        // No actions needed or aborted
+        manager._gridSidesUpdated.clear();
     }
 }
 

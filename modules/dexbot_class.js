@@ -3032,15 +3032,12 @@ class DEXBot {
                         this._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
                     }
 
-                    await Grid.updateGridFromBlockchainSnapshot(this.manager, divergence.orderType, true);
-                    await this._persistAndRecoverIfNeeded();
-
                     try {
                         await applyGridDivergenceCorrections(
                             this.manager,
                             this.accountOrders,
                             this.config.botKey,
-                            this.updateOrdersOnChainPlan.bind(this)
+                            this.updateOrdersOnChainBatch.bind(this)
                         );
                         if (await this._abortFlowIfIllegalState(`${context} divergence correction`)) return;
                         this._log(`Grid divergence corrections applied during ${context}`);
