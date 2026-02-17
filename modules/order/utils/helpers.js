@@ -189,7 +189,7 @@ function calculateRequiredFunds(grid, precisions = {}) {
     let sellRequiredInt = 0;
 
     for (const order of grid.values()) {
-        const size = toFiniteNumber(order.size || order.amount);
+        const size = toFiniteNumber(order.size ?? order.amount);
 
         const state = order.state;
         const isActive = state === 'active' || state === 'partial';
@@ -229,13 +229,13 @@ function validateWorkingGridFunds(workingGrid, projectedFunds, precisions = {}, 
         ? Number(projectedFunds.allocatedBuy)
         : isValidNumber(projectedFunds?.chainTotalBuy)
             ? Number(projectedFunds.chainTotalBuy)
-            : toFiniteNumber(projectedFunds?.freeBuy || projectedFunds?.chainFreeBuy);
+            : toFiniteNumber(projectedFunds?.freeBuy ?? projectedFunds?.chainFreeBuy);
     
     const availableSell = isValidNumber(projectedFunds?.allocatedSell)
         ? Number(projectedFunds.allocatedSell)
         : isValidNumber(projectedFunds?.chainTotalSell)
             ? Number(projectedFunds.chainTotalSell)
-            : toFiniteNumber(projectedFunds?.freeSell || projectedFunds?.chainFreeSell);
+            : toFiniteNumber(projectedFunds?.freeSell ?? projectedFunds?.chainFreeSell);
 
     const shortfalls = [];
 
@@ -709,7 +709,7 @@ function buildStateUpdates(actions, masterGrid) {
         } else if (action.type === COW_ACTIONS.UPDATE) {
             const masterOrder = masterGrid.get(action.id);
             if (masterOrder) {
-                const newSize = toFiniteNumber(action.newSize || action.order?.size);
+                const newSize = toFiniteNumber(action.newSize ?? action.order?.size);
                 stateUpdates.push({ ...masterOrder, size: newSize });
             }
         }

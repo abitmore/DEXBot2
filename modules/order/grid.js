@@ -421,9 +421,9 @@ class Grid {
      * Prevents stale references during grid reinitialization.
      * RC-2: Synchronized to prevent concurrent modifications during clear
      * 
-     * Note: Uses explicit assignment instead of .clear() because:
-     * - manager.orders is a frozen Map (Object.freeze) per COW pattern
-     * - Cannot call .clear() on frozen Map; must use assignment instead
+     * Note: Uses explicit assignment instead of .clear() to enforce COW semantics:
+     * - Replace the master grid atomically with a fresh Map instance
+     * - Avoid mutating any previously referenced Map object
      * @private
      */
     static _clearOrderCachesLogic(manager) {

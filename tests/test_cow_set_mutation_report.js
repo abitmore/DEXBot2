@@ -165,8 +165,10 @@ console.log('\n[ANALYSIS-2] Runtime Index Integrity Verification...\n');
 
 const { OrderManager } = require('../modules/order');
 const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
+let runtimeVerificationFailed = false;
 
-try {
+async function runRuntimeVerification() {
+    try {
     // Test that _applyOrderUpdate properly maintains indices
     const manager = new OrderManager({
         assetA: 'RTEST.A',
@@ -210,7 +212,7 @@ try {
         state: ORDER_STATES.ACTIVE
     };
     
-    manager._applyOrderUpdate(updatedOrder, 'test-state-change', true);
+    await manager._applyOrderUpdate(updatedOrder, 'test-state-change', true);
     
     // Verify post-update state
     assert(
@@ -234,7 +236,7 @@ try {
         type: ORDER_TYPES.SELL
     };
     
-    manager._applyOrderUpdate(typeChangedOrder, 'test-type-change', true);
+    await manager._applyOrderUpdate(typeChangedOrder, 'test-type-change', true);
     
     assert(
         !manager._ordersByType[ORDER_TYPES.BUY].has(order.id),
@@ -254,37 +256,50 @@ try {
     console.log('✓ [TEST-4] Indices pass consistency validation');
     
     console.log('\n✓ All runtime verification tests passed\n');
-    
-} catch (e) {
-    console.error('✗ Runtime verification failed:', e.message);
-    console.error(e.stack);
+    } catch (e) {
+        runtimeVerificationFailed = true;
+        console.error('✗ Runtime verification failed:', e.message);
+        console.error(e.stack);
+    }
 }
 
 // ============================================================================
 // 4. Summary
 // ============================================================================
 
-console.log('='.repeat(80));
-console.log('\n=== REPORT SUMMARY ===\n');
+function printSummary() {
+    console.log('='.repeat(80));
+    console.log('\n=== REPORT SUMMARY ===\n');
 
-console.log(`Violations Found: ${violations.length}`);
-console.log(`High Severity: ${violations.filter(v => v.severity === 'HIGH').length}`);
+    console.log(`Violations Found: ${violations.length}`);
+    console.log(`High Severity: ${violations.filter(v => v.severity === 'HIGH').length}`);
+    console.log(`Runtime Verification Failed: ${runtimeVerificationFailed ? 'yes' : 'no'}`);
 
-if (violations.length === 0) {
-    console.log('\nStatus: ✓ PASS - COW Index invariant is properly maintained\n');
-    console.log('The codebase correctly uses _applyOrderUpdate() for all index mutations.');
-    console.log('No direct mutations of _ordersByState or _ordersByType were found\n');
-    console.log('This ensures:');
-    console.log('  1. Atomic state transitions (all-or-nothing)');
-    console.log('  2. No race conditions during concurrent operations');
-    console.log('  3. Proper lock sequencing via _gridLock');
-    console.log('  4. Fund accounting consistency\n');
-} else {
-    console.log('\nStatus: ✗ FAIL - COW Index invariant is violated\n');
-    console.log('Required Actions:');
-    console.log('  1. Review each violation above');
-    console.log('  2. Refactor to use manager._applyOrderUpdate()');
-    console.log('  3. Re-run this report to verify all violations are fixed\n');
+    if (!runtimeVerificationFailed && violations.length === 0) {
+        console.log('\nStatus: ✓ PASS - COW Index invariant is properly maintained\n');
+        console.log('The codebase correctly uses _applyOrderUpdate() for all index mutations.');
+        console.log('No direct mutations of _ordersByState or _ordersByType were found\n');
+        console.log('This ensures:');
+        console.log('  1. Atomic state transitions (all-or-nothing)');
+        console.log('  2. No race conditions during concurrent operations');
+        console.log('  3. Proper lock sequencing via _gridLock');
+        console.log('  4. Fund accounting consistency\n');
+    } else {
+        console.log('\nStatus: ✗ FAIL - COW Index invariant checks failed\n');
+        console.log('Required Actions:');
+        if (runtimeVerificationFailed) {
+            console.log('  1. Fix runtime index integrity test failures');
+            console.log('  2. Re-run this report to verify runtime checks pass');
+            if (violations.length > 0) {
+                console.log('  3. Refactor direct Set mutations to _applyOrderUpdate()');
+            }
+            console.log();
+        } else {
+            console.log('  1. Review each violation above');
+            console.log('  2. Refactor to use manager._applyOrderUpdate()');
+            console.log('  3. Re-run this report to verify all violations are fixed\n');
+        }
+    }
 }
 
 // ============================================================================
@@ -319,3 +334,10 @@ function assert(condition, message) {
         throw new Error(`Assertion failed: ${message}`);
     }
 }
+
+(async () => {
+    await runRuntimeVerification();
+    printSummary();
+    const hasFailures = violations.length > 0 || runtimeVerificationFailed;
+    process.exit(hasFailures ? 1 : 0);
+})();

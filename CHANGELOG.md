@@ -66,6 +66,11 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
 ### Fixes and Refinements (Post-Implementation)
 
 **Critical Bug Fixes:**
+- **Explicit Zero-Value Handling in COW Helpers** (`modules/order/utils/helpers.js`) - commit pending
+  - Replaced `||` fallbacks with nullish coalescing (`??`) in fund and size derivation paths
+  - Prevents explicit `0` values from being overwritten by fallback fields
+  - Fixes optimistic UPDATE rendering and required-fund calculations when target size is zero
+
 - **Post-Commit State Cleanup** (`modules/order/manager.js`) - commit 55ab7d1
   - Fixed bug where `recalculateFunds()` exception left system stuck in `BROADCASTING` state
   - Added try-finally block to ensure `_clearWorkingGridRef()` always executes
@@ -214,11 +219,6 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
   - Added TODO comment documenting duplicate state management pattern
   - Currently `_state` (StateManager) and direct properties (`_isBroadcasting`, `isBootstrapping`) must be kept in sync
   - Documented refactor plan to consolidate to StateManager only
-
-- **Code Review Report** (`docs/TEST_VS_MAIN_CODE_REVIEW.md`)
-  - Comprehensive comparison of `test` vs `main` branch order logic
-  - Documents 3 critical issues, 4 potential bugs, 4 suspicious patterns, 6 safe improvements
-  - Includes breaking API changes table and migration recommendations
 
 ---
 

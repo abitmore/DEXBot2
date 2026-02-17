@@ -159,6 +159,7 @@ function generateMutationReport(tracker) {
 
 console.log('=== COW Index Mutation Detection Tests ===\n');
 
+(async () => {
 try {
     // Test 1: Detect mutations during normal _applyOrderUpdate
     {
@@ -190,7 +191,7 @@ try {
         const snapshot = snapshotIndices(manager);
         
         // Update order state from ACTIVE to PARTIAL
-        manager._applyOrderUpdate({
+        await manager._applyOrderUpdate({
             id: 'order-1',
             price: 100,
             size: 5,
@@ -414,9 +415,11 @@ try {
     }
     
     console.log('✓ All mutation detection tests passed!\n');
+    process.exit(0);
     
 } catch (e) {
     console.error('✗ Test failed:', e.message);
     console.error(e.stack);
     process.exit(1);
 }
+})();
