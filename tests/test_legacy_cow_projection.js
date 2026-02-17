@@ -29,7 +29,7 @@ async function testLegacyProjectionIntoWorkingGrid() {
         return { executed: true, hadRotation: true };
     };
 
-    await bot.updateOrdersOnChainBatch({
+    await bot.updateOrdersOnChainPlan({
         ordersToPlace: [
             { id: 'slot-101', type: ORDER_TYPES.SELL, state: ORDER_STATES.VIRTUAL, price: 1310.85, size: 0.0607 }
         ],

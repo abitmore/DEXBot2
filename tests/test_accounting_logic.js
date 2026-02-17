@@ -247,7 +247,13 @@ async function runTests() {
         manager._recoveryState.lastAttemptAt = Date.now() - 61000;
         const success = await manager.accountant._attemptFundRecovery(manager, 'unit-test');
         assert.strictEqual(success, true, 'Successful recovery should return true');
-        assert.strictEqual(manager._recoveryState.attemptCount, 0, 'Successful recovery should reset attempt count');
+        // NOTE: Successful recovery does NOT reset attempt count immediately.
+        // This prevents infinite "attempt 1/5" loops when fund invariants are violated
+        // but sync "succeeds" (no errors) without actually fixing the invariant.
+        // The counter is reset by:
+        // 1. resetRecoveryState() called at start of each periodic fetch cycle
+        // 2. Decay logic if enough time passes without violations
+        assert.strictEqual(manager._recoveryState.attemptCount, 3, 'Successful recovery should NOT reset attempt count (counter is 3 from previous attempts)');
 
         manager.accountant._performStateRecovery = originalRecovery;
     }

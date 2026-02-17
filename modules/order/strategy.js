@@ -375,16 +375,21 @@ class StrategyEngine {
         applySizes(buySlots, buySizes);
         applySizes(sellSlots, sellSizes);
         
-        // Handle slots outside the window (ensure they are zeroed/virtualized)
+        // Handle slots outside the window: preserve their calculated sizes
+        // Window Discipline only controls WHICH orders are placed on-chain,
+        // not the grid's fund allocation. Virtual orders must retain their
+        // sizes so that funds.virtual reflects the full grid commitment.
         const windowIds = new Set([...buySlots, ...sellSlots].map(s => s.id));
         allSlots.forEach(slot => {
             if (!windowIds.has(slot.id)) {
+                // Use calculated size from full-rail sizing (preserves fund allocation)
+                const calculatedSize = buySizeById.get(slot.id) ?? sellSizeById.get(slot.id) ?? slot.size ?? 0;
                 targetGrid.set(slot.id, {
                     id: slot.id,
                     price: slot.price,
-                    type: slot.type, // Keep current type
-                    size: 0,
-                    idealSize: 0,
+                    type: slot.type,
+                    size: calculatedSize,
+                    idealSize: calculatedSize,
                     state: ORDER_STATES.VIRTUAL
                 });
             }

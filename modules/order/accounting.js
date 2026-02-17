@@ -456,7 +456,11 @@ class Accountant {
 
               if (validation.isValid) {
                   mgr.logger?.log?.('[RECOVERY] State recovery succeeded', 'info');
-                  this.resetRecoveryState();
+                  // NOTE: Do NOT reset attemptCount here. The fund invariant check will
+                  // run again after recovery returns. If the invariant is still violated,
+                  // we want the counter to increment properly (2/5, 3/5, etc.) rather
+                  // than resetting to 1/5 each time. The decay logic (line 417) will
+                  // reset the counter if enough time passes without violations.
                   return true;
               }
 

@@ -125,17 +125,20 @@ async function testFeeAccounting() {
 
     const totalFees = deductedAmount + directDeductedAmount + manager.funds.btsFeesOwed;
     console.log(`  Total BTS fees (deducted + remaining): ${Format.formatMetric5(totalFees)}`);
-    
-    // Expected: 
-    // 1 Fill net cost: makerNetFee = 0.001
-    // Updates: modern rebalance plans updates for all active orders in window
-    // In this test, there are multiple update actions.
-    const expected = 0.0018; 
-    if (Math.abs(totalFees - expected) > 0.0001) {
-        console.warn(`  ⚠ Unexpected fee total: ${totalFees.toFixed(5)} != ${expected.toFixed(5)}`);
-    } else {
-        console.log(`  ✓ Fee accounting is correct: 0.001 (fill) + ${(expected - 0.001).toFixed(4)} (actions) = ${expected.toFixed(4)}`);
-    }
+
+    const makerFee = utils.getAssetFees('BTS', null, true).netFee;
+    const updateFee = utils.getAssetFees('BTS').updateFee;
+    const expected = makerFee + (updates.length * updateFee);
+
+    assert.ok(
+        Math.abs(totalFees - expected) <= 1e-10,
+        `Unexpected fee total: got ${totalFees.toFixed(8)}, expected ${expected.toFixed(8)} ` +
+        `(makerFee=${makerFee}, updateFee=${updateFee}, updates=${updates.length})`
+    );
+    console.log(
+        `  ✓ Fee accounting is correct: ${makerFee.toFixed(4)} (fill) + ` +
+        `${(updates.length * updateFee).toFixed(4)} (updates) = ${expected.toFixed(4)}`
+    );
 }
 
 async function testFeeSettlementCorrectness() {

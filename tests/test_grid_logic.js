@@ -186,18 +186,25 @@ async function runTests() {
         assert.strictEqual(await Grid.hasAnyDust(manager, [partial], 'buy'), true, 'BUY dust detection should match market-oriented geometric sizing');
     }
 
-    console.log(' - Testing regeneration re-arm and cooldown...');
+    console.log(' - Testing regeneration trigger uses cache and available funds...');
     {
         const mockManager = {
+            config: {
+                assetA: 'USD',
+                assetB: 'EUR',
+                activeOrders: { buy: 10, sell: 10 }
+            },
             funds: {
                 total: { grid: { buy: 100, sell: 100 } },
-                cacheFunds: { buy: 4, sell: 0 }
+                cacheFunds: { buy: 4, sell: 0 },
+                virtual: { buy: 0, sell: 0 },
+                btsFeesOwed: 0
+            },
+            accountTotals: {
+                buyFree: 0,
+                sellFree: 0
             },
             _gridSidesUpdated: new Set(),
-            _gridRegenState: {
-                buy: { armed: true, lastTriggeredAt: 0 },
-                sell: { armed: true, lastTriggeredAt: 0 }
-            },
             getChainFundsSnapshot() {
                 return {
                     allocatedBuy: 100,
@@ -208,19 +215,18 @@ async function runTests() {
             }
         };
 
-        const first = Grid.checkAndUpdateGridIfNeeded(mockManager);
-        assert.strictEqual(first.buyUpdated, true, 'First threshold crossing should trigger buy-side update');
+        const fromCache = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(fromCache.buyUpdated, true, 'Cache surplus above threshold should trigger buy-side update');
 
-        const second = Grid.checkAndUpdateGridIfNeeded(mockManager);
-        assert.strictEqual(second.buyUpdated, false, 'Repeated checks above threshold should not retrigger while disarmed/cooling down');
+        mockManager.funds.cacheFunds.buy = 0;
+        mockManager.accountTotals.buyFree = 4;
+        const fromAvailable = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(fromAvailable.buyUpdated, true, 'Available funds above threshold should also trigger buy-side update');
 
-        mockManager.funds.cacheFunds.buy = 2.0;
-        Grid.checkAndUpdateGridIfNeeded(mockManager); // falls below threshold, re-arms side
-
-        mockManager.funds.cacheFunds.buy = 4.0;
-        mockManager._gridRegenState.buy.lastTriggeredAt = 0; // clear cooldown effect for deterministic test
-        const third = Grid.checkAndUpdateGridIfNeeded(mockManager);
-        assert.strictEqual(third.buyUpdated, true, 'Side should trigger again after dropping below threshold');
+        mockManager.funds.cacheFunds.buy = 0;
+        mockManager.accountTotals.buyFree = 0;
+        const belowThreshold = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(belowThreshold.buyUpdated, false, 'No surplus should not trigger update');
     }
 
     console.log('✓ Grid logic tests passed!');

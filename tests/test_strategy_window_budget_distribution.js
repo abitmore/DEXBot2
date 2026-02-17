@@ -47,10 +47,19 @@ async function run() {
         sellSideIsDoubled: false
     });
 
-    const buyTargets = Array.from(targetGrid.values()).filter(o => o.type === ORDER_TYPES.BUY && Number(o.size || 0) > 0);
-    assert.strictEqual(buyTargets.length, 3, 'window discipline should keep 3 buy slots non-zero');
+    // All buy slots should have sizes (grid integrity)
+    const allBuySlots = Array.from(targetGrid.values()).filter(o => o.type === ORDER_TYPES.BUY);
+    const buyTargetsWithSize = allBuySlots.filter(o => Number(o.size || 0) > 0);
+    
+    // Window discipline controls which orders are ACTIVE, not which have sizes.
+    // All buy slots should have sizes to maintain fund accounting integrity.
+    assert.strictEqual(buyTargetsWithSize.length, allBuySlots.length, 'all buy slots should retain their calculated sizes');
+    
+    // Window discipline: only 3 closest buy slots should be marked for placement (ACTIVE state)
+    const activeBuySlots = allBuySlots.filter(o => o.state === ORDER_STATES.ACTIVE);
+    assert.strictEqual(activeBuySlots.length, 3, 'window discipline should mark 3 buy slots as ACTIVE');
 
-    const maxBuySize = Math.max(...buyTargets.map(o => Number(o.size || 0)));
+    const maxBuySize = Math.max(...buyTargetsWithSize.map(o => Number(o.size || 0)));
 
     // Regression guard: sizing must be based on full side topology, not only 3-window slots.
     // If concentrated into 3 slots, sizes jump near ~2000 for this budget.

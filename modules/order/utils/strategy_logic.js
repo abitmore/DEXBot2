@@ -51,6 +51,12 @@ function getSideBudget(side, funds, config, totalTarget) {
     const isBuy = side === 'buy';
     const allocated = isBuy ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
     
+    // NOTE: Do NOT include cacheFunds (fill proceeds) in the sizing budget.
+    // Proceeds absorption is handled separately by updating only the farthest order
+    // or placing a new order in a vacant slot (like main branch's rebalanceSideRobust).
+    // Including cacheFunds here would redistribute sizes across ALL orders, causing
+    // multiple UPDATEs instead of the expected single UPDATE on the farthest order.
+    
     const isBtsSide = (isBuy && config.assetB === 'BTS') || (!isBuy && config.assetA === 'BTS');
     if (isBtsSide && allocated > 0) {
         const btsFees = MathUtils.calculateOrderCreationFees(

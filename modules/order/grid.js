@@ -107,6 +107,7 @@ const {
     calculateOrderCreationFees,
     calculateOrderSizes,
     calculateRotationOrderSizes,
+    calculateAvailableFundsValue,
     calculateGridSideDivergenceMetric,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
@@ -684,21 +685,23 @@ class Grid {
      * @returns {boolean} returns.buyUpdated - Buy side exceeded regeneration threshold
      * @returns {boolean} returns.sellUpdated - Sell side exceeded regeneration threshold
      */
-    static checkAndUpdateGridIfNeeded(manager) {
+    static checkAndUpdateGridIfNeeded(manager, cacheFunds = null) {
         const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 1;
-        const cooldownMs = Math.max(0, Number(GRID_LIMITS.GRID_REGEN_COOLDOWN_MS) || 0);
-        const now = Date.now();
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
         const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
         const result = { buyUpdated: false, sellUpdated: false };
 
-        if (!manager._gridRegenState || typeof manager._gridRegenState !== 'object') {
-            manager._gridRegenState = {
-                buy: { armed: true, lastTriggeredAt: 0 },
-                sell: { armed: true, lastTriggeredAt: 0 }
-            };
-        }
+        const cacheState = {
+            buy: Number(manager.funds?.cacheFunds?.buy || 0),
+            sell: Number(manager.funds?.cacheFunds?.sell || 0)
+        };
+        const cacheInput = (cacheFunds && typeof cacheFunds === 'object')
+            ? {
+                buy: Number(cacheFunds.buy || 0),
+                sell: Number(cacheFunds.sell || 0)
+            }
+            : cacheState;
 
         const sides = [
             { name: 'buy', grid: gridBuy, orderType: ORDER_TYPES.BUY },
@@ -707,36 +710,29 @@ class Grid {
 
         for (const s of sides) {
             if (s.grid <= 0) continue;
-            // Recalc trigger should follow real pending surplus (cacheFunds), not full side
-            // availability. Using availability causes startup false positives and no-op
-            // update churn when cacheFunds is zero.
-            const totalPending = Number(manager.funds?.cacheFunds?.[s.name] || 0);
+
+            const availableFunds = calculateAvailableFundsValue(
+                s.name,
+                manager.accountTotals,
+                manager.funds,
+                manager.config.assetA,
+                manager.config.assetB,
+                manager.config.activeOrders
+            );
+            const cachePending = Number(cacheInput[s.name] || 0);
+            const totalPending = Math.max(cachePending, availableFunds);
 
             // Denominator: side's allocated capital (or chain total fallback).
             const allocated = s.name === 'buy' ? chainSnap.allocatedBuy : chainSnap.allocatedSell;
-            const chainTotal = s.name === 'buy' ? chainSnap.chainTotalBuy : chainSnap.chainTotalSell;
-            const denominator = (allocated > 0) ? allocated : chainTotal;
+            const denominator = (allocated > 0) ? allocated : (s.grid + totalPending);
             const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
 
-            const regenState = manager._gridRegenState[s.name] || { armed: true, lastTriggeredAt: 0 };
-
-            if (ratio < threshold) {
-                regenState.armed = true;
-            }
-
-            const onCooldown = cooldownMs > 0 && (now - (regenState.lastTriggeredAt || 0)) < cooldownMs;
-
-            if (ratio >= threshold && regenState.armed && !onCooldown) {
+            if (ratio >= threshold) {
                 // RC-3: Use Set for automatic duplicate prevention
                 if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
                 manager._gridSidesUpdated.add(s.orderType);
                 if (s.name === 'buy') result.buyUpdated = true; else result.sellUpdated = true;
-
-                regenState.armed = false;
-                regenState.lastTriggeredAt = now;
             }
-
-            manager._gridRegenState[s.name] = regenState;
         }
         return result;
     }
@@ -1052,6 +1048,16 @@ class Grid {
     static async monitorDivergence(manager, calculatedGrid, persistedGrid) {
         // 1. Check Ratio-based divergence (cacheFunds vs allocated)
         const ratioResult = Grid.checkAndUpdateGridIfNeeded(manager);
+
+        if (ratioResult.buyUpdated || ratioResult.sellUpdated) {
+            const { getOrderTypeFromUpdatedFlags } = require('./utils/order');
+            return {
+                needsUpdate: true,
+                buy: { updated: ratioResult.buyUpdated, ratio: ratioResult.buyUpdated, rms: false, metric: 0 },
+                sell: { updated: ratioResult.sellUpdated, ratio: ratioResult.sellUpdated, rms: false, metric: 0 },
+                orderType: getOrderTypeFromUpdatedFlags(ratioResult.buyUpdated, ratioResult.sellUpdated)
+            };
+        }
         
         // 2. Check RMS-based divergence (structural deviation)
         const rmsResult = await Grid.compareGrids(calculatedGrid, persistedGrid, manager);
