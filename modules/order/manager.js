@@ -523,6 +523,19 @@ class OrderManager {
         return result;
     }
 
+    // TODO: TECH DEBT - Consolidate duplicate state management
+    // Currently state is tracked in TWO places that must be kept in sync:
+    //   1. this._state (StateManager instance) - new centralized approach
+    //   2. this._isBroadcasting, this.isBootstrapping - legacy direct properties
+    // 
+    // Refactor plan:
+    //   - Remove direct properties (_isBroadcasting, isBootstrapping)
+    //   - Use only this._state.isBroadcastingActive(), this._state.isBootstrapping()
+    //   - Update all call sites throughout codebase
+    //   - This prevents bugs from forgetting to update both places
+    //
+    // See: docs/TEST_VS_MAIN_CODE_REVIEW.md "Duplicate State Management" section
+
     startBroadcasting() {
         this._isBroadcasting = true;
         this._state.startBroadcasting();
@@ -923,13 +936,22 @@ class OrderManager {
         return [...validSells, ...validBuys];
     }
 
+    /**
+     * Get orders matching the specified type and state.
+     * 
+     * @param {string|null} type - Order type (ORDER_TYPES.BUY/SELL/SPREAD) or null for all types
+     * @param {string} state - Order state (ORDER_STATES.ACTIVE/PARTIAL/VIRTUAL)
+     * @returns {Array} Array of matching orders
+     */
     getOrdersByTypeAndState(type, state) {
         const result = [];
         const ids = this._ordersByState[state];
         if (!ids) return result;
         for (const id of ids) {
             const order = this.orders.get(id);
-            if (order && order.type === type) {
+            // If type is null/undefined, return all orders with matching state
+            // Otherwise, filter by both type and state
+            if (order && (type == null || order.type === type)) {
                 result.push(order);
             }
         }

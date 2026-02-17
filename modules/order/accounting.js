@@ -416,9 +416,12 @@ class Accountant {
           // cycle permanently exhausting the attempt budget.
           const decayMs = retryIntervalMs > 0 ? retryIntervalMs * 3 : PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS;
           if (state.attemptCount > 0 && state.lastFailureAt > 0 && (now - state.lastFailureAt) > decayMs) {
+              // Log at 'info' level so operators can monitor for repeated decay patterns
+              // which may indicate a persistent issue that self-corrects just long enough
+              // to trigger decay, then recurs. Pattern: repeated "decayed" messages.
               mgr.logger?.log?.(
                   `[RECOVERY] Attempt count decayed (${state.attemptCount} -> 0) after ${Math.round((now - state.lastFailureAt) / 1000)}s idle`,
-                  'debug'
+                  'info'
               );
               state.attemptCount = 0;
               state.lastFailureAt = 0;

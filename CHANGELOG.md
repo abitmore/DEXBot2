@@ -194,6 +194,32 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
 - Relaxed git action gate policy from strict inference to user-directed writes
 - Simplified interpretation rules while maintaining safety guardrails
 
+**Code Review and Bug Fixes** - 2026-02-17
+- **Fixed `getOrdersByTypeAndState(null, state)` Breaking Change** (`modules/order/manager.js`)
+  - Restored support for `null` type parameter to return all orders with matching state
+  - This fixes `logger.js` status display which passes `null` to get all ACTIVE/PARTIAL/VIRTUAL orders
+  - Added JSDoc documenting the `null` type behavior
+
+- **Documented Intentional Lock Timeout Race Behavior** (`modules/order/sync_engine.js`)
+  - Added detailed comment explaining why `Promise.race` timeout behavior is intentional
+  - Completing a sync fully then throwing is safer than aborting mid-sync (partial state corruption)
+  - The timeout error triggers recovery which re-syncs anyway
+
+- **Recovery Decay Logging Visibility** (`modules/order/accounting.js`)
+  - Changed recovery attempt decay log from `debug` to `info` level
+  - Operators can now monitor for repeated decay patterns indicating persistent issues
+  - Added comment explaining monitoring rationale
+
+- **Tech Debt Documentation** (`modules/order/manager.js`)
+  - Added TODO comment documenting duplicate state management pattern
+  - Currently `_state` (StateManager) and direct properties (`_isBroadcasting`, `isBootstrapping`) must be kept in sync
+  - Documented refactor plan to consolidate to StateManager only
+
+- **Code Review Report** (`docs/TEST_VS_MAIN_CODE_REVIEW.md`)
+  - Comprehensive comparison of `test` vs `main` branch order logic
+  - Documents 3 critical issues, 4 potential bugs, 4 suspicious patterns, 6 safe improvements
+  - Includes breaking API changes table and migration recommendations
+
 ---
 
 ## [0.6.0-patch.18] - 2026-02-08 - Batching Hardening, Accounting Precision & Telemetry Optimization

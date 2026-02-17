@@ -246,6 +246,17 @@ class SyncEngine {
         const cancelToken = { isCancelled: false };
 
         try {
+            // INTENTIONAL DESIGN: Promise.race with timeout
+            // =============================================
+            // If the timeout fires AFTER the lock is acquired but BEFORE the cancelToken
+            // check, the sync operation will complete fully and THEN throw the timeout error.
+            // This is intentional and safe because:
+            //   1. A fully completed sync is always better than a partial/aborted sync
+            //   2. Partial sync would leave grid state inconsistent with blockchain
+            //   3. The timeout error triggers recovery which will re-sync anyway
+            //   4. The cancelToken check at entry prevents NEW work after timeout
+            // The worst case is a completed sync followed by an unnecessary recovery cycle,
+            // which is harmless compared to the alternative of corrupted grid state.
             return await Promise.race([
                 mgr._syncLock.acquire(async () => {
                     // Check if cancelled immediately after acquiring lock
