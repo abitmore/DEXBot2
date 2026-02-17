@@ -1,10 +1,11 @@
 /**
  * modules/order/utils/order.js - Order Domain Utilities
- * 
+ *
  * Business rules for orders, state predicates, filtering, and reconciliation.
+ * Includes grid indexing, order comparison, delta building, and strategy calculations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS (27 exported functions)
+ * TABLE OF CONTENTS (43 exported functions)
  * ===============================================================================
  *
  * SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION (5 functions)
@@ -47,10 +48,24 @@
  *   - assignGridRoles(allSlots, boundaryIdx, gapSlots, ...) - Assign BUY/SELL roles
  *   - shouldFlagOutOfSpread(order, startPrice, configSpread) - Check if order is out of spread
  *
+ * SECTION 8: GRID INDEXING (2 functions)
+ *   - buildIndexes(grid) - Build complete index set from grid
+ *   - validateIndexes(grid, indexes) - Validate index consistency
+ *
+ * SECTION 9: ORDER COMPARISON & DELTA (3 functions)
+ *   - ordersEqual(a, b) - Compare two orders for equality
+ *   - buildDelta(masterGrid, workingGrid) - Build delta actions between grids
+ *   - getOrderSize(order) - Extract order size with fallback
+ *
+ * SECTION 10: STRATEGY CALCULATIONS (3 functions)
+ *   - deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots) - Derive boundary from fills
+ *   - getSideBudget(side, funds, config, totalTarget) - Calculate side budget after fees
+ *   - calculateBudgetedSizes(slots, side, budget, weightDist, incrementPercent, assets) - Calculate budgeted sizes
+ *
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS } = require('../../constants');
 const Format = require('../format');
 const { isValidNumber, toFiniteNumber } = Format;
 const MathUtils = require('./math');
@@ -620,7 +635,7 @@ function assignGridRoles(allSlots, boundaryIdx, gapSlots, ORDER_TYPES, ORDER_STA
  * Determine if grid is out of spread and by how many steps.
  * Compares current spread against nominal with tolerance.
  * Returns number of excess steps (0 = in-spread).
- * 
+ *
  * @param {number} currentSpread - Current bid-ask spread percentage
  * @param {number} nominalSpread - Nominal spread percentage
  * @param {number} toleranceSteps - Tolerance in increment steps
@@ -636,6 +651,242 @@ function shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buy
     const limitSteps = (Math.log(1 + (nominalSpread / 100)) / Math.log(step)) + toleranceSteps;
     if (currentSteps <= limitSteps) return 0;
     return Math.max(1, Math.ceil(currentSteps - limitSteps));
+}
+
+// ================================================================================
+// SECTION 8: GRID INDEXING
+// ================================================================================
+
+/**
+ * Build complete index set from grid
+ * @param {Map} grid - Order grid
+ * @returns {Object} - Index object with state and type indexes
+ */
+function buildIndexes(grid) {
+    const indexes = {
+        [ORDER_STATES.VIRTUAL]: new Set(),
+        [ORDER_STATES.ACTIVE]: new Set(),
+        [ORDER_STATES.PARTIAL]: new Set(),
+        [ORDER_STATES.FILLED]: new Set(),
+        [ORDER_TYPES.BUY]: new Set(),
+        [ORDER_TYPES.SELL]: new Set(),
+        [ORDER_TYPES.SPREAD]: new Set()
+    };
+
+    for (const order of grid.values()) {
+        if (indexes[order.state]) indexes[order.state].add(order.id);
+        if (indexes[order.type]) indexes[order.type].add(order.id);
+    }
+
+    return indexes;
+}
+
+/**
+ * Validate index consistency (for testing/debugging)
+ * @param {Map} grid - Order grid
+ * @param {Object} indexes - Index object
+ * @returns {Object} - Validation result
+ */
+function validateIndexes(grid, indexes) {
+    const errors = [];
+
+    for (const [id, order] of grid.entries()) {
+        const stateIndex = indexes[order.state];
+        const typeIndex = indexes[order.type];
+
+        if (!stateIndex || !stateIndex.has(id)) {
+            errors.push(`Order ${id} missing from state index ${order.state}`);
+        }
+        if (!typeIndex || !typeIndex.has(id)) {
+            errors.push(`Order ${id} missing from type index ${order.type}`);
+        }
+    }
+
+    for (const [key, indexSet] of Object.entries(indexes)) {
+        for (const id of indexSet) {
+            if (!grid.has(id)) {
+                errors.push(`Orphaned index entry: ${key} has ${id} but not in grid`);
+            }
+        }
+    }
+
+    return {
+        valid: errors.length === 0,
+        errors
+    };
+}
+
+// ================================================================================
+// SECTION 9: ORDER COMPARISON & DELTA
+// ================================================================================
+
+const EPSILON = 1e-6;
+
+/**
+ * Extract order size with fallback
+ * @param {Object} order - Order object
+ * @returns {number|null} - Size or null if not found
+ */
+function getOrderSize(order) {
+    const size = toFiniteNumber(order?.size, null);
+    if (size !== null) return size;
+    return toFiniteNumber(order?.amount);
+}
+
+/**
+ * Compare two orders for equality
+ * @param {Object} a - First order
+ * @param {Object} b - Second order
+ * @returns {boolean} - True if orders are equivalent
+ */
+function ordersEqual(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+
+    return a.id === b.id &&
+           a.type === b.type &&
+           a.state === b.state &&
+           Math.abs(a.price - b.price) < EPSILON &&
+           Math.abs(getOrderSize(a) - getOrderSize(b)) < EPSILON &&
+           a.orderId === b.orderId &&
+           a.gridIndex === b.gridIndex;
+}
+
+/**
+ * Build delta actions between master and working grid
+ * @param {Map} masterGrid - Source of truth grid
+ * @param {Map} workingGrid - Modified working copy
+ * @returns {Array} - Array of action objects
+ */
+function buildDelta(masterGrid, workingGrid) {
+    const actions = [];
+
+    for (const [id, workingOrder] of workingGrid.entries()) {
+        const masterOrder = masterGrid.get(id);
+
+        if (!masterOrder) {
+            actions.push({
+                type: 'create',
+                id,
+                order: workingOrder
+            });
+        } else if (!ordersEqual(workingOrder, masterOrder)) {
+            actions.push({
+                type: 'update',
+                id,
+                order: workingOrder,
+                prevOrder: masterOrder,
+                orderId: masterOrder.orderId
+            });
+        }
+    }
+
+    for (const [id, masterOrder] of masterGrid.entries()) {
+        if (!workingGrid.has(id)) {
+            actions.push({
+                type: 'cancel',
+                id,
+                orderId: masterOrder.orderId
+            });
+        }
+    }
+
+    return actions;
+}
+
+// ================================================================================
+// SECTION 10: STRATEGY CALCULATIONS
+// ================================================================================
+
+/**
+ * Determine new boundary based on fills and current state.
+ *
+ * @param {Array} fills - Recent fill events
+ * @param {number|null} currentBoundaryIdx - Current boundary index
+ * @param {Array} allSlots - All grid slots sorted by price
+ * @param {Object} config - Bot configuration
+ * @param {number} gapSlots - Number of spread gap slots
+ * @returns {number} New boundary index
+ */
+function deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots) {
+    let newBoundaryIdx = currentBoundaryIdx;
+
+    // Initial recovery if boundary is undefined
+    if (newBoundaryIdx === undefined || newBoundaryIdx === null) {
+         const referencePrice = config.startPrice;
+         newBoundaryIdx = calculateIdealBoundary(allSlots, referencePrice, gapSlots);
+    }
+
+    // Apply shift from fills
+    for (const fill of fills) {
+        if (fill.isPartial) continue;
+        if (fill.type === ORDER_TYPES.SELL) newBoundaryIdx++;
+        else if (fill.type === ORDER_TYPES.BUY) newBoundaryIdx--;
+    }
+
+    // Clamp boundary
+    return Math.max(0, Math.min(allSlots.length - 1, newBoundaryIdx));
+}
+
+/**
+ * Calculate side budget after BTS fee deduction.
+ *
+ * @param {string} side - 'buy' or 'sell'
+ * @param {Object} funds - Snapshot of allocated funds
+ * @param {Object} config - Bot configuration
+ * @param {number} totalTarget - Total target order count (for fee calculation)
+ * @returns {number} Available budget for the side
+ */
+function getSideBudget(side, funds, config, totalTarget) {
+    const isBuy = side === 'buy';
+    const allocated = isBuy ? (funds.allocatedBuy || 0) : (funds.allocatedSell || 0);
+
+    const isBtsSide = (isBuy && config.assetB === 'BTS') || (!isBuy && config.assetA === 'BTS');
+    if (isBtsSide && allocated > 0) {
+        const btsFees = MathUtils.calculateOrderCreationFees(
+            config.assetA, config.assetB, totalTarget,
+            FEE_PARAMETERS.BTS_RESERVATION_MULTIPLIER
+        );
+        return Math.max(0, allocated - btsFees);
+    }
+    return allocated;
+}
+
+/**
+ * Calculate sizes for all slots on a side using weighted distribution.
+ *
+ * @param {Array} slots - Array of slots for the side
+ * @param {string} side - 'buy' or 'sell'
+ * @param {number} budget - Total budget for the side
+ * @param {number} weightDist - Weight distribution factor
+ * @param {number} incrementPercent - Grid increment percentage
+ * @param {Object} assets - Asset metadata for precision
+ * @returns {Array} Array of calculated sizes
+ */
+function calculateBudgetedSizes(slots, side, budget, weightDist, incrementPercent, assets) {
+    const isBuy = side === 'buy';
+
+    let precision = 8;
+    if (assets?.assetA && assets?.assetB) {
+        try {
+            const { A: precA, B: precB } = MathUtils.getPrecisionsForManager(assets);
+            precision = isBuy ? precB : precA;
+        } catch (e) {
+            // Keep default precision 8 if manager asset structure is incomplete
+        }
+    }
+
+    const incrementFactor = incrementPercent / 100;
+
+    return MathUtils.allocateFundsByWeights(
+        budget,
+        slots.length,
+        weightDist || 0.5,
+        incrementFactor,
+        isBuy, // Reverse for BUY (Market-Close is last in array)
+        0,
+        precision
+    );
 }
 
 module.exports = {
@@ -664,5 +915,13 @@ module.exports = {
     calculateIdealBoundary,
     calculateFundDrivenBoundary,
     assignGridRoles,
-    shouldFlagOutOfSpread
+    shouldFlagOutOfSpread,
+    buildIndexes,
+    validateIndexes,
+    ordersEqual,
+    buildDelta,
+    getOrderSize,
+    deriveTargetBoundary,
+    getSideBudget,
+    calculateBudgetedSizes
 };

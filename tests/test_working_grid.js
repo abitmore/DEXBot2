@@ -47,7 +47,7 @@ function testDeltaBuilding() {
 }
 
 function testOrderComparison() {
-    const { ordersEqual } = require('../modules/order/utils/order_comparison');
+    const { ordersEqual } = require('../modules/order/utils/order');
     
     const order1 = { id: '1', price: 100.00000001, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };
     const order2 = { id: '1', price: 100.00000002, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };

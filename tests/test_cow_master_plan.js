@@ -5,9 +5,8 @@
 
 const assert = require('assert');
 const { WorkingGrid } = require('../modules/order/working_grid');
-const { ordersEqual, buildDelta } = require('../modules/order/utils/order_comparison');
-const { buildIndexes, validateIndexes } = require('../modules/order/utils/grid_indexes');
-const { projectTargetToWorkingGrid, reconcileGrid } = require('../modules/order/utils/helpers');
+const { ordersEqual, buildDelta, buildIndexes, validateIndexes } = require('../modules/order/utils/order');
+const { projectTargetToWorkingGrid, reconcileGrid } = require('../modules/order/utils/validate');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 function createTestOrder(id, type, state, price, amount, orderId = null) {

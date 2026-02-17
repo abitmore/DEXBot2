@@ -75,7 +75,7 @@ try {
 // Test 5: Validators are accessible via helpers
 console.log('5. Testing validator modules...');
 try {
-  const helpers = require('../modules/order/utils/helpers');
+  const helpers = require('../modules/order/utils/validate');
 
   assert(typeof helpers.validateOrder === 'function', 'validateOrder missing');
   assert(typeof helpers.checkFundDrift === 'function', 'checkFundDrift missing');
@@ -107,7 +107,7 @@ try {
 // Test 7: Basic order validation works
 console.log('7. Testing order validation...');
 try {
-  const { validateOrder, VALID_ORDER_STATES, VALID_ORDER_TYPES } = require('../modules/order/utils/helpers');
+  const { validateOrder, VALID_ORDER_STATES, VALID_ORDER_TYPES } = require('../modules/order/utils/validate');
   const { ORDER_STATES, ORDER_TYPES } = require('../modules/constants');
 
   const result = validateOrder({
@@ -129,7 +129,7 @@ try {
 // Test 8: Basic fund validation works
 console.log('8. Testing fund validation...');
 try {
-  const { checkFundDrift } = require('../modules/order/utils/helpers');
+  const { checkFundDrift } = require('../modules/order/utils/validate');
 
   const orders = new Map([
     ['order-1', { id: 'order-1', type: 'buy', state: 'active', size: 100, orderId: 'chain-1' }]

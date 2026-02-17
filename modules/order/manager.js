@@ -61,7 +61,7 @@ const {
     buildAbortedResult,
     buildSuccessResult,
     evaluateCommit
-} = require('./utils/helpers');
+} = require('./utils/validate');
 const { WorkingGrid } = require('./working_grid');
 const Logger = require('./logger');
 const AsyncLock = require('./async_lock');

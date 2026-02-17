@@ -275,7 +275,7 @@ class StrategyEngine {
             currentBoundaryIdx 
         } = params;
 
-        const { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes } = require('./utils/strategy_logic');
+        const { deriveTargetBoundary, getSideBudget, calculateBudgetedSizes } = require('./utils/order');
         const { assignGridRoles } = require('./utils/order');
 
         // Clone grid for local simulation (Target Grid)

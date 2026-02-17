@@ -3,7 +3,7 @@
  */
 
 const { WorkingGrid } = require('../modules/order/working_grid');
-const { buildIndexes } = require('../modules/order/utils/grid_indexes');
+const { buildIndexes } = require('../modules/order/utils/order');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
 
 function createTestOrder(id, type, state, price, amount, orderId = null) {

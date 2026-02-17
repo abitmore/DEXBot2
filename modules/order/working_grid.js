@@ -3,8 +3,7 @@
  * Tracks modifications and builds deltas from master
  */
 
-const { buildDelta } = require('./utils/order_comparison');
-const { buildIndexes } = require('./utils/grid_indexes');
+const { buildDelta, buildIndexes } = require('./utils/order');
 const { COW_PERFORMANCE } = require('../constants');
 
 class WorkingGrid {

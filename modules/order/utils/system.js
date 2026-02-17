@@ -441,7 +441,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
     if (!manager._gridLock) return;
     const Grid = require('../grid');
     const { WorkingGrid } = require('../working_grid');
-    const { hasActionForOrder, removeActionsForOrder } = require('./helpers');
+    const { hasActionForOrder, removeActionsForOrder } = require('./validate');
 
     // Phase 1: Pre-lock grid resizing using COW
     // This calculates new sizes from blockchain state but DOES NOT modify master.
