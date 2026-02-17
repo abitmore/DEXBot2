@@ -100,6 +100,107 @@ The `OrderManager` is the central hub that coordinates all order operations. It 
 
 ---
 
+## Copy-on-Write (COW) Grid Pattern
+
+The OrderManager implements a **Copy-on-Write (COW) pattern** to protect the master grid from speculative modifications until blockchain finality is confirmed.
+
+### Core Principle
+
+The master grid (`this.orders`) is **immutable** - it can only be replaced atomically, never mutated in place. All speculative planning operations work on isolated copies, and the master is only updated when blockchain confirms the operation.
+
+**Important**: Index Sets (`_ordersByState`, `_ordersByType`) are **mutable by design** but must **only be mutated through `_applyOrderUpdate()`**. Direct external mutations violate the COW invariant.
+
+### Protection Mechanisms
+
+| Mechanism | Location | Purpose |
+|-----------|----------|---------|
+| `Object.freeze()` | `manager.js:396` | Master Map is frozen at initialization |
+| `deepFreeze()` | `manager.js:813` | Individual order objects are deep-frozen |
+| `_gridVersion` | `manager.js:828` | Version counter for staleness detection |
+| `_gridLock` | `manager.js:431` | AsyncLock serializes grid mutations |
+| Encapsulation | `manager.js:406-415` | Index Sets are private; mutations only via `_applyOrderUpdate()` |
+
+### Master Grid Update Pattern
+
+All master grid updates follow clone-and-replace semantics:
+
+```javascript
+// 1. Clone existing Map
+const newMap = cloneMap(this.orders);
+
+// 2. Apply mutation to clone
+newMap.set(id, updatedOrder);
+
+// 3. Atomically replace with frozen copy
+this.orders = Object.freeze(newMap);
+this._gridVersion++;
+```
+
+Index Sets follow the same pattern - cloned, mutated, frozen, then replaced.
+
+### WorkingGrid Class
+
+The `WorkingGrid` class (`modules/order/working_grid.js`) provides isolation for speculative operations:
+
+- **Deep clones** the master grid on construction
+- Tracks **modified orders** in a Set
+- Supports **staleness detection** via `baseVersion`
+- **Never modifies** the master grid
+
+### COW Rebalance Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. Create WorkingGrid from frozen master                   │
+│     workingGrid = new WorkingGrid(masterGrid, {baseVersion})│
+└─────────────────────────┬───────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  2. Calculate target state (PURE - no side effects)         │
+│     strategy.calculateTargetGrid() returns new Map          │
+└─────────────────────────┬───────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  3. Project target onto working grid                        │
+│     Modifies working copy only                              │
+└─────────────────────────┬───────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  4. Validate funds & check staleness                        │
+│     If stale: abort without committing                      │
+└─────────────────────────┬───────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  5. Submit to blockchain & wait for finality                │
+│     synchronizeWithChain() confirms on-chain                │
+└─────────────────────────┬───────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  6. Commit: Replace master with working grid                │
+│     this.orders = Object.freeze(workingGrid.toMap())        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Triggers for Master Grid Updates
+
+Only blockchain-confirmed events trigger master updates:
+
+| Event | Entry Point | Mechanism |
+|-------|-------------|-----------|
+| Order Created | `sync_engine.js:877-921` | `synchronizeWithChain('createOrder')` |
+| Order Cancelled | `sync_engine.js:923-940` | `synchronizeWithChain('cancelOrder')` |
+| Order Filled | `sync_engine.js:662-823` | `syncFromFillHistory()` |
+| Full Sync | `sync_engine.js:942-947` | `syncFromOpenOrders()` |
+| Grid Init/Load | `grid.js:495-626` | Bootstrap operations |
+
+### Defensive Measures
+
+1. **Double-check commit pattern**: Staleness is checked both outside and inside the lock
+2. **Working grid sync**: If master mutates during planning, working grid is marked stale
+3. **Version mismatch detection**: Commits abort if `baseVersion` doesn't match `_gridVersion`
+
+---
+
 ## Fill Processing Pipeline (Patch 17 & 18)
 
 The fill pipeline handles incoming filled orders efficiently through adaptive batching instead of one-at-a-time processing.

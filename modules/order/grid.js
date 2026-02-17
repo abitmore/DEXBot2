@@ -420,12 +420,27 @@ class Grid {
      * Internal utility to clear all order-related manager caches.
      * Prevents stale references during grid reinitialization.
      * RC-2: Synchronized to prevent concurrent modifications during clear
+     * 
+     * Note: Uses explicit assignment instead of .clear() because:
+     * - manager.orders is a frozen Map (Object.freeze) per COW pattern
+     * - Cannot call .clear() on frozen Map; must use assignment instead
      * @private
      */
     static _clearOrderCachesLogic(manager) {
-        manager.orders?.clear?.();
-        if (manager._ordersByState) Object.values(manager._ordersByState).forEach(set => set?.clear?.());
-        if (manager._ordersByType) Object.values(manager._ordersByType).forEach(set => set?.clear?.());
+        // Replace frozen master grid with fresh empty frozen Map (COW pattern)
+        manager.orders = Object.freeze(new Map());
+        
+        // Clear index Sets with fresh empty Sets (mutable for _applyOrderUpdate)
+        if (manager._ordersByState) {
+            for (const key of Object.keys(manager._ordersByState)) {
+                manager._ordersByState[key] = new Set();
+            }
+        }
+        if (manager._ordersByType) {
+            for (const key of Object.keys(manager._ordersByType)) {
+                manager._ordersByType[key] = new Set();
+            }
+        }
     }
 
 

@@ -403,6 +403,9 @@ class OrderManager {
 
         this._state = new StateManager({ logger: this.logger });
 
+        // Index Sets use mutable mutation patterns controlled via _applyOrderUpdate
+        // These are private implementation details and must NOT be mutated directly
+        // All external code must go through the COW pipeline
         this._ordersByState = {
             [ORDER_STATES.VIRTUAL]: new Set(),
             [ORDER_STATES.ACTIVE]: new Set(),
