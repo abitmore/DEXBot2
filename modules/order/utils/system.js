@@ -456,12 +456,12 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 : ORDER_TYPES.SELL;
 
         // If out-of-spread correction moves boundary, recompute both sides.
+        // syncBoundaryToFunds clamps the result to the gap between on-chain
+        // orders and returns only {changed, newIdx} — no grid mutation occurs
+        // here; the subsequent COW resize picks up the updated boundaryIdx.
         const boundarySync = syncBoundaryToFunds(manager);
         if (manager.outOfSpread > 0 && boundarySync.changed) {
             manager.boundaryIdx = boundarySync.newIdx;
-            if (boundarySync.updatedSlots?.length > 0) {
-                await manager.applyGridUpdateBatch(boundarySync.updatedSlots, 'boundary-sync', true);
-            }
             resizeOrderType = 'both';
             manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
             manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
@@ -652,10 +652,22 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
 /**
  * Synchronize grid boundary position based on available funds.
- * Recalculates boundary index to match fund ratio and reassigns grid roles if changed.
- * 
+ *
+ * Computes a fund-driven boundary index and clamps it to the gap between the
+ * highest on-chain BUY slot and the lowest on-chain SELL slot.  The boundary
+ * may therefore only shift within the existing spread — it can never jump over
+ * a committed order on either side.
+ *
+ * A shift is only produced when the fund ratio is asymmetric enough that the
+ * clamped result differs from the current boundaryIdx.  Balanced available
+ * funds yield a mid-range result that, after clamping, equals the current
+ * boundary and produces no change.
+ *
+ * No master-grid mutation is performed here; the caller is responsible for
+ * updating manager.boundaryIdx and triggering the subsequent COW resize.
+ *
  * @param {Object} manager - OrderManager instance
- * @returns {boolean} True if boundary changed, false otherwise
+ * @returns {{ changed: boolean, newIdx?: number }}
  */
 function syncBoundaryToFunds(manager) {
     const availA = (manager.funds?.available?.sell || 0);
@@ -663,17 +675,37 @@ function syncBoundaryToFunds(manager) {
     const allSlots = Array.from(manager.orders.values()).sort((a, b) => a.price - b.price);
     const Grid = require('../grid');
     const gapSlots = Grid.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent);
-    const newIdx = OrderUtils.calculateFundDrivenBoundary(allSlots, availA, availB, manager.config.startPrice, gapSlots);
+
+    // Determine the index range permitted by master-grid slot assignments.
+    // Both virtual and active orders count: the boundary must stay strictly
+    // between the highest BUY slot and the lowest SELL slot so it never
+    // crosses an existing order regardless of whether it is on-chain.
+    let maxBuyIdx  = -1;
+    let minSellIdx = allSlots.length;
+    for (let i = 0; i < allSlots.length; i++) {
+        const slot = allSlots[i];
+        if (slot.type === ORDER_TYPES.BUY  && i > maxBuyIdx)  maxBuyIdx  = i;
+        if (slot.type === ORDER_TYPES.SELL && i < minSellIdx) minSellIdx = i;
+    }
+
+    // Build clamp bounds from whichever sides have typed slots.
+    // If a side has no typed slots there is nothing to protect on that side,
+    // so the boundary is free to move to the corresponding edge of the grid.
+    const lowerBound = maxBuyIdx  >= 0                ? maxBuyIdx  + 1          : 0;
+    const upperBound = minSellIdx < allSlots.length   ? minSellIdx - 1          : allSlots.length - 1;
+
+    // Bounds are contradictory — typed slots leave no gap to shift into.
+    if (lowerBound > upperBound) {
+        return { changed: false };
+    }
+
+    let newIdx = OrderUtils.calculateFundDrivenBoundary(allSlots, availA, availB, manager.config.startPrice, gapSlots);
+
+    // Clamp to the permitted range.
+    newIdx = Math.max(lowerBound, Math.min(newIdx, upperBound));
+
     if (newIdx !== manager.boundaryIdx) {
-        const updatedSlots = OrderUtils.assignGridRoles(allSlots, newIdx, gapSlots, ORDER_TYPES, ORDER_STATES, {
-            assignOnChain: false,
-            getCurrentSlot: (id) => manager.orders.get(id)
-        });
-        // Filter to only changed slots to minimize batch size.
-        // assignGridRoles returns the original frozen reference when unchanged,
-        // so object identity reliably distinguishes cloned (changed) slots.
-        const changedSlots = updatedSlots.filter(s => s !== manager.orders.get(s.id));
-        return { changed: true, newIdx, updatedSlots: changedSlots };
+        return { changed: true, newIdx };
     }
     return { changed: false };
 }

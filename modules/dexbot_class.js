@@ -2474,13 +2474,24 @@ class DEXBot {
 
                 // Full rotation: old slot was virtualized in the committed working grid.
                 // Activate the destination slot with the existing on-chain orderId.
-                const slot = this.manager.orders.get(newGridId) || {
-                    id: newGridId,
-                    type,
-                    price: newPrice,
-                    size: 0,
-                    state: ORDER_STATES.VIRTUAL
-                };
+                const slot = this.manager.orders.get(newGridId);
+                if (!slot) {
+                    this.manager.logger.log(
+                        `[ROTATION] Destination slot ${newGridId} missing from master grid after COW commit - skipping activation, sync will reconcile`,
+                        'error'
+                    );
+                    // Still clear source orderId to prevent a stale chain reference persisting
+                    if (oldOrder?.id && oldOrder.id !== newGridId) {
+                        const staleSource = this.manager.orders.get(oldOrder.id);
+                        if (staleSource?.orderId) {
+                            updatesToApply.push({
+                                order: { ...staleSource, state: ORDER_STATES.VIRTUAL, orderId: null, rawOnChain: null },
+                                context: 'post-rotation-source-clear'
+                            });
+                        }
+                    }
+                    continue;
+                }
                 const updatedSlot = {
                     ...slot,
                     id: newGridId,
