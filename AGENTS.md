@@ -185,6 +185,7 @@ git checkout main && git pull && git merge --no-ff dev && git push
   - Scenario and integration tests (fills, grid, manager, etc.)
 
 ## Recent Updates
+- **Atomic Boundary Shifts (Patch 20)**: Ensured boundary index shifts during divergence correction are atomic with slot-type reassignment. `pendingBoundaryIdx` carries boundary changes through the COW pipeline; `manager.boundaryIdx` is only updated inside `_commitWorkingGrid`. Added boundary clamping to prevent crossing existing orders. Updated `COPY_ON_WRITE_MASTER_PLAN.md`.
 - **Native Test Porting**: Ported all unit tests from Jest (`tests/unit/`) to native Node.js `assert` (`tests/test_*_logic.js`) to eliminate heavy devDependencies in standard installations. Removed `jest` and `tests/unit/` directory.
 - **BTS Fee Accounting Fix**: Corrected under-counting of fees during order rotations and size updates. Unified deduction logic in `Accountant` to handle all on-chain fees via `total` balance reduction.
 - **Rotation Synchronization**: Fixed `SyncEngine` to correctly apply `updateFee` during order rotations, ensuring `synchronizeWithChain` reflects actual blockchain costs.

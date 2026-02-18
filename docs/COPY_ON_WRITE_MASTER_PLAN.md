@@ -242,6 +242,18 @@ if (fills.length === 0 && rebalanceState === REBALANCE_STATES.NORMAL) {
 ### Phase 7: Divergence Correction COW Migration ✅
 Migrated `applyGridDivergenceCorrections` from queue-based cancellations to full COW pattern.
 
+**Atomic Boundary Shifts (Patch 20)**: Boundary index changes during divergence correction are now atomic with slot-type reassignment. The `pendingBoundaryIdx` variable carries boundary changes through the COW pipeline without touching `manager.boundaryIdx` until `_commitWorkingGrid` completes. This prevents temporary mismatches between boundary position and slot BUY/SELL roles during blockchain execution.
+
+```javascript
+// Boundary changes flow through COW pipeline atomically
+const boundarySync = syncBoundaryToFunds(manager);  // Returns { changed, newIdx }
+if (boundarySync.changed) {
+    pendingBoundaryIdx = boundarySync.newIdx;  // NOT manager.boundaryIdx!
+    // updateGridFromBlockchainSnapshot reassigns slot types in WorkingGrid
+    // manager.boundaryIdx updated atomically in _commitWorkingGrid
+}
+```
+
 **Before (Queue-Based)**:
 ```javascript
 // Detect divergence → Queue corrections → Execute batch → Clear queue

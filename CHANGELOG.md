@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.20] - 2026-02-18 - Atomic Boundary Shifts in COW Pipeline
+
+This patch ensures boundary index shifts during divergence correction are atomic with slot-type reassignment, preventing temporary mismatches between `boundaryIdx` and slot roles during the COW planning-to-commit lifecycle.
+
+### Fixed
+- **Atomic Boundary Shifts in COW Divergence Updates** (`modules/order/utils/system.js`) - commit 86ab205
+  - **Problem**: Boundary movement during divergence correction was threaded through manager state (`manager.boundaryIdx`) before the COW commit completed, risking temporary mismatch between boundary index and slot typing.
+  - **Impact**: If blockchain execution failed after boundary was mutated, slot types would be inconsistent with the boundary index, potentially corrupting grid role assignments.
+  - **Solution**: Introduced `pendingBoundaryIdx` to carry boundary changes through the COW pipeline. `updateGridFromBlockchainSnapshot` now accepts `overrideBoundaryIdx` and reassigns slot roles in the working grid before commit. `manager.boundaryIdx` is only updated atomically inside `_commitWorkingGrid`.
+
+- **Boundary Clamping to Existing Orders** (`modules/order/utils/system.js`) - commit eabbaf6
+  - **Problem**: Fund-driven boundary shifts could cross existing on-chain or virtual orders, causing slot-type inversions.
+  - **Impact**: Boundary could jump over committed orders, leading to incorrect BUY/SELL role assignments.
+  - **Solution**: `syncBoundaryToFunds` now clamps the new boundary index to the gap between the highest BUY slot and lowest SELL slot. Counts both virtual and active orders in clamp calculation. Returns `{ changed, newIdx }` instead of mutating manager state directly.
+
+- **Working Grid Slot Role Reassignment** (`modules/order/grid.js`) - commit 86ab205
+  - Extended `updateGridFromBlockchainSnapshot` with `overrideBoundaryIdx` parameter.
+  - Reassigns slot roles in working grid when boundary changes, ensuring atomic commit of both types and boundary.
+
+### Technical Details
+- Boundary shifts now flow: `syncBoundaryToFunds()` → `pendingBoundaryIdx` → `updateGridFromBlockchainSnapshot(overrideBoundaryIdx)` → `_commitWorkingGrid()` → `manager.boundaryIdx`
+- No manager state mutation before blockchain confirmation
+- Clamp bounds derived from typed slots (BUY/SELL), not just on-chain orders
+
+### Testing
+- `node tests/test_unanchored_spread_correction.js` - Boundary regression tests
+- `node tests/test_cow_commit_guards.js` - COW commit guards
+- `node tests/test_boundary_sync_logic.js` - Boundary sync logic
+- `node tests/test_cow_divergence_correction.js` - Divergence correction COW tests
+
+---
+
 ## [0.6.0-patch.19] - 2026-02-14 to 2026-02-17 - Copy-on-Write (COW) Grid Architecture
 
 This patch introduces a major architectural refactoring replacing the snapshot/rollback pattern with a cleaner Copy-on-Write approach. The master grid remains immutable until blockchain confirmation succeeds, eliminating state corruption risks and simplifying failure recovery.
