@@ -24,7 +24,8 @@ async function testUnanchoredSpreadCorrection() {
 
     const mgr = new OrderManager({
         assetA: 'BASE', assetB: 'QUOTE', startPrice: 100,
-        botFunds: { buy: 1000, sell: 1000 }, activeOrders: { buy: 2, sell: 2 },
+        // Keep bot caps aligned with scenario totals so available funds match expectations.
+        botFunds: { buy: 10000, sell: 100 }, activeOrders: { buy: 2, sell: 2 },
         incrementPercent: 1, targetSpreadPercent: 1
     });
 
@@ -56,8 +57,11 @@ async function testUnanchoredSpreadCorrection() {
     // 3. Run applyGridDivergenceCorrections
     console.log('  Scenario 2: Correcting spread with BUY-heavy inventory');
 
-    // BitShares client is no longer required inside the function as we use config.startPrice
-    const mockUpdateFn = async () => ({ executed: true });
+    // Mirror production behavior: successful batch execution commits the working grid.
+    const mockUpdateFn = async (cowResult) => {
+        await mgr._commitWorkingGrid(cowResult.workingGrid, cowResult.workingIndexes, cowResult.workingBoundary);
+        return { executed: true };
+    };
 
     // Mock accountOrders with storeMasterGrid to avoid errors during persistence
     const mockAccountOrders = { storeMasterGrid: async () => {} };

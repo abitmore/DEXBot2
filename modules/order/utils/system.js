@@ -445,7 +445,11 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
 
     // Phase 1: Pre-lock grid resizing using COW
     // This calculates new sizes from blockchain state but DOES NOT modify master.
+    // pendingBoundaryIdx carries any fund-driven boundary shift through the COW
+    // pipeline so that manager.boundaryIdx is only updated atomically inside
+    // _commitWorkingGrid — never before the slot types are consistent.
     let resizeCowResult = null;
+    let pendingBoundaryIdx = manager.boundaryIdx;
     if (manager._gridSidesUpdated && manager._gridSidesUpdated.size > 0) {
         const hasBuy = manager._gridSidesUpdated.has(ORDER_TYPES.BUY);
         const hasSell = manager._gridSidesUpdated.has(ORDER_TYPES.SELL);
@@ -456,18 +460,18 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 : ORDER_TYPES.SELL;
 
         // If out-of-spread correction moves boundary, recompute both sides.
-        // syncBoundaryToFunds clamps the result to the gap between on-chain
-        // orders and returns only {changed, newIdx} — no grid mutation occurs
-        // here; the subsequent COW resize picks up the updated boundaryIdx.
+        // Store the new index in pendingBoundaryIdx — do NOT touch manager.boundaryIdx
+        // here; updateGridFromBlockchainSnapshot will re-assign slot types in the
+        // WorkingGrid and _commitWorkingGrid will update manager.boundaryIdx atomically.
         const boundarySync = syncBoundaryToFunds(manager);
         if (manager.outOfSpread > 0 && boundarySync.changed) {
-            manager.boundaryIdx = boundarySync.newIdx;
+            pendingBoundaryIdx = boundarySync.newIdx;
             resizeOrderType = 'both';
             manager._gridSidesUpdated.add(ORDER_TYPES.BUY);
             manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
         }
 
-        resizeCowResult = await Grid.updateGridFromBlockchainSnapshot(manager, resizeOrderType, true);
+        resizeCowResult = await Grid.updateGridFromBlockchainSnapshot(manager, resizeOrderType, true, pendingBoundaryIdx);
     }
 
     // Phase 2: Create working grid for divergence corrections
@@ -592,7 +596,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 actions,
                 workingGrid,
                 workingIndexes: workingGrid.getIndexes(),
-                workingBoundary: manager.boundaryIdx,
+                workingBoundary: pendingBoundaryIdx,
                 aborted: false
             };
         } else if (resizeCowResult?.hasWorkingChanges) {
@@ -602,7 +606,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                 actions: [],
                 workingGrid,
                 workingIndexes: workingGrid.getIndexes(),
-                workingBoundary: manager.boundaryIdx,
+                workingBoundary: pendingBoundaryIdx,
                 localOnly: true,
                 aborted: false
             };

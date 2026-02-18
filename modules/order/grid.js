@@ -948,7 +948,7 @@ class Grid {
      * @param {boolean} fromBlockchainTimer - If true, skip refetch of account totals (already current)
      * @returns {Promise<Object|null>} COW result with {workingGrid, actions, workingIndexes, workingBoundary, hasWorkingChanges} or null if no changes
      */
-    static async updateGridFromBlockchainSnapshot(manager, orderType = 'both', fromBlockchainTimer = false) {
+    static async updateGridFromBlockchainSnapshot(manager, orderType = 'both', fromBlockchainTimer = false, overrideBoundaryIdx = null) {
         if (!fromBlockchainTimer && manager.config?.accountId) {
             await manager.fetchAccountTotals(manager.config.accountId);
         }
@@ -970,6 +970,22 @@ class Grid {
             hasWorkingChanges = hasWorkingChanges || sellResult.changed;
         }
 
+        // If the boundary is shifting, reassign slot types in the WorkingGrid now.
+        // This ensures the COW commit delivers consistent types + boundaryIdx in one
+        // atomic operation — manager.boundaryIdx must not be touched before the commit.
+        const newBoundary = (overrideBoundaryIdx !== null) ? overrideBoundaryIdx : manager.boundaryIdx;
+        if (overrideBoundaryIdx !== null && overrideBoundaryIdx !== manager.boundaryIdx) {
+            const gapSlots = Grid.calculateGapSlots(manager.config.incrementPercent, manager.config.targetSpreadPercent);
+            const allSlots = Array.from(workingGrid.values())
+                .filter(s => s.price != null)
+                .sort((a, b) => a.price - b.price);
+            const updatedSlots = assignGridRoles(allSlots, newBoundary, gapSlots, ORDER_TYPES, ORDER_STATES);
+            for (const slot of updatedSlots) {
+                workingGrid.set(slot.id, slot);
+            }
+            hasWorkingChanges = true;
+        }
+
         // Return COW result only if there are changes
         if (allActions.length === 0 && !hasWorkingChanges) {
             return null;
@@ -979,7 +995,7 @@ class Grid {
             actions: allActions,
             workingGrid,
             workingIndexes: workingGrid.getIndexes(),
-            workingBoundary: manager.boundaryIdx,
+            workingBoundary: newBoundary,
             hasWorkingChanges,
             aborted: false
         };
