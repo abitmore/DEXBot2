@@ -94,6 +94,19 @@ git push origin v0.X.Y
 
 **Status**: All branches synchronized and ready for development (Jan 10, 2026).
 
+## Architectural Safety: Copy-on-Write
+
+DEXBot2 uses a **Copy-on-Write (COW)** grid architecture to prevent state corruption during rebalancing. This is relevant to all developers contributing code:
+
+- The master grid (`manager.orders`) is **immutable** — frozen with `Object.freeze()` and never mutated in place.
+- All strategy and rebalancing logic runs on an isolated `WorkingGrid` clone.
+- The master is replaced atomically only after blockchain confirmation (`_commitWorkingGrid()`).
+- On any failure, the working grid is discarded and the master remains unchanged.
+
+This means feature branches that touch rebalancing, grid planning, or order state changes **must** operate on `WorkingGrid`, not `manager.orders` directly. See [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md) for the full specification and [developer_guide.md#copy-on-write-cow-development-rules](developer_guide.md#copy-on-write-cow-development-rules) for coding rules.
+
+---
+
 ## Key Rules
 
 ### ✅ DO:

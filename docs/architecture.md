@@ -44,7 +44,7 @@ graph TB
             GRID[Grid<br/>grid.js]
         end
         
-        UTILS[Utils<br/>utils.js]
+        UTILS[Utils<br/>utils/]
         LOGGER[Logger<br/>logger.js]
         RUNNER[Runner<br/>runner.js]
     end
@@ -93,10 +93,10 @@ The `OrderManager` is the central hub that coordinates all order operations. It 
 
 | Engine | File | Responsibility |
 |--------|------|----------------|
-| **Accountant** | `accounting.js` | **Single Source of Truth**. Centralized fund tracking via `recalculateFunds()`, fee management, invariant verification, **recovery retry state management** (Patch 17: `resetRecoveryState()`) |
-| **StrategyEngine** | `strategy.js` | Grid rebalancing, order rotation, partial order handling, **fill boundary shifts** (Patch 17), **cache remainder tracking** (Patch 18) |
-| **SyncEngine** | `sync_engine.js` | Blockchain synchronization, fill detection, **stale-order cleanup**, **type-mismatch handling** |
-| **Grid** | `grid.js` | Grid creation, sizing, divergence detection, **cache remainder accuracy during capped resize** (Patch 18) |
+| **Accountant** | `accounting.js` | **Single Source of Truth**. Centralized fund tracking via `recalculateFunds()`, fee management, invariant verification, recovery retry state management (`resetRecoveryState()`) |
+| **StrategyEngine** | `strategy.js` | Grid rebalancing, order rotation, partial order handling, fill boundary shifts, cache remainder tracking |
+| **SyncEngine** | `sync_engine.js` | Blockchain synchronization, fill detection, stale-order cleanup, type-mismatch handling |
+| **Grid** | `grid.js` | Grid creation, sizing, divergence detection, cache remainder accuracy during capped resize |
 
 ---
 
@@ -201,7 +201,7 @@ Only blockchain-confirmed events trigger master updates:
 
 ---
 
-## Fill Processing Pipeline (Patch 17 & 18)
+## Fill Processing Pipeline
 
 The fill pipeline handles incoming filled orders efficiently through adaptive batching instead of one-at-a-time processing.
 
@@ -262,7 +262,7 @@ The fill pipeline handles incoming filled orders efficiently through adaptive ba
 
 ### Key Properties
 
-- **Adaptive Batch Sizing** (Patch 17): Batch size scales with queue depth (1-4 fills)
+- **Adaptive Batch Sizing**: Batch size scales with queue depth (1-4 fills)
   - 0-2 awaiting: batch 1 (legacy sequential, low throughput)
   - 3-7 awaiting: batch 2 (moderate stress)
   - 8-14 awaiting: batch 3 (high stress)
@@ -273,13 +273,13 @@ The fill pipeline handles incoming filled orders efficiently through adaptive ba
   - Combined proceeds immediately available
   - Single cache fund update
 
-- **Recovery Retries** (Patch 17): Periodic retry system replaces one-shot flag
+- **Recovery Retries**: Periodic retry system replaces one-shot flag
   - Max 5 attempts per episode
   - 60s minimum interval between retries
   - Reset on fill arrival or periodic sync (10 minutes)
   - `resetRecoveryState()` called by Accountant
 
-- **Stale-Cleaned Order Tracking** (Patch 17): Prevents orphan double-credit
+- **Stale-Cleaned Order Tracking**: Prevents orphan double-credit
   - Batch failure → cleanup stale order IDs
   - Delayed orphan event → check if ID in stale-cleaned map
   - Skip credit if already cleaned
@@ -296,7 +296,7 @@ The fill pipeline handles incoming filled orders efficiently through adaptive ba
 
 ---
 
-## Fund-Driven Boundary Sync (Patch 8)
+## Fund-Driven Boundary Sync
 
 The grid boundary (which separates BUY, SPREAD, and SELL zones) automatically aligns with the bot's actual inventory distribution.
 
@@ -356,7 +356,7 @@ Once the new boundary is determined, existing on-chain orders are matched to des
 
 ---
 
-## Scaled Spread Correction (Patch 8)
+## Scaled Spread Correction
 
 Dynamic spread correction that scales the number of replacement slots based on how much the spread has widened.
 
@@ -414,7 +414,7 @@ SPREAD_LIMITS: {
 
 ---
 
-## Periodic Market Price Refresh (Patch 8)
+## Periodic Market Price Refresh
 
 Background market price updates every 4 hours to ensure grid anchoring remains accurate during long-running sessions without fills.
 
@@ -473,7 +473,7 @@ Price refresh is passive:
 
 ---
 
-## Out-of-Spread Metric Refinement (Patch 8)
+## Out-of-Spread Metric Refinement
 
 Refactored `outOfSpread` from a simple boolean flag to a numeric distance metric for more precise structural updates.
 
@@ -534,7 +534,7 @@ PIPELINE_TIMING: {
 
 **How It Works**:
 - `isPipelineEmpty()` tracks when pipeline operations started blocking via `_pipelineBlockedSince` timestamp
-- If blockage exceeds 5 minutes, `clearStalePipelineOperations()` is called (Patch 12, commit dd94044)
+- If blockage exceeds 5 minutes, `clearStalePipelineOperations()` is called
 - Non-destructive recovery: clears operation flags only, does NOT delete orders or modify grid state
 - Recovery called from `_executeMaintenanceLogic()` during periodic maintenance checks
 
@@ -912,7 +912,7 @@ sequenceDiagram
 | **StrategyEngine** | Rebalancing, rotation, partial handling | `rebalance()`, `processFilledOrders()`, `preparePartialOrderMove()` |
 | **SyncEngine** | Blockchain sync, fill detection | `syncFromOpenOrders()`, `synchronizeWithChain()` |
 | **Grid** | Grid creation, sizing, divergence | `createOrderGrid()`, `compareGrids()`, `checkAndUpdateGridIfNeeded()` |
-| **Utils** | Shared utilities, conversions | `calculateAvailableFundsValue()`, `floatToBlockchainInt()`, `quantizeFloat()`, `normalizeInt()`, `parseChainOrder()` |
+| **Utils** | Shared utilities, conversions | `quantizeFloat()`, `normalizeInt()` (`math.js`); order predicates (`order.js`); COW action building (`validate.js`); price derivation (`system.js`) |
 | **Logger** | Formatted logging, diagnostics | `logOrderGrid()`, `logFundsStatus()`, `logGridDiagnostics()` |
 
 ---

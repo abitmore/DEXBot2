@@ -203,38 +203,38 @@ npx jest tests/unit/ --no-coverage
 
 ---
 
-## Patch 17-18 Regression Tests (Feb 7-8, 2026)
+## Fill Batching & Recovery Regression Tests (Feb 7-8, 2026)
 
 ### Overview
 
-New regression test file `tests/test_patch17_invariants.js` validates fixes for the Feb 7 market crash post-mortem analysis. These tests ensure fill batching, recovery retry system, and orphan-fill deduplication remain robust.
+Test file `tests/test_fill_batch_invariants.js` validates fixes for the Feb 7 market crash post-mortem analysis. These tests ensure fill batching, recovery retry system, and orphan-fill deduplication remain robust.
 
 ### Test Coverage
 
-**Patch 17 (Adaptive Fill Batching & Recovery Retries)**:
+**Fill Batching & Recovery Retries**:
 
 | Test | File | Purpose |
 |------|------|---------|
-| `test_adaptive_batch_pipeline` | `test_patch17_invariants.js` | Verifies fills processed in adaptive batches (1-4 per broadcast) instead of one-at-a-time |
-| `test_recovery_retry_mechanism` | `test_patch17_invariants.js` | Validates count+time-based retry system with periodic reset (max 5 attempts, 60s interval) |
-| `test_orphan_fill_deduplication` | `test_patch17_invariants.js` | Ensures stale-cleaned order IDs prevent double-crediting of fills |
+| `test_adaptive_batch_pipeline` | `test_fill_batch_invariants.js` | Verifies fills processed in adaptive batches (1-4 per broadcast) instead of one-at-a-time |
+| `test_recovery_retry_mechanism` | `test_fill_batch_invariants.js` | Validates count+time-based retry system with periodic reset (max 5 attempts, 60s interval) |
+| `test_orphan_fill_deduplication` | `test_fill_batch_invariants.js` | Ensures stale-cleaned order IDs prevent double-crediting of fills |
 
-**Patch 18 (Batching Hardening)**:
+**Cache & Stale-Order Handling**:
 
 | Test | File | Purpose |
 |------|------|---------|
-| `test_cache_remainder_parity` | `test_patch17_invariants.js` | Verifies cache remainder calculated from actual allocated sizes (not ideal sizes) during capped grid resizes |
-| `test_abort_cooldown_arming` | `test_patch17_invariants.js` | Ensures both primary and retry hard-abort paths arm `_maintenanceCooldownCycles` |
-| `test_single_stale_cancel_fast_path` | `test_patch17_invariants.js` | Validates single-op batch stale recovery doesn't trigger expensive full sync |
+| `test_cache_remainder_parity` | `test_fill_batch_invariants.js` | Verifies cache remainder calculated from actual allocated sizes (not ideal sizes) during capped grid resizes |
+| `test_abort_cooldown_arming` | `test_fill_batch_invariants.js` | Ensures both primary and retry hard-abort paths arm `_maintenanceCooldownCycles` |
+| `test_single_stale_cancel_fast_path` | `test_fill_batch_invariants.js` | Validates single-op batch stale recovery doesn't trigger expensive full sync |
 
-### Running Patch 17-18 Tests
+### Running Tests
 
 ```bash
-# Run patch 17-18 invariant tests
-npm test -- tests/test_patch17_invariants.js
+# Run fill batching invariant tests
+npm test -- tests/test_fill_batch_invariants.js
 
-# Or with npm scripts (if configured)
-node tests/test_patch17_invariants.js
+# Or directly
+node tests/test_fill_batch_invariants.js
 ```
 
 ### Test Details
@@ -287,7 +287,7 @@ MAX_RECOVERY_ATTEMPTS: 5            // Max 5 retries
 - ✅ Log shows `[ORPHAN-FILL] Skipping double-credit`
 - ✅ TTL pruning removes entries after 5 minutes
 
-#### Test 4: Cache Remainder Parity (Patch 18)
+#### Test 4: Cache Remainder Parity
 
 **Scenario**: Grid resize capped by available funds
 
@@ -299,7 +299,7 @@ MAX_RECOVERY_ATTEMPTS: 5            // Max 5 retries
 - ✅ Next cycle gets correct 400 BTS available for allocation
 - ✅ No "stuck fund" situations
 
-#### Test 5: Hard-Abort Cooldown Arming (Patch 18)
+#### Test 5: Hard-Abort Cooldown Arming
 
 **Scenario**: Batch execution fails with illegal state or accounting error
 
@@ -310,7 +310,7 @@ MAX_RECOVERY_ATTEMPTS: 5            // Max 5 retries
 - ✅ Next maintenance cycle respects cooldown
 - ✅ Log shows `[COOLDOWN] Arming maintenance cooldown after hard-abort`
 
-#### Test 6: Single-Op Stale-Cancel Fast-Path (Patch 18)
+#### Test 6: Single-Op Stale-Cancel Fast-Path
 
 **Scenario**: Single order in batch becomes stale on-chain
 
@@ -360,17 +360,17 @@ Coverage Targets:
 
 ### Integration with CI/CD
 
-Patch 17-18 tests are part of the main test suite:
+Fill batching tests are part of the main test suite:
 
 ```bash
-# Full test suite (includes patch17_invariants)
+# Full test suite
 npm test
 
-# Only Patch 17-18 tests
-npm test -- test_patch17_invariants.js
+# Only fill batching tests
+npm test -- test_fill_batch_invariants.js
 
 # With coverage reporting
-npm test -- --coverage test_patch17_invariants.js
+npm test -- --coverage test_fill_batch_invariants.js
 ```
 
 ### Regression Prevention
@@ -386,9 +386,9 @@ These tests catch regressions in:
 ### Related Documentation
 
 See complete technical details in:
-- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 1.4](FUND_MOVEMENT_AND_ACCOUNTING.md#14-fill-batch-processing--cache-fund-timeline-patch-17) - Fill batch processing
-- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 3.7](FUND_MOVEMENT_AND_ACCOUNTING.md#37-orphan-fill-deduplication--double-credit-prevention-patch-17) - Orphan-fill prevention
-- [docs/architecture.md - Fill Processing Pipeline](architecture.md#fill-processing-pipeline-patch-17--18) - Architecture & diagrams
+- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 1.4](FUND_MOVEMENT_AND_ACCOUNTING.md#14-fill-batch-processing--cache-fund-timeline) - Fill batch processing
+- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 3.7](FUND_MOVEMENT_AND_ACCOUNTING.md#37-orphan-fill-deduplication--double-credit-prevention) - Orphan-fill prevention
+- [docs/architecture.md - Fill Processing Pipeline](architecture.md#fill-processing-pipeline) - Architecture & diagrams
 
 ---
 

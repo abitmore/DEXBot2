@@ -1,6 +1,6 @@
 # DEXBot2 Test Suite
 
-This directory contains the test suite for DEXBot2, covering unit tests, integration tests, strategy logic verification, and infrastructure checks.
+This directory contains the test suite for DEXBot2, covering logic tests, integration tests, strategy verification, and infrastructure checks.
 
 ## Overview
 
@@ -9,18 +9,20 @@ The test suite validates:
 - **Fund Accounting**: Balance calculations, fee deduction, fund invariant checks
 - **Grid Management**: Order generation, sizing, divergence detection, reconciliation
 - **Copy-on-Write Rebalancing**: Safe concurrent rebalancing with isolated working grids (see [docs/COPY_ON_WRITE_MASTER_PLAN.md](../docs/COPY_ON_WRITE_MASTER_PLAN.md))
-- **Fill Processing**: Partial fills, consolidation, rotation order sizing
+- **Fill Processing**: Adaptive batching, partial fills, consolidation, rotation order sizing
 - **Market Scenarios**: Realistic trading conditions, edge cases, recovery mechanisms
 
-## Unit Tests
+## Running Tests
 
-Unit tests are located in the `unit/` directory. They focus on testing individual modules in isolation.
-See [unit/README.md](unit/README.md) for more details.
+Tests run directly with Node.js using native `assert`:
 
-## Integration & Functional Tests
+```bash
+# Run all tests
+npm test
 
-The tests in this directory are generally run using Node.js directly.
-Example: `node tests/test_market_price.js`
+# Run specific test file
+node tests/test_strategy_logic.js
+```
 
 **Module References:** For understanding the code being tested, see [root README 📦 Modules section](../README.md#-modules)
 

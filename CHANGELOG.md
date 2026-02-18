@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.6.0-patch.19] - 2026-02-14 - Copy-on-Write (COW) Grid Architecture
+## [0.6.0-patch.19] - 2026-02-14 to 2026-02-17 - Copy-on-Write (COW) Grid Architecture
 
 This patch introduces a major architectural refactoring replacing the snapshot/rollback pattern with a cleaner Copy-on-Write approach. The master grid remains immutable until blockchain confirmation succeeds, eliminating state corruption risks and simplifying failure recovery.
 
@@ -219,6 +219,37 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
   - Added TODO comment documenting duplicate state management pattern
   - Currently `_state` (StateManager) and direct properties (`_isBroadcasting`, `isBootstrapping`) must be kept in sync
   - Documented refactor plan to consolidate to StateManager only
+
+**Utils Consolidation and COW Hardening** - 2026-02-17
+- **Utils Folder Consolidation** (commit 4bc88bc)
+  - Merged `grid_indexes.js` into `order.js` (buildIndexes, validateIndexes)
+  - Merged `order_comparison.js` into `order.js` (ordersEqual, buildDelta, getOrderSize)
+  - Merged `strategy_logic.js` into `order.js` (deriveTargetBoundary, getSideBudget, calculateBudgetedSizes)
+  - Renamed `helpers.js` → `validate.js` for more specific naming
+  - Reduced utils folder from 7 files to 4 consolidated files
+  - Updated all imports across modules and tests
+
+- **COW Architecture Hardening** (commit 1fed7f2, 2a95540, ada36b7)
+  - Eliminated all in-place mutations in COW pipeline
+  - Implemented hybrid Copy-on-Write pattern with static mutation detection
+  - Preserved explicit zero values in COW helpers using nullish coalescing (`??`)
+  - Hardened test exits with `process.exit(0)` for clean termination
+
+- **Documentation Improvements** (commit 17e7a18)
+  - Enhanced `working_grid.js` header with 70+ line comprehensive documentation
+  - Added COW pattern documentation to `manager.js`
+  - Enhanced inline documentation in `math.js` for RMS divergence calculation
+  - Removed ASCII workflow diagrams for reduced verbosity
+  - Updated `docs/README.md` to remove "Patch" references
+  - Updated `tests/README.md` to reflect native assert (no Jest)
+  - Updated `scripts/README.md` test count (100+ test cases)
+
+- **README.md Consolidation** (2026-02-17)
+  - Removed redundant sections: OS-specific install details moved to short paragraph, technical details moved to docs/
+  - Removed "Patch 17" markers from features (now standard functionality)
+  - Removed obsolete `docs/PATCH17_18_DOCUMENTATION_UPDATES.md` planning document
+  - Removed "Patch 8/12/17/18" references from architecture.md and other docs
+  - Streamlined from 549 to ~260 lines while keeping all user-essential info
 
 ---
 

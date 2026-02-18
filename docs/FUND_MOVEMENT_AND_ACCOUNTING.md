@@ -28,11 +28,11 @@ $$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{FeesOwed} - \tex
 
 ---
 
-## 1.3 Mixed Order Fund Validation (Patch 12)
+## 1.3 Mixed Order Fund Validation
 
 **Problem Fixed**: When `_buildCreateOps()` received both BUY and SELL orders in a batch, it used a single fund check on the first order's type, causing false fund warnings.
 
-**Solution**: Separate validation per order type (Patch 12, commit 701352b).
+**Solution**: Separate validation per order type.
 
 ### Fund Availability Checks by Order Type
 
@@ -48,7 +48,7 @@ sellFree represents unallocated assetA available for limit orders
 
 ### Implementation Location
 
-File: `modules/dexbot_class.js::_buildCreateOps()` (lines 1516-1548, Patch 12)
+File: `modules/dexbot_class.js::_buildCreateOps()`
 
 ```javascript
 // Separate BUY and SELL orders
@@ -86,11 +86,11 @@ For checking order types and states, use centralized helpers from `modules/order
 - `isOrderPlaced()` - Check if safely placed (on-chain with ID)
 - `isOrderVirtual()` - Check if VIRTUAL state
 
-See [developer_guide.md#order-state-helper-functions-patch-11](developer_guide.md#order-state-helper-functions-patch-11) for complete helper function reference.
+See [developer_guide.md#order-state-helper-functions](developer_guide.md#order-state-helper-functions) for complete helper function reference.
 
 ---
 
-## 1.4 Fill Batch Processing & Cache Fund Timeline (Patch 17)
+## 1.4 Fill Batch Processing & Cache Fund Timeline
 
 ### Problem Solved
 
@@ -159,7 +159,7 @@ This means:
 - ✅ **Single rebalance uses combined capital** for sizing calculations
 - ✅ **Rotation surplus also uses combined pool** for optimal placement
 
-### Recovery Retry System (Patch 17)
+### Recovery Retry System
 
 **Problem**: One-shot `_recoveryAttempted` boolean flag meant permanent lockup if recovery failed once.
 
@@ -198,7 +198,7 @@ PIPELINE_TIMING: {
 - ✅ Self-heals within minutes after market settles
 - ✅ No permanent lockup from single failure
 
-### Stale-Cleaned Order ID Tracking (Patch 17)
+### Stale-Cleaned Order ID Tracking
 
 **Problem**: During batch execution failure, cleanup freed slots. Then delayed orphan fill events credited proceeds AGAIN = double-count.
 
@@ -225,7 +225,7 @@ _staleCleanedOrderIds = new Map();  // orderId → cleanupTimestamp
 
 ---
 
-## 1.5 Cache Remainder Accuracy During Capped Resize (Patch 18)
+## 1.5 Cache Remainder Accuracy During Capped Resize
 
 ### Problem Fixed
 
@@ -267,6 +267,8 @@ const cacheRemainder = totalIdealSizes - sum(appliedSizes);
 ---
 
 
+
+## 2. Grid Topology & Sizing
 
 The grid is a unified array ("Master Rail") of price levels, not separate Buy/Sell arrays.
 
@@ -326,13 +328,13 @@ Budgets are dynamic. The bot calculates `TotalSideBudget` based on `ChainFree` +
 If the calculated ideal grid requires more capital than is available, the *increase* is capped.
 $$Increase_{capped} = \min(Ideal - Current, Available)$$
 
-#### Batch Sizing Impact (Patch 18)
+#### Batch Sizing Impact
 
 During fill batch rebalancing, the cache remainder (amount NOT allocated due to fund caps) affects available funds for the next cycle:
 
 **Cache Remainder Calculation**:
-- **Old (Patch 17)**: Computed from ideal sizes even when resize was capped
-- **New (Patch 18)**: Tracked per-slot, derived from actual allocated values
+- **Old**: Computed from ideal sizes even when resize was capped
+- **New**: Tracked per-slot, derived from actual allocated values
 
 **Effect on Side Capping Formula**:
 ```javascript
@@ -379,7 +381,7 @@ Rotations move capital from "Surplus" (useless) to "Shortage" (needed).
         -   The released funds from $S$ are immediately added to `ChainFree`.
         -   The reserved funds for $T$ are immediately subtracted (added to `Virtual`).
 
-### 3.4 Edge-First Surplus Sorting (Patch 18)
+### 3.4 Edge-First Surplus Sorting
 
 **Change**: Prioritize furthest-from-market surpluses (lowest Buy / highest Sell) for rotations.
 
@@ -390,7 +392,7 @@ Rotations move capital from "Surplus" (useless) to "Shortage" (needed).
 - ✅ Inner surpluses remain available for spontaneous fill opportunities
 - ✅ Reduces unnecessary churn on volatile price action
 
-### 3.5 Victim Cancel Safety Logic (Patch 18)
+### 3.5 Victim Cancel Safety Logic
 
 **Change**: Explicitly detect and cancel "victim" dust orders when a rotation targets an occupied slot.
 
@@ -416,7 +418,7 @@ targetSlot.orderId = newOrderId;
 
 ---
 
-## 3.7 Orphan-Fill Deduplication & Double-Credit Prevention (Patch 17)
+## 3.6 Orphan-Fill Deduplication & Double-Credit Prevention
 
 **Location**: `modules/dexbot_class.js` (constructor, `_handleBatchHardAbort()`, batch failure handler)
 
@@ -553,7 +555,7 @@ These are deducted from the *proceeds* of a fill.
 
 ---
 
-## 5.3 BTS Fee Object Structure (Patch 8)
+## 5.3 BTS Fee Object Structure
 
 For BTS fees, the system returns a structured object (not a simple number) with multiple fields for accounting precision.
 
@@ -568,12 +570,12 @@ getAssetFees('BTS', amount)
     total: 500,              // Old field: total fee (preserved for compatibility)
     createFee: 500,          // Old field: single create fee (preserved)
     netFee: 450,             // Old field: net fee after processing
-    netProceeds: 45500,      // NEW FIELD (Patch 8): proceeds after fee
+    netProceeds: 45500,      // proceeds after fee deduction
     isMaker: true            // Flag: is this a maker fee?
 }
 ```
 
-### netProceeds Calculation (Patch 8)
+### netProceeds Calculation
 
 **For Makers** (isMaker = true, gets 90% rebate):
 ```
@@ -619,7 +621,7 @@ const legacyFee = feeInfo.createFee;  // Works for both old and new code
 
 ---
 
-## 5.4 BUY Side Sizing & Fee Accounting (Patch 8)
+## 5.4 BUY Side Sizing & Fee Accounting
 
 **Problem Fixed**: BUY side fee calculations incorrectly applied fees to base asset instead of quote asset.
 
@@ -670,7 +672,7 @@ For BUY orders that are makers:
 
 ---
 
-## 5.5 Precision & Quantization (Patch 14)
+## 5.5 Precision & Quantization
 
 **Problem**: Floating-point arithmetic accumulates rounding errors over many calculations. After dozens of order size calculations, price derivations, and fund allocations, float values drift from their true blockchain integer representations, causing mismatches between internal state and on-chain reality.
 
@@ -741,9 +743,9 @@ const normalized = normalizeInt(currentSizeInt, 8);
 - Normalizing fund totals before invariant checks
 - Preparing sizes for blockchain transaction encoding
 
-### 5.5.2 Consolidation Impact (Patch 14)
+### 5.5.2 Consolidation Impact
 
-Before Patch 14, five separate quantization implementations existed:
+Previously, five separate quantization implementations existed:
 - `dexbot_class.js` - Manual rounding logic
 - `order.js` - Custom precision handling
 - `strategy.js` - Divergent rounding approach
@@ -767,7 +769,7 @@ Before Patch 14, five separate quantization implementations existed:
 | **Price derivation** | `quantizeFloat()` | Pool/market price calculations prone to float errors |
 | **Validate blockchain match** | `normalizeInt()` | Check: `normalizeInt(internal) === normalizeInt(chain)` |
 
-### 5.5.4 Relationship to Fund Validation (Patch 14 Fix)
+### 5.5.4 Relationship to Fund Validation
 
 The corrected fund validation in `_validateOperationFunds()` uses quantized values:
 
@@ -782,7 +784,7 @@ if (requiredAmount > availableBalance) {
 }
 ```
 
-This prevents the pre-Patch 14 bug where `available = chainFree + required` created a tautology (`required > chainFree + required` always false). Quantized comparisons now accurately reflect blockchain constraints.
+This prevents the bug where `available = chainFree + required` created a tautology (`required > chainFree + required` always false). Quantized comparisons now accurately reflect blockchain constraints.
 
 ---
 

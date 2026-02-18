@@ -224,9 +224,9 @@ Each category can be enabled/disabled independently:
 | **errorWarnings** | warn/error | enabled | All errors/warnings | Critical issues and warnings only |
 | **edgeCases** | warn/error | enabled | Edge condition handling | Unusual conditions that don't cause errors |
 
-### New Categories: Batch Processing & Recovery (Patch 17-18)
+### Batch Processing & Recovery Categories
 
-**Patch 17-18 adds new log messages for fill batching and recovery system:**
+**Log messages for fill batching and recovery system:**
 
 | Log Type | Module | Example | Purpose |
 |----------|--------|---------|---------|
@@ -236,10 +236,10 @@ Each category can be enabled/disabled independently:
 | **[RECOVERY]** | `accounting.js` | `[RECOVERY] Recovery succeeded, resetting state` | Confirms successful recovery and reset |
 | **[RECOVERY-RESET]** | `accounting.js` | `[RECOVERY-RESET] Periodic 10min sync, resetting retry counter` | Shows periodic reset points |
 | **[ORPHAN-FILL]** | `dexbot_class.js` | `[ORPHAN-FILL] Skipping double-credit for stale-cleaned order 12345` | Orphan-fill deduplication guard |
-| **[HARD-ABORT]** | `dexbot_class.js` | `[HARD-ABORT] Illegal state during batch processing with 12 ops` | Batch hard-abort with operation count telemetry (Patch 18) |
-| **[COOLDOWN]** | `dexbot_class.js` | `[COOLDOWN] Arming maintenance cooldown after hard-abort` | Confirms cooldown consistency (Patch 18) |
-| **[STALE-CANCEL]** | `dexbot_class.js` | `[STALE-CANCEL] Single-op batch stale recovery (fast-path)` | Fast-path recovery for single operations (Patch 18) |
-| **[CACHE-REMAINDER]** | `grid.js` | `[CACHE-REMAINDER] Tracking per-slot allocations (actual: 450/500)` | Cache remainder accuracy tracking (Patch 18) |
+| **[HARD-ABORT]** | `dexbot_class.js` | `[HARD-ABORT] Illegal state during batch processing with 12 ops` | Batch hard-abort with operation count telemetry |
+| **[COOLDOWN]** | `dexbot_class.js` | `[COOLDOWN] Arming maintenance cooldown after hard-abort` | Confirms cooldown consistency |
+| **[STALE-CANCEL]** | `dexbot_class.js` | `[STALE-CANCEL] Single-op batch stale recovery (fast-path)` | Fast-path recovery for single operations |
+| **[CACHE-REMAINDER]** | `grid.js` | `[CACHE-REMAINDER] Tracking per-slot allocations (actual: 450/500)` | Cache remainder accuracy tracking |
 
 ### Configuration for Batch Processing Logs
 

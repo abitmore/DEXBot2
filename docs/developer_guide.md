@@ -20,24 +20,26 @@ Understand these fundamental concepts before diving into code:
 - **Order States**: VIRTUAL → ACTIVE → PARTIAL lifecycle
 - **Fund Tracking**: Atomic accounting to prevent overdrafts
 - **Boundary Crawl**: Dynamic order rotation following price movement
+- **Copy-on-Write (COW)**: Master grid is immutable. All rebalancing runs on an isolated `WorkingGrid` clone; the master is replaced atomically only after blockchain success. See [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md).
 
 ### 3. **Code Reading Roadmap** (30-40 minutes)
 Follow this path through the codebase:
 
 ```
 1. modules/constants.js                    (5 min)   - Configuration and tuning parameters
-2. modules/order/manager.js                (10 min)  - Central coordinator, read constructor + _updateOrder()
-3. modules/order/accounting.js             (5 min)   - Fund tracking, read recalculateFunds() and resetRecoveryState()
-4. modules/order/strategy.js               (5 min)   - Rebalancing logic, read rebalance()
-5. modules/order/grid.js                   (5 min)   - Grid creation, read createOrderGrid()
-6. modules/dexbot_class.js::processFilledOrders (5-10 min) - Fill batch processing pipeline (Patch 17)
+2. modules/order/manager.js                (10 min)  - Central coordinator, read constructor + _updateOrder() + _applySafeRebalanceCOW()
+3. modules/order/working_grid.js           (5 min)   - COW working copy; read syncFromMaster() + buildDelta() + _commitWorkingGrid()
+4. modules/order/accounting.js             (5 min)   - Fund tracking, read recalculateFunds() and resetRecoveryState()
+5. modules/order/strategy.js               (5 min)   - Rebalancing logic, read rebalance()
+6. modules/order/grid.js                   (5 min)   - Grid creation, read createOrderGrid()
+7. modules/dexbot_class.js::processFilledOrders (5-10 min) - Fill batch processing pipeline
 ```
 
-**Additional Resources for Patch 17-18:**
+**Additional Resources**:
 - `modules/constants.js::FILL_PROCESSING` - Batch configuration (MAX_FILL_BATCH_SIZE, BATCH_STRESS_TIERS)
 - `modules/constants.js::PIPELINE_TIMING` - Recovery configuration (RECOVERY_RETRY_INTERVAL_MS, MAX_RECOVERY_ATTEMPTS)
-- `modules/dexbot_class.js::_handleBatchHardAbort()` - Hard-abort recovery handler (Patch 18)
-- `modules/dexbot_class.js::_staleCleanedOrderIds` - Orphan-fill deduplication tracking (Patch 17)
+- `modules/dexbot_class.js::_handleBatchHardAbort()` - Hard-abort recovery handler
+- `modules/dexbot_class.js::_staleCleanedOrderIds` - Orphan-fill deduplication tracking
 
 ---
 
@@ -58,7 +60,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 
 ### Pipeline Safety Features
 
-#### Patch 12: Pipeline Timeout & Health
+#### Pipeline Timeout & Health
 
 | Term | Meaning |
 |------|---------|
@@ -66,7 +68,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Pipeline Health Diagnostics** | `getPipelineHealth()` method returning 8 diagnostic fields for monitoring |
 | **Stale Operation Clearing** | Non-destructive recovery clearing operation flags without touching orders |
 
-#### Patch 17: Fill Batching & Recovery Retries
+#### Fill Batching & Recovery Retries
 
 | Term | Meaning |
 |------|---------|
@@ -75,13 +77,13 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Recovery Retry System** | Count+time-based retry mechanism with periodic reset. Replaces one-shot `_recoveryAttempted` flag. Max 5 attempts per episode with 60s minimum interval between retries. |
 | **Orphan-Fill Deduplication** | Map+TTL-based tracking of stale-cleaned order IDs to prevent double-crediting. Delayed orphan fill events are still blocked by checking `_staleCleanedOrderIds`. |
 
-#### Patch 18: Batching Hardening
+#### Cache & Stale-Order Handling
 
 | Term | Meaning |
 |------|---------|
-| **Cache Remainder Tracking** | Cache remainder now derived from actual allocated sizes during capped grid resizes (not ideal sizes). Ensures accurate cache fund availability for next rebalance cycle. |
+| **Cache Remainder Tracking** | Cache remainder derived from actual allocated sizes during capped grid resizes (not ideal sizes). Ensures accurate cache fund availability for next rebalance cycle. |
 | **Stale-Order Fast-Path** | Stale-cancel logic applies to single-op batches for fast recovery without triggering full state syncs. Prevents unnecessary expensive resynchronization. |
-| **Hard-Abort Cooldown Consistency** | Both primary and retry batch hard-abort paths now explicitly arm `_maintenanceCooldownCycles` to prevent premature maintenance after recovery. |
+| **Hard-Abort Cooldown Consistency** | Both primary and retry batch hard-abort paths explicitly arm `_maintenanceCooldownCycles` to prevent premature maintenance after recovery. |
 
 ### Fund Components
 
@@ -95,6 +97,21 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **available** | Free funds for new orders | `max(0, chainFree - virtual - cacheFunds - fees)` |
 | **total.chain** | Total on-chain balance | `chainFree + committed.chain` |
 | **total.grid** | Total grid allocation | `committed.grid + virtual` |
+
+### Copy-on-Write (COW) Concepts
+
+| Term | Meaning |
+|------|---------|
+| **Master Grid** (`manager.orders`) | The immutable source of truth. Frozen with `Object.freeze()`. Never mutated in place—replaced atomically via `_commitWorkingGrid()` only after blockchain success. |
+| **WorkingGrid** | Mutable clone of the master grid used during planning. Created by `new WorkingGrid(masterGrid)`. Discarded on failure; committed on success. Lives in `modules/order/working_grid.js`. |
+| **COW Rebalance** | The full plan→broadcast→commit cycle: `_applySafeRebalanceCOW()` → `_updateOrdersOnChainBatchCOW()` → `_commitWorkingGrid()` |
+| **Atomic Commit** | `_commitWorkingGrid(workingGrid, indexes, boundary)` swaps master to the working copy in a single operation, then increments `_gridVersion`. |
+| **Staleness / Version Mismatch** | If a fill mutates the master grid while a rebalance is in progress, the working grid is marked stale. The commit guard rejects stale or version-mismatched working grids. |
+| **`_gridVersion`** | Integer counter incremented on every master-grid mutation. Used by commit guards to detect concurrent master changes. |
+| **`_gridLock`** | `AsyncLock` that serializes all master-grid mutations to prevent races. |
+| **`syncFromMaster()`** | WorkingGrid method that selectively syncs one order from the master into the working copy during fills, avoiding a full abort. |
+| **Delta / COW Action** | A `{ type, id, ... }` object describing a single Create / Update / Cancel operation derived by comparing master vs. working grid. Only deltas are sent to the blockchain. |
+| **Rebalance States** | `NORMAL → REBALANCING → BROADCASTING → NORMAL`. Fills during REBALANCING sync into working grid. Fills during BROADCASTING mark it stale. |
 
 ### Grid Concepts
 
@@ -121,10 +138,10 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Atomic Check-and-Deduct** | Verify funds + deduct in single operation |
 | **Divergence Detection** | Comparing ideal grid vs. persisted grid |
 | **Invariant Verification** | Checking fund accounting consistency |
-| **Batch Processing** (Patch 17) | Grouping multiple fills into single rebalance cycle instead of one-at-a-time. Adaptive sizing (1-4 fills per broadcast) based on queue depth. |
-| **Adaptive Batch Sizing** (Patch 17) | Dynamic batch size calculation using stress tiers: low queue depth→batch 1, high queue depth→batch 4. Reduces fill processing from ~90s to ~24s for 29 fills. |
-| **Stale-Order Recovery** (Patch 18) | Fast-path recovery for single-operation batches that encounter stale orders on-chain. Executes cleanup without full state sync. |
-| **Orphan-Fill Prevention** (Patch 17) | Deduplication mechanism that prevents double-crediting fills from stale-cleaned orders using timestamp-based ID tracking (TTL pruning). |
+| **Batch Processing** | Grouping multiple fills into single rebalance cycle instead of one-at-a-time. Adaptive sizing (1-4 fills per broadcast) based on queue depth. |
+| **Adaptive Batch Sizing** | Dynamic batch size calculation using stress tiers: low queue depth→batch 1, high queue depth→batch 4. Reduces fill processing from ~90s to ~24s for 29 fills. |
+| **Stale-Order Recovery** | Fast-path recovery for single-operation batches that encounter stale orders on-chain. Executes cleanup without full state sync. |
+| **Orphan-Fill Prevention** | Deduplication mechanism that prevents double-crediting fills from stale-cleaned orders using timestamp-based ID tracking (TTL pruning). |
 
 ### Price Orientation and Derivation
 
@@ -240,7 +257,8 @@ const normalized = normalizeInt(currentSizeInt, assetPrecision);
 **Role**: Central coordinator for all order operations
 
 **Key Responsibilities**:
-- Maintain order state in `orders` Map
+- Maintain **immutable** master grid (`orders` Map, frozen via `Object.freeze()`)
+- Enforce Copy-on-Write rebalancing via `WorkingGrid` and atomic commits
 - Coordinate specialized engines (Accountant, Strategy, Sync, Grid)
 - Manage order indices for fast lookups
 - Handle order locking to prevent race conditions
@@ -250,6 +268,16 @@ const normalized = normalizeInt(currentSizeInt, assetPrecision);
 // Central state update - ALWAYS use this, never modify orders Map directly
 // Signature: _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0)
 _updateOrder(order, context, skipAccounting, fee)
+
+// COW rebalance pipeline
+performSafeRebalance(fills, excludeIds)       // Entry point; delegates to COW
+_applySafeRebalanceCOW(fills, excludeIds)     // Creates WorkingGrid, runs planning
+_reconcileGridCOW(targetGrid, boundary, wg)   // Computes delta against working copy
+_commitWorkingGrid(workingGrid, indexes, boundary) // Atomic swap: working → master
+
+// COW state tracking
+_setRebalanceState(state)    // NORMAL | REBALANCING | BROADCASTING
+_currentWorkingGrid          // Reference to active WorkingGrid (for fill sync)
 
 // Fast lookups using indices
 getOrdersByTypeAndState(type, state)
@@ -263,6 +291,8 @@ isOrderLocked(orderId)
 pauseFundRecalc()
 resumeFundRecalc()
 ```
+
+> **COW Rule**: The `orders` Map is frozen. Never call `manager.orders.set()` directly. All mutations go through `_applyOrderUpdate()` (for master changes) or the WorkingGrid (for planning). The master is only replaced inside `_commitWorkingGrid()` after blockchain success.
 
 **Common Patterns**:
 ```javascript
@@ -401,9 +431,62 @@ See `tests/repro_phantom_orders.js` for comprehensive test coverage:
 
 ---
 
-## Order State Helper Functions (Patch 11)
+## Copy-on-Write (COW) Development Rules
 
-**Location**: `modules/order/utils.js`
+The COW architecture is the **single standard** for grid mutations. All new rebalancing code must follow these rules.
+
+### The Golden Rule
+
+> The master grid (`manager.orders`) is **read-only** for strategy code. Only `_applyOrderUpdate()` (internal) and `_commitWorkingGrid()` (COW commit) may replace it.
+
+### Rebalance Pipeline (Required Pattern)
+
+```javascript
+// 1. Entry: performSafeRebalance() creates WorkingGrid automatically
+//    → calls _applySafeRebalanceCOW(fills, excludeIds)
+
+// 2. Planning: Work on the working copy ONLY
+const workingGrid = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
+workingGrid.set(orderId, updatedOrder);  // OK - modifies clone, not master
+
+// 3. Broadcast: _updateOrdersOnChainBatchCOW() sends ops to chain
+//    → On success: _commitWorkingGrid() atomically replaces master
+//    → On failure: workingGrid discarded (master unchanged)
+```
+
+### What New Code Must NOT Do
+
+```javascript
+// ❌ WRONG: Direct master mutation
+manager.orders.set('buy-5', order);             // Throws (frozen Map)
+manager.orders.get('buy-5').size = 100;         // Throws (deepFrozen object)
+
+// ❌ WRONG: Bypassing _applyOrderUpdate for blockchain-confirmed changes
+manager.orders = new Map([...manager.orders]);  // Breaks version + index tracking
+
+// ✅ CORRECT: State changes for confirmed blockchain events
+manager._applyOrderUpdate(order, 'my-context'); // Updates master + increments version
+
+// ✅ CORRECT: Planning changes during rebalance
+workingGrid.set(orderId, newOrderState);         // Safe - working copy only
+```
+
+### Fill Handling During Rebalance
+
+| COW State | Fill Arrives | Action |
+|-----------|-------------|--------|
+| `NORMAL` | Individual fill | Process immediately, update master |
+| `REBALANCING` | Individual fill | Update master + `workingGrid.syncFromMaster(master, id)` |
+| `BROADCASTING` | Individual fill | Update master + mark working grid stale; commit guard will reject |
+| `REBALANCING`/`BROADCASTING` | Full side update | Block until fills = 0 or abort |
+
+For full details see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md).
+
+---
+
+## Order State Helper Functions
+
+**Location**: `modules/order/utils/order.js`
 
 **Purpose**: Single source of truth for order state logic, replacing 34+ inline checks scattered across the codebase.
 
@@ -781,7 +864,7 @@ fetchAccountBalancesAndSetTotals()
 
 ---
 
-## Startup Sequence & Lock Ordering (Patch 9 Consolidation)
+## Startup Sequence & Lock Ordering
 
 ### Unified Startup Flow
 
@@ -954,7 +1037,7 @@ The `startPrice` is the anchor for valuation (calculating the relative value of 
     *   The bot derives the price from the current orderbook.
     *   Updated periodically every 4 hours.
 
-### Numeric `startPrice` - Fixed Anchor (Patch 8)
+### Numeric `startPrice` - Fixed Anchor
 
 When you set a **numeric value** like `"startPrice": 105.5` in `bots.json`:
 
@@ -1045,6 +1128,12 @@ describe('LIMIT order type', () => {
 - **LIMIT**: User-defined limit orders outside the grid
 ```
 
+**7. Ensure COW Compliance**
+- Any new strategy or rebalancing logic must operate on a `WorkingGrid`, not `manager.orders` directly.
+- New blockchain-confirmed state updates must go through `_applyOrderUpdate()`.
+- If a new operation can race with fills, verify the rebalance state (`_setRebalanceState`) gates it correctly.
+- Add tests for master-unchanged-on-failure and commit-only-on-success scenarios.
+
 ---
 
 ## Testing Strategy
@@ -1093,6 +1182,18 @@ manager.logger.logGridDiagnostics(manager, 'AFTER FILL');
 ---
 
 ## Code Style Guidelines
+
+### 0. **Respect the COW Boundary**
+```javascript
+// ✅ CORRECT - Planning on working copy (during rebalance)
+workingGrid.set(orderId, { ...order, size: newSize });
+
+// ✅ CORRECT - Confirmed blockchain event goes through _updateOrder()
+manager._updateOrder({ ...order, state: ORDER_STATES.ACTIVE }, 'placed');
+
+// ❌ WRONG - Direct master mutation (throws: Map is frozen)
+manager.orders.set(orderId, order);
+```
 
 ### 1. **Always Use _updateOrder()**
 ```javascript
@@ -1209,7 +1310,7 @@ const netProceeds = getAssetFees('IOB.XRP', 100);
 const fees = await BitShares.db.get_global_properties();
 ```
 
-### 4. **Leverage Pool ID Caching (Patch 8)**
+### 4. **Leverage Pool ID Caching**
 
 When deriving pool prices, the bot caches Liquidity Pool IDs to avoid repeated blockchain scans.
 
@@ -1331,6 +1432,7 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 
 ### Documentation
 - [Architecture](architecture.md) - System design and module relationships
+- [Copy-on-Write Master Plan](COPY_ON_WRITE_MASTER_PLAN.md) - COW architecture, phases, state machine, and test results
 - [Fund Movement Logic](FUND_MOVEMENT_AND_ACCOUNTING.md) - Algorithms and formulas
 - [README](../README.md) - User documentation
 - [WORKFLOW](WORKFLOW.md) - Git branch workflow
@@ -1345,7 +1447,11 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 - `modules/order/strategy.js` - Rebalancing logic
 - `modules/order/grid.js` - Grid creation
 - `modules/order/sync_engine.js` - Blockchain sync
-- `modules/order/utils.js` - Shared utilities
+- `modules/order/working_grid.js` - COW working copy (clone/delta/commit)
+- `modules/order/utils/order.js` - Order state predicates and helpers
+- `modules/order/utils/math.js` - Precision, quantization, fund math
+- `modules/order/utils/validate.js` - Validation and COW action building
+- `modules/order/utils/system.js` - Price derivation, deduplication
 
 ---
 

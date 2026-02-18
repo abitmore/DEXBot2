@@ -186,7 +186,7 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 | `npm run ptest` | Sync local test → origin/test |
 | `npm run pdev` | Sync local test → dev |
 | `npm run pmain` | Sync local test → dev → main |
-| `npm test` | Run full test suite (35+ test cases) |
+| `npm test` | Run full test suite (100+ test cases) |
 
 ---
 
