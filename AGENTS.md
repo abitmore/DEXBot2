@@ -184,25 +184,6 @@ git checkout main && git pull && git merge --no-ff dev && git push
   - `test_bts_fee_logic.js` - Ported from bts_fee_settlement.test.js
   - Scenario and integration tests (fills, grid, manager, etc.)
 
-## Recent Updates
-- **StateManager Consolidation (Patch 21)**: Eliminated duplicate state tracking — `isBootstrapping` and `_isBroadcasting` were maintained as both direct `OrderManager` properties and `StateManager` fields. `StateManager` is now the sole source of truth. Removed direct properties, updated all read sites across `manager.js`, `dexbot_class.js`, `accounting.js`, and `grid.js`. Fixed a pre-existing broken test in `test_resync_invariants.js` (Case 3 checked wrong log level and never actually validated its invariant).
-- **Atomic Boundary Shifts (Patch 20)**: Ensured boundary index shifts during divergence correction are atomic with slot-type reassignment. `pendingBoundaryIdx` carries boundary changes through the COW pipeline; `manager.boundaryIdx` is only updated inside `_commitWorkingGrid`. Added boundary clamping to prevent crossing existing orders. Updated `COPY_ON_WRITE_MASTER_PLAN.md`.
-- **Native Test Porting**: Ported all unit tests from Jest (`tests/unit/`) to native Node.js `assert` (`tests/test_*_logic.js`) to eliminate heavy devDependencies in standard installations. Removed `jest` and `tests/unit/` directory.
-- **BTS Fee Accounting Fix**: Corrected under-counting of fees during order rotations and size updates. Unified deduction logic in `Accountant` to handle all on-chain fees via `total` balance reduction.
-- **Rotation Synchronization**: Fixed `SyncEngine` to correctly apply `updateFee` during order rotations, ensuring `synchronizeWithChain` reflects actual blockchain costs.
-- **Unified Resize Accounting**: Migrated manual `chainFree` deductions in `DEXBot` to the centralized `_updateOrder` flow, ensuring consistent tracking of both total and free balances.
-- **Fund Rotation Fix**: Aligned `rebalanceSideRobust` in `strategy.js` with the `main` branch's budgeted rotation model.
-- **Available Funds Bug**: Eliminated double-deduction of `inFlight` funds in `utils.js::calculateAvailableFundsValue`, ensuring rotations proceed when capital is available.
-- **Accounting Stabilization**: Reported `recalculateFunds` in `accounting.js` to match the strict `main` branch structure.
-- **Startup Invariant Suppression**: Suppressed transient fund invariant warnings during the bootstrap phase. Added `startBootstrap()` and enhanced `finishBootstrap()` in `OrderManager` to explicitly control the bootstrap lifecycle. Integrated these into `recalculateGrid` and `performResync` to ensure invariant checks are paused during transient states. Added `tests/test_resync_invariants.js` for verification.
-- **Resync Order Duplication Fix**: Fixed a bug where triggered resyncs would create new orders instead of updating existing ones. Resolved a `ReferenceError` in `utils.js::parseChainOrder` and refactored `reconcileStartupOrders` in `startup_reconcile.js` to use **delta-based balance checks**. This allows existing orders to be updated/reused even when liquid funds are low, preventing duplicate order placements. Added `tests/test_resync_balance_fix.js`.
-- **Dynamic Configuration Refresh**: Implemented periodic (4h) refresh of `bots.json` in `dexbot_class.js` to pick up manual configuration changes (like `startPrice`) without process restart. Updates memory valuation anchors while maintaining "fund-driven" operational stability (no auto-rebalancing).
-- **Streamlined `startPrice` Logic**: Centralized `startPrice` handling across all bot states. If numeric, it acts as the **Single Source of Truth**, blocking auto-derivation. Used for valuation during runtime and as a fixed anchor during grid resets. Updated `architecture.md` and `developer_guide.md` with configuration management details.
-- **Refined Optimistic Accounting**: Centralized fund updates in `manager.js::_updateOrder` with `skipAccounting` support for full-sync scenarios.
-- **Price Orientation Fix**: Unified all price derivation utilities (`derivePoolPrice`, `deriveMarketPrice`) to use the standard **B/A orientation** (units of capital per 1 unit of inventory). Fixed `deriveMarketPrice` incorrectly inverting BitShares order book prices and enhanced `derivePoolPrice` with robust asset ID ordering to handle blockchain internal storage logic. Updated unit tests to enforce the unified B/A standard.
-- **Ghost Order Prevention**: Implemented robust full-fill detection in `SyncEngine` to handle cases where tiny remainders (below minimum order size or rounding to zero on either side) would previously cause orders to hang in `PARTIAL` state. Added `tests/test_ghost_order_fix.js` for verification.
-- **Documentation**: Updated fund model overview in `runner.js` to reflect refined handling of `virtual` fund commitments.
-
 ## Documentation
 - `README.md` - Full documentation
 - `docs/WORKFLOW.md` - Branch workflow
