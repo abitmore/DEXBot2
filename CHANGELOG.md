@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.21] - 2026-02-19 - StateManager Consolidation
+
+Eliminated duplicate state tracking where `isBootstrapping` and `_isBroadcasting` were maintained as both direct `OrderManager` properties and `StateManager` fields, requiring both to be kept in sync and creating a latent bug class.
+
+### Refactored
+- **Consolidated Bootstrap and Broadcast State** (`modules/order/manager.js`, `modules/dexbot_class.js`, `modules/order/accounting.js`, `modules/order/grid.js`) - commit f9bc182
+  - **Problem**: `isBootstrapping` and `_isBroadcasting` existed as direct `OrderManager` properties *and* as `StateManager` fields simultaneously. `isPipelineEmpty()` queried `broadcasting || this._isBroadcasting` — two paths to the same state — evidence of prior divergence.
+  - **Impact**: Any code path that updated one tracker but not the other caused a silent divergence. The double-check was a defensive hedge that indicated the trackers had already drifted.
+  - **Solution**: Removed `this._isBroadcasting` and `this.isBootstrapping` direct properties. `StateManager` is now the sole source of truth. All read sites updated to `this._state.isBootstrapping()` and `this._state.isBroadcastingActive()`. Deleted the tech debt TODO block that tracked this problem.
+  - **Dead code removed**: Else-branch `manager.isBootstrapping = true` in `recalculateGrid()` — `startBootstrap()` always exists; the runtime fallback was unreachable.
+
+### Fixed
+- **Broken Test Case** (`tests/test_resync_invariants.js`) - commit f9bc182
+  - Case 3 checked `level === 'warn'` but the code logs at `'error'`. Additionally `assets=null` caused an early return from `_verifyFundInvariants`, meaning the test never validated what it claimed. Rewrote to match the pattern of Cases 1 and 2.
+
+### Testing
+- `node tests/test_resync_invariants.js` ✓
+- `node tests/test_manager_logic.js` ✓
+- `node tests/test_accounting_logic.js` ✓
+- `node tests/test_grid_logic.js` ✓
+- `node tests/test_resync_balance_fix.js` ✓
+- `node tests/test_cow_commit_guards.js` ✓
+- `node tests/test_manager.js` ✓
+- `node tests/test_cow_divergence_correction.js` ✓
+
+---
+
 ## [0.6.0-patch.20] - 2026-02-18 - Atomic Boundary Shifts in COW Pipeline
 
 This patch ensures boundary index shifts during divergence correction are atomic with slot-type reassignment, preventing temporary mismatches between `boundaryIdx` and slot roles during the COW planning-to-commit lifecycle.
