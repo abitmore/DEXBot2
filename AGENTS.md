@@ -13,7 +13,8 @@
 
 ## Absolute Git Action Gate (User-Directed Writes)
 
-The agent may run git write actions when the user clearly requests them.
+**Agent must NOT proactively ask for or execute git write actions.**
+The agent only runs git write actions when the user clearly requests them.
 
 Git write actions include:
 - `git add`

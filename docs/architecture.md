@@ -19,6 +19,89 @@ DEXBot2 is a grid trading bot for the BitShares blockchain. It maintains a geome
 
 ---
 
+## Top-Level Data Flow
+
+The diagram below shows DEXBot2 from a **data perspective**: what data enters the system, how it moves through each engine, and what leaves as blockchain operations or persisted state.
+
+```mermaid
+flowchart TD
+    subgraph IN["INPUTS"]
+        CFG["bots.json<br/>(grid params, funds, pair)"]
+        GS["general.settings.json<br/>(timing, thresholds)"]
+        KEYS["keys.json AES encrypted<br/>+ MASTER_PASSWORD env"]
+        PERSIST["orders/botKey.json<br/>grid snapshot, cacheFunds,<br/>feesOwed, boundaryIdx"]
+        FILLEV["Fill Events real-time<br/>BitShares block op-4"]
+        OPENORD["Open Orders polling<br/>chain open-order list"]
+        BALANCES["Account Balances<br/>FREE + COMMITTED assets"]
+        PRICE["Market Price<br/>pool or order-book"]
+    end
+
+    subgraph BOOT["BOOTSTRAP — once at startup"]
+        AUTH["Credential Daemon<br/>Decrypt private key"]
+        ASSETMETA["Asset Metadata<br/>precision, fees, IDs"]
+        INITGRID["Initial Grid<br/>geometric price levels<br/>order sizes per side"]
+    end
+
+    subgraph ENGINE["CORE ENGINE — OrderManager"]
+        MASTERGRID["Master Grid — immutable/frozen<br/>slot-id, price, size, state<br/>orderId, blockchain, grid, proceeds"]
+        TWOPASS["SyncEngine<br/>2-pass: grid-to-chain then chain-to-grid<br/>match orderId, detect partials, flag stale"]
+        FUNDS["Accounting — SSOT for funds<br/>available, virtual, committed<br/>cacheFunds, btsFeesOwed<br/>Avail = max 0 ChainFree minus Virtual minus Fees"]
+        TARGET["Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial-fill consolidation, rotation"]
+        WORKGRID["WorkingGrid — COW copy<br/>all mutations here only<br/>commit to Master on confirmation"]
+        FILLQUEUE["Fill Queue<br/>AsyncLock + dedup 5-60 min"]
+        BATCHER["Adaptive Batcher<br/>depth 0-2 batch 1<br/>depth 3-7 batch 2<br/>depth 8-14 batch 3<br/>depth 15+ batch 4"]
+    end
+
+    subgraph OUT["OUTPUTS"]
+        OPS["Blockchain Operations<br/>CREATE / UPDATE / CANCEL<br/>limit orders on BitShares"]
+        SNAP["Grid Snapshot<br/>profiles/orders/botKey.json"]
+        LOGS["Logs and Metrics<br/>profiles/logs/botName.log<br/>queue depth, latency, health"]
+    end
+
+    KEYS --> AUTH --> ASSETMETA
+    CFG --> INITGRID
+    GS --> INITGRID
+    ASSETMETA --> INITGRID
+    PERSIST --> MASTERGRID
+    INITGRID --> MASTERGRID
+
+    PRICE --> FUNDS
+    BALANCES --> FUNDS
+    BALANCES --> TWOPASS
+    OPENORD --> TWOPASS
+    TWOPASS --> FUNDS
+    TWOPASS --> MASTERGRID
+
+    FILLEV --> FILLQUEUE
+    OPENORD --> FILLQUEUE
+    FILLQUEUE --> BATCHER
+    BATCHER --> WORKGRID
+
+    MASTERGRID --> WORKGRID
+    FUNDS --> TARGET
+    WORKGRID --> TARGET
+    TARGET --> WORKGRID
+    WORKGRID --> OPS
+    OPS --> MASTERGRID
+
+    MASTERGRID --> SNAP
+    FUNDS --> LOGS
+    BATCHER --> LOGS
+    OPS --> LOGS
+```
+
+### Key Design Principles
+
+| Principle | Mechanism |
+|---|---|
+| **Immutability** | Master Grid is frozen; all changes go through a disposable WorkingGrid (Copy-on-Write) |
+| **Single Source of Truth** | Accounting engine owns all fund data; everything reads from it |
+| **Event-driven + Polling** | Fill Events (real-time) and Open-Order polling feed the same queue |
+| **Adaptive throughput** | Batcher scales 1–4 operations per broadcast based on queue depth |
+| **Persistence** | Grid snapshot written after every confirmed blockchain commit |
+
+---
+
 ## Module Architecture
 
 ```mermaid
