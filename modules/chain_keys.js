@@ -508,7 +508,6 @@ async function main() {
             try {
                 const decryptedKey = decrypt(accountsData.accounts[accountName].encryptedKey, masterPassword);
                 console.log(`First 5 characters: ${decryptedKey.substring(0, 5)}`);
-                decryptedKey.replace(/./g, ' ');
             } catch (error) {
                 console.log('Decryption failed - wrong master password or corrupted data');
             }

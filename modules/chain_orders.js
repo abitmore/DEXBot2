@@ -126,7 +126,8 @@ const _accountResolutionCache = new Map();
 /**
  * Resolve asset precision from ID or symbol via BitShares DB.
  * @param {string} assetRef - Asset ID or symbol.
- * @returns {Promise<number>} The asset's precision (number of decimals), or 0 on failure.
+ * @returns {Promise<number>} The asset's precision (number of decimals).
+ * @throws {Error} If precision cannot be resolved.
  * @private
  */
 async function _getAssetPrecision(assetRef) {
@@ -143,11 +144,11 @@ async function _getAssetPrecision(assetRef) {
                 if (Array.isArray(res) && res[0] && typeof res[0].precision === 'number') return res[0].precision;
             }
         }
-    } catch (e) { 
-        console.error(`[_getAssetPrecision] Failed to resolve precision for ${assetRef}: ${e.message}`);
+    } catch (e) {
+        throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors. Cause: ${e.message}`);
     }
-    
-    throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors.`);
+
+    throw new Error(`CRITICAL: Could not resolve precision for asset ${assetRef}. Halting operation to prevent scaling errors. Cause: asset not found or precision missing.`);
 }
 
 // Preferred account ID and name for operations (can be changed)
@@ -291,7 +292,9 @@ async function _ensureAccountSubscriber(accountName) {
 
         try {
             BitShares.subscribe('account', bsCallback, accountName);
-        } catch (e) { }
+        } catch (e) {
+            console.warn(`[chain_orders] Failed to subscribe to account '${accountName}': ${e.message}`);
+        }
 
         const entry = { userCallbacks, bsCallback };
         accountSubscriptions.set(accountName, entry);
@@ -774,7 +777,9 @@ async function buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToR
  */
 async function createOrder(accountName, privateKey, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration, dryRun = false) {
     try {
-        const { op } = await buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration);
+        const buildResult = await buildCreateOrderOp(accountName, amountToSell, sellAssetId, minToReceive, receiveAssetId, expiration);
+        if (!buildResult) return { skipped: true };
+        const { op } = buildResult;
 
         if (dryRun) {
             console.log(`Dry run: Limit order prepared for account ${accountName} (not broadcasted)`);

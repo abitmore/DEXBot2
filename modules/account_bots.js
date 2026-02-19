@@ -30,20 +30,19 @@
  *   "bots": [
  *     {
  *       "name": "BTS/USD",
+ *       "preferredAccount": "my-account",
  *       "assetA": "BTS",
  *       "assetB": "USD",
  *       "active": true,
+ *       "dryRun": false,
  *       "startPrice": "pool",
  *       "minPrice": "3x",
  *       "maxPrice": "3x",
  *       "incrementPercent": 0.5,
  *       "targetSpreadPercent": 2,
- *       "activeOrders": { "buy": 20, "sell": 20 },
- *       "botFunds": { "buy": "100%", "sell": "100%" },
  *       "weightDistribution": { "sell": 0.5, "buy": 0.5 },
- *       "dryRun": false,
- *       "rotationEnabled": false,
- *       "rotationInterval": "1h"
+ *       "botFunds": { "sell": "100%", "buy": "100%" },
+ *       "activeOrders": { "sell": 20, "buy": 20 }
  *     }
  *   ]
  * }
@@ -561,7 +560,7 @@ async function askIntegerInRange(promptText, defaultValue, minVal, maxVal) {
         return askIntegerInRange(promptText, defaultValue, minVal, maxVal);
     }
     // Validate bounds
-    if (parsed < minVal || Math.floor(parsed) > maxVal) {
+    if (parsed < minVal || parsed > maxVal) {
         console.log(`Invalid ${promptText}: ${parsed}. Must be between ${minVal} and ${maxVal}`);
         return askIntegerInRange(promptText, defaultValue, minVal, maxVal);
     }

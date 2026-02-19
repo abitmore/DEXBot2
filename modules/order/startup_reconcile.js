@@ -332,6 +332,12 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
         false
     );
 
+    if (result && result.skipped) {
+        const logger = manager && manager.logger;
+        logger?.log?.(`[_createOrderFromGrid] Skipped slot ${gridOrder.id}: order amounts too small to place on-chain`, 'warn');
+        return;
+    }
+
     const chainOrderId =
         result &&
         result[0] &&
