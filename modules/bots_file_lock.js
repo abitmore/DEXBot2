@@ -11,20 +11,27 @@
  * - Queues operations during conflicts
  *
  * ===============================================================================
- * EXPORTS (1 function)
+ * EXPORTS (3 functions)
  * ===============================================================================
  *
- * 1. readBotsFileSync(filePath, parser) - Thread-safe file read
- *    filePath: Path to bots.json
- *    parser: Function to parse file content (e.g., JSON.parse)
- *    Returns: Parsed file content
- *    Acquires read lock for duration of read operation
+ * 1. readBotsFileWithLock(botsJsonPath, parseFunction) - Lock-protected async file read
+ *    Returns: Promise<{content: string, config: Object}>
+ *    Acquires lock, reads and parses file, releases lock
+ *
+ * 2. writeBotsFileWithLock(botsJsonPath, config) - Lock-protected async file write
+ *    Returns: Promise<void>
+ *    Acquires lock, writes JSON, releases lock
+ *
+ * 3. readBotsFileSync(botsJsonPath, parseFunction) - Synchronous file read (startup only)
+ *    Returns: {content: string, config: Object}
+ *    WARNING: Blocks event loop — only use before event loop is active
  *
  * ===============================================================================
  *
  * USAGE:
- * const { readBotsFileSync } = require('./bots_file_lock');
- * const config = readBotsFileSync('./profiles/bots.json', JSON.parse);
+ * const { readBotsFileWithLock, writeBotsFileWithLock, readBotsFileSync } = require('./bots_file_lock');
+ * const { config } = await readBotsFileWithLock('./profiles/bots.json', JSON.parse);
+ * await writeBotsFileWithLock('./profiles/bots.json', updatedConfig);
  *
  * ===============================================================================
  */

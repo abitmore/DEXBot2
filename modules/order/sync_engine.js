@@ -15,8 +15,12 @@
  * Uses AsyncLock to prevent concurrent sync operations (defense-in-depth locking).
  *
  * ===============================================================================
- * TABLE OF CONTENTS - SyncEngine Class (8 methods)
+ * TABLE OF CONTENTS - SyncEngine Class (8 methods) + 1 module-level helper
  * ===============================================================================
+ *
+ * MODULE-LEVEL HELPER (internal, not exported):
+ *   hasEquivalentRawOnChainOrder(a, b) - Compare two chain orders for equivalence
+ *      Used internally during sync to detect redundant/duplicate chain entries
  *
  * INITIALIZATION (1 method)
  *   1. constructor(manager) - Create new SyncEngine with manager reference

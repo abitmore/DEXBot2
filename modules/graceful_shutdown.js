@@ -11,13 +11,17 @@
  * - Detailed shutdown logging
  *
  * ===============================================================================
- * EXPORTS (1 function)
+ * EXPORTS (2 functions)
  * ===============================================================================
  *
  * 1. registerCleanup(name, cleanupFn) - Register cleanup function
  *    name: Description of cleanup operation (e.g., "Bot connection", "BitShares")
  *    cleanupFn: Async function to execute during shutdown
  *    Functions execute in reverse registration order (LIFO)
+ *
+ * 2. setupGracefulShutdown() - Install signal and exception handlers
+ *    Registers SIGTERM, SIGINT, uncaughtException, unhandledRejection handlers
+ *    Should be called once at process startup
  *
  * ===============================================================================
  *

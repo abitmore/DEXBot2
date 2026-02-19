@@ -31,9 +31,17 @@
  *      Decides whether to resume persisted grid, create new grid, or abort
  *      Returns { action, reason } where action is 'resume', 'create_new', or 'abort'
  *
- * INTERNAL HELPERS (2 functions):
- *   4. _countActiveOnGrid(manager, type) - Count active/partial orders by type (internal)
- *   5. _pickVirtualSlotsToActivate(manager, type, count) - Pick virtual slots for activation (internal)
+ * INTERNAL HELPERS (10 functions):
+ *   4. _countActiveOnGrid(manager, type) - Count active/partial orders by type
+ *   5. _pickVirtualSlotsToActivate(manager, type, count) - Pick virtual slots for activation
+ *   6. _isGridEdgeFullyActive(manager, orderType, updateCount) - Check if grid edge is fully active on one side
+ *   7. _updateChainOrderToGrid({...}) - Update a chain order's grid slot position (async)
+ *   8. _findLargestOrder(unmatchedOrders, updateCount) - Find the largest unmatched chain order
+ *   9. _cancelLargestOrder({...}) - Cancel the largest unmatched chain order (async)
+ *   10. _createOrderFromGrid({...}) - Create a new on-chain order from a grid slot (async)
+ *   11. _cancelChainOrder({...}) - Cancel a specific on-chain order (async)
+ *   12. _recoverStartupSyncFailure({...}) - Handle sync failure recovery at startup (async)
+ *   13. _reconcileStartupSide({...}) - Reconcile one side (buy/sell) against chain at startup (async)
  *
  * ===============================================================================
  *

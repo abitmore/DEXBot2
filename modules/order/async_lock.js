@@ -21,7 +21,7 @@
  *   });
  *
  * ===============================================================================
- * TABLE OF CONTENTS - AsyncLock Class (4 methods)
+ * TABLE OF CONTENTS - AsyncLock Class (6 methods)
  * ===============================================================================
  *
  * INITIALIZATION (1 method)
@@ -37,9 +37,12 @@
  *      Marks as locked, executes callback, handles errors, unlocks, processes next
  *      Recursive: processes next item after each callback completes
  *
- * STATUS QUERIES (2 methods)
+ * STATUS QUERIES (3 methods)
  *   4. isLocked() - Check if lock is currently acquired
  *   5. getQueueLength() - Get number of operations waiting for lock
+ *   6. clearQueue() - Reject and discard all pending queued operations
+ *      Returns: number of operations that were cleared
+ *      Does NOT stop the currently executing operation
  *
  * ===============================================================================
  *

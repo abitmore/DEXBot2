@@ -15,34 +15,36 @@
  * Time/Performance (ms, %):     1-2 decimals - readable metrics
  *
  * ===============================================================================
- * TABLE OF CONTENTS (16 exported functions)
+ * TABLE OF CONTENTS (18 exported functions)
  * ===============================================================================
  *
- * SECTION 1: ASSET FORMATTING (2 functions)
+ * SECTION 1: ASSET FORMATTING (5 functions)
  *   1. formatAmount8(value) - Format to 8 decimals (blockchain standard)
  *   2. formatAmount(value, decimals) - Format with custom decimal places
  *   3. formatAmountByPrecision(value, precision, fallbackPrecision) - Format using chain precision
- *   4. formatSizeByOrderType(value, orderType, assets, fallbackPrecision) - Format order size by BUY/SELL asset precision
+ *   4. formatAmountStrict(value, precision) - Format using chain precision; returns 'N/A' if either arg is non-finite
+ *   5. formatSizeByOrderType(value, orderType, assets, fallbackPrecision) - Format order size by BUY/SELL asset precision
  *
  * SECTION 2: PRICE FORMATTING (3 functions)
- *   5. formatPrice(value) - Format to 8 decimals (maximum precision)
- *   6. formatPrice6(value) - Format to 6 decimals
- *   7. formatPrice4(value) - Format to 4 decimals (simplified display)
+ *   6. formatPrice(value) - Format to 8 decimals (maximum precision)
+ *   7. formatPrice6(value) - Format to 6 decimals
+ *   8. formatPrice4(value) - Format to 4 decimals (simplified display)
  *
  * SECTION 3: PERCENTAGE FORMATTING (3 functions)
- *   8. formatPercent2(value) - Format to 2 decimals (spread %, ratios)
- *   9. formatPercent4(value) - Format to 4 decimals (precise measurements)
- *   10. formatPercent(value, decimals) - Format with custom decimal places
+ *   9. formatPercent2(value) - Format to 2 decimals (spread %, ratios)
+ *   10. formatPercent4(value) - Format to 4 decimals (precise measurements)
+ *   11. formatPercent(value, decimals) - Format with custom decimal places
  *
  * SECTION 4: RATIO/METRIC FORMATTING (3 functions)
- *   11. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
- *   12. formatMetric2(value) - Format to 2 decimals (timing, performance)
- *   13. formatMetric5(value) - Format to 5 decimals (detailed metrics)
+ *   12. formatRatio(value, decimals) - Format ratios with custom decimals (default 5)
+ *   13. formatMetric2(value) - Format to 2 decimals (timing, performance)
+ *   14. formatMetric5(value) - Format to 5 decimals (detailed metrics)
  *
- * SECTION 5: HELPER UTILITIES (3 functions)
- *   14. isValidNumber(value) - Check if value is defined and finite
- *   15. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
- *   16. safeFormat(value, decimals, fallback) - Safely format with fallback
+ * SECTION 5: HELPER UTILITIES (4 functions)
+ *   15. isValidNumber(value) - Check if value is defined and finite
+ *   16. isNumeric(val) - Check if value is a number or parseable numeric string
+ *   17. toFiniteNumber(value, defaultValue) - Convert to finite number with fallback
+ *   18. safeFormat(value, decimals, fallback) - Safely format with fallback
  *
  * ===============================================================================
  */
