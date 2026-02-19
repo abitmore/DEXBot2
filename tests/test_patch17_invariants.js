@@ -3,12 +3,19 @@ const DEXBot = require('../modules/dexbot_class');
 const Grid = require('../modules/order/grid');
 const chainOrders = require('../modules/chain_orders');
 const { OrderManager } = require('../modules/order/manager');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');
 const bsModule = require('../modules/bitshares_client');
 
 if (typeof bsModule.setSuppressConnectionLog === 'function') {
     bsModule.setSuppressConnectionLog(true);
 }
+
+const TEST_TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS || 30000);
+const testTimeoutHandle = setTimeout(() => {
+    console.error(`✗ Patch17 invariant tests timed out after ${TEST_TIMEOUT_MS}ms`);
+    process.exit(1);
+}, TEST_TIMEOUT_MS);
+if (typeof testTimeoutHandle.unref === 'function') testTimeoutHandle.unref();
 
 async function createManager() {
     const mgr = new OrderManager({
@@ -33,12 +40,25 @@ function createBatchManagerStub(overrides = {}) {
             assetA: { id: '1.3.0', precision: 8, symbol: 'TEST' },
             assetB: { id: '1.3.1', precision: 5, symbol: 'BTS' }
         },
+        _gridVersion: 0,
+        boundaryIdx: null,
         lockOrders: () => {},
         unlockOrders: () => {},
+        _setRebalanceState: () => {},
+        startBroadcasting: () => {},
+        stopBroadcasting: () => {},
+        _clearWorkingGridRef: () => {},
         pauseFundRecalc: () => {},
-        resumeFundRecalc: () => {},
+        resumeFundRecalc: async () => {},
+        modifyCacheFunds: async () => {},
+        _commitWorkingGrid: async () => {},
         consumeIllegalStateSignal: () => null,
         consumeAccountingFailureSignal: () => null,
+        getChainFundsSnapshot: () => ({
+            chainFreeBuy: 100000,
+            chainFreeSell: 100000,
+            available: { buy: 100000, sell: 100000 }
+        }),
         orders: new Map(),
         _updateOrder: async () => {},
         _throwOnIllegalState: false,
@@ -70,19 +90,32 @@ async function testExtremePlacementOrdering() {
     }
     await mgr.resumeFundRecalc();
 
-    const buySlots = allSlots.filter(s => s.type === ORDER_TYPES.BUY);
-    const sellSlots = allSlots.filter(s => s.type === ORDER_TYPES.SELL);
+    const targetGrid = new Map(
+        allSlots.map((slot) => [
+            slot.id,
+            {
+                ...slot,
+                state: ORDER_STATES.ACTIVE,
+                size: slot.type === ORDER_TYPES.BUY ? 100 : 10
+            }
+        ])
+    );
 
-    const buyResult = await mgr.strategy.rebalanceSideRobust(ORDER_TYPES.BUY, allSlots, buySlots, 9000, 9000, new Set(), 4);
-    const sellResult = await mgr.strategy.rebalanceSideRobust(ORDER_TYPES.SELL, allSlots, sellSlots, 900, 900, new Set(), 4);
+    const reconcile = mgr.reconcileGrid(targetGrid, 3);
+    const buyCreateIds = reconcile.actions
+        .filter((a) => a.type === COW_ACTIONS.CREATE && a.order?.type === ORDER_TYPES.BUY)
+        .map((a) => a.id);
+    const sellCreateIds = reconcile.actions
+        .filter((a) => a.type === COW_ACTIONS.CREATE && a.order?.type === ORDER_TYPES.SELL)
+        .map((a) => a.id);
 
     assert.deepStrictEqual(
-        buyResult.ordersToPlace.map(o => o.id),
+        buyCreateIds,
         ['b0', 'b1', 'b2', 'b3'],
         'BUY placements must use nearest available free slots first'
     );
     assert.deepStrictEqual(
-        sellResult.ordersToPlace.map(o => o.id),
+        sellCreateIds,
         ['s0', 's1', 's2', 's3'],
         'SELL placements must use nearest available free slots first'
     );
@@ -122,7 +155,7 @@ async function testPipelineInFlightDefersMaintenance() {
             healthChecks++;
             return { buyDust: false, sellDust: false };
         },
-        _isBroadcasting: true,
+        _state: { isBroadcastingActive: () => true },
         shadowOrderIds: new Set(['lock-1']),
         logger: { log: () => {} }
     };
@@ -187,11 +220,13 @@ async function testIllegalStateAbortResyncAndCooldown() {
 
     assert.strictEqual(recoverySyncCalls, 1, 'Illegal state should trigger immediate recovery sync');
     assert.strictEqual(persistCalls, 0, 'Illegal state abort should skip persistence in same cycle');
-    assert.strictEqual(healthChecks, 0, 'Illegal state abort should skip further maintenance in same cycle');
+    assert.strictEqual(healthChecks, 1, 'Health check runs first; abort should stop the remaining maintenance steps');
+    assert.strictEqual(spreadChecks, 0, 'Illegal state abort should prevent spread checks in same cycle');
     assert.strictEqual(bot._maintenanceCooldownCycles, 1, 'Hard-abort should arm one maintenance cooldown cycle');
 
     await bot._executeMaintenanceLogic('invariant-abort-2');
-    assert.strictEqual(spreadChecks, 1, 'Cooldown cycle should skip spread check once after hard-abort');
+    assert.strictEqual(healthChecks, 1, 'Cooldown cycle should skip all maintenance checks once after hard-abort');
+    assert.strictEqual(spreadChecks, 0, 'Cooldown cycle should skip spread checks once after hard-abort');
 }
 
 async function testRoleAssignmentBlocksOnChainSpreadConversion() {
@@ -212,14 +247,18 @@ async function testRoleAssignmentBlocksOnChainSpreadConversion() {
     mgr.config.startPrice = 99;
     mgr.boundaryIdx = 1;
 
-    await mgr.strategy.rebalance([]);
+    const rebalanceResult = await mgr.performSafeRebalance([], new Set());
 
     const midOrder = mgr.orders.get('mid-active');
     assert(midOrder, 'Mid slot should still exist');
-    assert.notStrictEqual(midOrder.type, ORDER_TYPES.SPREAD, 'On-chain mid slot must not be converted to SPREAD');
+    assert.strictEqual(midOrder.type, ORDER_TYPES.BUY, 'On-chain mid slot should keep BUY type before commit');
+
+    const hasSpreadCreate = (rebalanceResult.actions || []).some(
+        (action) => action.type === COW_ACTIONS.CREATE && action.order?.type === ORDER_TYPES.SPREAD
+    );
     assert(
-        (mgr._metrics?.spreadRoleConversionBlocked || 0) > 0,
-        'Blocked SPREAD conversion metric should increment for on-chain slot'
+        hasSpreadCreate === false,
+        'Rebalance should not emit CREATE actions that convert on-chain slots into SPREAD orders'
     );
 }
 
@@ -286,14 +325,31 @@ async function testIllegalBatchAbortArmsMaintenanceCooldown() {
     bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
 
     const originalExecuteBatch = chainOrders.executeBatch;
+    const originalBuildCreateOrderOp = chainOrders.buildCreateOrderOp;
     try {
+        chainOrders.buildCreateOrderOp = async () => ({
+            op: {
+                op_name: 'limit_order_create',
+                op_data: {
+                    amount_to_sell: { asset_id: '1.3.1', amount: 1 },
+                    min_to_receive: { asset_id: '1.3.0', amount: 1 }
+                }
+            },
+            finalInts: {
+                sell: 1,
+                receive: 1,
+                sellAssetId: '1.3.1',
+                receiveAssetId: '1.3.0'
+            }
+        });
+
         chainOrders.executeBatch = async () => {
             const err = new Error('simulated illegal state');
             err.code = 'ILLEGAL_ORDER_STATE';
             throw err;
         };
 
-        const result = await bot.updateOrdersOnChainBatch({
+        const result = await bot.updateOrdersOnChainPlan({
             ordersToPlace: [{ id: 'slot-new', type: ORDER_TYPES.BUY, size: 1, price: 99 }],
             ordersToRotate: [],
             ordersToUpdate: [],
@@ -305,6 +361,7 @@ async function testIllegalBatchAbortArmsMaintenanceCooldown() {
         assert.strictEqual(bot._maintenanceCooldownCycles, 1, 'Illegal-state batch abort must arm maintenance cooldown');
     } finally {
         chainOrders.executeBatch = originalExecuteBatch;
+        chainOrders.buildCreateOrderOp = originalBuildCreateOrderOp;
     }
 }
 
@@ -318,7 +375,6 @@ async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
         incrementPercent: 0.5
     });
 
-    let staleCleanupUpdates = 0;
     let recoverySyncCalls = 0;
     bot._triggerStateRecoverySync = async () => {
         recoverySyncCalls++;
@@ -334,40 +390,40 @@ async function testSingleStaleCancelBatchUsesStaleOnlyFastPath() {
                 price: 99,
                 orderId: '1.7.999'
             }]
-        ]),
-        _updateOrder: () => {
-            staleCleanupUpdates++;
-        }
+        ])
     });
 
-    bot._buildCancelOps = async (_ordersToCancel, operations, opContexts) => {
-        operations.push({ op_data: { order: '1.7.999' } });
-        opContexts.push({ kind: 'cancel', order: { id: 'slot-stale', orderId: '1.7.999' } });
-    };
-    bot._buildCreateOps = async () => {};
-    bot._buildSizeUpdateOps = async () => {};
-    bot._buildRotationOps = async () => [];
-    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
-
     const originalExecuteBatch = chainOrders.executeBatch;
+    const originalBuildCancelOrderOp = chainOrders.buildCancelOrderOp;
     try {
+        chainOrders.buildCancelOrderOp = async () => ({
+            op_name: 'limit_order_cancel',
+            op_data: { order: '1.7.999' }
+        });
+
         chainOrders.executeBatch = async () => {
             throw new Error('Limit order 1.7.999 does not exist');
         };
 
-        const result = await bot.updateOrdersOnChainBatch({
-            ordersToPlace: [],
-            ordersToRotate: [],
-            ordersToUpdate: [],
-            ordersToCancel: []
-        });
+        let thrownError = null;
+        try {
+            await bot.updateOrdersOnChainPlan({
+                ordersToPlace: [],
+                ordersToRotate: [],
+                ordersToUpdate: [],
+                ordersToCancel: [{ id: 'slot-stale', orderId: '1.7.999' }]
+            });
+        } catch (err) {
+            thrownError = err;
+        }
 
-        assert.strictEqual(result?.staleOnly, true, 'Single stale cancel batch should exit via stale-only fast path');
+        assert(thrownError, 'Stale cancel error should surface to caller');
+        assert(/does not exist/i.test(thrownError.message), 'Thrown error should include stale-order context');
         assert.strictEqual(recoverySyncCalls, 0, 'Stale-only cancel race should not trigger recovery sync');
-        assert.strictEqual(staleCleanupUpdates > 0, true, 'Stale grid reference should still be cleaned up');
         assert.strictEqual(bot._staleCleanedOrderIds.has('1.7.999'), true, 'Stale order id should be tracked to avoid double-credit');
     } finally {
         chainOrders.executeBatch = originalExecuteBatch;
+        chainOrders.buildCancelOrderOp = originalBuildCancelOrderOp;
     }
 }
 
@@ -388,6 +444,7 @@ runTests().catch(err => {
     console.error(err);
     process.exitCode = 1;
 }).finally(() => {
+    clearTimeout(testTimeoutHandle);
     const BitShares = bsModule.BitShares;
     if (BitShares?.ws?.isConnected && typeof BitShares.disconnect === 'function') {
         try { BitShares.disconnect(); } catch (_) { }

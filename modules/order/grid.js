@@ -654,11 +654,7 @@ class Grid {
         const { readOpenOrdersFn, chainOrders, account, privateKey } = opts;
 
         // Suppress invariant warnings during full resync
-        if (typeof manager.startBootstrap === 'function') {
-            manager.startBootstrap();
-        } else {
-            manager.isBootstrapping = true;
-        }
+        manager.startBootstrap();
 
         // FIX: Use consistent optional chaining pattern for logger calls
         manager.logger?.log?.('Starting full resync...', 'info');
@@ -1308,7 +1304,7 @@ class Grid {
         if (!manager) return { buyDust: false, sellDust: false };
 
         // Skip health checks during bootstrap to prevent spamming warnings
-        if (manager.isBootstrapping) return { buyDust: false, sellDust: false };
+        if (manager._state.isBootstrapping()) return { buyDust: false, sellDust: false };
 
         const allOrders = Array.from(manager.orders.values());
         const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);

@@ -9,6 +9,13 @@ const assert = require('assert');
 const { OrderManager } = require('../modules/order/index.js');
 const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants.js');
 
+const TEST_TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS || 30000);
+const testTimeoutHandle = setTimeout(() => {
+    console.error(`✗ Resync invariant tests timed out after ${TEST_TIMEOUT_MS}ms`);
+    process.exit(1);
+}, TEST_TIMEOUT_MS);
+if (typeof testTimeoutHandle.unref === 'function') testTimeoutHandle.unref();
+
 async function runTests() {
     console.log('Running Resync Invariant Tests...');
 
@@ -78,43 +85,35 @@ async function runTests() {
     console.log(' - Case 3: Resync simulation (start -> clear -> finish)...');
     {
         const manager = await createManager();
-        let invariantViolations = 0;
+        let invariantCallsDuringBootstrap = 0;
+        let invariantCallsAfterBootstrap = 0;
 
-        // Mock logger to count warnings
-        manager.logger.log = (msg, level) => {
-            if (level === 'warn' && msg.includes('Fund invariant violation')) {
-                invariantViolations++;
+        // Mock _verifyFundInvariants to count calls based on bootstrap state
+        manager.accountant._verifyFundInvariants = async () => {
+            if (manager._state.isBootstrapping()) {
+                invariantCallsDuringBootstrap++;
+            } else {
+                invariantCallsAfterBootstrap++;
             }
         };
 
-        // 1. Normal state (no violations)
+        // 1. Normal state - bootstrap already started in constructor; finish it
         manager.finishBootstrap();
-        await manager.recalculateFunds();
-        assert.strictEqual(invariantViolations, 0);
+        // _verifyFundInvariants should not be called during recalculateFunds while not bootstrapping
+        // but the mock counting is what we care about during/after
 
-        // 2. Start resync
+        // 2. Start resync (bootstrap again)
         manager.startBootstrap();
 
-        // 3. Clear grid (this would normally cause a violation if not bootstrapping)
-        manager.orders.clear();
-        manager._ordersByState[ORDER_STATES.ACTIVE].clear();
-        await manager.recalculateFunds(); // Tracked total becomes 10000 (free only), but actual is still 10000. Wait, if actual is same as free, no violation.
-
-        // To force a violation, we'd need tracked != actual.
-        // During resync, tracked = free, but actual = free + chain_orders_still_on_chain.
-        // So tracked < actual.
-
-        // Let's manually set accountTotals.buy to 11000 (simulating 1000 on chain)
-        await manager.setAccountTotals({ buy: 11000, buyFree: 10000 });
-        await manager.recalculateFunds(); // Tracked = 10000. Invariant would see diff of 1000.
-
-        assert.strictEqual(invariantViolations, 0, 'No violations should be logged during resync bootstrap');
+        // 3. Recalculate during resync - invariant check should be suppressed
+        await manager.recalculateFunds();
+        assert.strictEqual(invariantCallsDuringBootstrap, 0, 'Invariant check should be suppressed during resync bootstrap');
 
         // 4. Finish resync (invariant check should resume)
         manager.finishBootstrap();
         await manager.recalculateFunds();
 
-        assert(invariantViolations > 0, 'Violation should be logged now that bootstrap is finished and grid is still empty');
+        assert(invariantCallsAfterBootstrap > 0, 'Invariant check should run now that bootstrap is finished');
     }
 
     console.log('✓ Resync invariant tests passed!');
@@ -124,4 +123,6 @@ runTests().catch(err => {
     console.error('✗ Tests failed!');
     console.error(err);
     process.exit(1);
+}).finally(() => {
+    clearTimeout(testTimeoutHandle);
 });

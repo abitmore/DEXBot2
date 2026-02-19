@@ -298,7 +298,7 @@ class DEXBot {
             batchInFlight: this._batchInFlight,
             retryInFlight: this._batchRetryInFlight,
             recoveryInFlight: this._recoverySyncInFlight,
-            broadcasting: this.manager?._isBroadcasting || false
+            broadcasting: this.manager?._state?.isBroadcastingActive() || false
         };
     }
 
@@ -392,7 +392,7 @@ class DEXBot {
             this.manager.accountId = this.accountId;
             this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
         }
-        this.manager.isBootstrapping = true;
+        this.manager.startBootstrap();
 
         // Fetch account totals from blockchain at startup to initialize funds
         try {
@@ -706,7 +706,7 @@ class DEXBot {
                     this._log('Bootstrap phase complete - fill processing resumed', 'info');
                 } finally {
                     // CRITICAL: Always clear bootstrap flag, even on error
-                    this.manager.isBootstrapping = false;
+                    this.manager.finishBootstrap();
                 }
             });
 
@@ -784,10 +784,10 @@ class DEXBot {
         try {
             // BOOTSTRAP OPTIMIZATION: During bootstrap, prioritize fill processing over grid-wide checks
             // Process fills immediately with side-only rebalancing (no expensive full grid recalculations)
-            if (this.manager.isBootstrapping) {
+            if (this.manager._state.isBootstrapping()) {
                 // During bootstrap: skip lock contention checks, process fills directly
                 await this.manager._fillProcessingLock.acquire(async () => {
-                    if (!this.manager.isBootstrapping) return; // bootstrap finished while waiting for lock
+                    if (!this.manager._state.isBootstrapping()) return; // bootstrap finished while waiting for lock
                     await this._processFillsWithBootstrapMode(chainOrders);
                 });
                 return;
@@ -2039,7 +2039,7 @@ class DEXBot {
                 }
             } finally {
                 this.manager._throwOnIllegalState = false;
-                // Keep _isBroadcasting true during resumeFundRecalc to skip invariant checks
+                // Keep broadcasting true during resumeFundRecalc to skip invariant checks
                 // that would fail due to stale accountTotals (not yet refreshed from blockchain)
                 await this.manager.resumeFundRecalc();
                 this.manager.stopBroadcasting();

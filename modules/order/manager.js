@@ -477,7 +477,6 @@ class OrderManager {
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalc = false;
         this._pauseRecalcLogging = false;
-        this._isBroadcasting = false;
         this._throwOnIllegalState = false;
         this._pipelineBlockedSince = null;
         this._recoveryAttempted = false;
@@ -493,7 +492,7 @@ class OrderManager {
             metricsStartTime: Date.now()
         };
 
-        this.isBootstrapping = true;
+        this._state.startBootstrap();
         this._currentWorkingGrid = null;
         this._cowEngine = null;
 
@@ -535,15 +534,13 @@ class OrderManager {
     }
 
     startBootstrap() {
-        this.isBootstrapping = true;
         this._state.startBootstrap();
     }
 
     finishBootstrap() {
         const result = { hadDrift: false, driftInfo: null };
 
-        if (this.isBootstrapping) {
-            this.isBootstrapping = false;
+        if (this._state.isBootstrapping()) {
             this._state.finishBootstrap();
 
             // Validate fund state at bootstrap completion - if drift exists here,
@@ -565,26 +562,11 @@ class OrderManager {
         return result;
     }
 
-    // TODO: TECH DEBT - Consolidate duplicate state management
-    // Currently state is tracked in TWO places that must be kept in sync:
-    //   1. this._state (StateManager instance) - new centralized approach
-    //   2. this._isBroadcasting, this.isBootstrapping - legacy direct properties
-    // 
-    // Refactor plan:
-    //   - Remove direct properties (_isBroadcasting, isBootstrapping)
-    //   - Use only this._state.isBroadcastingActive(), this._state.isBootstrapping()
-    //   - Update all call sites throughout codebase
-    //   - This prevents bugs from forgetting to update both places
-    //
-    // See: docs/TEST_VS_MAIN_CODE_REVIEW.md "Duplicate State Management" section
-
     startBroadcasting() {
-        this._isBroadcasting = true;
         this._state.startBroadcasting();
     }
 
     stopBroadcasting() {
-        this._isBroadcasting = false;
         this._state.stopBroadcasting();
     }
 
@@ -1154,7 +1136,7 @@ class OrderManager {
         if (recoveryInFlight) {
             reasons.push('recovery sync in-flight');
         }
-        if (broadcasting || this._isBroadcasting) {
+        if (broadcasting || this._state.isBroadcastingActive()) {
             reasons.push('broadcasting active orders');
         }
 
@@ -1357,7 +1339,7 @@ class OrderManager {
     validateGridStateForPersistence() {
         const result = validateGridForPersistence(this.orders, this.accountTotals);
 
-        if (!result.isValid && this.isBootstrapping) {
+        if (!result.isValid && this._state.isBootstrapping()) {
             this.logger.log(`[BOOTSTRAP] Transient state (expected): ${result.reason}`, 'debug');
             return { isValid: true, reason: null };
         }

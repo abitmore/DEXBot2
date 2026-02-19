@@ -231,7 +231,7 @@ class Accountant {
              }
          }
 
-        if (!mgr._pauseFundRecalc && !mgr.isBootstrapping && !mgr._isBroadcasting) {
+        if (!mgr._pauseFundRecalc && !mgr._state.isBootstrapping() && !mgr._state.isBroadcastingActive()) {
             const snapshot = { chainFreeBuy, chainFreeSell, chainBuy, chainSell };
 
             const runVerification = (nextSnapshot) => {
