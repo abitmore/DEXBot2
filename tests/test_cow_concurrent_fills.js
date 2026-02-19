@@ -218,53 +218,6 @@ async function testNoSyncWhenNormalState() {
 }
 
 // ============================================================================
-// TEST 5: _cloneOrder deep-clones rawOnChain
-// ============================================================================
-function testCloneOrderDeepClonesRawOnChain() {
-    console.log('\n[COW-FILL-005] _cloneOrder deep-clones rawOnChain...');
-
-    const workingGrid = new WorkingGrid(new Map());
-
-    const original = {
-        id: 'slot-1',
-        type: ORDER_TYPES.BUY,
-        state: ORDER_STATES.ACTIVE,
-        price: 1.0,
-        size: 100,
-        orderId: '1.7.100',
-        rawOnChain: {
-            id: '1.7.100',
-            for_sale: '10000',
-            sell_price: {
-                base: { amount: '10000', asset_id: '1.3.0' },
-                quote: { amount: '5000', asset_id: '1.3.121' }
-            }
-        }
-    };
-
-    const cloned = workingGrid._cloneOrder(original);
-
-    // Verify clone independence
-    assert.notStrictEqual(cloned.rawOnChain, original.rawOnChain, 'rawOnChain should be a different reference');
-    assert.notStrictEqual(cloned.rawOnChain.sell_price, original.rawOnChain.sell_price, 'sell_price should be a different reference');
-    assert.notStrictEqual(cloned.rawOnChain.sell_price.base, original.rawOnChain.sell_price.base, 'base should be a different reference');
-    assert.notStrictEqual(cloned.rawOnChain.sell_price.quote, original.rawOnChain.sell_price.quote, 'quote should be a different reference');
-
-    // Verify values are equal
-    assert.strictEqual(cloned.rawOnChain.for_sale, '10000');
-    assert.strictEqual(cloned.rawOnChain.sell_price.base.amount, '10000');
-    assert.strictEqual(cloned.rawOnChain.sell_price.quote.amount, '5000');
-
-    // Mutate the clone and verify original is unchanged
-    cloned.rawOnChain.for_sale = '5000';
-    cloned.rawOnChain.sell_price.base.amount = '5000';
-    assert.strictEqual(original.rawOnChain.for_sale, '10000', 'original rawOnChain.for_sale should be unchanged');
-    assert.strictEqual(original.rawOnChain.sell_price.base.amount, '10000', 'original base.amount should be unchanged');
-
-    console.log('  PASS');
-}
-
-// ============================================================================
 // TEST 6: _cloneOrder handles missing rawOnChain gracefully
 // ============================================================================
 function testCloneOrderHandlesMissingRawOnChain() {
@@ -325,7 +278,6 @@ async function run() {
     await testFillDuringBroadcastingSyncsToWorkingGrid();
     await testCommitRejectedAfterFillDuringBroadcast();
     await testNoSyncWhenNormalState();
-    testCloneOrderDeepClonesRawOnChain();
     testCloneOrderHandlesMissingRawOnChain();
     await testStalenessIncludesPhaseContext();
 

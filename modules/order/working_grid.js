@@ -25,8 +25,8 @@
  *   1. constructor(masterGrid, options) - Clone master grid and initialize tracking
  *      options.baseVersion: Track version synced from master
  *
- *   2. _cloneGrid(source) - Deep clone grid Map (internal)
- *   3. _cloneOrder(order) - Clone single order object with nested payload cloning (internal)
+ *   2. _cloneGrid(source) - Clone grid Map (internal)
+ *   3. _cloneOrder(order) - Clone single order object with metadata cloning (internal)
  *
  * GRID OPERATIONS (6 methods)
  *   4. get(id) - Get order by ID
@@ -92,7 +92,7 @@ class WorkingGrid {
     /**
      * Clone a Map containing order objects
      * @param {Map} source - Source map
-     * @returns {Map} - Deep cloned map
+     * @returns {Map} - Cloned map
      */
     _cloneGrid(source) {
         const cloned = new Map();
@@ -108,24 +108,10 @@ class WorkingGrid {
      * @returns {Object} - Cloned order
      */
     _cloneOrder(order) {
-        const cloned = {
+        return {
             ...order,
             metadata: order.metadata ? { ...order.metadata } : undefined
         };
-        // Shallow-clone rawOnChain to prevent frozen-object mutation when
-        // sync_engine updates for_sale on partial fills.
-        if (order.rawOnChain && typeof order.rawOnChain === 'object') {
-            cloned.rawOnChain = { ...order.rawOnChain };
-            // Also clone sell_price if present (nested object with base/quote)
-            if (order.rawOnChain.sell_price && typeof order.rawOnChain.sell_price === 'object') {
-                cloned.rawOnChain.sell_price = {
-                    ...order.rawOnChain.sell_price,
-                    base: order.rawOnChain.sell_price.base ? { ...order.rawOnChain.sell_price.base } : undefined,
-                    quote: order.rawOnChain.sell_price.quote ? { ...order.rawOnChain.sell_price.quote } : undefined
-                };
-            }
-        }
-        return cloned;
     }
 
     get(id) { return this.grid.get(id); }
