@@ -523,10 +523,10 @@ class SyncEngine {
                             newSize,
                             updatedOrder.idealSize || gridOrder.idealSize
                         );
-                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', skipAccounting, 0);
+                        await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting, fee: 0 });
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', skipAccounting, 0);
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass1-filled', { skipAccounting, fee: 0 });
                         filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                     }
@@ -541,13 +541,13 @@ class SyncEngine {
                             gridOrder.idealSize
                         )
                     };
-                    await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', skipAccounting, 0);
+                    await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting, fee: 0 });
                 }
             } else if (isOrderOnChain(gridOrder)) {
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
-                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', skipAccounting, 0);
+                await mgr._applyOrderUpdate(spreadOrder, 'sync-cleanup-phantom', { skipAccounting, fee: 0 });
 
                 // Only genuine disappearances (had orderId) count as fills.
                 if (hadOrderId) {
@@ -606,7 +606,7 @@ class SyncEngine {
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(bestMatch);
                         filledOrders.push({ ...bestMatch });
-                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', skipAccounting, 0);
+                        await mgr._applyOrderUpdate(spreadOrder, 'sync-pass2-filled', { skipAccounting, fee: 0 });
                         updatedOrders.push(spreadOrder);
                         chainOrderIdsOnGrid.add(chainOrderId);
                         continue;
@@ -618,7 +618,7 @@ class SyncEngine {
                         match.idealSize
                     );
                 }
-                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', skipAccounting, 0);
+                await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting, fee: 0 });
                 updatedOrders.push(bestMatch);
                 chainOrderIdsOnGrid.add(chainOrderId);
             } else if (match) {
@@ -749,7 +749,7 @@ class SyncEngine {
                     }
 
                     const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
-                    await mgr._updateOrder(spreadOrder, 'handle-fill-full', false, 0);
+                    await mgr._updateOrder(spreadOrder, 'handle-fill-full', { skipAccounting: false, fee: 0 });
                     filledOrders.push(filledOrder);
                     return { filledOrders, updatedOrders, partialFill: false };
                 } else {
@@ -789,7 +789,7 @@ class SyncEngine {
                         // Note: partial fill on doubled side does NOT trigger double replacement
                     }
 
-                    await mgr._updateOrder(updatedOrder, 'handle-fill-partial', false, 0);
+                    await mgr._updateOrder(updatedOrder, 'handle-fill-partial', { skipAccounting: false, fee: 0 });
                     updatedOrders.push(updatedOrder);
                     filledOrders.push(filledPortion);
                     return { filledOrders, updatedOrders, partialFill: true };
@@ -872,12 +872,18 @@ class SyncEngine {
                         if (isRotation && existingOrder) {
                             if (!isOrderVirtual(existingOrder)) {
                                 const oldVirtualOrder = { ...virtualizeOrder(existingOrder), size: 0 };
-                                await mgr._applyOrderUpdate(oldVirtualOrder, 'rotation-cleanup', chainData.skipAccounting || false, 0);
+                                await mgr._applyOrderUpdate(oldVirtualOrder, 'rotation-cleanup', {
+                                    skipAccounting: chainData.skipAccounting || false,
+                                    fee: 0
+                                });
                             } else if (hasOnChainId(existingOrder)) {
                                 // Already VIRTUAL but still has orderId (from rebalance)
                                 // Just clear the orderId to reflect blockchain state
                                 const clearedOrder = { ...virtualizeOrder(existingOrder), size: 0 };
-                                await mgr._applyOrderUpdate(clearedOrder, 'fill-cleanup', chainData.skipAccounting || false, 0);
+                                await mgr._applyOrderUpdate(clearedOrder, 'fill-cleanup', {
+                                    skipAccounting: chainData.skipAccounting || false,
+                                    fee: 0
+                                });
                             }
                         }
 
@@ -893,7 +899,10 @@ class SyncEngine {
                         };
                         // Deduced fee (createFee or updateFee) must always be applied to reflect blockchain cost
                         const actualFee = fee;
-                        await mgr._applyOrderUpdate(updatedOrder, 'fill-place', chainData.skipAccounting || false, actualFee);
+                        await mgr._applyOrderUpdate(updatedOrder, 'fill-place', {
+                            skipAccounting: chainData.skipAccounting || false,
+                            fee: actualFee
+                        });
                     }
                 } finally {
                     mgr.unlockOrders([gridOrderId]);
@@ -911,7 +920,10 @@ class SyncEngine {
                         // Re-fetch to ensure we have latest state after acquiring lock
                         const currentGridOrder = mgr.orders.get(gridOrder.id);
                         if (currentGridOrder && currentGridOrder.orderId === orderId) {
-                            await mgr._applyOrderUpdate(virtualizeOrder(currentGridOrder), 'cancel-order', false, 0);
+                            await mgr._applyOrderUpdate(virtualizeOrder(currentGridOrder), 'cancel-order', {
+                                skipAccounting: false,
+                                fee: 0
+                            });
                         }
                     } finally {
                         mgr.unlockOrders(orderIds);

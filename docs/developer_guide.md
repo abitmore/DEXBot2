@@ -105,7 +105,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Master Grid** (`manager.orders`) | The immutable source of truth. Frozen with `Object.freeze()`. Never mutated in place—replaced atomically via `_commitWorkingGrid()` only after blockchain success. |
 | **WorkingGrid** | Mutable clone of the master grid used during planning. Created by `new WorkingGrid(masterGrid)`. Discarded on failure; committed on success. Lives in `modules/order/working_grid.js`. |
 | **COW Rebalance** | The full plan→broadcast→commit cycle: `_applySafeRebalanceCOW()` → `_updateOrdersOnChainBatchCOW()` → `_commitWorkingGrid()` |
-| **Atomic Commit** | `_commitWorkingGrid(workingGrid, indexes, boundary)` swaps master to the working copy in a single operation, then increments `_gridVersion`. |
+| **Atomic Commit** | `_commitWorkingGrid(workingGrid, indexes, boundary, options = {})` swaps master to the working copy in a single operation, then increments `_gridVersion`. |
 | **Staleness / Version Mismatch** | If a fill mutates the master grid while a rebalance is in progress, the working grid is marked stale. The commit guard rejects stale or version-mismatched working grids. |
 | **`_gridVersion`** | Integer counter incremented on every master-grid mutation. Used by commit guards to detect concurrent master changes. |
 | **`_gridLock`** | `AsyncLock` that serializes all master-grid mutations to prevent races. |
@@ -266,14 +266,14 @@ const normalized = normalizeInt(currentSizeInt, assetPrecision);
 **Critical Methods**:
 ```javascript
 // Central state update - ALWAYS use this, never modify orders Map directly
-// Signature: _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0)
-_updateOrder(order, context, skipAccounting, fee)
+// Signature: _updateOrder(order, context = 'updateOrder', options = {})
+_updateOrder(order, context, { skipAccounting, fee })
 
 // COW rebalance pipeline
 performSafeRebalance(fills, excludeIds)       // Entry point; delegates to COW
 _applySafeRebalanceCOW(fills, excludeIds)     // Creates WorkingGrid, runs planning
 _reconcileGridCOW(targetGrid, boundary, wg)   // Computes delta against working copy
-_commitWorkingGrid(workingGrid, indexes, boundary) // Atomic swap: working → master
+_commitWorkingGrid(workingGrid, indexes, boundary, { skipRecalc }) // Atomic swap: working → master
 
 // COW state tracking
 _setRebalanceState(state)    // NORMAL | REBALANCING | BROADCASTING
@@ -310,14 +310,13 @@ manager._updateOrder({
 manager._updateOrder(
     { id: 'buy-5', state: ORDER_STATES.VIRTUAL, orderId: null },
     'cancel-order',  // context for logging
-    false,           // skipAccounting: update balances
-    0                // fee: no fee for cancel
+    { skipAccounting: false, fee: 0 }  // update balances, no cancel fee
 );
 
 // Pattern 3: Batch updates with pause/resume
 manager.pauseFundRecalc();
 for (const order of orders) {
-    manager._updateOrder(order, 'rebalance-batch', false, 0);
+    manager._updateOrder(order, 'rebalance-batch', { skipAccounting: false, fee: 0 });
 }
 manager.resumeFundRecalc(); // Recalculates once at end
 
@@ -645,7 +644,7 @@ const ordersToPlace = orders.filter(o =>
 for (const order of allOrders) {
     if (isPhantomOrder(order)) {
         const placeholder = convertToSpreadPlaceholder(order);
-        mgr._updateOrder(placeholder, 'sync-cleanup-phantom', false, 0);
+        mgr._updateOrder(placeholder, 'sync-cleanup-phantom', { skipAccounting: false, fee: 0 });
     }
 }
 ```
@@ -1204,9 +1203,9 @@ manager._updateOrder({
     type: ORDER_TYPES.BUY,
     price: 0.5,
     size: 100
-}, 'order-update', false, 0);
+}, 'order-update', { skipAccounting: false, fee: 0 });
 
-// ✅ ALSO CORRECT - Using defaults (context='updateOrder', skipAccounting=false, fee=0)
+// ✅ ALSO CORRECT - Using defaults (context='updateOrder', options={})
 manager._updateOrder({
     id: 'buy-5',
     state: ORDER_STATES.ACTIVE,
@@ -1224,7 +1223,7 @@ manager.orders.set('buy-5', order);
 // ✅ CORRECT - Recalculates once, with context for logging
 manager.pauseFundRecalc();
 for (const order of orders) {
-    manager._updateOrder(order, 'rebalance-batch', false, 0);
+    manager._updateOrder(order, 'rebalance-batch', { skipAccounting: false, fee: 0 });
 }
 manager.resumeFundRecalc();
 
@@ -1604,9 +1603,9 @@ expect(
 **Pattern 1: Batch Fund Updates**
 ```javascript
 manager.pauseFundRecalc();  // Batch mode
-manager._updateOrder(order1, 'test-batch', false, 0);
-manager._updateOrder(order2, 'test-batch', false, 0);
-manager._updateOrder(order3, 'test-batch', false, 0);
+manager._updateOrder(order1, 'test-batch', { skipAccounting: false, fee: 0 });
+manager._updateOrder(order2, 'test-batch', { skipAccounting: false, fee: 0 });
+manager._updateOrder(order3, 'test-batch', { skipAccounting: false, fee: 0 });
 manager.resumeFundRecalc();  // Recalc once
 
 // Verify final state

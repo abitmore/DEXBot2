@@ -1313,7 +1313,7 @@ if (manager.accountant.tryDeductFromChainFree(orderType, size)) {
 manager.pauseFundRecalc();
 for (const order of orders) {
     // context parameter helps with logging/debugging the source of the update
-    manager._updateOrder(order, 'batch-update', false, 0);
+    manager._updateOrder(order, 'batch-update', { skipAccounting: false, fee: 0 });
 }
 manager.resumeFundRecalc(); // Recalculates once
 ```

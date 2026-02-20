@@ -86,7 +86,7 @@ async function testExtremePlacementOrdering() {
 
     mgr.pauseFundRecalc();
     for (const slot of allSlots) {
-        await mgr._updateOrder(slot, 'seed', true, 0);
+        await mgr._updateOrder(slot, 'seed', { skipAccounting: true, fee: 0 });
     }
     await mgr.resumeFundRecalc();
 
@@ -242,7 +242,7 @@ async function testRoleAssignmentBlocksOnChainSpreadConversion() {
     ];
 
     for (const slot of slots) {
-        await mgr._updateOrder(slot, 'seed', true, 0);
+        await mgr._updateOrder(slot, 'seed', { skipAccounting: true, fee: 0 });
     }
     mgr.config.startPrice = 99;
     mgr.boundaryIdx = 1;
@@ -278,7 +278,7 @@ async function testGridResizeCacheTracksAppliedSizesAfterCap() {
 
     mgr.pauseFundRecalc();
     for (const slot of slots) {
-        await mgr._updateOrder(slot, 'seed', true, 0);
+        await mgr._updateOrder(slot, 'seed', { skipAccounting: true, fee: 0 });
     }
     await mgr.resumeFundRecalc();
 

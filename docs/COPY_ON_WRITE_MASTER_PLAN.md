@@ -143,7 +143,7 @@ When fills arrive during REBALANCING state (before BROADCASTING):
 
 ```javascript
 // Implementation in _applyOrderUpdate (manager.js)
-async _applyOrderUpdate(order, context, skipAccounting, fee) {
+async _applyOrderUpdate(order, context, options = {}) {
     // ... update master grid (immutable swap) ...
 
     // Centralized adapter handles:
@@ -310,7 +310,7 @@ await updateOrdersOnChainBatch(cowResult); // Execute via COW
 | `performSafeRebalance(fills, excludeIds)` | Entry point - delegates to COW |
 | `_applySafeRebalanceCOW(fills, excludeIds)` | Creates working grid, runs planning |
 | `_reconcileGridCOW(targetGrid, boundary, workingGrid)` | Delta against working copy |
-| `_commitWorkingGrid(workingGrid, indexes, boundary)` | Atomic swap to master |
+| `_commitWorkingGrid(workingGrid, indexes, boundary, options = {})` | Atomic swap to master |
 | `_setRebalanceState(state)` | Track rebalance state |
 | `_currentWorkingGrid` | Reference to working grid during rebalance for fill sync |
 | `syncFromMaster(masterGrid, orderId)` | Sync specific order from master to working grid (WorkingGrid method) |

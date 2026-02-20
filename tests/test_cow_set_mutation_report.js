@@ -153,7 +153,7 @@ if (violations.length === 0) {
     console.log('instead of directly mutating the Sets.\n');
     console.log('Example fix:');
     console.log('  BEFORE: manager._ordersByState[state].add(id)');
-    console.log('  AFTER:  manager._applyOrderUpdate(order, context, skipAccounting)\n');
+    console.log('  AFTER:  manager._applyOrderUpdate(order, context, { skipAccounting, fee })\n');
 }
 
 // ============================================================================
@@ -212,7 +212,7 @@ async function runRuntimeVerification() {
         state: ORDER_STATES.ACTIVE
     };
     
-    await manager._applyOrderUpdate(updatedOrder, 'test-state-change', true);
+    await manager._applyOrderUpdate(updatedOrder, 'test-state-change', { skipAccounting: true });
     
     // Verify post-update state
     assert(
@@ -236,7 +236,7 @@ async function runRuntimeVerification() {
         type: ORDER_TYPES.SELL
     };
     
-    await manager._applyOrderUpdate(typeChangedOrder, 'test-type-change', true);
+    await manager._applyOrderUpdate(typeChangedOrder, 'test-type-change', { skipAccounting: true });
     
     assert(
         !manager._ordersByType[ORDER_TYPES.BUY].has(order.id),

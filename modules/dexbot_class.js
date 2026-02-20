@@ -700,8 +700,8 @@ class DEXBot {
 
                     // Perform initial grid maintenance (thresholds, divergence, spread, health)
                     // Consolidated into shared logic to ensure consistent behavior at boot and runtime.
-                    // CRITICAL: Pass lockAlreadyHeld=true since we're inside _fillProcessingLock.acquire()
-                    await this._runGridMaintenance('startup', true);
+                    // CRITICAL: Pass lockAlreadyHeld since we're inside _fillProcessingLock.acquire()
+                    await this._runGridMaintenance('startup', { fillLockAlreadyHeld: true });
 
                     this._log('Bootstrap phase complete - fill processing resumed', 'info');
                 } finally {
@@ -1095,7 +1095,7 @@ class DEXBot {
                         // After: Grid maintenance waits for isPipelineEmpty() before structural changes
                         // Run only when the cycle contains at least one full fill.
                         if (shouldRunPostFillChecks) {
-                            await this._runGridMaintenance('post-fill', true);
+                            await this._runGridMaintenance('post-fill', { fillLockAlreadyHeld: true });
                         }
                     }
 
@@ -1256,7 +1256,11 @@ class DEXBot {
                 const oppositeType = filledType === ORDER_TYPES.BUY ? ORDER_TYPES.SELL : ORDER_TYPES.BUY;
 
                 // Mark filled slot as VIRTUAL (released)
-                await this.manager._updateOrder({ ...virtualizeOrder(filledOrder), size: 0 }, 'bootstrap-fill', false, 0);
+                await this.manager._updateOrder(
+                    { ...virtualizeOrder(filledOrder), size: 0 },
+                    'bootstrap-fill',
+                    { skipAccounting: false, fee: 0 }
+                );
 
                 // Find highest active order on opposite side (closest to market)
                 const allOrders = Array.from(this.manager.orders.values());
@@ -1303,7 +1307,11 @@ class DEXBot {
                 this._log(`[BOOTSTRAP] Rotating ${surplusOrder.id} → ${targetSlot.id} (${oppositeType} ${Format.formatAmount8(rotationSize)})`, 'info');
 
                 // Mark surplus as released
-                await this.manager._updateOrder({ ...virtualizeOrder(surplusOrder), size: 0 }, 'bootstrap-rotate', false, 0);
+                await this.manager._updateOrder(
+                    { ...virtualizeOrder(surplusOrder), size: 0 },
+                    'bootstrap-rotate',
+                    { skipAccounting: false, fee: 0 }
+                );
 
                 // Create rotation order with pre-calculated size
                 ordersToPlace.push({
@@ -1982,7 +1990,13 @@ class DEXBot {
                 if (result.success) {
                     // SUCCESS: Commit working grid to master (atomic swap)
                     this.manager.logger.log('[COW] Blockchain success - committing working grid to master', 'info');
-                    await this.manager._commitWorkingGrid(workingGrid, workingIndexes, workingBoundary);
+                    // RC-FIX: skipRecalc prevents invariant violation before optimistic accounting
+                    await this.manager._commitWorkingGrid(
+                        workingGrid,
+                        workingIndexes,
+                        workingBoundary,
+                        { skipRecalc: true }
+                    );
                     
                     // Deduct cacheFunds for new placements (CREATE) and rotations (UPDATE with newGridId)
                     // This prevents fund invariant violations from double-counting fill proceeds
@@ -2551,7 +2565,7 @@ class DEXBot {
             await this.manager.applyGridUpdateBatch(
                 updatesToApply.map(u => u.order), 
                 'batch-results-process',
-                true
+                { skipAccounting: true }
             );
         }
 
@@ -2759,14 +2773,14 @@ class DEXBot {
      * Called by the periodic blockchain fetch interval to check if grid needs updates.
      *
      * IMPORTANT: This method MUST only be called from within _fillProcessingLock.acquire()
-     * (specifically from _setupBlockchainFetchInterval). It passes fillLockAlreadyHeld=true
+     * (specifically from _setupBlockchainFetchInterval). It passes fillLockAlreadyHeld
      * to avoid deadlock with _consumeFillQueue which uses the same lock ordering.
      *
      * @private
      */
     async _performPeriodicGridChecks() {
         // CRITICAL: Caller (_setupBlockchainFetchInterval) already holds _fillProcessingLock
-        await this._runGridMaintenance('periodic', true);
+        await this._runGridMaintenance('periodic', { fillLockAlreadyHeld: true });
     }
 
     _isOpenOrdersSyncLoopEnabled() {
@@ -3103,10 +3117,15 @@ class DEXBot {
      * - Matches the order used in _consumeFillQueue to prevent deadlocks
      *
      * @param {string} context - Maintenance context for logging (e.g. 'startup', 'periodic', 'post-fill')
-     * @param {boolean} fillLockAlreadyHeld - If true, caller already holds _fillProcessingLock
+     * @param {Object} options - Maintenance options
      * @private
      */
-    async _runGridMaintenance(context = 'periodic', fillLockAlreadyHeld = false) {
+    async _runGridMaintenance(context = 'periodic', options = {}) {
+        if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+            throw new TypeError('Grid maintenance options must be an object');
+        }
+        const fillLockAlreadyHeld = options.fillLockAlreadyHeld === true;
+
         try {
             if (!this.manager || !this.manager.orders || this.manager.orders.size === 0) return;
 

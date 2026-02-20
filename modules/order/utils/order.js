@@ -257,7 +257,10 @@ async function correctOrderPriceOnChain(manager, correctionInfo, accountName, pr
             manager.ordersNeedingPriceCorrection = manager.ordersNeedingPriceCorrection.filter(c => c.chainOrderId !== chainOrderId);
             if (gridOrder && manager._applyOrderUpdate) {
                 const spreadOrder = convertToSpreadPlaceholder(gridOrder);
-                await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', false, 0);
+                await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', {
+                    skipAccounting: false,
+                    fee: 0
+                });
             }
             return { success: true, cancelled: true };
         } catch (error) {

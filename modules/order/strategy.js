@@ -192,7 +192,11 @@ class StrategyEngine {
 
                 if (currentSlot && !slotReused && isOrderPlaced(currentSlot)) {
                     mgr.logger.log(`[STRATEGY] Virtualizing filled slot ${filledOrder.id}`, 'debug');
-                    await mgr._updateOrder({ ...virtualizeOrder(currentSlot), size: 0 }, 'fill', false, 0);
+                    await mgr._updateOrder(
+                        { ...virtualizeOrder(currentSlot), size: 0 },
+                        'fill',
+                        { skipAccounting: false, fee: 0 }
+                    );
                 }
             }
         }

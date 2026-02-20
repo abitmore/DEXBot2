@@ -785,13 +785,34 @@ class OrderManager {
         }
     }
 
-    async _updateOrder(order, context = 'updateOrder', skipAccounting = false, fee = 0) {
+    _normalizeOrderUpdateOptions(options = {}) {
+        if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+            throw new TypeError('Order update options must be an object');
+        }
+
+        return {
+            skipAccounting: options.skipAccounting === true,
+            fee: Number.isFinite(Number(options.fee)) ? Number(options.fee) : 0
+        };
+    }
+
+    _normalizeCommitOptions(options = {}) {
+        if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+            throw new TypeError('Commit options must be an object');
+        }
+        return { skipRecalc: options.skipRecalc === true };
+    }
+
+    async _updateOrder(order, context = 'updateOrder', options = {}) {
+        const updateOptions = this._normalizeOrderUpdateOptions(options);
         return await this._gridLock.acquire(async () => {
-            return await this._applyOrderUpdate(order, context, skipAccounting, fee);
+            return await this._applyOrderUpdate(order, context, updateOptions);
         });
     }
 
-    async _applyOrderUpdate(order, context = 'updateOrder', skipAccounting = false, fee = 0) {
+    async _applyOrderUpdate(order, context = 'updateOrder', options = {}) {
+        const updateOptions = this._normalizeOrderUpdateOptions(options);
+        const { skipAccounting, fee: normalizedFee } = updateOptions;
         const oldOrder = this.orders.get(order.id);
         const validation = validateOrder(order, oldOrder, context);
 
@@ -827,7 +848,7 @@ class OrderManager {
         }
 
         if (this.accountant) {
-            await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, fee, skipAccounting);
+            await this.accountant.updateOptimisticFreeBalance(oldOrder, nextOrder, context, normalizedFee, skipAccounting);
         }
 
         const updatedOrder = deepFreeze({ ...nextOrder });
@@ -872,10 +893,11 @@ class OrderManager {
         }
     }
 
-    async applyGridUpdateBatch(updates, context = 'batch-update', skipAccounting = false) {
+    async applyGridUpdateBatch(updates, context = 'batch-update', options = {}) {
+        const updateOptions = this._normalizeOrderUpdateOptions(options);
         return await this._gridLock.acquire(async () => {
             for (const update of updates) {
-                await this._applyOrderUpdate(update, context, skipAccounting);
+                await this._applyOrderUpdate(update, context, updateOptions);
             }
             return true;
         });
@@ -1260,7 +1282,8 @@ class OrderManager {
         return buildAbortedResult(reason);
     }
 
-    async _commitWorkingGrid(workingGrid, workingIndexes, workingBoundary) {
+    async _commitWorkingGrid(workingGrid, workingIndexes, workingBoundary, options = {}) {
+        const { skipRecalc } = this._normalizeCommitOptions(options);
         const startTime = Date.now();
         const stats = workingGrid.getMemoryStats();
 
@@ -1319,7 +1342,9 @@ class OrderManager {
         });
 
         try {
-            await this.recalculateFunds();
+            if (!skipRecalc) {
+                await this.recalculateFunds();
+            }
             const duration = Date.now() - startTime;
             this.logger.log(`[COW] Grid committed in ${duration}ms`, 'debug');
 

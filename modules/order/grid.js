@@ -487,7 +487,7 @@ class Grid {
                         manager.logger?.log?.(`Sanitizing corrupted order ${order.id}: ACTIVE/PARTIAL without orderId -> VIRTUAL`, 'warn');
                         currentOrder = { ...order, state: ORDER_STATES.VIRTUAL };
                     }
-                    await manager._applyOrderUpdate(currentOrder, 'grid-load', true);
+                    await manager._applyOrderUpdate(currentOrder, 'grid-load', { skipAccounting: true });
                 }
                  const spreadCount = grid.filter(o => o.type === ORDER_TYPES.SPREAD).length;
                  manager.targetSpreadCount = spreadCount;
@@ -622,7 +622,7 @@ class Grid {
             try {
                  // RC-2: Use _applyOrderUpdate (PRIVATE/UNLOCKED)
                  for (const order of sizedOrders) {
-                     await manager._applyOrderUpdate(order, 'grid-init', true);
+                     await manager._applyOrderUpdate(order, 'grid-init', { skipAccounting: true });
                  }
              } finally {
                  await manager.resumeFundRecalc();
@@ -905,7 +905,11 @@ class Grid {
                         }
                     } else {
                         // CRITICAL: Set skipAccounting=false to ensure delta is consumed/released from ChainFree
-                        await manager._updateOrder({ ...slot, size: newSize }, 'grid-resize', false, 0);
+                        await manager._updateOrder(
+                            { ...slot, size: newSize },
+                            'grid-resize',
+                            { skipAccounting: false, fee: 0 }
+                        );
                     }
                 }
 
