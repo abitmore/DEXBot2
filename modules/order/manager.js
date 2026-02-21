@@ -157,7 +157,10 @@ class COWRebalanceEngine {
             masterGrid,
             targetGrid,
             targetBoundary,
-            { logger: (msg, level) => this.logger?.log(msg, level) }
+            {
+                logger: (msg, level) => this.logger?.log(msg, level),
+                dustThresholdPercent: GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE
+            }
         );
 
         if (reconcileResult.aborted) {
@@ -1215,7 +1218,8 @@ class OrderManager {
 
     reconcileGrid(targetGrid, targetBoundary) {
         return reconcileGrid(this.orders, targetGrid, targetBoundary, {
-            logger: (msg, level) => this.logger.log(msg, level)
+            logger: (msg, level) => this.logger.log(msg, level),
+            dustThresholdPercent: GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE
         });
     }
 

@@ -626,6 +626,59 @@ async function testCOW016_RotationOnlyUpdatesInReconcile() {
     console.log('✓ COW-016 passed');
 }
 
+/**
+ * COW-017: Dust holes must not be filled via rotation UPDATE
+ *
+ * Regression guard for double-dust prevention:
+ * - If a target hole is below double-dust threshold, reconcile must not emit
+ *   CREATE or rotation UPDATE for that slot.
+ */
+async function testCOW017_NoRotationIntoDustHole() {
+    console.log('\n[COW-017] Testing reconcile skips rotation into dust-sized hole...');
+
+    const master = new Map([
+        ['slot-1', {
+            id: 'slot-1',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 99,
+            size: 100,
+            orderId: '1.7.3001'
+        }],
+        ['slot-2', {
+            id: 'slot-2',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.VIRTUAL,
+            price: 100,
+            size: 0
+        }]
+    ]);
+
+    const target = new Map([
+        ['slot-1', {
+            id: 'slot-1',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.VIRTUAL,
+            price: 99,
+            size: 0
+        }],
+        ['slot-2', {
+            id: 'slot-2',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 100,
+            size: 5,
+            idealSize: 100
+        }]
+    ]);
+
+    const result = reconcileGrid(master, target, null, { dustThresholdPercent: 5 });
+    assert.strictEqual(result.actions.filter(a => a.type === 'update').length, 0, 'Dust hole must not receive rotation UPDATE');
+    assert.strictEqual(result.actions.filter(a => a.type === 'create').length, 0, 'Dust hole must not receive CREATE');
+
+    console.log('✓ COW-017 passed');
+}
+
 async function runAllTests() {
     console.log('=== Copy-on-Write Master Plan Test Suite ===\n');
     
@@ -645,6 +698,7 @@ async function runAllTests() {
     await testCOW014_ZeroSizeOrdersBecomeVirtual();
     await testCOW015_FullAccountingFlowSimulation();
     await testCOW016_RotationOnlyUpdatesInReconcile();
+    await testCOW017_NoRotationIntoDustHole();
     
     console.log('\n=== All COW tests passed! ===');
 }

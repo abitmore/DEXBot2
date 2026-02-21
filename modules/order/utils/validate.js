@@ -44,7 +44,8 @@ const {
 const {
     floatToBlockchainInt,
     blockchainToFloat,
-    getPrecisionSlack
+    getPrecisionSlack,
+    getDoubleDustThreshold
 } = require('./math');
 const {
     isOrderOnChain,
@@ -350,14 +351,32 @@ function checkFundDrift(orders, accountTotals, assets = null) {
  * @returns {Object} Reconciliation result with actions
  */
 function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
-    const { logger = null } = options;
+    const { logger = null, dustThresholdPercent = 5 } = options;
     const actions = [];
     
-    // Track surpluses (on-chain orders that should be VIRTUAL) and holes (need ACTIVE but empty)
-    const surplusesBuy = [];  // Orders to potentially rotate FROM
+    const surplusesBuy = [];
     const surplusesSell = [];
-    const holesBuy = [];      // Slots to potentially rotate TO
+    const holesBuy = [];
     const holesSell = [];
+
+    const isCreateHealthy = (order) => {
+        if (!order || order.size <= 0) return false;
+        const idealSize = toFiniteNumber(order.idealSize || order.size);
+        if (idealSize <= 0) return true;
+        const minHealthy = getDoubleDustThreshold(idealSize, dustThresholdPercent);
+        if (order.size < minHealthy) {
+            if (logger) {
+                logger(
+                    `[RECONCILE] Skipping dust target order: ${order.id} ` +
+                    `size=${Format.formatAmount8(order.size)} < minHealthy=${Format.formatAmount8(minHealthy)} ` +
+                    `(ideal=${Format.formatAmount8(idealSize)}, threshold=${dustThresholdPercent * 2}%)`,
+                    'warn'
+                );
+            }
+            return false;
+        }
+        return true;
+    };
 
     let validatedBoundary = targetBoundary;
     if (targetBoundary !== null) {
@@ -389,7 +408,7 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
 
         if (masterOrder.type !== targetOrder.type) {
             actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
-            if (targetOrder.size > 0 && targetOrder.state === ORDER_STATES.ACTIVE) {
+            if (targetOrder.size > 0 && targetOrder.state === ORDER_STATES.ACTIVE && isCreateHealthy(targetOrder)) {
                 actions.push({ type: COW_ACTIONS.CREATE, id, order: targetOrder });
             }
             continue;
@@ -417,33 +436,30 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         }
     }
 
-    // Handle rotations: pair surpluses with holes of the same type
-    // Rotation = UPDATE with newGridId and newPrice (move order to different slot)
     const pairRotations = (surpluses, holes) => {
         if (holes.length === 0) return;
-        
-        // If no surpluses, all holes become CREATEs (initial placement)
+
+        const healthyHoles = holes.filter(hole => isCreateHealthy(hole.order));
+        if (healthyHoles.length === 0) return;
+
         if (surpluses.length === 0) {
-            for (const hole of holes) {
+            for (const hole of healthyHoles) {
                 actions.push({ type: COW_ACTIONS.CREATE, id: hole.id, order: hole.order });
             }
             return;
         }
-        
+
         const isBuy = surpluses[0]?.master?.type === ORDER_TYPES.BUY;
-        
-        // Holes: closest to market first (for BUY: highest price, for SELL: lowest price)
-        holes.sort((a, b) => isBuy ? b.order.price - a.order.price : a.order.price - b.order.price);
-        
-        // Surpluses: furthest from market first (for BUY: lowest price, for SELL: highest price)
+
+        healthyHoles.sort((a, b) => isBuy ? b.order.price - a.order.price : a.order.price - b.order.price);
+
         surpluses.sort((a, b) => isBuy ? a.master.price - b.master.price : b.master.price - a.master.price);
-        
-        const rotationCount = Math.min(surpluses.length, holes.length);
+
+        const rotationCount = Math.min(surpluses.length, healthyHoles.length);
         for (let i = 0; i < rotationCount; i++) {
             const surplus = surpluses[i];
-            const hole = holes[i];
-            
-            // Generate rotation: UPDATE the surplus order to the hole's location
+            const hole = healthyHoles[i];
+
             actions.push({
                 type: COW_ACTIONS.UPDATE,
                 id: surplus.id,
@@ -455,14 +471,10 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
                 isRotation: true
             });
         }
-        
-        // Remaining holes become CREATEs
-        for (let i = rotationCount; i < holes.length; i++) {
-            actions.push({ type: COW_ACTIONS.CREATE, id: holes[i].id, order: holes[i].order });
+
+        for (let i = rotationCount; i < healthyHoles.length; i++) {
+            actions.push({ type: COW_ACTIONS.CREATE, id: healthyHoles[i].id, order: healthyHoles[i].order });
         }
-        
-        // Remaining surpluses stay in place (no action needed - we don't cancel them)
-        // They're outside the window but we keep them for fund accounting
     };
     
     pairRotations(surplusesBuy, holesBuy);

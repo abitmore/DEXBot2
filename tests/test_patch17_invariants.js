@@ -315,13 +315,6 @@ async function testIllegalBatchAbortArmsMaintenanceCooldown() {
         consumeIllegalStateSignal: () => ({ message: 'simulated illegal state from test' })
     });
 
-    bot._buildCancelOps = async () => {};
-    bot._buildCreateOps = async (_ordersToPlace, _assetA, _assetB, operations, opContexts) => {
-        operations.push({ op_data: { amount_to_sell: { asset_id: '1.3.1', amount: 1 }, min_to_receive: { asset_id: '1.3.0', amount: 1 } } });
-        opContexts.push({ kind: 'create', order: { id: 'slot-new' } });
-    };
-    bot._buildSizeUpdateOps = async () => {};
-    bot._buildRotationOps = async () => [];
     bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok' });
 
     const originalExecuteBatch = chainOrders.executeBatch;

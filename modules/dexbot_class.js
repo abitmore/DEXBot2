@@ -1606,6 +1606,36 @@ class DEXBot {
         return { isValid: true, summary };
     }
 
+    _resolveIdealSizeForValidation(orderLike, fallbackSize = null) {
+        const candidates = [
+            orderLike?.idealSize,
+            orderLike?.order?.idealSize,
+            orderLike?.size,
+            orderLike?.order?.size,
+            fallbackSize
+        ];
+
+        for (const candidate of candidates) {
+            const numeric = Number(candidate);
+            if (Number.isFinite(numeric) && numeric > 0) {
+                return numeric;
+            }
+        }
+
+        return null;
+    }
+
+    _validateOrderSizeForExecution(size, type, orderLike = null, fallbackSize = null) {
+        return validateOrderSize(
+            size,
+            type,
+            this.manager.assets,
+            GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50,
+            this._resolveIdealSizeForValidation(orderLike, fallbackSize),
+            GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5
+        );
+    }
+
     async _executeBatchIfNeeded(rebalanceResult, contextLabel = 'rebalance') {
         if (!hasExecutableActions(rebalanceResult)) {
             this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
@@ -1883,6 +1913,19 @@ class DEXBot {
                 } else if (action.type === COW_ACTIONS.CREATE) {
                     try {
                         const order = action.order;
+                        const sizeValidation = this._validateOrderSizeForExecution(
+                            order.size,
+                            order.type,
+                            order,
+                            order.size
+                        );
+                        if (!sizeValidation.isValid) {
+                            this.manager.logger.log(
+                                `Skipping create op for ${action.id}: ${sizeValidation.reason}`,
+                                'warn'
+                            );
+                            continue;
+                        }
                         const args = buildCreateOrderArgs(order, assetA, assetB);
                         const buildResult = await chainOrders.buildCreateOrderOp(
                             this.account,
@@ -1918,6 +1961,20 @@ class DEXBot {
                                 : Number(action.order?.size || 0);
 
                             if (!masterOrder || !action.orderId || !orderType || !Number.isFinite(newPrice) || newSize <= 0) {
+                                continue;
+                            }
+
+                            const rotationSizeValidation = this._validateOrderSizeForExecution(
+                                newSize,
+                                orderType,
+                                action.order,
+                                newSize
+                            );
+                            if (!rotationSizeValidation.isValid) {
+                                this.manager.logger.log(
+                                    `Skipping rotation update ${action.id} -> ${action.newGridId}: ${rotationSizeValidation.reason}`,
+                                    'warn'
+                                );
                                 continue;
                             }
 
@@ -2114,240 +2171,6 @@ class DEXBot {
             this._batchInFlight = false;
             this.manager.unlockOrders(idsToLock);
         }
-    }
-
-    /**
-     * Build cancellation operations for surplus orders.
-     * @param {Array} ordersToCancel - Grid orders to cancel
-     * @param {Array} operations - Operations array to append to
-     * @param {Array} opContexts - Operation contexts array to append to
-     * @private
-     */
-    async _buildCancelOps(ordersToCancel, operations, opContexts) {
-        if (!ordersToCancel || ordersToCancel.length === 0) return;
-        for (const order of ordersToCancel) {
-            if (!order.orderId) continue;
-            try {
-                const op = await chainOrders.buildCancelOrderOp(this.account, order.orderId);
-                operations.push(op);
-                opContexts.push({ kind: 'cancel', order });
-            } catch (err) {
-                this.manager.logger.log(`Failed to prepare cancel op for order ${order.id} (${order.orderId}): ${err.message}`, 'error');
-            }
-        }
-    }
-
-    async _buildCreateOps(ordersToPlace, assetA, assetB, operations, opContexts) {
-        if (!ordersToPlace || ordersToPlace.length === 0) return;
-
-        // Pre-check: Verify available funds before attempting to build operations
-        // IMPORTANT: Separate BUY and SELL orders - they use different asset budgets!
-        const buyOrders = ordersToPlace.filter(o => o.type === 'buy');
-        const sellOrders = ordersToPlace.filter(o => o.type === 'sell');
-
-        // Check BUY orders against buyFree (assetB funds)
-        if (buyOrders.length > 0) {
-            const buyTotalSize = buyOrders.reduce((sum, o) => sum + o.size, 0);
-            const buyFund = this.manager.accountTotals?.buyFree ?? 0;
-            if (buyTotalSize > buyFund) {
-                const buyPrecision = this.manager.assets?.assetB?.precision;
-                const buyTotalText = Number.isFinite(buyPrecision)
-                    ? Format.formatAmountByPrecision(buyTotalSize, buyPrecision)
-                    : String(buyTotalSize);
-                const buyFundText = Number.isFinite(buyPrecision)
-                    ? Format.formatAmountByPrecision(buyFund, buyPrecision)
-                    : String(buyFund);
-                this.manager.logger.log(
-                    `Warning: total order size (${buyTotalText}) exceeds available funds (${buyFundText}) for buy. ` +
-                    `Some orders may be skipped or placed at reduced size.`,
-                    'warn'
-                );
-            }
-        }
-
-        // Check SELL orders against sellFree (assetA funds)
-        if (sellOrders.length > 0) {
-            const sellTotalSize = sellOrders.reduce((sum, o) => sum + o.size, 0);
-            const sellFund = this.manager.accountTotals?.sellFree ?? 0;
-            if (sellTotalSize > sellFund) {
-                const sellPrecision = this.manager.assets?.assetA?.precision;
-                const sellTotalText = Number.isFinite(sellPrecision)
-                    ? Format.formatAmountByPrecision(sellTotalSize, sellPrecision)
-                    : String(sellTotalSize);
-                const sellFundText = Number.isFinite(sellPrecision)
-                    ? Format.formatAmountByPrecision(sellFund, sellPrecision)
-                    : String(sellFund);
-                this.manager.logger.log(
-                    `Warning: total order size (${sellTotalText}) exceeds available funds (${sellFundText}) for sell. ` +
-                    `Some orders may be skipped or placed at reduced size.`,
-                    'warn'
-                );
-            }
-        }
-
-        for (const order of ordersToPlace) {
-            // Determine order type for validation (not just first order)
-            const sideOfOrders = order.type || 'unknown';
-            try {
-                // Comprehensive order size validation (absolute minimum + double-dust threshold)
-                const sizeValidation = validateOrderSize(
-                    order.size,
-                    sideOfOrders,
-                    this.manager.assets,
-                    GRID_LIMITS.MIN_ORDER_SIZE_FACTOR || 50,
-                    null,  // No ideal size here; threshold checks already done in grid/strategy
-                    GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5
-                );
-
-                if (!sizeValidation.isValid) {
-                    this.manager.logger.log(
-                        `Skipping placement: ${sizeValidation.reason}. Order: ${order.id}`,
-                        'warn'
-                    );
-                    continue;
-                }
-
-                const args = buildCreateOrderArgs(order, assetA, assetB);
-
-                // Build the operation - returns null if amounts would round to 0 on blockchain
-                const result = await chainOrders.buildCreateOrderOp(
-                    this.account, args.amountToSell, args.sellAssetId,
-                    args.minToReceive, args.receiveAssetId, null
-                );
-
-                // Skip if order amounts are invalid (would round to 0)
-                if (!result) {
-                    this.manager.logger.log(
-                        `Skipping placement: amounts would round to 0 on blockchain. ` +
-                        `Order: ${order.type} ${order.id} size=${Format.formatSizeByOrderType(order.size, order.type, this.manager.assets)} @ price=${Format.formatPrice(order.price)}`,
-                        'warn'
-                    );
-                    continue;
-                }
-
-                const { op, finalInts } = result;
-                operations.push(op);
-                opContexts.push({ kind: 'create', order, args, finalInts });
-            } catch (err) {
-                this.manager.logger.log(`Failed to prepare create op for ${order.type} order ${order.id}: ${err.message}`, 'error');
-            }
-        }
-    }
-
-    /**
-     * Build size update operations for partial order consolidation.
-     * Used when dust partials need to be updated to their target size.
-     * @param {Array} ordersToUpdate - Partial orders needing size updates
-     * @param {Array} operations - Operations array to append to
-     * @param {Array} opContexts - Operation contexts array to append to
-     * @private
-     */
-    async _buildSizeUpdateOps(ordersToUpdate, operations, opContexts) {
-        if (!ordersToUpdate || ordersToUpdate.length === 0) return;
-        this.manager.logger.log(`[SPLIT UPDATE] Processing ${ordersToUpdate.length} size update(s)`, 'info');
-
-        for (const updateInfo of ordersToUpdate) {
-            try {
-                const { partialOrder, newSize } = updateInfo;
-                if (!partialOrder.orderId) continue;
-
-                const buildResult = await chainOrders.buildUpdateOrderOp(
-                    this.account, partialOrder.orderId,
-                    { amountToSell: newSize, orderType: partialOrder.type },
-                    partialOrder.rawOnChain // Use cached raw order to avoid redundant fetch
-                );
-
-                if (buildResult) {
-                    const { op, finalInts } = buildResult;
-                    operations.push(op);
-                    opContexts.push({ kind: 'size-update', updateInfo, finalInts });
-                }
-            } catch (err) {
-                this.manager.logger.log(`[SPLIT UPDATE] Failed to prepare size update op: ${err.message}`, 'error');
-            }
-        }
-    }
-
-
-    /**
-     * Build rotation operations for moving orders to new prices.
-     * Tracks unmet rotations (orders missing on-chain) for fallback to creation.
-     * @param {Array} ordersToRotate - Orders with rotation targets
-     * @param {Object} assetA - Asset A metadata
-     * @param {Object} assetB - Asset B metadata
-     * @param {Array} operations - Operations array to append to
-     * @param {Array} opContexts - Operation contexts array to append to
-     * @param {Array} virtualOpenOrders - Optional: virtual state of open orders (with pending updates applied)
-     * @returns {Array} Unmet rotations (fallback to placements)
-     * @private
-     */
-    async _buildRotationOps(ordersToRotate, assetA, assetB, operations, opContexts) {
-        if (!ordersToRotate || ordersToRotate.length === 0) return [];
-
-        const seenOrderIds = new Set();
-        const unmetRotations = [];  // Track rotations that couldn't be executed
-
-        for (const rotation of ordersToRotate) {
-            const { oldOrder, newPrice, newSize, type, newGridId } = rotation;
-            if (!oldOrder.orderId || seenOrderIds.has(oldOrder.orderId)) continue;
-            seenOrderIds.add(oldOrder.orderId);
-
-            // Trust internal grid state: if orderId exists and no rawOnChain cache,
-            // it's likely a newly placed order. buildUpdateOrderOp will handle
-            // the fetch if cache is missing.
-            try {
-                const { amountToSell, minToReceive } = buildCreateOrderArgs({ type, size: newSize, price: newPrice }, assetA, assetB);
-                const buildResult = await chainOrders.buildUpdateOrderOp(
-                    this.account, oldOrder.orderId,
-                    { amountToSell, minToReceive, newPrice, orderType: type },
-                    oldOrder.rawOnChain // Use cached raw order to avoid redundant fetch
-                );
-
-                if (buildResult) {
-                    const { op, finalInts } = buildResult;
-                    operations.push(op);
-                    opContexts.push({ kind: 'rotation', rotation, finalInts });
-                } else {
-                    this.manager.logger.log(`Skipping rotation of ${oldOrder.orderId}: no blockchain change needed`, 'debug');
-                }
-            } catch (err) {
-                // If the error indicates the order is missing, re-check open orders once
-                // before converting rotation to placement. This reduces false fallback
-                // conversions caused by transient API/index lag.
-                if (/not found|does not exist|unable to find object/i.test(String(err?.message || ''))) {
-                    let confirmedMissing = false;
-                    try {
-                        const accountRef = this.accountId || this.account;
-                        const freshOpenOrders = await chainOrders.readOpenOrders(accountRef);
-                        const stillExists = Array.isArray(freshOpenOrders)
-                            && freshOpenOrders.some(o => String(o?.id) === String(oldOrder.orderId));
-
-                        if (stillExists) {
-                            this.manager.logger.log(
-                                `Rotation recheck found order ${oldOrder.orderId} still on-chain. Skipping create fallback for this cycle.`,
-                                'warn'
-                            );
-                        } else {
-                            confirmedMissing = true;
-                        }
-                    } catch (recheckErr) {
-                        this.manager.logger.log(
-                            `Rotation missing-order recheck failed for ${oldOrder.orderId}: ${recheckErr.message}. Deferring fallback to avoid duplicate exposure.`,
-                            'warn'
-                        );
-                    }
-
-                    if (confirmedMissing) {
-                        this.manager.logger.log(`Rotation fallback to creation: Order ${oldOrder.orderId} not found after recheck`, 'warn');
-                        unmetRotations.push({ newGridId, newPrice, newSize, type });
-                    }
-                } else {
-                    this.manager.logger.log(`Failed to prepare rotation op: ${err.message}`, 'error');
-                }
-            }
-        }
-
-        return unmetRotations;
     }
 
     /**
