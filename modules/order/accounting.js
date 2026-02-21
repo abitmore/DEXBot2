@@ -916,25 +916,27 @@ class Accountant {
      * @private
      */
     _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) {
-        const mgr = this.manager;
         if (!assetSymbol) return rawAmount;
 
-        // For BTS, credit maker refund optimistically to keep totals aligned between
-        // blockchain snapshots. Net fee settlement still happens via deductBtsFees().
+        // For BTS, project maker refund into proceeds to keep tracked totals aligned
+        // between blockchain snapshots.
         if (assetSymbol === 'BTS') {
-            // For BTS: add the maker fee refund to proceeds.
-            // BitShares refunds 90% of the creation fee when a maker order fills.
-            // This must be tracked optimistically to prevent BUY drift between blockchain fetches.
-            let refund = 0;
-            if (isMaker) {
-                try {
-                    const feeInfo = getAssetFees('BTS');
-                    refund = (feeInfo?.createFee || 0) * (mgr.config.makerRefundPercent || 0.9);
-                } catch (e) {
-                    refund = 0;
+            // Use shared fee model to keep maker/taker handling consistent.
+            // For makers this includes the projected refund; for takers it is raw amount.
+            try {
+                const feeInfo = getAssetFees('BTS', rawAmount, isMaker);
+                const netProceeds = toFiniteNumber(feeInfo?.netProceeds, null);
+                if (netProceeds === null) {
+                    throw new Error('BTS netProceeds is not finite');
                 }
+                return netProceeds;
+            } catch (err) {
+                this.manager?.logger?.log?.(
+                    `[FILL-FEE] Failed to compute BTS proceeds projection: ${err.message}. Using raw proceeds (${Format.formatAmount8(rawAmount)}).`,
+                    'warn'
+                );
+                return rawAmount;
             }
-            return rawAmount + refund;
         }
 
         // For other assets: apply normal fee calculation (market fee %)

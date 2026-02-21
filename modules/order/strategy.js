@@ -52,10 +52,6 @@
 
 const { ORDER_TYPES, ORDER_STATES, PIPELINE_TIMING } = require("../constants");
 const {
-    getAssetFees,
-    _getFeeCache
-} = require("./utils/math");
-const {
     virtualizeOrder,
     hasOnChainId,
     isOrderPlaced
@@ -201,17 +197,9 @@ class StrategyEngine {
             }
         }
 
-        const hasBtsPair = (mgr.config?.assetA === 'BTS' || mgr.config?.assetB === 'BTS');
-        const feeCache = _getFeeCache();
-        if (hasBtsPair && fillsToSettle > 0 && feeCache?.BTS) {
-            const btsFeeDataMaker = getAssetFees('BTS', null, true);
-            const btsFeeDataTaker = getAssetFees('BTS', null, false);
-            const makerFeesOwed = makerFillCount * btsFeeDataMaker.netFee;
-            const takerFeesOwed = takerFillCount * btsFeeDataTaker.netFee;
-            mgr.logger.log(`[STRATEGY] Calculated fees: makerOwed=${makerFeesOwed} (${makerFillCount} fills), takerOwed=${takerFeesOwed} (${takerFillCount} fills)`, 'debug');
-            mgr.funds.btsFeesOwed += makerFeesOwed + takerFeesOwed;
-            await mgr.accountant.deductBtsFees();
-        }
+        // BTS operation fees are settled at operation time (create/update/cancel).
+        // Fill proceeds already include maker refund projection via accounting, so
+        // do not accrue/deduct additional fill-time BTS fees here.
 
         await mgr.recalculateFunds();
         mgr.logger.log(`[STRATEGY] Batch fill processing complete. Fills settled: ${fillsToSettle}`, 'info');

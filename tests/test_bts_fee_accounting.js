@@ -126,18 +126,17 @@ async function testFeeAccounting() {
     const totalFees = deductedAmount + directDeductedAmount + manager.funds.btsFeesOwed;
     console.log(`  Total BTS fees (deducted + remaining): ${Format.formatMetric5(totalFees)}`);
 
-    const makerFee = utils.getAssetFees('BTS', null, true).netFee;
     const updateFee = utils.getAssetFees('BTS').updateFee;
-    const expected = makerFee + (updates.length * updateFee);
+    const expected = updates.length * updateFee;
 
     assert.ok(
         Math.abs(totalFees - expected) <= 1e-10,
         `Unexpected fee total: got ${totalFees.toFixed(8)}, expected ${expected.toFixed(8)} ` +
-        `(makerFee=${makerFee}, updateFee=${updateFee}, updates=${updates.length})`
+        `(updateFee=${updateFee}, updates=${updates.length})`
     );
     console.log(
-        `  ✓ Fee accounting is correct: ${makerFee.toFixed(4)} (fill) + ` +
-        `${(updates.length * updateFee).toFixed(4)} (updates) = ${expected.toFixed(4)}`
+        `  ✓ Fee accounting is correct: ${(updates.length * updateFee).toFixed(4)} ` +
+        `(update operations only)`
     );
 }
 
