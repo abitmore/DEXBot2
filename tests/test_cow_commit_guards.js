@@ -1,8 +1,10 @@
 const assert = require('assert');
 
+const DEXBot = require('../modules/dexbot_class');
+const chainOrders = require('../modules/chain_orders');
 const { OrderManager } = require('../modules/order/manager');
 const { WorkingGrid } = require('../modules/order/working_grid');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
+const { ORDER_TYPES, ORDER_STATES, COW_ACTIONS } = require('../modules/constants');
 
 function createOrder(id, overrides = {}) {
     return {
@@ -113,14 +115,127 @@ async function testNoPostCommitSideEffectsWhenDeltaEmpty() {
     console.log('✓ COW-COMMIT-002 passed');
 }
 
+async function testExecuteBatchIfNeededSkipsEmptyActions() {
+    console.log('\n[COW-COMMIT-003] central empty-action guard skips broadcast...');
+
+    const bot = new DEXBot({
+        botKey: 'test_cow_commit_guard_empty_actions',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'TEST',
+        assetB: 'BTS',
+        incrementPercent: 0.5
+    });
+
+    const logs = [];
+    bot.manager = {
+        logger: {
+            log: (msg, level) => logs.push({ msg: String(msg), level })
+        }
+    };
+
+    let batchCalls = 0;
+    bot.updateOrdersOnChainBatch = async () => {
+        batchCalls += 1;
+        return { executed: true, hadRotation: false };
+    };
+
+    const emptyResult = await bot._executeBatchIfNeeded({ actions: [] }, 'unit-empty');
+    assert.strictEqual(batchCalls, 0, 'Empty action set must not call updateOrdersOnChainBatch');
+    assert.strictEqual(emptyResult.skippedNoActions, true, 'Empty action set should return skipped marker');
+    assert(logs.some(l => l.level === 'debug' && l.msg.includes('No actions needed for unit-empty')),
+        'Empty action guard should emit debug log');
+
+    await bot._executeBatchIfNeeded({
+        actions: [{ type: COW_ACTIONS.CREATE, id: 'slot-new', order: { id: 'slot-new' } }],
+        workingGrid: {}
+    }, 'unit-non-empty');
+    assert.strictEqual(batchCalls, 1, 'Non-empty action set must execute batch once');
+
+    console.log('✓ COW-COMMIT-003 passed');
+}
+
+async function testRejectsCreateOnOccupiedSlotBeforeBroadcast() {
+    console.log('\n[COW-COMMIT-004] rejects create on occupied slot pre-broadcast...');
+
+    const { manager } = createManagerFixture();
+    manager.assets = {
+        assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+        assetB: { id: '1.3.1', precision: 5, symbol: 'USD' }
+    };
+
+    const bot = new DEXBot({
+        botKey: 'test_cow_commit_guard_occupied_slot',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'BTS',
+        assetB: 'USD',
+        incrementPercent: 0.5
+    });
+    bot.manager = manager;
+    bot.account = { id: '1.2.999' };
+    bot.privateKey = 'TEST_PRIVATE_KEY';
+
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: manager._gridVersion });
+    const cowResult = {
+        workingGrid,
+        workingIndexes: workingGrid.getIndexes(),
+        workingBoundary: manager.boundaryIdx,
+        actions: [{
+            type: COW_ACTIONS.CREATE,
+            id: 'slot-1',
+            order: {
+                id: 'slot-1',
+                type: ORDER_TYPES.SELL,
+                price: 1.1,
+                size: 10,
+                state: ORDER_STATES.VIRTUAL,
+                orderId: null
+            }
+        }]
+    };
+
+    const originalExecuteBatch = chainOrders.executeBatch;
+    let executeBatchCalls = 0;
+    chainOrders.executeBatch = async () => {
+        executeBatchCalls += 1;
+        return { success: true, operation_results: [] };
+    };
+
+    try {
+        const result = await bot.updateOrdersOnChainBatch(cowResult);
+        assert.strictEqual(result.executed, false, 'Occupied-slot create batch must not execute');
+        assert.strictEqual(result.aborted, true, 'Occupied-slot create batch should abort early');
+        assert.strictEqual(result.reason, 'CREATE_SLOT_OCCUPIED', 'Abort reason should indicate occupied slot');
+        assert.strictEqual(executeBatchCalls, 0, 'Pre-broadcast guard must block blockchain executeBatch call');
+    } finally {
+        chainOrders.executeBatch = originalExecuteBatch;
+    }
+
+    console.log('✓ COW-COMMIT-004 passed');
+}
+
 async function run() {
     console.log('Running COW commit guard regression tests...');
     await testRejectsVersionMismatchWithoutCommit();
     await testNoPostCommitSideEffectsWhenDeltaEmpty();
+    await testExecuteBatchIfNeededSkipsEmptyActions();
+    await testRejectsCreateOnOccupiedSlotBeforeBroadcast();
     console.log('\n✓ All COW commit guard regression tests passed');
 }
 
 run().catch(err => {
     console.error('Test failed:', err);
-    process.exit(1);
+    process.exitCode = 1;
+}).finally(() => {
+    try {
+        const bsModule = require('../modules/bitshares_client');
+        const BitShares = bsModule?.BitShares;
+        if (BitShares?.ws?.isConnected && typeof BitShares.disconnect === 'function') {
+            BitShares.disconnect();
+        }
+    } catch (_) {
+        // noop
+    }
+    setTimeout(() => process.exit(process.exitCode || 0), 20);
 });

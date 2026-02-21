@@ -469,7 +469,9 @@ function countOrdersByType(orderType, ordersMap) {
  * @param {Object} order - Order to check
  * @returns {boolean} True if order has on-chain state
  */
-function isOrderOnChain(order) { return order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL; }
+function isOrderOnChain(order) {
+    return (order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL) && !!order?.orderId;
+}
 
 /**
  * Check if order is virtual (not on blockchain yet).
@@ -503,7 +505,10 @@ function isOrderPlaced(order) { return isOrderOnChain(order) && hasOnChainId(ord
  * @param {Object} order - Order to check
  * @returns {boolean} True if order appears on-chain but has no ID
  */
-function isPhantomOrder(order) { return isOrderOnChain(order) && !hasOnChainId(order); }
+function isPhantomOrder(order) {
+    const inOnChainState = order?.state === ORDER_STATES.ACTIVE || order?.state === ORDER_STATES.PARTIAL;
+    return inOnChainState && !hasOnChainId(order);
+}
 
 /**
  * Check if slot is available for new order placement.

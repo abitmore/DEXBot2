@@ -253,6 +253,7 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
     if (assetSymbol === 'BTS') {
         const orderCreationFee = cachedFees.limitOrderCreate.bts;
         const orderUpdateFee = cachedFees.limitOrderUpdate.bts;
+        const orderCancelFee = cachedFees.limitOrderCancel?.bts || 0;
         const makerNetFee = orderCreationFee * FEE_PARAMETERS.MAKER_FEE_PERCENT;
         const takerNetFee = orderCreationFee * FEE_PARAMETERS.TAKER_FEE_PERCENT;
         const netFee = isMaker ? makerNetFee : takerNetFee;
@@ -273,6 +274,7 @@ function getAssetFees(assetSymbol, assetAmount = null, isMaker = true) {
             total: netFee + orderUpdateFee,
             createFee: orderCreationFee,
             updateFee: orderUpdateFee,
+            cancelFee: orderCancelFee,
             makerNetFee: makerNetFee,
             takerNetFee: takerNetFee,
             netFee: netFee,

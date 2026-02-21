@@ -110,7 +110,12 @@ function validateOrder(order, oldOrder = null, context = 'validate') {
         normalizedOrder.size = 0;
     }
 
-    if (normalizedOrder.type === ORDER_TYPES.SPREAD && isOrderOnChain(normalizedOrder)) {
+    const isOnChainState = (
+        normalizedOrder.state === ORDER_STATES.ACTIVE ||
+        normalizedOrder.state === ORDER_STATES.PARTIAL
+    );
+
+    if (normalizedOrder.type === ORDER_TYPES.SPREAD && isOnChainState) {
         errors.push({
             code: 'ILLEGAL_SPREAD_STATE',
             message: `ILLEGAL STATE: Refusing to move SPREAD order ${order.id} to ${normalizedOrder.state}. SPREAD orders must remain VIRTUAL.`,
@@ -576,6 +581,58 @@ function summarizeActions(actions) {
     };
 }
 
+function hasExecutableActions(rebalanceResult) {
+    const actions = rebalanceResult?.actions;
+    return Array.isArray(actions) && actions.length > 0;
+}
+
+function validateCreateTargetSlots(actions, orders) {
+    const safeActions = Array.isArray(actions) ? actions : [];
+    const orderMap = orders instanceof Map ? orders : new Map();
+    const releasedSlotIds = new Set();
+
+    for (const action of safeActions) {
+        if (action?.type === COW_ACTIONS.CANCEL && action.id) {
+            releasedSlotIds.add(action.id);
+            continue;
+        }
+
+        if (
+            action?.type === COW_ACTIONS.UPDATE &&
+            action.id &&
+            action.newGridId &&
+            action.newGridId !== action.id
+        ) {
+            releasedSlotIds.add(action.id);
+        }
+    }
+
+    const violations = [];
+    for (const action of safeActions) {
+        if (action?.type !== COW_ACTIONS.CREATE) continue;
+
+        const targetId = action.id || action.order?.id;
+        if (!targetId || releasedSlotIds.has(targetId)) continue;
+
+        const current = orderMap.get(targetId);
+        if (!current) continue;
+
+        if (isOrderOnChain(current)) {
+            violations.push({
+                targetId,
+                currentOrderId: current.orderId,
+                currentType: current.type,
+                currentState: current.state
+            });
+        }
+    }
+
+    return {
+        isValid: violations.length === 0,
+        violations
+    };
+}
+
 /**
  * Check whether an action targets a given order reference.
  * Matches by orderId first (when present on both), otherwise by slot id.
@@ -851,6 +908,8 @@ module.exports = {
     reconcileGrid,
     optimizeRebalanceActions,
     summarizeActions,
+    hasExecutableActions,
+    validateCreateTargetSlots,
     hasActionForOrder,
     removeActionsForOrder,
     projectTargetToWorkingGrid,

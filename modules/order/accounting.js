@@ -169,10 +169,10 @@ class Accountant {
          // AUTO-SYNC SPREAD COUNT
          mgr.currentSpreadCount = mgr._ordersByType[ORDER_TYPES.SPREAD]?.size || 0;
 
-         // STEP 1-4: Iterate all orders, classify, and aggregate by state
-         for (const order of orderSnapshot) {
-             const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL);
-             const isVirtual = (order.state === ORDER_STATES.VIRTUAL);
+          // STEP 1-4: Iterate all orders, classify, and aggregate by state
+          for (const order of orderSnapshot) {
+              const isActive = (order.state === ORDER_STATES.ACTIVE || order.state === ORDER_STATES.PARTIAL) && !!order.orderId;
+              const isVirtual = (order.state === ORDER_STATES.VIRTUAL);
              const size = toFiniteNumber(order.size);
              if (size <= 0) continue;
 
@@ -658,13 +658,20 @@ class Accountant {
         const fromHint = this._normalizeSideHint(explicitSideHint);
         if (fromHint) return fromHint;
 
+        // Prefer explicit order type over carried metadata.
+        // committedSide/sideHint can be stale during boundary flips, but type is the
+        // authoritative current side for BUY/SELL commitments.
+        const fromOrderType = this._normalizeSideHint(order?.type);
+        if (fromOrderType) return fromOrderType;
+
+        const fromFallbackType = this._normalizeSideHint(fallbackOrder?.type);
+        if (fromFallbackType) return fromFallbackType;
+
         const candidates = [
             order?.sideHint,
             order?.committedSide,
-            order?.type,
             fallbackOrder?.sideHint,
-            fallbackOrder?.committedSide,
-            fallbackOrder?.type
+            fallbackOrder?.committedSide
         ];
 
         for (const candidate of candidates) {
@@ -909,16 +916,25 @@ class Accountant {
      * @private
      */
     _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) {
+        const mgr = this.manager;
         if (!assetSymbol) return rawAmount;
 
-        // CRITICAL: For BTS, the refund is a SEPARATE transaction, not included in fill amount
-        // Do NOT add refund to fill proceeds - that would be double counting
-        // The fill.receives already contains only the market proceeds
-        // The refund will arrive as a separate transaction that we'll account for separately
+        // For BTS, credit maker refund optimistically to keep totals aligned between
+        // blockchain snapshots. Net fee settlement still happens via deductBtsFees().
         if (assetSymbol === 'BTS') {
-            // For BTS: just return raw amount (no refund addition)
-            // Fee settlement (net fee) will be deducted later via deductBtsFees()
-            return rawAmount;
+            // For BTS: add the maker fee refund to proceeds.
+            // BitShares refunds 90% of the creation fee when a maker order fills.
+            // This must be tracked optimistically to prevent BUY drift between blockchain fetches.
+            let refund = 0;
+            if (isMaker) {
+                try {
+                    const feeInfo = getAssetFees('BTS');
+                    refund = (feeInfo?.createFee || 0) * (mgr.config.makerRefundPercent || 0.9);
+                } catch (e) {
+                    refund = 0;
+                }
+            }
+            return rawAmount + refund;
         }
 
         // For other assets: apply normal fee calculation (market fee %)

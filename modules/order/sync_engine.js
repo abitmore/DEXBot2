@@ -543,7 +543,7 @@ class SyncEngine {
                     };
                     await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting, fee: 0 });
                 }
-            } else if (isOrderOnChain(gridOrder)) {
+            } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
                 const hadOrderId = Boolean(currentGridOrder?.orderId);
                 const spreadOrder = convertToSpreadPlaceholder(currentGridOrder);
@@ -911,7 +911,9 @@ class SyncEngine {
             }
             case 'cancelOrder': {
                 const orderId = chainData;
+                const btsFeeData = getAssetFees('BTS');
                 const gridOrder = findMatchingGridOrderByOpenOrder({ orderId }, { orders: mgr.orders, assets: mgr.assets, calcToleranceFn: (p, s, t) => calculatePriceTolerance(p, s, t, mgr.assets), logger: mgr.logger });
+                
                 if (gridOrder) {
                     // Lock both chain orderId and grid order ID to prevent concurrent modifications
                     const orderIds = [orderId, gridOrder.id].filter(Boolean);
@@ -922,11 +924,18 @@ class SyncEngine {
                         if (currentGridOrder && currentGridOrder.orderId === orderId) {
                             await mgr._applyOrderUpdate(virtualizeOrder(currentGridOrder), 'cancel-order', {
                                 skipAccounting: false,
-                                fee: 0
+                                fee: btsFeeData?.cancelFee || 0
                             });
                         }
                     } finally {
                         mgr.unlockOrders(orderIds);
+                    }
+                } else {
+                    // CRITICAL: Even if order not in grid, the cancellation fee was still paid on blockchain
+                    // Deduct it from account totals to prevent drift.
+                    const btsSide = (mgr.config.assetA === 'BTS') ? ORDER_TYPES.SELL : (mgr.config.assetB === 'BTS') ? ORDER_TYPES.BUY : null;
+                    if (btsSide && btsFeeData?.cancelFee > 0) {
+                        await mgr.accountant.adjustTotalBalance(btsSide, -btsFeeData.cancelFee, 'cancel-order-unmatched-fee');
                     }
                 }
                 break;

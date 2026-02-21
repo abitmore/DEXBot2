@@ -371,7 +371,9 @@ class StrategyEngine {
                     idealSize: size,
                     // If size > 0, we WANT it active. If size 0, we want it VIRTUAL/SPREAD
                     state: size > 0 ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL,
-                    committedSide: slot.committedSide // Preserve metadata
+                    committedSide: (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
+                        ? slot.type
+                        : slot.committedSide
                 });
             });
         };
@@ -394,7 +396,10 @@ class StrategyEngine {
                     type: slot.type,
                     size: calculatedSize,
                     idealSize: calculatedSize,
-                    state: ORDER_STATES.VIRTUAL
+                    state: ORDER_STATES.VIRTUAL,
+                    committedSide: (slot.type === ORDER_TYPES.BUY || slot.type === ORDER_TYPES.SELL)
+                        ? slot.type
+                        : slot.committedSide
                 });
             }
         });

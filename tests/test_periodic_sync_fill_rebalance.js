@@ -84,6 +84,7 @@ async function runTests() {
                 assert.strictEqual(filledOrders.length, 1, 'Expected one periodic sync-detected fill');
                 assert.strictEqual(filledOrders[0].orderId, '1.7.777777', 'Expected periodic detected order to flow into strategy');
                 return {
+                    actions: [{ type: 'create', id: 'slot-174', order: { id: 'slot-174', type: 'buy', size: 1, price: 100 } }],
                     ordersToPlace: [],
                     ordersToRotate: [],
                     ordersToUpdate: [],

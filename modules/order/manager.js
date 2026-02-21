@@ -935,7 +935,17 @@ class OrderManager {
             return rebalanceResult;
         }
 
-        return { actions: [], stateUpdates: [], hadRotation: false };
+        const { WorkingGrid } = require('./working_grid');
+        const workingGrid = new WorkingGrid(this.orders, { baseVersion: this._gridVersion });
+        return { 
+            actions: [], 
+            stateUpdates: [], 
+            hadRotation: false,
+            workingGrid,
+            workingIndexes: workingGrid.getIndexes(),
+            workingBoundary: this.boundaryIdx,
+            aborted: false
+        };
     }
 
     getInitialOrdersToActivate() {

@@ -95,6 +95,10 @@ const {
     applyGridDivergenceCorrections
 } = require('./order/utils/system');
 const {
+    hasExecutableActions,
+    validateCreateTargetSlots
+} = require('./order/utils/validate');
+const {
     buildCreateOrderArgs,
     getOrderTypeFromUpdatedFlags,
     virtualizeOrder,
@@ -525,22 +529,10 @@ class DEXBot {
                             // This will shift the boundary and place a new order on the filled slot
                             const rebalanceResult = await this.manager.processFilledOrders([gridOrder], new Set());
 
-                            if (rebalanceResult) {
-                                // Place the orders identified by rebalance
-                                const allOrders = [
-                                    ...(rebalanceResult.ordersToPlace || []),
-                                    ...(rebalanceResult.ordersToRotate || []),
-                                    ...(rebalanceResult.ordersToUpdate || [])
-                                ];
-
-                                if (allOrders.length > 0) {
-                                    this._log(`[POST-RESET] Placing ${allOrders.length} order(s) for filled slot`);
-                                    const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
-                                    if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
-                                        this._warn('[POST-RESET] Aborted batch due to illegal state; skipping grid persistence this cycle');
-                                        continue;
-                                    }
-                                }
+                            const batchResult = await this._executeBatchIfNeeded(rebalanceResult, `[POST-RESET] fill ${gridOrder.id}`);
+                            if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
+                                this._warn('[POST-RESET] Aborted batch due to illegal state; skipping grid persistence this cycle');
+                                continue;
                             }
                         }
                         await this.manager.persistGrid();
@@ -662,9 +654,7 @@ class DEXBot {
                                 chainOpenOrders,
                             });
 
-                            if (rebalanceResult) {
-                                await this.updateOrdersOnChainBatch(rebalanceResult);
-                            }
+                            await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (regenerated grid)');
                         } else {
                             this._log('Generating new grid and placing initial orders on-chain...');
                             await this.placeInitialOrders();
@@ -689,9 +679,7 @@ class DEXBot {
                             chainOpenOrders,
                         });
 
-                        if (rebalanceResult) {
-                            await this.updateOrdersOnChainBatch(rebalanceResult);
-                        }
+                        await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (loaded grid)');
 
                         await this._persistAndRecoverIfNeeded();
                     }
@@ -1022,7 +1010,7 @@ class DEXBot {
                                     `AFTER rebalanceOrders calculated for fill set [${batchIds}] (planned: ${rebalanceResult.ordersToPlace?.length || 0} new, ${rebalanceResult.ordersToRotate?.length || 0} rotations)`
                                 );
 
-                                const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
+                                const batchResult = await this._executeBatchIfNeeded(rebalanceResult, `fill set [${batchIds}]`);
 
                                 if (batchResult?.abortedForIllegalState || batchResult?.abortedForAccountingFailure) {
                                     this.manager.logger.log(
@@ -1618,6 +1606,14 @@ class DEXBot {
         return { isValid: true, summary };
     }
 
+    async _executeBatchIfNeeded(rebalanceResult, contextLabel = 'rebalance') {
+        if (!hasExecutableActions(rebalanceResult)) {
+            this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
+            return { executed: false, hadRotation: false, skippedNoActions: true };
+        }
+        return await this.updateOrdersOnChainBatch(rebalanceResult);
+    }
+
     /**
      * Executes a batch of order operations on the blockchain using COW pattern.
      * Master grid is only updated after successful blockchain confirmation.
@@ -1826,6 +1822,25 @@ class DEXBot {
             if (createCount > 0) this.manager.logger.log(`Dry run: would place ${createCount} new orders`, 'info');
             if (updateCount > 0) this.manager.logger.log(`Dry run: would update ${updateCount} orders`, 'info');
             return { executed: true, hadRotation: false };
+        }
+
+        const createSlotValidation = validateCreateTargetSlots(actions, this.manager?.orders);
+        if (!createSlotValidation.isValid) {
+            for (const violation of createSlotValidation.violations) {
+                this.manager.logger.log(
+                    `[COW] Rejecting CREATE for occupied slot ${violation.targetId}: ` +
+                    `existing orderId=${violation.currentOrderId}, type=${violation.currentType}, state=${violation.currentState}`,
+                    'error'
+                );
+            }
+
+            return {
+                executed: false,
+                aborted: true,
+                reason: 'CREATE_SLOT_OCCUPIED',
+                violations: createSlotValidation.violations,
+                hadRotation: false
+            };
         }
 
         const { assetA, assetB } = this.manager.assets;
@@ -2375,7 +2390,7 @@ class DEXBot {
                         oldOrder,
                         committedOrder,
                         'fill-cancel',
-                        0,
+                        btsFeeData?.cancelFee || 0,
                         false
                     );
                 }
@@ -2831,11 +2846,9 @@ class DEXBot {
                                 if (syncResult?.filledOrders && syncResult.filledOrders.length > 0) {
                                     this._log(`Open-orders sync loop: ${syncResult.filledOrders.length} grid order(s) found filled on-chain. Triggering rebalance.`, 'info');
                                     const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, new Set());
-                                    if (rebalanceResult) {
-                                        const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
-                                        if (!batchResult?.abortedForIllegalState && !batchResult?.abortedForAccountingFailure) {
-                                            await this.manager.persistGrid();
-                                        }
+                                    const batchResult = await this._executeBatchIfNeeded(rebalanceResult, 'open-orders sync fill rebalance');
+                                    if (!batchResult?.abortedForIllegalState && !batchResult?.abortedForAccountingFailure && !batchResult?.skippedNoActions) {
+                                        await this.manager.persistGrid();
                                     }
                                 }
                             });
@@ -2926,11 +2939,9 @@ class DEXBot {
                                 // Process these fills through the full strategy + batch pipeline
                                 // so periodic detection behaves consistently with fill listener processing.
                                 const rebalanceResult = await this.manager.processFilledOrders(syncResult.filledOrders, new Set());
-                                if (rebalanceResult) {
-                                    const batchResult = await this.updateOrdersOnChainBatch(rebalanceResult);
-                                    if (!batchResult?.abortedForIllegalState && !batchResult?.abortedForAccountingFailure) {
-                                        await this.manager.persistGrid();
-                                    }
+                                const batchResult = await this._executeBatchIfNeeded(rebalanceResult, 'periodic sync fill rebalance');
+                                if (!batchResult?.abortedForIllegalState && !batchResult?.abortedForAccountingFailure && !batchResult?.skippedNoActions) {
+                                    await this.manager.persistGrid();
                                 }
                             }
 
