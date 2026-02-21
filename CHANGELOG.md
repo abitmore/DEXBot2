@@ -2,6 +2,69 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.22] - 2026-02-21 - Fill Accounting Alignment, COW Invariant Hardening & API Safety
+
+This patch aligns BTS fee handling with the operation-fee lifecycle, hardens COW fill/rebalance flows against race conditions and edge cases, and replaces positional-boolean APIs with explicit options objects to prevent ordering bugs.
+
+### Fixed
+- **BTS Fill Accounting Alignment with Operation-Fee Lifecycle** (`modules/order/strategy.js`, `modules/order/accounting.js`) - commit 73754c8
+  - **Problem**: Fill processing accrued/deducted BTS fees after proceeds already included maker refund projection, causing maker fills to be effectively charged twice across create + fill settlement.
+  - **Impact**: Overcharging maker fills with combined refund-projected proceeds and additional fill-time BTS fee settlement.
+  - **Solution**: Removed fill-time `btsFeesOwed` accrual/settlement from strategy. BTS fee handling now stays on operation events (create/update/cancel), and fill accounting focuses on proceeds via unified `getAssetFees('BTS', rawAmount, isMaker).netProceeds`.
+
+- **COW Fill Handling and Accounting Invariants** (`modules/dexbot_class.js`, `modules/order/accounting.js`, `modules/order/strategy.js`, `modules/order/utils/validate.js`) - commit 7dbbb49
+  - **Problem**: Fill rebalance flow was vulnerable to empty-batch execution paths, CREATE actions could target occupied slots in edge races, and side metadata drift could misclassify commitments after boundary flips.
+  - **Impact**: Inconsistent empty payload handling, slot exclusivity violations, wrong-side optimistic deductions, and SPREAD invariant drift.
+  - **Solution**: Centralized batch execution gating with shared empty-action handling across all call sites. Added pre-broadcast validation to reject CREATE actions on occupied ACTIVE/PARTIAL slots. Side resolution now prefers explicit order type and preserves committed side from slot type in target-grid projections.
+
+- **COW Rebalance Invariant Race Elimination** (`modules/order/manager.js`, `modules/dexbot_class.js`) - commit b27619a
+  - **Problem**: COW commit path triggered fund recalculation before optimistic accounting was applied, producing transient invariant violations.
+  - **Impact**: Race condition between commit and recalc could produce false invariant failures.
+  - **Solution**: Made `_commitWorkingGrid` recalculation optional via explicit `options.skipRecalc`. Commit path now defers recalculation to resume flow.
+
+- **Order Edge-Cases Across Chain Modules** (`modules/chain_orders.js`, `modules/order/startup_reconcile.js`, `modules/chain_keys.js`, `modules/account_bots.js`) - commit 986a28a
+  - **Problem**: `_ensureAccountSubscriber()` swallowed subscription failures, `createOrder()` could destructure `null` from `buildCreateOrderOp()`, `_getAssetPrecision()` returned `undefined` on missing metadata, and reconcile flow misinterpreted `{ skipped: true }` responses.
+  - **Impact**: Silent subscription outages, TypeError on dust-sized orders, less actionable precision errors, and malformed success payload interpretation.
+  - **Solution**: Log subscription failures with account context, return `{ skipped: true }` for intentionally skipped placements, add explicit CRITICAL throw for missing asset metadata, and handle skip explicitly in reconcile flow.
+
+### Refactored
+- **Positional-Boolean to Options Object API Migration** (`modules/order/manager.js`, `modules/order/sync_engine.js`, `modules/order/grid.js`, `modules/order/strategy.js`, `modules/order/utils/order.js`, `modules/dexbot_class.js`) - commit b27619a
+  - Replaced legacy positional flags with explicit options objects for `_updateOrder`, `_applyOrderUpdate`, `applyGridUpdateBatch`, and `_runGridMaintenance`.
+  - Removed legacy compatibility shims and enforced object options to prevent ambiguous call signatures that made ordering bugs easier to introduce.
+
+- **Removed Redundant rawOnChain Deep-Clone** (`modules/order/working_grid.js`) - commit 4cb3430
+  - Deep-clone block was redundant because partial-fill updates already use immutable replacement and operation builders consume cached rawOnChain from master state.
+  - Updated WorkingGrid docs/comments to match actual shallow clone behavior (metadata-only nested clone).
+
+### Documentation
+- **Data-Flow Diagram and DEXBot Comparison** (`docs/architecture.md`, `docs/DEXBOT_COMPARISON.md`, `AGENTS.md`) - commit 6026de5
+  - Added top-level data-oriented Mermaid flowchart to architecture.md (GitHub-compatible with br/ line breaks).
+  - Added comprehensive DEXBot vs DEXBot2 comparison report (797 lines).
+  - Clarified that agents must not proactively ask for or execute git write actions.
+
+- **TOC Header Errors in 6 Module Files** (`modules/bots_file_lock.js`, `modules/graceful_shutdown.js`, `modules/order/async_lock.js`, `modules/order/format.js`, `modules/order/startup_reconcile.js`, `modules/order/sync_engine.js`) - commit 32be4dd
+  - Fixed inaccurate section counts and added missing function entries across all affected modules.
+
+- **Project Evolution and Roadmap Documentation** (`docs/EVOLUTION.md`, `docs/IMPROVEMENT_ROADMAP.md`) - commit 2ec1ae3
+  - Added comprehensive 499-line EVOLUTION.md documenting project history and architectural decisions.
+  - Added 486-line IMPROVEMENT_ROADMAP.md with future enhancement planning.
+
+- **AGENTS.md Cleanup** - commit c47acd6
+  - Removed obsolete "Recent Updates" section.
+
+### Testing
+- `node tests/test_strategy_logic.js` ✓
+- `node tests/test_bts_fee_accounting.js` ✓
+- `node tests/test_cow_commit_guards.js` ✓
+- `node tests/test_cow_concurrent_fills.js` ✓
+- `node tests/test_patch17_invariants.js` ✓
+- `node tests/test_sync_logic.js` ✓
+- `node tests/test_grid_logic.js` ✓
+- `node tests/test_cow_master_plan.js` ✓
+- `npm test` ✓
+
+---
+
 ## [0.6.0-patch.21] - 2026-02-19 - StateManager Consolidation
 
 Eliminated duplicate state tracking where `isBootstrapping` and `_isBroadcasting` were maintained as both direct `OrderManager` properties and `StateManager` fields, requiring both to be kept in sync and creating a latent bug class.
