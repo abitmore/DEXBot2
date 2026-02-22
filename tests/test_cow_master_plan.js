@@ -679,6 +679,170 @@ async function testCOW017_NoRotationIntoDustHole() {
     console.log('✓ COW-017 passed');
 }
 
+/**
+ * COW-018: PARTIAL order size must be preserved in projectTargetToWorkingGrid
+ *
+ * REGRESSION TEST for fund-invariant violation bug:
+ * - A partial buy fill leaves slot-N with state=PARTIAL, size=<remaining> on chain.
+ * - calculateTargetGrid computes the ideal full size for that slot (ignoring the
+ *   partial fill state) and places it in the target grid.
+ * - projectTargetToWorkingGrid must NOT overwrite current.size with targetSize for
+ *   PARTIAL orders that are still on-chain — no UPDATE action was emitted to resize
+ *   the order, so the blockchain still holds current.size.
+ * - Overwriting would cause recalculateFunds to count the ideal size as committed,
+ *   inflating chainBuy by ~350 BTS and triggering a CRITICAL fund-invariant
+ *   violation ("trackedTotal > blockchainTotal").
+ *
+ * Fix: preserve current.size when keepOrderId && current.state === PARTIAL.
+ */
+async function testCOW018_PartialOrderSizePreservedInProjection() {
+    console.log('\n[COW-018] Testing PARTIAL order size preserved in projectTargetToWorkingGrid...');
+
+    const partialRemainingSize = 3.68;    // What is actually on chain after a fill
+    const idealTargetSize     = 354.41;  // What calculateTargetGrid computes
+
+    // Master grid reflects the post-fill state: slot-157 is PARTIAL with the
+    // actual remaining size.
+    const masterGrid = new Map([
+        ['slot-157', {
+            id: 'slot-157',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.PARTIAL,
+            price: 0.00270,
+            size: partialRemainingSize,
+            orderId: '1.7.55555'   // Still on chain — same order, partially filled
+        }]
+    ]);
+
+    // Target grid computed by calculateTargetGrid — uses the ideal geometric size,
+    // unaware of the partial fill.
+    const targetGrid = new Map([
+        ['slot-157', {
+            id: 'slot-157',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,  // Target wants a full-size active order
+            price: 0.00270,
+            size: idealTargetSize
+        }]
+    ]);
+
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid);
+
+    const result = workingGrid.get('slot-157');
+    assert(result, 'slot-157 should exist in working grid');
+
+    // The orderId must be kept (same type, still on chain).
+    assert.strictEqual(result.orderId, '1.7.55555',
+        'PARTIAL order orderId must be preserved');
+
+    // State must remain PARTIAL — the order is still on chain, partially filled.
+    assert.strictEqual(result.state, ORDER_STATES.PARTIAL,
+        'PARTIAL order state must remain PARTIAL');
+
+    // CRITICAL: size must NOT be overwritten with the ideal target size.
+    // recalculateFunds sums size for all ACTIVE/PARTIAL orders; if we wrote
+    // idealTargetSize here, chainBuy would be inflated by ~350 BTS.
+    assert.strictEqual(result.size, partialRemainingSize,
+        'PARTIAL order must keep actual on-chain size, not overwritten with ideal target size');
+
+    assert.notStrictEqual(result.size, idealTargetSize,
+        'PARTIAL order size must NOT equal idealTargetSize (would cause fund-invariant violation)');
+
+    console.log('✓ COW-018 passed');
+}
+
+/**
+ * COW-018b: ACTIVE order size IS updated normally (not subject to partial-preservation).
+ *
+ * Ensures the fix is narrowly scoped to PARTIAL orders and does not regress
+ * the normal case where an ACTIVE order's size should follow the target.
+ */
+async function testCOW018b_ActiveOrderSizeUpdatedNormally() {
+    console.log('\n[COW-018b] Testing ACTIVE order size is updated to targetSize normally...');
+
+    const masterGrid = new Map([
+        ['slot-50', {
+            id: 'slot-50',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 0.00270,
+            size: 100,
+            orderId: '1.7.11111'
+        }]
+    ]);
+
+    const targetGrid = new Map([
+        ['slot-50', {
+            id: 'slot-50',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 0.00270,
+            size: 120   // Target wants a different size
+        }]
+    ]);
+
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid);
+
+    const result = workingGrid.get('slot-50');
+    assert(result, 'slot-50 should exist');
+    assert.strictEqual(result.orderId, '1.7.11111', 'orderId preserved');
+    assert.strictEqual(result.state, ORDER_STATES.ACTIVE, 'state remains ACTIVE');
+    // For ACTIVE orders the target size should be applied.
+    assert.strictEqual(result.size, 120,
+        'ACTIVE order size should be updated to targetSize');
+
+    console.log('✓ COW-018b passed');
+}
+
+/**
+ * COW-018c: PARTIAL preserve-path normalizes malformed current.size safely.
+ *
+ * If current.size is malformed/non-finite, projection should keep the order
+ * on-chain identity/state but normalize size to a safe finite non-negative
+ * value instead of propagating invalid data.
+ */
+async function testCOW018c_PartialPreservePathNormalizesMalformedSize() {
+    console.log('\n[COW-018c] Testing PARTIAL preserve-path normalizes malformed size...');
+
+    const idealTargetSize = 222.22;
+
+    const masterGrid = new Map([
+        ['slot-88', {
+            id: 'slot-88',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.PARTIAL,
+            price: 0.00270,
+            size: Number.NaN,
+            orderId: '1.7.88888'
+        }]
+    ]);
+
+    const targetGrid = new Map([
+        ['slot-88', {
+            id: 'slot-88',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 0.00270,
+            size: idealTargetSize
+        }]
+    ]);
+
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid);
+
+    const result = workingGrid.get('slot-88');
+    assert(result, 'slot-88 should exist');
+    assert.strictEqual(result.orderId, '1.7.88888', 'orderId preserved for PARTIAL on-chain order');
+    assert.strictEqual(result.state, ORDER_STATES.PARTIAL, 'state remains PARTIAL');
+    assert(Number.isFinite(result.size), 'size must be finite after normalization');
+    assert(result.size >= 0, 'size must be non-negative after normalization');
+    assert.strictEqual(result.size, 0, 'malformed PARTIAL size should normalize to 0');
+
+    console.log('✓ COW-018c passed');
+}
+
 async function runAllTests() {
     console.log('=== Copy-on-Write Master Plan Test Suite ===\n');
     
@@ -699,6 +863,9 @@ async function runAllTests() {
     await testCOW015_FullAccountingFlowSimulation();
     await testCOW016_RotationOnlyUpdatesInReconcile();
     await testCOW017_NoRotationIntoDustHole();
+    await testCOW018_PartialOrderSizePreservedInProjection();
+    await testCOW018b_ActiveOrderSizeUpdatedNormally();
+    await testCOW018c_PartialPreservePathNormalizesMalformedSize();
     
     console.log('\n=== All COW tests passed! ===');
 }

@@ -50,7 +50,6 @@ const {
 const {
     isOrderOnChain,
     isPhantomOrder,
-    hasOnChainId,
     convertToSpreadPlaceholder
 } = require('./order');
 const Format = require('../format');
@@ -725,13 +724,24 @@ function projectTargetToWorkingGrid(workingGrid, targetGrid) {
         }
 
         if (targetSize > 0) {
-            const keepOrderId = isOrderOnChain(current) && hasOnChainId(current) && current.type === targetOrder.type;
+            const keepOrderId = isOrderOnChain(current) && current.type === targetOrder.type;
             // Orders without on-chain ID remain VIRTUAL until synchronizeWithChain
             // confirms blockchain placement and triggers accounting deduction.
+            //
+            // For PARTIAL orders we preserve the actual remaining on-chain size
+            // instead of overwriting with the ideal target size.  The target size
+            // reflects what the grid *wants* the order to be once it is fully
+            // re-placed; it does NOT reflect what is currently committed on chain.
+            // Overwriting current.size with targetSize causes recalculateFunds to
+            // count the ideal size as committed, inflating chainBuy/chainSell and
+            // triggering a spurious fund-invariant violation.
+            const preservedSize = (keepOrderId && current.state === ORDER_STATES.PARTIAL)
+                ? Math.max(0, toFiniteNumber(current.size))
+                : targetSize;
             workingGrid.set(id, {
                 ...current,
                 ...targetOrder,
-                size: targetSize,
+                size: preservedSize,
                 state: keepOrderId ? current.state : ORDER_STATES.VIRTUAL,
                 orderId: keepOrderId ? current.orderId : null
             });

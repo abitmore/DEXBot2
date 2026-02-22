@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.23] - 2026-02-22 - Dust Rotation Guard, Legacy Builder Removal & PARTIAL Fund Invariant Fix
+
+This patch closes two fund-accounting correctness gaps: dust-sized slots could still be reached via surplus→hole rotation despite CREATE filtering, and PARTIAL orders had their actual on-chain remaining size silently overwritten with the ideal target size in the COW projection step, causing a spurious fund-invariant violation. Legacy plan-builder helpers that duplicated COW execution logic are also removed.
+
+### Fixed
+
+- **Dust Rotation Guard in reconcileGrid** (`modules/order/utils/validate.js`, `modules/order/manager.js`) - commit af33cdd
+  - **Problem**: `reconcileGrid` filtered dust only for CREATE leftovers. Surplus→hole rotation UPDATE paths bypassed the filter, allowing sub-double-dust target slots to receive rotation operations.
+  - **Impact**: Tiny, uneconomical orders could still be scheduled via rotation UPDATE even when they would have been rejected as CREATE targets.
+  - **Solution**: Added configurable `dustThresholdPercent` option to `reconcileGrid`. Healthy holes are now computed up front using `isCreateHealthy` before any surplus pairing occurs, ensuring the same dust threshold applies to both rotation and direct CREATE paths. `GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE` is now passed through both manager reconcile entry points for consistent runtime behaviour.
+
+- **PARTIAL Order Size Preserved in COW Projection** (`modules/order/utils/validate.js`) - commit (current)
+  - **Problem**: `projectTargetToWorkingGrid` unconditionally overwrote the working-grid order's `size` with `targetSize` (the ideal geometric size from `calculateTargetGrid`). For PARTIAL orders still on-chain, `targetSize` reflects the desired full size, not the actual remaining quantity. Because `reconcileGrid` intentionally emits no in-place UPDATE for this case (rotation-only design), no blockchain resize occurs — yet `recalculateFunds` was summing the ideal size as committed, inflating `chainBuy` by up to ~350 BTS.
+  - **Impact**: Spurious CRITICAL fund-invariant violation (`trackedTotal > blockchainTotal`) after any partial buy fill, self-correcting only at the next 4-hour blockchain sync.
+  - **Solution**: Added a narrowly scoped guard: when `keepOrderId` is true (order is still on-chain, same type) and `current.state === PARTIAL`, preserve current on-chain size instead of overwriting with `targetSize`. Preserve-path sizing is normalized to a finite non-negative value for safety, and redundant `hasOnChainId` duplication was removed because `isOrderOnChain` already guarantees an on-chain id.
+
+### Refactored
+
+- **Legacy Plan-Builder Removal** (`modules/dexbot_class.js`) - commit af33cdd
+  - Removed `_buildCancelOps`, `_buildCreateOps`, `_buildSizeUpdateOps`, and `_buildRotationOps` — pre-COW helpers that duplicated execution logic now handled solely by the COW action execution path.
+  - Centralized execution-time size and dust validation into `_resolveIdealSizeForValidation` to eliminate repeated logic across placement paths.
+
+### Testing
+
+- Added **COW-017** (`tests/test_cow_master_plan.js`) — asserts `reconcileGrid` emits no CREATE or rotation UPDATE for sub-double-dust target holes.
+- Added **COW-018** (`tests/test_cow_master_plan.js`) — asserts `projectTargetToWorkingGrid` preserves `current.size` for PARTIAL on-chain orders (regression guard for the fund-invariant violation).
+- Added **COW-018b** (`tests/test_cow_master_plan.js`) — asserts ACTIVE orders still receive the updated target size (fix is narrowly scoped to PARTIAL state).
+- Added **COW-018c** (`tests/test_cow_master_plan.js`) — asserts malformed PARTIAL preserve-path sizes are normalized to safe finite non-negative values while retaining on-chain identity/state.
+- Updated `tests/test_patch17_invariants.js` — removed stubs for deleted legacy builder methods.
+- Updated `tests/test_rotation_fallback_recheck.js` — replaced legacy-helper invocation checks with assertions that those methods no longer exist.
+- `npm test` ✓ (all 40+ tests pass, zero regressions)
+
+### Core Lines Changed
+**Total: ~580** (dust guard + legacy removal commit af33cdd: 183 added / 374 removed; PARTIAL fix: 10 added / 3 removed)
+
+---
+
 ## [0.6.0-patch.22] - 2026-02-21 - Fill Accounting Alignment, COW Invariant Hardening & API Safety
 
 This patch aligns BTS fee handling with the operation-fee lifecycle, hardens COW fill/rebalance flows against race conditions and edge cases, and replaces positional-boolean APIs with explicit options objects to prevent ordering bugs.
@@ -63,6 +100,9 @@ This patch aligns BTS fee handling with the operation-fee lifecycle, hardens COW
 - `node tests/test_cow_master_plan.js` ✓
 - `npm test` ✓
 
+### Core Lines Changed
+**Total: 1,282** (678 added, 604 removed) - Root and modules/*.js files only
+
 ---
 
 ## [0.6.0-patch.21] - 2026-02-19 - StateManager Consolidation
@@ -89,6 +129,9 @@ Eliminated duplicate state tracking where `isBootstrapping` and `_isBroadcasting
 - `node tests/test_cow_commit_guards.js` ✓
 - `node tests/test_manager.js` ✓
 - `node tests/test_cow_divergence_correction.js` ✓
+
+### Core Lines Changed
+**Total: 230** (133 added, 97 removed) - Root and modules/*.js files only
 
 ---
 
@@ -121,6 +164,9 @@ This patch ensures boundary index shifts during divergence correction are atomic
 - `node tests/test_cow_commit_guards.js` - COW commit guards
 - `node tests/test_boundary_sync_logic.js` - Boundary sync logic
 - `node tests/test_cow_divergence_correction.js` - Divergence correction COW tests
+
+### Core Lines Changed
+**Total: 9,731** (6,730 added, 3,001 removed) - Root and modules/*.js files only
 
 ---
 
@@ -373,6 +419,9 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
   - Removed "Patch 8/12/17/18" references from architecture.md and other docs
   - Streamlined from 549 to ~260 lines while keeping all user-essential info
 
+### Core Lines Changed
+**Total: 4,059** (1,389 added, 2,670 removed) - Root and modules/*.js files only
+
 ---
 
 ## [0.6.0-patch.18] - 2026-02-08 - Batching Hardening, Accounting Precision & Telemetry Optimization
@@ -434,6 +483,9 @@ This patch refines the adaptive fill batching introduced in patch 17, addressing
 - All core test suites pass: `tests/test_strategy_logic.js`, `tests/test_patch17_invariants.js`, `tests/test_critical_bug_fixes.js`.
 - Verified batching simulation across queue depths (1..20) to ensure adaptive tiers and anti-singleton tail logic.
 
+### Core Lines Changed
+**Total: 666** (471 added, 195 removed) - Root and modules/*.js files only
+
 ---
 
 ## [0.6.0-patch.17] - 2026-02-07 - Adaptive Fill Batching, Periodic Recovery Retries & Orphan-Fill Double-Credit Prevention
@@ -479,6 +531,9 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
 - Backward compatible: batch size 1 = legacy one-at-a-time behavior.
 - Follow-up verification: `node tests/test_periodic_sync_fill_rebalance.js`, `node tests/test_layer2_self_healing.js`.
 - Precision-format verification: `node tests/test_strategy_logic.js`, `node tests/test_accounting_logic.js`, `node tests/test_startup_reconcile_regressions.js`.
+
+### Core Lines Changed
+**Total: 9,812** (7,072 added, 2,740 removed) - Root and modules/*.js files only
 
 ---
 
@@ -681,6 +736,9 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
     - Fill-triggered reset: Only on actual fill events (in `processFilledOrders`)
   - Ensures accounting recovery can be re-attempted even when no fills occur for extended periods
 
+### Core Lines Changed
+**Total: 1,428** (1,390 added, 38 removed) - Root and modules/*.js files only
+
 ---
 
 ## [0.6.0-patch.14] - 2026-02-05 - Critical Bug Fixes, Price Orientation, Fund Validation & Quantization Consolidation
@@ -854,10 +912,16 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
 - Verified spread threshold calculation across multiple multiplier ranges
 - Config extraction tested with null metadata scenarios
 
+### Core Lines Changed
+**Total: 608** (407 added, 201 removed) - Root and modules/*.js files only
+
 ### Related Commits
 - Builds on Patch 12 pipeline safety (non-destructive recovery principles)
 - Complements Patch 11 order state predicates
 - Fixes edge cases in order metadata handling from Patch 10
+
+### Core Lines Changed
+**Total: 6,125** (2,600 added, 3,525 removed) - Root and modules/*.js files only
 
 ---
 
@@ -990,11 +1054,17 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
 ### Fixed
 - **Dynamic require in dexbot_class.js**: Moved `virtualizeOrder` import to module-level
 
+### Core Lines Changed
+**Total: 2,196** (1,686 added, 510 removed) - Root and modules/*.js files only
+
 ### Benefits
 - Single source of truth for order state logic
 - Semantic function names improve readability
 - Centralized phantom order detection
 - Consistent patterns across all modules
+
+### Core Lines Changed
+**Total: 2,717** (2,118 added, 599 removed) - Root and modules/*.js files only
 
 ---
 
@@ -1100,6 +1170,12 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
   - Prevented order duplication through proper grid state management.
   - Improved type/state change atomicity with two-phase architecture.
 
+### Core Lines Changed
+**Total: 511** (365 added, 146 removed) - Root and modules/*.js files only
+
+### Core Lines Changed
+**Total: 5,388** (1,216 added, 4,172 removed) - Root and modules/*.js files only
+
 ---
 
 ## [0.6.0-patch.9] - 2026-01-28 - Startup Consolidation, Zero-Amount Prevention & Auto-Recovery
@@ -1161,6 +1237,9 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
   - Improved lock management with explicit parameter passing
   - Enhanced error handling in divergence lock acquisition
   - Maintainability improvement: Single source of truth for startup sequence and grid maintenance logic
+
+### Core Lines Changed
+**Total: 3,498** (2,426 added, 1,072 removed) - Root and modules/*.js files only
 
 ---
 
@@ -1346,6 +1425,12 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
 - **Architecture & Developer Guides** (commit 86261fc)
   - Added "Phantom Order Prevention" and "Hardened Startup Sequence" sections.
 
+### Core Lines Changed
+**Total: 7,317** (5,326 added, 1,991 removed) - Root and modules/*.js files only
+
+### Core Lines Changed
+**Total: 6,217** (3,872 added, 2,345 removed) - Root and modules/*.js files only
+
 ---
 
 ## [0.6.0-patch.6] - 2026-01-22 - Accounting Hardening & Asset Neutrality
@@ -1435,6 +1520,9 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
 - **docs/memory_tracking.md**
   - Documented new integer-based memory tracking architecture
 
+### Core Lines Changed
+**Total: 8,443** (6,939 added, 1,504 removed) - Root and modules/*.js files only
+
 ---
 
 ## [0.6.0-patch.4] - 2026-01-15 - Rotation Sizing Formula Fix
@@ -1449,12 +1537,18 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
   - **Key Insight:** Available funds already include fill proceeds, source order release is handled separately in fund accounting
   - **Tests:** All 24+ rotation and fund accounting tests pass ✓
 
+### Core Lines Changed
+**Total: 31** (14 added, 17 removed) - Root and modules/*.js files only
+
 ### Updated Documentation
 - **docs/fund_movement_logic.md**
   - Added new section "Rotation Sizing Formula" with mathematical explanation
   - Documented the gridDifference formula and why it's correct
   - Clarified relationship between available funds and rotation capital allocation
   - Explained how fill accounting via cacheFunds integrates with rotation sizing
+
+### Core Lines Changed
+**Total: 4,899** (1,511 added, 3,388 removed) - Root and modules/*.js files only
 
 ---
 
@@ -1489,6 +1583,9 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
   - **Step 2:** Deduct cacheFunds (while pauseFundRecalc still active)
   - **Step 3:** Recalculate all funds (everything now in sync)
   - Improves maintainability by making it clear that all fund state is consistent before any calculation
+
+### Core Lines Changed
+**Total: 1,663** (769 added, 894 removed) - Root and modules/*.js files only
 
 ---
 
@@ -1525,6 +1622,9 @@ Post-mortem analysis of the Feb 7 market crash (8% spike + reversal) revealed th
 ### All Tests Pass ✓
 - 25+ test suites including fund accounting, partial orders, and rotation scenarios
 - Multi-fill opposite partial order tests verify rotation state transitions
+
+### Core Lines Changed
+**Total: 2,120** (1,166 added, 954 removed) - Root and modules/*.js files only
 
 ---
 
