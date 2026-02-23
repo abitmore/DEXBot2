@@ -435,26 +435,6 @@ class SyncEngine {
             }
         };
 
-        const configuredRestoreRatio = toFiniteNumber(GRID_LIMITS.PARTIAL_ACTIVE_RESTORE_RATIO);
-        const restoreRatio = (Number.isFinite(configuredRestoreRatio) && configuredRestoreRatio > 0)
-            ? Math.min(configuredRestoreRatio, 1.0)
-            : 0.95;
-
-        const resolveStateFromChainSize = (priorState, chainSize, idealSize) => {
-            const chainNumeric = toFiniteNumber(chainSize);
-            if (chainNumeric <= 0) return ORDER_STATES.VIRTUAL;
-
-            const idealNumeric = toFiniteNumber(idealSize);
-            const ratio = idealNumeric > 0 ? (chainNumeric / idealNumeric) : 1;
-
-            if (priorState === ORDER_STATES.PARTIAL || priorState === ORDER_STATES.ACTIVE) {
-                if (idealNumeric <= 0) return ORDER_STATES.PARTIAL;
-                return ratio >= restoreRatio ? ORDER_STATES.ACTIVE : ORDER_STATES.PARTIAL;
-            }
-
-            return ORDER_STATES.ACTIVE;
-        };
-
         // ====================================================================
         // PASS 1: GRID → CHAIN - Match grid orders to blockchain
         // ====================================================================
@@ -518,11 +498,8 @@ class SyncEngine {
                             // Merge updated state if size actually changed
                             updatedOrder = { ...updatedOrder, ...nextOrder };
                         }
-                        updatedOrder.state = resolveStateFromChainSize(
-                            gridOrder.state,
-                            newSize,
-                            updatedOrder.idealSize || gridOrder.idealSize
-                        );
+                        // Keep existing state — only fill events change ACTIVE → PARTIAL
+                        updatedOrder.state = gridOrder.state;
                         await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting, fee: 0 });
                     } else {
                         const spreadOrder = convertToSpreadPlaceholder(gridOrder);
@@ -530,18 +507,6 @@ class SyncEngine {
                         filledOrders.push(spreadOrder);
                         updatedOrders.push(spreadOrder);
                     }
-                } else if (gridOrder.state === ORDER_STATES.PARTIAL && chainOrder.size > 0 && chainOrder.size < gridOrder.size) {
-                    const updatedOrder = {
-                        ...gridOrder,
-                        size: chainOrder.size,
-                        rawOnChain: rawChainOrders.get(gridOrder.orderId),
-                        state: resolveStateFromChainSize(
-                            gridOrder.state,
-                            chainOrder.size,
-                            gridOrder.idealSize
-                        )
-                    };
-                    await mgr._applyOrderUpdate(updatedOrder, 'sync-pass1-partial', { skipAccounting, fee: 0 });
                 }
             } else if (gridOrder.state === ORDER_STATES.ACTIVE || gridOrder.state === ORDER_STATES.PARTIAL) {
                 const currentGridOrder = mgr.orders.get(gridOrder.id) || gridOrder;
@@ -595,11 +560,7 @@ class SyncEngine {
                         } else if (chainInt < targetInt) {
                             bestMatch.state = ORDER_STATES.PARTIAL;
                         } else if (wasPartial) {
-                            bestMatch.state = resolveStateFromChainSize(
-                                match.state,
-                                chainOrder.size,
-                                match.idealSize
-                            );
+                            bestMatch.state = ORDER_STATES.PARTIAL;
                         } else {
                             bestMatch.state = ORDER_STATES.ACTIVE;
                         }
@@ -612,11 +573,7 @@ class SyncEngine {
                         continue;
                     }
                 } else if (wasPartial) {
-                    bestMatch.state = resolveStateFromChainSize(
-                        match.state,
-                        chainOrder.size,
-                        match.idealSize
-                    );
+                    bestMatch.state = ORDER_STATES.PARTIAL;
                 }
                 await mgr._applyOrderUpdate(bestMatch, 'sync-pass2-orphan', { skipAccounting, fee: 0 });
                 updatedOrders.push(bestMatch);

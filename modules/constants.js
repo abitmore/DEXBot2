@@ -237,9 +237,7 @@ let GRID_LIMITS = {
     // Checked independently per side, allowing asymmetric fill patterns.
     GRID_REGENERATION_PERCENTAGE: 3,
 
-    // PARTIAL_ACTIVE_RESTORE_RATIO: Minimum size ratio required to restore PARTIAL -> ACTIVE.
-    // Formula: chainSize / idealSize >= ratio.
-    PARTIAL_ACTIVE_RESTORE_RATIO: 0.95,
+
 
     // PARTIAL_DUST_THRESHOLD_PERCENTAGE: Threshold for treating partially-filled orders as "dust".
     // Formula: IF (actualSize / idealSize) × 100 < threshold → dust
