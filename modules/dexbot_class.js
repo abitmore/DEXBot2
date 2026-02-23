@@ -663,11 +663,20 @@ class DEXBot {
                     } else {
                         this._log('Found active session. Loading and syncing existing grid.');
                         await Grid.loadGrid(this.manager, persistedGrid, persistedBoundaryIdx);
-                        const syncResult = await this.manager.synchronizeWithChain(chainOpenOrders, 'readOpenOrders');
+                        let startupChainOpenOrders = chainOpenOrders;
+                        const syncResult = await this.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
 
                         if (syncResult.filledOrders && syncResult.filledOrders.length > 0) {
                             this._log(`Startup sync: ${syncResult.filledOrders.length} grid order(s) found filled. Processing proceeds.`, 'info');
-                            await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
+                            const startupFillRebalance = await this.manager.processFilledOrders(syncResult.filledOrders, new Set(), { skipAccountTotalsUpdate: true });
+                            const batchResult = await this._executeBatchIfNeeded(startupFillRebalance, 'startup sync fill rebalance');
+
+                            if (!batchResult?.abortedForIllegalState && !batchResult?.abortedForAccountingFailure && !batchResult?.skippedNoActions) {
+                                // Refresh open orders so startup reconcile works with post-batch chain reality
+                                // and avoids reconciling against a stale pre-batch snapshot.
+                                startupChainOpenOrders = await chainOrders.readOpenOrders(this.accountId);
+                                await this.manager.synchronizeWithChain(startupChainOpenOrders, 'readOpenOrders');
+                            }
                         }
 
                         const rebalanceResult = await reconcileStartupOrders({
@@ -676,7 +685,7 @@ class DEXBot {
                             account: this.account,
                             privateKey: this.privateKey,
                             chainOrders,
-                            chainOpenOrders,
+                            chainOpenOrders: startupChainOpenOrders,
                         });
 
                         await this._executeBatchIfNeeded(rebalanceResult, 'startup reconcile (loaded grid)');
