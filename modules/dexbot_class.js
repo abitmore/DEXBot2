@@ -1589,6 +1589,12 @@ class DEXBot {
     async _executeBatchIfNeeded(rebalanceResult, contextLabel = 'rebalance') {
         if (!hasExecutableActions(rebalanceResult)) {
             this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
+            // Clear REBALANCING state even when there are no actions to execute.
+            // _applySafeRebalanceCOW sets REBALANCING before calling the COW engine;
+            // if the engine returns an empty actions list (not aborted), the state
+            // would otherwise remain stuck at REBALANCING permanently, blocking
+            // all subsequent fill processing and rebalance attempts.
+            this.manager?._clearWorkingGridRef?.();
             return { executed: false, hadRotation: false, skippedNoActions: true };
         }
         return await this.updateOrdersOnChainBatch(rebalanceResult);

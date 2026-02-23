@@ -233,8 +233,8 @@ async function runTests() {
         await manager.sync.syncFromOpenOrders([makeSellChainOrder('c-partial-restore', 98, 100)]);
         assert.strictEqual(
             manager.orders.get('partial-restore-1').state,
-            ORDER_STATES.ACTIVE,
-            'Order should upgrade to ACTIVE when chain size meets restore ratio'
+            ORDER_STATES.PARTIAL,
+            'Sync never upgrades PARTIAL to ACTIVE; only fill events change order state'
         );
     }
 

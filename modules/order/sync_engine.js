@@ -901,6 +901,9 @@ class SyncEngine {
             case 'periodicBlockchainFetch': {
                 // Must update accounting when blockchain state has changed (fills detected)
                 // Using skipAccounting: true leaves phantom funds in system, causing invariant violations
+                // Exception: recovery path in Accountant._performStateRecovery() intentionally uses
+                // skipAccounting=true because fetchAccountTotals() already refreshed chain truth and
+                // recovery only needs structural reconciliation, not another optimistic delta pass.
                 return this.syncFromOpenOrders(chainData, { skipAccounting: false });
             }
         }

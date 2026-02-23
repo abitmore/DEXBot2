@@ -381,7 +381,11 @@ class Accountant {
         // 2. Sync from open orders
         const chainOrders = require('../chain_orders');
         const openOrders = await chainOrders.readOpenOrders(accountRef);
-        await mgr.syncFromOpenOrders(openOrders, { skipAccounting: false });
+        // Recovery runs after fetchAccountTotals() has refreshed authoritative balances
+        // from chain. During this pass we only want to reconcile grid structure/order
+        // mapping against open orders; re-applying optimistic accounting deltas here
+        // double-counts commitment changes and can amplify invariant drift.
+        await mgr.syncFromOpenOrders(openOrders, { skipAccounting: true });
 
         // 3. Validate recovery
         return mgr.validateGridStateForPersistence();

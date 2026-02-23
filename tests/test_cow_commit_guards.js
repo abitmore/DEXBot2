@@ -128,10 +128,12 @@ async function testExecuteBatchIfNeededSkipsEmptyActions() {
     });
 
     const logs = [];
+    let clearWorkingGridCalls = 0;
     bot.manager = {
         logger: {
             log: (msg, level) => logs.push({ msg: String(msg), level })
-        }
+        },
+        _clearWorkingGridRef: () => { clearWorkingGridCalls++; }
     };
 
     let batchCalls = 0;
@@ -145,12 +147,16 @@ async function testExecuteBatchIfNeededSkipsEmptyActions() {
     assert.strictEqual(emptyResult.skippedNoActions, true, 'Empty action set should return skipped marker');
     assert(logs.some(l => l.level === 'debug' && l.msg.includes('No actions needed for unit-empty')),
         'Empty action guard should emit debug log');
+    assert.strictEqual(clearWorkingGridCalls, 1,
+        'Empty action guard must call _clearWorkingGridRef to reset REBALANCING state');
 
     await bot._executeBatchIfNeeded({
         actions: [{ type: COW_ACTIONS.CREATE, id: 'slot-new', order: { id: 'slot-new' } }],
         workingGrid: {}
     }, 'unit-non-empty');
     assert.strictEqual(batchCalls, 1, 'Non-empty action set must execute batch once');
+    // _clearWorkingGridRef for non-empty path is handled inside _updateOrdersOnChainBatchCOW
+    assert.strictEqual(clearWorkingGridCalls, 1, 'Non-empty path must not double-call _clearWorkingGridRef');
 
     console.log('✓ COW-COMMIT-003 passed');
 }

@@ -258,6 +258,37 @@ async function runTests() {
         manager.accountant._performStateRecovery = originalRecovery;
     }
 
+    // Test: Recovery sync must not re-apply optimistic accounting deltas
+    console.log(' - Testing recovery sync uses skipAccounting=true...');
+    {
+        const manager = await createManager();
+        manager.accountId = '1.2.345';
+
+        const originalFetchTotals = manager.fetchAccountTotals;
+        const originalSyncFromOpenOrders = manager.syncFromOpenOrders;
+        const chainOrders = require('../modules/chain_orders');
+        const originalReadOpenOrders = chainOrders.readOpenOrders;
+
+        let capturedSyncOptions = null;
+        manager.fetchAccountTotals = async () => { };
+        manager.syncFromOpenOrders = async (_orders, options) => {
+            capturedSyncOptions = options;
+            return { filledOrders: [], updatedOrders: [], ordersNeedingCorrection: [] };
+        };
+        chainOrders.readOpenOrders = async () => [];
+
+        try {
+            const result = await manager.accountant._performStateRecovery(manager);
+            assert.strictEqual(typeof result.isValid, 'boolean', 'Recovery should return validation result');
+            assert.strictEqual(capturedSyncOptions?.skipAccounting, true,
+                'Recovery sync must use skipAccounting=true to avoid double-counting');
+        } finally {
+            manager.fetchAccountTotals = originalFetchTotals;
+            manager.syncFromOpenOrders = originalSyncFromOpenOrders;
+            chainOrders.readOpenOrders = originalReadOpenOrders;
+        }
+    }
+
     // Test: Absolute cacheFunds setter is atomic and authoritative
     console.log(' - Testing setCacheFundsAbsolute()...');
     {
