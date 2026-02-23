@@ -740,6 +740,11 @@ class Grid {
             const denominator = (allocated > 0) ? allocated : (s.grid + totalPending);
             const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
 
+            manager.logger?.log?.(
+                `[DIVERGENCE] ${s.name.toUpperCase()} ratio check: cachePending=${cachePending.toFixed(5)}, availableFunds=${availableFunds.toFixed(5)}, totalPending=${totalPending.toFixed(5)}, allocated=${allocated.toFixed(5)}, ratio=${ratio.toFixed(4)}% (threshold=${threshold}%) → ${ratio >= threshold ? 'TRIGGER' : 'no trigger'}`,
+                'debug'
+            );
+
             if (ratio >= threshold) {
                 // RC-3: Use Set for automatic duplicate prevention
                 if (!(manager._gridSidesUpdated instanceof Set)) manager._gridSidesUpdated = new Set();
