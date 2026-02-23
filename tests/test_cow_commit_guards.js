@@ -70,6 +70,52 @@ function createManagerFixture() {
     };
 }
 
+function createCowExecutionFixture(masterOrders = new Map()) {
+    const bot = new DEXBot({
+        botKey: 'test_cow_cache_deduction',
+        dryRun: false,
+        startPrice: 1,
+        assetA: 'BTS',
+        assetB: 'USD',
+        incrementPercent: 0.5
+    });
+
+    const cacheDeductions = [];
+    const manager = {
+        assets: {
+            assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
+            assetB: { id: '1.3.1', precision: 5, symbol: 'USD' }
+        },
+        orders: Object.freeze(masterOrders),
+        logger: {
+            log: () => {},
+            logFundsStatus: () => {}
+        },
+        lockOrders: () => {},
+        unlockOrders: () => {},
+        _setRebalanceState: () => {},
+        startBroadcasting: () => {},
+        stopBroadcasting: () => {},
+        pauseFundRecalc: () => {},
+        resumeFundRecalc: async () => {},
+        _commitWorkingGrid: async () => {},
+        modifyCacheFunds: async (side, delta, operation) => {
+            cacheDeductions.push({ side, delta, operation });
+            return delta;
+        },
+        persistGrid: async () => {},
+        _clearWorkingGridRef: () => {}
+    };
+
+    bot.manager = manager;
+    bot.account = 'test-account';
+    bot.privateKey = 'test-private-key';
+    bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
+    bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
+
+    return { bot, manager, cacheDeductions };
+}
+
 async function testRejectsVersionMismatchWithoutCommit() {
     console.log('\n[COW-COMMIT-001] rejects version mismatch without commit...');
 
@@ -221,12 +267,264 @@ async function testRejectsCreateOnOccupiedSlotBeforeBroadcast() {
     console.log('✓ COW-COMMIT-004 passed');
 }
 
+async function testCreateDeductionUsesQuantizedFinalInts() {
+    console.log('\n[COW-COMMIT-005] cache deduction uses quantized create finalInts...');
+
+    const { bot, manager, cacheDeductions } = createCowExecutionFixture();
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+
+    const actions = [{
+        type: COW_ACTIONS.CREATE,
+        id: 'slot-create-buy',
+        order: {
+            id: 'slot-create-buy',
+            type: ORDER_TYPES.BUY,
+            price: 1,
+            size: 1.23456789,
+            state: ORDER_STATES.VIRTUAL,
+            orderId: null
+        }
+    }];
+
+    const originalBuildCreate = chainOrders.buildCreateOrderOp;
+    const originalBuildCancel = chainOrders.buildCancelOrderOp;
+    const originalBuildUpdate = chainOrders.buildUpdateOrderOp;
+
+    chainOrders.buildCancelOrderOp = async () => ({ op_name: 'limit_order_cancel', op_data: {} });
+    chainOrders.buildUpdateOrderOp = async () => ({ op: { op_name: 'limit_order_update', op_data: {} }, finalInts: null });
+    chainOrders.buildCreateOrderOp = async () => ({
+        op: {
+            op_name: 'limit_order_create',
+            op_data: {
+                amount_to_sell: { amount: 123456, asset_id: manager.assets.assetB.id }
+            }
+        },
+        finalInts: {
+            sell: 123456,
+            receive: 12345678,
+            sellAssetId: manager.assets.assetB.id,
+            receiveAssetId: manager.assets.assetA.id
+        }
+    });
+
+    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
+        result: { success: true, operation_results: [] },
+        opContexts
+    });
+
+    try {
+        await bot._updateOrdersOnChainBatchCOW({
+            workingGrid,
+            workingIndexes: workingGrid.getIndexes(),
+            workingBoundary: 0,
+            actions
+        });
+    } finally {
+        chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.buildCancelOrderOp = originalBuildCancel;
+        chainOrders.buildUpdateOrderOp = originalBuildUpdate;
+    }
+
+    assert.strictEqual(cacheDeductions.length, 1, 'Exactly one cache deduction expected');
+    assert.strictEqual(cacheDeductions[0].side, 'buy', 'BUY create should deduct buy cache');
+    assert.strictEqual(cacheDeductions[0].operation, 'cow-placements', 'Deduction operation tag should match COW placement');
+    assert(Math.abs(cacheDeductions[0].delta - (-1.23456)) < 1e-12,
+        'Deduction must use quantized finalInts (1.23456), not raw order.size');
+
+    console.log('✓ COW-COMMIT-005 passed');
+}
+
+async function testCacheDeductionUsesExecutedContextsOnly() {
+    console.log('\n[COW-COMMIT-006] cache deduction uses executed contexts only...');
+
+    const { bot, manager, cacheDeductions } = createCowExecutionFixture();
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+
+    const actions = [
+        {
+            type: COW_ACTIONS.CREATE,
+            id: 'slot-create-buy',
+            order: {
+                id: 'slot-create-buy',
+                type: ORDER_TYPES.BUY,
+                price: 1,
+                size: 1,
+                state: ORDER_STATES.VIRTUAL,
+                orderId: null
+            }
+        },
+        {
+            type: COW_ACTIONS.CREATE,
+            id: 'slot-create-sell',
+            order: {
+                id: 'slot-create-sell',
+                type: ORDER_TYPES.SELL,
+                price: 1,
+                size: 2,
+                state: ORDER_STATES.VIRTUAL,
+                orderId: null
+            }
+        }
+    ];
+
+    const originalBuildCreate = chainOrders.buildCreateOrderOp;
+    const originalBuildCancel = chainOrders.buildCancelOrderOp;
+    const originalBuildUpdate = chainOrders.buildUpdateOrderOp;
+
+    chainOrders.buildCancelOrderOp = async () => ({ op_name: 'limit_order_cancel', op_data: {} });
+    chainOrders.buildUpdateOrderOp = async () => ({ op: { op_name: 'limit_order_update', op_data: {} }, finalInts: null });
+    chainOrders.buildCreateOrderOp = async (_account, _amountToSell, sellAssetId) => {
+        if (sellAssetId === manager.assets.assetB.id) {
+            return {
+                op: {
+                    op_name: 'limit_order_create',
+                    op_data: {
+                        amount_to_sell: { amount: 100000, asset_id: sellAssetId }
+                    }
+                },
+                finalInts: {
+                    sell: 100000,
+                    receive: 10000000,
+                    sellAssetId,
+                    receiveAssetId: manager.assets.assetA.id
+                }
+            };
+        }
+
+        return {
+            op: {
+                op_name: 'limit_order_create',
+                op_data: {
+                    amount_to_sell: { amount: 200000000, asset_id: sellAssetId }
+                }
+            },
+            finalInts: {
+                sell: 200000000,
+                receive: 200000,
+                sellAssetId,
+                receiveAssetId: manager.assets.assetB.id
+            }
+        };
+    };
+
+    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
+        result: { success: true, operation_results: [] },
+        opContexts: opContexts.filter(ctx => ctx?.kind === 'create' && ctx?.order?.type === ORDER_TYPES.SELL)
+    });
+
+    try {
+        await bot._updateOrdersOnChainBatchCOW({
+            workingGrid,
+            workingIndexes: workingGrid.getIndexes(),
+            workingBoundary: 0,
+            actions
+        });
+    } finally {
+        chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.buildCancelOrderOp = originalBuildCancel;
+        chainOrders.buildUpdateOrderOp = originalBuildUpdate;
+    }
+
+    assert.strictEqual(cacheDeductions.length, 1, 'Only executed context should generate deduction');
+    assert.strictEqual(cacheDeductions[0].side, 'sell', 'Executed SELL create should deduct sell cache');
+    assert(Math.abs(cacheDeductions[0].delta - (-2)) < 1e-12,
+        'SELL deduction should reflect executed context size only');
+
+    console.log('✓ COW-COMMIT-006 passed');
+}
+
+async function testSizeUpdateDeductionUsesQuantizedNetGrowth() {
+    console.log('\n[COW-COMMIT-007] size-update deduction uses quantized net growth...');
+
+    const master = new Map([
+        ['slot-update-buy', createOrder('slot-update-buy', {
+            type: ORDER_TYPES.BUY,
+            size: 1,
+            state: ORDER_STATES.ACTIVE,
+            orderId: '1.7.700',
+            rawOnChain: { for_sale: '100000' }
+        })]
+    ]);
+    const { bot, manager, cacheDeductions } = createCowExecutionFixture(master);
+    const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
+
+    const actions = [{
+        type: COW_ACTIONS.UPDATE,
+        id: 'slot-update-buy',
+        orderId: '1.7.700',
+        newGridId: 'slot-update-buy',
+        newSize: 1.000009,
+        order: {
+            id: 'slot-update-buy',
+            type: ORDER_TYPES.BUY,
+            price: 1,
+            size: 1.000009
+        }
+    }];
+
+    const originalBuildCreate = chainOrders.buildCreateOrderOp;
+    const originalBuildCancel = chainOrders.buildCancelOrderOp;
+    const originalBuildUpdate = chainOrders.buildUpdateOrderOp;
+
+    chainOrders.buildCancelOrderOp = async () => ({ op_name: 'limit_order_cancel', op_data: {} });
+    chainOrders.buildCreateOrderOp = async () => ({
+        op: { op_name: 'limit_order_create', op_data: {} },
+        finalInts: null
+    });
+    chainOrders.buildUpdateOrderOp = async () => ({
+        op: {
+            op_name: 'limit_order_update',
+            op_data: {
+                new_price: {
+                    base: { amount: 100001, asset_id: manager.assets.assetB.id },
+                    quote: { amount: 10000100, asset_id: manager.assets.assetA.id }
+                },
+                delta_amount_to_sell: { amount: 1, asset_id: manager.assets.assetB.id }
+            }
+        },
+        finalInts: {
+            sell: 100001,
+            receive: 10000100,
+            sellAssetId: manager.assets.assetB.id,
+            receiveAssetId: manager.assets.assetA.id
+        }
+    });
+
+    bot._executeOperationsWithStrategy = async (operations, opContexts) => ({
+        result: { success: true, operation_results: [] },
+        opContexts
+    });
+
+    try {
+        await bot._updateOrdersOnChainBatchCOW({
+            workingGrid,
+            workingIndexes: workingGrid.getIndexes(),
+            workingBoundary: 0,
+            actions
+        });
+    } finally {
+        chainOrders.buildCreateOrderOp = originalBuildCreate;
+        chainOrders.buildCancelOrderOp = originalBuildCancel;
+        chainOrders.buildUpdateOrderOp = originalBuildUpdate;
+    }
+
+    assert.strictEqual(cacheDeductions.length, 1, 'Exactly one cache deduction expected for size update');
+    assert.strictEqual(cacheDeductions[0].side, 'buy', 'BUY size update should deduct buy cache');
+    assert(Math.abs(cacheDeductions[0].delta - (-0.00001)) < 1e-12,
+        'Deduction must use quantized net growth from finalInts (1 blockchain unit)');
+
+    console.log('✓ COW-COMMIT-007 passed');
+}
+
 async function run() {
     console.log('Running COW commit guard regression tests...');
     await testRejectsVersionMismatchWithoutCommit();
     await testNoPostCommitSideEffectsWhenDeltaEmpty();
     await testExecuteBatchIfNeededSkipsEmptyActions();
     await testRejectsCreateOnOccupiedSlotBeforeBroadcast();
+    await testCreateDeductionUsesQuantizedFinalInts();
+    await testCacheDeductionUsesExecutedContextsOnly();
+    await testSizeUpdateDeductionUsesQuantizedNetGrowth();
     console.log('\n✓ All COW commit guard regression tests passed');
 }
 

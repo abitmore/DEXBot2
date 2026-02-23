@@ -731,6 +731,35 @@ function _hasExplicitUpdateForOrder(selectors, current, id) {
     return !!orderId && selectors.orderIds.has(String(orderId));
 }
 
+/**
+ * Check whether projecting targetOrder onto current would produce an identical order.
+ * Used to avoid marking orders as modified in the working grid when nothing changed.
+ *
+ * The projection result is: { ...current, ...targetOrder, size: resultSize,
+ *   state: resultState, orderId: resultOrderId }.
+ * An order is unchanged if:
+ *   - The explicitly-controlled fields (size, state, orderId) are the same.
+ *   - Every field that targetOrder would overwrite in current is already equal.
+ *
+ * @param {Object} current       - Current order in working grid
+ * @param {Object} targetOrder   - Target order from calculateTargetGrid
+ * @param {number} resultSize    - Resolved size for the projected order
+ * @param {string} resultState   - Resolved state for the projected order
+ * @param {string|null} resultOrderId - Resolved orderId for the projected order
+ * @returns {boolean} True if the projection would not change current
+ */
+function _isProjectionUnchanged(current, targetOrder, resultSize, resultState, resultOrderId) {
+    if (resultSize !== current.size) return false;
+    if (resultState !== current.state) return false;
+    if (resultOrderId !== current.orderId) return false;
+    // Check every field that targetOrder spreads onto current
+    for (const key of Object.keys(targetOrder)) {
+        if (key === 'size' || key === 'state' || key === 'orderId') continue; // explicitly controlled above
+        if (current[key] !== targetOrder[key]) return false;
+    }
+    return true;
+}
+
 function projectTargetToWorkingGrid(workingGrid, targetGrid, options = {}) {
     const updateSelectors = _buildUpdateSelectors(options.actions);
     const targetIds = new Set();
@@ -767,21 +796,27 @@ function projectTargetToWorkingGrid(workingGrid, targetGrid, options = {}) {
             const preservedSize = shouldPreserveSize
                 ? Math.max(0, toFiniteNumber(current.size))
                 : targetSize;
-            workingGrid.set(id, {
-                ...current,
-                ...targetOrder,
-                size: preservedSize,
-                state: keepOrderId ? current.state : ORDER_STATES.VIRTUAL,
-                orderId: keepOrderId ? current.orderId : null
-            });
+            const resultState = keepOrderId ? current.state : ORDER_STATES.VIRTUAL;
+            const resultOrderId = keepOrderId ? current.orderId : null;
+            if (!_isProjectionUnchanged(current, targetOrder, preservedSize, resultState, resultOrderId)) {
+                workingGrid.set(id, {
+                    ...current,
+                    ...targetOrder,
+                    size: preservedSize,
+                    state: resultState,
+                    orderId: resultOrderId
+                });
+            }
         } else {
-            workingGrid.set(id, {
-                ...current,
-                ...targetOrder,
-                size: 0,
-                state: ORDER_STATES.VIRTUAL,
-                orderId: null
-            });
+            if (!_isProjectionUnchanged(current, targetOrder, 0, ORDER_STATES.VIRTUAL, null)) {
+                workingGrid.set(id, {
+                    ...current,
+                    ...targetOrder,
+                    size: 0,
+                    state: ORDER_STATES.VIRTUAL,
+                    orderId: null
+                });
+            }
         }
     }
 

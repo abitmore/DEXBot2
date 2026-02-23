@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.24] - 2026-02-23 - Fill/Sync Consistency, Startup Ordering & COW Integer-Exact Accounting
+
+This patch closes several post-patch.23 correctness gaps discovered in production-like fill/sync timing: stale-size residuals at 1-satoshi precision, startup sequencing that could reconcile before sync-detected fill rebalance, and COW optimistic cache deductions that could diverge from executed chain integers. It also hardens reconnect/recovery state transitions and unifies paired-create ordering across startup and COW execution.
+
+### Fixed
+
+- **COW Cache Deduction Aligned to Executed On-Chain Ints** (`modules/dexbot_class.js`, `modules/order/utils/validate.js`) - commit 7f02c09
+  - **Problem**: Optimistic cache-fund deduction could be derived from planned float values instead of finalized integer operation amounts.
+  - **Impact**: Small accounting drift could accumulate between tracked cache commitments and blockchain-executed values.
+  - **Solution**: Route deduction paths through executed integer payloads so COW accounting mirrors exact on-chain amounts.
+
+- **Outside-In Paired CREATE Ordering Shared Across Startup and COW** (`modules/dexbot_class.js`, `modules/order/startup_reconcile.js`, `modules/order/utils/order.js`) - commit c7a685f
+  - **Problem**: Startup and COW paths used different create-order pairing/grouping behavior.
+  - **Impact**: Inconsistent slot pairing and placement ordering between bootstrap and steady-state execution.
+  - **Solution**: Introduced shared grouping helpers and standardized outside-in paired CREATE sequencing across both paths.
+
+- **Startup Sync Fill Rebalance Executed Before Reconcile** (`modules/dexbot_class.js`) - commit c625551
+  - **Problem**: Startup reconcile could run before sync-detected fills were fully rebalanced.
+  - **Impact**: Reconcile decisions could be made against pre-rebalance state, increasing transient divergence risk.
+  - **Solution**: Reordered startup flow to execute sync fill rebalance first, then run startup reconcile on updated state.
+
+- **Eliminated 1-Satoshi Stale-Size Fill Residuals** (`modules/dexbot_class.js`, `modules/order/manager.js`, `modules/order/sync_engine.js`, `modules/order/utils/validate.js`) - commit 0334360
+  - **Problem**: Precision-boundary edge cases could leave 1-sat residual size artifacts after fill/sync/COW transitions.
+  - **Impact**: Residuals caused avoidable follow-up corrections and noisy state deltas.
+  - **Solution**: Normalized stale-size handling in COW projection/sync paths so zero-equivalent dust at chain precision is cleared consistently.
+
+- **Fill Recovery and Rebalance State Reset Hardening** (`modules/btsdex_event_patch.js`, `modules/dexbot_class.js`, `modules/order/accounting.js`, `modules/order/sync_engine.js`) - commit d0de685
+  - **Problem**: Recovery/resubscribe/rebalance state transitions could leave stale flags or incomplete reset behavior after reconnect/failure episodes.
+  - **Impact**: Increased chance of delayed self-healing or repeated recovery loops under unstable connectivity.
+  - **Solution**: Hardened recovery lifecycle resets across event patching, sync, accounting, and bot orchestration paths.
+
+- **Sync No Longer Recomputes Order State from Chain Size** (`modules/order/sync_engine.js`, `modules/constants.js`) - commit f18ae6d
+  - **Problem**: `resolveStateFromChainSize` introduced state inference in sync where state should remain commit-driven.
+  - **Impact**: Sync pass could reclassify order state unexpectedly.
+  - **Solution**: Removed chain-size-to-state resolver usage so sync preserves canonical state semantics.
+
+- **Removed MAX_ORDER_FACTOR Cap Blocking Grid Resize on New Funds** (`modules/constants.js`, `modules/dexbot_class.js`) - commit 99d721a
+  - **Problem**: A hard size-factor cap constrained legitimate resize operations after new funds became available.
+  - **Impact**: Grid expansion under fresh capital could be artificially blocked.
+  - **Solution**: Removed cap path to allow intended resize behavior while retaining existing safety checks.
+
+### Documentation
+
+- **COW Invariant/Evolution Docs Added** (`docs/COW_INVARIANTS.md`, `docs/COW_EVOLUTION_REPORT.md`, `docs/WORKFLOW.md`) - commit b76df19
+  - Added explicit invariant contracts and promotion-review references for safer patch promotion audits.
+
+### Testing
+
+- Updated and expanded regressions in:
+  - `tests/test_cow_commit_guards.js`
+  - `tests/test_sync_logic.js`
+  - `tests/test_accounting_logic.js`
+  - `tests/test_cow_master_plan.js`
+  - `tests/test_legacy_cow_projection.js`
+  - `tests/test_startup_decision.js`
+
+### Core Lines Changed
+**Total: 564** (357 added, 207 removed) - Root and modules/*.js files only
+
+---
+
 ## [0.6.0-patch.23] - 2026-02-22 - Dust Rotation Guard, Legacy Builder Removal & PARTIAL Fund Invariant Fix
 
 This patch closes two fund-accounting correctness gaps: dust-sized slots could still be reached via surplus→hole rotation despite CREATE filtering, and PARTIAL orders had their actual on-chain remaining size silently overwritten with the ideal target size in the COW projection step, causing a spurious fund-invariant violation. Legacy plan-builder helpers that duplicated COW execution logic are also removed.
