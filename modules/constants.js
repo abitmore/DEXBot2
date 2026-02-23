@@ -275,17 +275,6 @@ let GRID_LIMITS = {
     //         Buy @ 99.9, empty, Sell @ 100.0 → 1-slot spread (too tight, rebalance triggered)
     MIN_SPREAD_ORDERS: 2,
 
-    // MAX_ORDER_FACTOR: Growth limit during grid expansion; new orders ≤ (largest_existing × this factor).
-    // Rationale: Gradual grid expansion prevents sudden explosive growth.
-    //   - 1.1 = new orders can't exceed 110% of the largest existing order
-    //   - When funds increase (fills, deposits), grid expands gradually over multiple cycles
-    //   - This prevents "resize explosion" where 1 fill suddenly expands all orders
-    //   - Gradual expansion is safer: prices move smoothly, less slippage on fills
-    // Example: Largest order = 100 BTS → new orders can be at most 110 BTS
-    //   - Next cycle: if still growing, can place up to 121 BTS (1.1 × 110)
-    //   - Exponential growth at 10% per cycle eventually reaches budget limit
-    // Applied during grid.createOrderGrid() to validate order sizes.
-    MAX_ORDER_FACTOR: 1.1,
 
     // Grid comparison metrics
     // Detects significant divergence between calculated (in-memory) and persisted grid state

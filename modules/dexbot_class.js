@@ -1455,34 +1455,8 @@ class DEXBot {
     }
 
     /**
-     * Get the maximum allowed order size based on the largest grid order.
-     * Max size = biggest order × 1.1 (allows 10% buffer above largest order)
-     * @returns {number} Maximum allowed order size in float amount
-     * @private
-     */
-    _getMaxOrderSize() {
-        const { GRID_LIMITS } = require('./constants');
-
-        // Get all orders and find the biggest by size
-        const allOrders = Array.from(this.manager.orders.values());
-        if (allOrders.length === 0) {
-            return Infinity; // No orders yet, no constraint
-        }
-
-        const biggestOrder = allOrders.reduce((max, order) =>
-            (order.size > max.size) ? order : max
-        );
-
-        // Maximum order size = largest order × MAX_ORDER_FACTOR
-        // Prevents creating oversized orders during validation and grid expansion
-        // Ensures gradual grid expansion when funds increase
-        // Fallback to 1.1 if constant is not defined
-        return biggestOrder.size * (GRID_LIMITS.MAX_ORDER_FACTOR || 1.1);
-    }
-
-    /**
      * Validate that operations can be executed with available funds before broadcasting.
-     * Checks: (1) sufficient available funds, (2) individual orders don't exceed max size limit
+     * Checks sufficient available funds for all operations.
      * @param {Array} operations - Operations to validate
      * @param {Object} assetA - Asset A metadata (id, precision, symbol)
      * @param {Object} assetB - Asset B metadata (id, precision, symbol)
@@ -1496,9 +1470,7 @@ class DEXBot {
 
         const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = require('./order/utils/math');
         const snap = this.manager.getChainFundsSnapshot();
-        const maxOrderSize = this._getMaxOrderSize();
         const requiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
-        const orderSizeViolations = [];
 
         // Sum amounts and check individual order sizes
         for (const op of operations) {
@@ -1529,19 +1501,6 @@ class DEXBot {
                     };
                 }
 
-                // CRITICAL SAFETY CHECK: Use integer comparison for max size
-                if (Number.isFinite(maxOrderSize)) {
-                    const maxOrderSizeInt = floatToBlockchainInt(maxOrderSize, precision);
-                    if (Number(sellAmountInt) > maxOrderSizeInt) {
-                        orderSizeViolations.push({
-                            asset: assetSymbol,
-                            sizeInt: sellAmountInt,
-                            maxInt: maxOrderSizeInt,
-                            sizeFloat: blockchainToFloat(sellAmountInt, precision)
-                        });
-                    }
-                }
-
                 // Accumulate required funds using quantized sums to match blockchain math
                 const floatAmount = blockchainToFloat(sellAmountInt, precision);
 
@@ -1569,15 +1528,6 @@ class DEXBot {
             [assetB.id]: quantizeFloat(snap.chainFreeBuy || 0, assetB.precision)
         };
 
-        // Check for order size violations
-        if (orderSizeViolations.length > 0) {
-            let summary = `[VALIDATION] CRITICAL: Order size limit FAILED (Absurd Size Check):\n`;
-            for (const v of orderSizeViolations) {
-                summary += `  ${v.asset}: sizeInt=${v.sizeInt}, maxInt=${v.maxInt} (approx ${Format.formatAmount8(v.sizeFloat)})\n`;
-            }
-            return { isValid: false, summary: summary.trim(), violations: orderSizeViolations };
-        }
-
         // Check for fund violations using quantized comparison
         const fundViolations = [];
         for (const assetId in requiredFunds) {
@@ -1602,7 +1552,7 @@ class DEXBot {
             return { isValid: false, summary: summary.trim(), violations: fundViolations };
         }
 
-        const summary = `[VALIDATION] PASSED: ${operations.length} operations, max order=${Format.formatAmount8(maxOrderSize)}`;
+        const summary = `[VALIDATION] PASSED: ${operations.length} operations`;
         return { isValid: true, summary };
     }
 
