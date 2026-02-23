@@ -167,7 +167,8 @@ class COWRebalanceEngine {
             return buildAbortedResult(reconcileResult.reason);
         }
 
-        projectTargetToWorkingGrid(workingGrid, targetGrid);
+        const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
+        projectTargetToWorkingGrid(workingGrid, targetGrid, { actions: optimizedActions });
 
         const precisions = {
             buyPrecision: this.assets?.assetB?.precision,
@@ -186,7 +187,6 @@ class COWRebalanceEngine {
             return buildAbortedResult(reason);
         }
 
-        const optimizedActions = optimizeRebalanceActions(reconcileResult.actions, masterGrid);
         const stateUpdates = buildStateUpdates(optimizedActions, masterGrid);
 
         const duration = Date.now() - startTime;
@@ -1262,11 +1262,12 @@ class OrderManager {
         const result = this.reconcileGrid(targetGrid, targetBoundary);
         if (result.aborted) return result;
 
-        projectTargetToWorkingGrid(workingGrid, targetGrid);
+        const actions = optimizeRebalanceActions(result.actions || [], this.orders);
+        projectTargetToWorkingGrid(workingGrid, targetGrid, { actions });
 
-        const actions = result.actions || [];
         return {
             ...result,
+            actions,
             total: actions.length,
             creates: actions.filter(a => a.type === COW_ACTIONS.CREATE).length,
             cancels: actions.filter(a => a.type === COW_ACTIONS.CANCEL).length,

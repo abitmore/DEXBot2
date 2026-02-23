@@ -661,10 +661,21 @@ class SyncEngine {
 
                 mgr.logger.log(`[SYNC] Order ${orderId} (${orderType}) currentSize=${currentSize}, filledAmount=${filledAmount}`, 'debug');
 
-                const currentSizeInt = floatToBlockchainInt(currentSize, precision);
+                const currentSizeIntFromGrid = floatToBlockchainInt(currentSize, precision);
+                const rawForSaleInt = toFiniteNumber(matchedGridOrder?.rawOnChain?.for_sale, null);
+                const currentSizeInt = Number.isFinite(rawForSaleInt)
+                    ? Math.max(0, Math.round(rawForSaleInt))
+                    : currentSizeIntFromGrid;
                 const filledAmountInt = floatToBlockchainInt(filledAmount, precision);
                 const newSizeInt = Math.max(0, currentSizeInt - filledAmountInt);
                 const newSize = blockchainToFloat(newSizeInt, precision, true); // needed for partial fills
+
+                if (Number.isFinite(rawForSaleInt) && currentSizeInt !== currentSizeIntFromGrid) {
+                    mgr.logger.log(
+                        `[SYNC] Using rawOnChain.for_sale baseline for ${orderId}: raw=${currentSizeInt}, grid=${currentSizeIntFromGrid}`,
+                        'debug'
+                    );
+                }
 
                 // CRITICAL (v0.5.1 Robustness): We must detect if an order is "effectively" full.
                 // An order is full if its size asset reaches 0 OR if the OTHER side reaches 0.
@@ -676,7 +687,7 @@ class SyncEngine {
                     // rounds to 0 on the blockchain, the order will be closed regardless of newSizeInt.
                     const otherPrecision = (orderType === ORDER_TYPES.SELL) ? assetBPrecision : assetAPrecision;
                     const price = matchedGridOrder.price;
-                    const otherSize = (orderType === ORDER_TYPES.SELL) ? (currentSize - filledAmount) * price : (currentSize - filledAmount) / price;
+                    const otherSize = (orderType === ORDER_TYPES.SELL) ? newSize * price : newSize / price;
                     
                     if (floatToBlockchainInt(otherSize, otherPrecision) <= 0) {
                         mgr.logger.log(`[SYNC] Order ${orderId} (slot ${matchedGridOrder.id}) other-side (${otherSize}) rounds to 0. Treating as full fill to trigger rotation.`, 'info');

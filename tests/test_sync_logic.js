@@ -274,6 +274,39 @@ async function runTests() {
         assert.strictEqual(result.filledOrders[0].isMaker, true, 'Missing is_maker should default to maker');
     }
 
+    console.log(' - Testing Fill History uses rawOnChain baseline when local size is stale...');
+    {
+        const manager = await createManager();
+        await manager._updateOrder({
+            id: 'raw-baseline-1',
+            state: ORDER_STATES.ACTIVE,
+            type: ORDER_TYPES.SELL,
+            size: 1.00000001,
+            price: 100,
+            orderId: 'c-raw-baseline',
+            rawOnChain: {
+                id: 'c-raw-baseline',
+                for_sale: '100000000'
+            }
+        });
+
+        const fill = {
+            op: [4, {
+                order_id: 'c-raw-baseline',
+                pays: { amount: 100000000, asset_id: '1.3.0' },
+                receives: { amount: 100000, asset_id: '1.3.1' },
+                is_maker: true
+            }],
+            block_num: 1001,
+            id: '1.11.1001'
+        };
+
+        const result = await manager.sync.syncFromFillHistory(fill);
+        assert.strictEqual(result.partialFill, false, 'Stale local size should still resolve to full fill when rawOnChain is authoritative');
+        assert.strictEqual(result.filledOrders.length, 1, 'Expected full fill with rawOnChain baseline');
+        assert.strictEqual(manager.orders.get('raw-baseline-1').state, ORDER_STATES.VIRTUAL, 'Filled slot should be virtualized after full fill');
+    }
+
     OrderUtils.getAssetFees = originalGetAssetFees;
     console.log('✓ Sync logic tests passed!');
 }

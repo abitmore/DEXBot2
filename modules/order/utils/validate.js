@@ -702,7 +702,37 @@ function removeActionsForOrder(actions, actionType, orderRef) {
  * @param {WorkingGrid} workingGrid - Working grid to modify
  * @param {Map} targetGrid - Target state
  */
-function projectTargetToWorkingGrid(workingGrid, targetGrid) {
+function _buildUpdateSelectors(actions) {
+    const selectors = {
+        slotIds: new Set(),
+        orderIds: new Set()
+    };
+
+    if (!Array.isArray(actions)) return selectors;
+
+    for (const action of actions) {
+        if (action?.type !== COW_ACTIONS.UPDATE) continue;
+        if (action.id) selectors.slotIds.add(String(action.id));
+        if (action.newGridId) selectors.slotIds.add(String(action.newGridId));
+        if (action.orderId) selectors.orderIds.add(String(action.orderId));
+    }
+
+    return selectors;
+}
+
+function _hasExplicitUpdateForOrder(selectors, current, id) {
+    if (!selectors) return false;
+
+    if (id && selectors.slotIds.has(String(id))) {
+        return true;
+    }
+
+    const orderId = current?.orderId;
+    return !!orderId && selectors.orderIds.has(String(orderId));
+}
+
+function projectTargetToWorkingGrid(workingGrid, targetGrid, options = {}) {
+    const updateSelectors = _buildUpdateSelectors(options.actions);
     const targetIds = new Set();
 
     for (const [id, targetOrder] of targetGrid.entries()) {
@@ -725,17 +755,16 @@ function projectTargetToWorkingGrid(workingGrid, targetGrid) {
 
         if (targetSize > 0) {
             const keepOrderId = isOrderOnChain(current) && current.type === targetOrder.type;
+            const hasExplicitUpdate = _hasExplicitUpdateForOrder(updateSelectors, current, id);
             // Orders without on-chain ID remain VIRTUAL until synchronizeWithChain
             // confirms blockchain placement and triggers accounting deduction.
             //
-            // For PARTIAL orders we preserve the actual remaining on-chain size
-            // instead of overwriting with the ideal target size.  The target size
-            // reflects what the grid *wants* the order to be once it is fully
-            // re-placed; it does NOT reflect what is currently committed on chain.
-            // Overwriting current.size with targetSize causes recalculateFunds to
-            // count the ideal size as committed, inflating chainBuy/chainSell and
-            // triggering a spurious fund-invariant violation.
-            const preservedSize = (keepOrderId && current.state === ORDER_STATES.PARTIAL)
+            // Preserve actual on-chain size for any unchanged on-chain order (ACTIVE/PARTIAL)
+            // unless there is an explicit UPDATE action for this slot/order.
+            // This prevents synthetic target sizes from being committed when no
+            // blockchain update operation will be broadcast.
+            const shouldPreserveSize = keepOrderId && !hasExplicitUpdate;
+            const preservedSize = shouldPreserveSize
                 ? Math.max(0, toFiniteNumber(current.size))
                 : targetSize;
             workingGrid.set(id, {

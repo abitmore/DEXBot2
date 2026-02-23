@@ -753,13 +753,13 @@ async function testCOW018_PartialOrderSizePreservedInProjection() {
 }
 
 /**
- * COW-018b: ACTIVE order size IS updated normally (not subject to partial-preservation).
+ * COW-018b: ACTIVE order size is preserved when no explicit UPDATE action exists.
  *
- * Ensures the fix is narrowly scoped to PARTIAL orders and does not regress
- * the normal case where an ACTIVE order's size should follow the target.
+ * Prevents COW projection from committing synthetic target sizes for unchanged
+ * on-chain orders. Size should only change if an UPDATE is explicitly planned.
  */
-async function testCOW018b_ActiveOrderSizeUpdatedNormally() {
-    console.log('\n[COW-018b] Testing ACTIVE order size is updated to targetSize normally...');
+async function testCOW018b_ActiveOrderSizePreservedWithoutUpdateAction() {
+    console.log('\n[COW-018b] Testing ACTIVE order size preserved without UPDATE action...');
 
     const masterGrid = new Map([
         ['slot-50', {
@@ -789,11 +789,52 @@ async function testCOW018b_ActiveOrderSizeUpdatedNormally() {
     assert(result, 'slot-50 should exist');
     assert.strictEqual(result.orderId, '1.7.11111', 'orderId preserved');
     assert.strictEqual(result.state, ORDER_STATES.ACTIVE, 'state remains ACTIVE');
-    // For ACTIVE orders the target size should be applied.
-    assert.strictEqual(result.size, 120,
-        'ACTIVE order size should be updated to targetSize');
+    assert.strictEqual(result.size, 100,
+        'ACTIVE order size must remain unchanged without explicit UPDATE action');
 
     console.log('✓ COW-018b passed');
+}
+
+/**
+ * COW-018d: ACTIVE order size follows target when explicit UPDATE action exists.
+ */
+async function testCOW018d_ActiveOrderSizeUpdatedWithUpdateAction() {
+    console.log('\n[COW-018d] Testing ACTIVE order size updated with explicit UPDATE action...');
+
+    const masterGrid = new Map([
+        ['slot-50', {
+            id: 'slot-50',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 0.00270,
+            size: 100,
+            orderId: '1.7.11111'
+        }]
+    ]);
+
+    const targetGrid = new Map([
+        ['slot-50', {
+            id: 'slot-50',
+            type: ORDER_TYPES.BUY,
+            state: ORDER_STATES.ACTIVE,
+            price: 0.00270,
+            size: 120
+        }]
+    ]);
+
+    const workingGrid = new WorkingGrid(masterGrid);
+    projectTargetToWorkingGrid(workingGrid, targetGrid, {
+        actions: [{ type: 'update', id: 'slot-50', orderId: '1.7.11111', newSize: 120 }]
+    });
+
+    const result = workingGrid.get('slot-50');
+    assert(result, 'slot-50 should exist');
+    assert.strictEqual(result.orderId, '1.7.11111', 'orderId preserved');
+    assert.strictEqual(result.state, ORDER_STATES.ACTIVE, 'state remains ACTIVE');
+    assert.strictEqual(result.size, 120,
+        'ACTIVE order size should follow target when UPDATE action is explicit');
+
+    console.log('✓ COW-018d passed');
 }
 
 /**
@@ -864,8 +905,9 @@ async function runAllTests() {
     await testCOW016_RotationOnlyUpdatesInReconcile();
     await testCOW017_NoRotationIntoDustHole();
     await testCOW018_PartialOrderSizePreservedInProjection();
-    await testCOW018b_ActiveOrderSizeUpdatedNormally();
+    await testCOW018b_ActiveOrderSizePreservedWithoutUpdateAction();
     await testCOW018c_PartialPreservePathNormalizesMalformedSize();
+    await testCOW018d_ActiveOrderSizeUpdatedWithUpdateAction();
     
     console.log('\n=== All COW tests passed! ===');
 }

@@ -1790,6 +1790,25 @@ class DEXBot {
         };
     }
 
+    _restoreSkippedUpdateSlotsInWorkingGrid(workingGrid, skippedSlotIds, skippedCount = 0) {
+        if (!workingGrid || !skippedSlotIds || skippedSlotIds.size === 0) {
+            return;
+        }
+
+        const masterVersion = Number.isFinite(Number(this.manager?._gridVersion))
+            ? Number(this.manager._gridVersion)
+            : undefined;
+
+        for (const slotId of skippedSlotIds) {
+            workingGrid.syncFromMaster(this.manager.orders, slotId, masterVersion);
+        }
+
+        this.manager.logger.log(
+            `[COW] Restored ${skippedSlotIds.size} slot(s) after ${skippedCount} skipped update action(s).`,
+            'debug'
+        );
+    }
+
     /**
      * COW broadcast: Execute blockchain operations and commit working grid on success.
      * Master grid is ONLY updated after successful blockchain confirmation.
@@ -1832,6 +1851,8 @@ class DEXBot {
         const { assetA, assetB } = this.manager.assets;
         const operations = [];
         const opContexts = [];
+        const skippedUpdateSlotIds = new Set();
+        let skippedUpdateCount = 0;
 
         // Collect IDs to lock from actions
         const idsToLock = new Set();
@@ -1946,7 +1967,16 @@ class DEXBot {
                                 { amountToSell, minToReceive, newPrice, orderType },
                                 masterOrder.rawOnChain || null
                             );
-                            if (!buildResult) continue;
+                            if (!buildResult) {
+                                skippedUpdateCount++;
+                                if (action.id) skippedUpdateSlotIds.add(action.id);
+                                if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                                this.manager.logger.log(
+                                    `[COW] Skipping rotation update ${action.id} -> ${action.newGridId}: no blockchain delta`,
+                                    'debug'
+                                );
+                                continue;
+                            }
 
                             operations.push(buildResult.op);
                             opContexts.push({
@@ -1977,7 +2007,16 @@ class DEXBot {
                             { amountToSell: newSize, orderType },
                             cachedRawOnChain
                         );
-                        if (!op) continue;
+                        if (!op) {
+                            skippedUpdateCount++;
+                            if (action.id) skippedUpdateSlotIds.add(action.id);
+                            if (action.newGridId) skippedUpdateSlotIds.add(action.newGridId);
+                            this.manager.logger.log(
+                                `[COW] Skipping size update ${action.id} (${action.orderId}): no blockchain delta`,
+                                'debug'
+                            );
+                            continue;
+                        }
                         operations.push(op.op);
                         const partialOrder = masterOrder || {
                             id: action.id,
@@ -1989,6 +2028,10 @@ class DEXBot {
                         this.manager.logger.log(`Failed to prepare update op for ${action.id}: ${err.message}`, 'error');
                     }
                 }
+            }
+
+            if (skippedUpdateCount > 0) {
+                this._restoreSkippedUpdateSlotsInWorkingGrid(workingGrid, skippedUpdateSlotIds, skippedUpdateCount);
             }
 
             if (operations.length === 0) {
