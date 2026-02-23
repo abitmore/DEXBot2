@@ -103,7 +103,9 @@ const {
     getOrderTypeFromUpdatedFlags,
     virtualizeOrder,
     correctAllPriceMismatches,
-    convertToSpreadPlaceholder
+    convertToSpreadPlaceholder,
+    buildOutsideInPairGroups,
+    extractBatchOperationResults
 } = require('./order/utils/order');
 const { validateOrderSize } = require('./order/utils/math');
 const {
@@ -1430,30 +1432,8 @@ class DEXBot {
         this.manager.logger.log('Placing initial orders on-chain...', 'info');
         const ordersToActivate = this.manager.getInitialOrdersToActivate();
 
-        const sellOrders = ordersToActivate.filter(o => o.type === 'sell');
-        const buyOrders = ordersToActivate.filter(o => o.type === 'buy');
-        const interleavedOrders = [];
-        const maxLen = Math.max(sellOrders.length, buyOrders.length);
-        for (let i = 0; i < maxLen; i++) {
-            if (i < sellOrders.length) interleavedOrders.push(sellOrders[i]);
-            if (i < buyOrders.length) interleavedOrders.push(buyOrders[i]);
-        }
-
-        // Refactored to use the batch logic while maintaining sequential execution in small groups.
-        // This prevents hitting blockchain transaction size limits and provides incremental feedback.
-        const orderGroups = [];
-        for (let i = 0; i < interleavedOrders.length;) {
-            const current = interleavedOrders[i];
-            const next = interleavedOrders[i + 1];
-            // Prefer grouping sell+buy pairs to balance side-specific limits
-            if (next && current.type === 'sell' && next.type === 'buy') {
-                orderGroups.push([current, next]);
-                i += 2;
-            } else {
-                orderGroups.push([current]);
-                i += 1;
-            }
-        }
+        // Place in outside->center pair mode when both sides are available.
+        const orderGroups = this._buildOutsideInPairGroupsForOrders(ordersToActivate);
 
         for (const group of orderGroups) {
             await this.updateOrdersOnChainPlan({ ordersToPlace: group });
@@ -1461,6 +1441,130 @@ class DEXBot {
 
         await this.manager.persistGrid();
         this.manager.finishBootstrap();
+    }
+
+    _buildOutsideInPairGroupsForOrders(orders) {
+        return buildOutsideInPairGroups(orders, {
+            isValid: Boolean,
+            getType: o => o.type,
+            getPrice: o => o.price,
+        });
+    }
+
+    _buildOutsideInPairGroupsForCreateEntries(createEntries) {
+        return buildOutsideInPairGroups(createEntries, {
+            isValid: e => Boolean(e?.context?.order),
+            getType: e => e.context.order.type,
+            getPrice: e => e.context.order.price,
+        });
+    }
+
+    _extractOperationResults(result, warnContext = '') {
+        const extracted = extractBatchOperationResults(result);
+
+        if (Array.isArray(extracted)) return extracted;
+
+        if (result) {
+            const resultType = Array.isArray(result) ? 'array' : typeof result;
+            const keySummary = (resultType === 'object' && !Array.isArray(result))
+                ? Object.keys(result).slice(0, 8).join(',')
+                : '';
+            const contextSuffix = warnContext ? ` (${warnContext})` : '';
+            const keysSuffix = keySummary ? `; keys=[${keySummary}]` : '';
+            this.manager?.logger?.log(
+                `[COW] Unrecognized operation_results shape${contextSuffix}; defaulting to empty results. resultType=${resultType}${keysSuffix}`,
+                'warn'
+            );
+        }
+
+        return [];
+    }
+
+    // Pair mode applies only when create contexts include both BUY and SELL.
+    // Single-side create batches intentionally remain a single executeBatch.
+    _shouldExecuteCreatePairMode(opContexts) {
+        if (!Array.isArray(opContexts) || opContexts.length < 2) return false;
+        if (!opContexts.every(ctx => ctx?.kind === 'create' && ctx?.order)) return false;
+
+        let hasBuy = false;
+        let hasSell = false;
+        for (const ctx of opContexts) {
+            if (ctx.order.type === ORDER_TYPES.BUY) hasBuy = true;
+            if (ctx.order.type === ORDER_TYPES.SELL) hasSell = true;
+            if (hasBuy && hasSell) return true;
+        }
+        return false;
+    }
+
+    async _executeOperationsWithStrategy(operations, opContexts) {
+        if (!this._shouldExecuteCreatePairMode(opContexts)) {
+            const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
+            return { result, opContexts };
+        }
+
+        const createEntries = [];
+        for (let i = 0; i < operations.length; i++) {
+            createEntries.push({
+                operation: operations[i],
+                context: opContexts[i],
+            });
+        }
+
+        const groups = this._buildOutsideInPairGroupsForCreateEntries(createEntries);
+        const mergedOperationResults = [];
+        const mergedRawResults = [];
+        const mergedContexts = [];
+
+        // Grouped execution is fail-fast, but NOT atomic across groups.
+        // Each group is a separate on-chain transaction; if a later group fails,
+        // earlier groups may already be confirmed on-chain.
+
+        for (let idx = 0; idx < groups.length; idx++) {
+            const group = groups[idx];
+            const groupOps = group.map(e => e.operation);
+            const groupContexts = group.map(e => e.context);
+            this.manager.logger.log(
+                `[COW] Broadcasting create pair group ${idx + 1}/${groups.length} (${groupOps.length} op${groupOps.length > 1 ? 's' : ''}, outside->center)`,
+                'info'
+            );
+            let groupResult;
+            try {
+                groupResult = await chainOrders.executeBatch(this.account, this.privateKey, groupOps);
+            } catch (err) {
+                const groupsBroadcast = idx;
+                const groupsTotal = groups.length;
+                const broadcastedOperationCount = mergedContexts.length;
+                this.manager.logger.log(
+                    `[COW] Grouped create execution failed at group ${idx + 1}/${groupsTotal}; ${groupsBroadcast} group(s) already broadcast (${broadcastedOperationCount} op context(s)). Partial on-chain state is possible.`,
+                    'error'
+                );
+                err.partialOnChainState = groupsBroadcast > 0;
+                err.groupsBroadcast = groupsBroadcast;
+                err.groupsTotal = groupsTotal;
+                err.broadcastedOperationCount = broadcastedOperationCount;
+                throw err;
+            }
+            const groupOpResults = this._extractOperationResults(groupResult);
+
+            mergedOperationResults.push(...groupOpResults);
+            mergedRawResults.push(groupResult?.raw || null);
+            mergedContexts.push(...groupContexts);
+        }
+
+        return {
+            result: {
+                success: true,
+                raw: {
+                    grouped: true,
+                    groupsExecuted: groups.length,
+                    groupResults: mergedRawResults,
+                },
+                operation_results: mergedOperationResults,
+                grouped: true,
+                groupsExecuted: groups.length
+            },
+            opContexts: mergedContexts
+        };
     }
 
     /**
@@ -2060,7 +2164,9 @@ class DEXBot {
 
             // Execute batch
             this.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');
-            const result = await chainOrders.executeBatch(this.account, this.privateKey, operations);
+            const execution = await this._executeOperationsWithStrategy(operations, opContexts);
+            const result = execution.result;
+            const executedContexts = execution.opContexts;
 
             // Process results and commit on success
             this.manager.pauseFundRecalc();
@@ -2116,7 +2222,7 @@ class DEXBot {
                     }
                     
                     // Process batch results for logging/metrics
-                    const batchResult = await this._processBatchResults(result, opContexts);
+                    const batchResult = await this._processBatchResults(result, executedContexts);
                     
                     // Persist to disk
                     await this.manager.persistGrid();
@@ -2144,6 +2250,12 @@ class DEXBot {
 
         } catch (err) {
             this.manager.logger.log(`[COW] Batch transaction failed: ${err.message}`, 'error');
+            if (err?.partialOnChainState) {
+                this.manager.logger.log(
+                    `[COW] Non-atomic grouped execution detected (${err.groupsBroadcast}/${err.groupsTotal} groups broadcast). Local rollback cannot undo confirmed on-chain operations; next sync/reconcile will converge state.`,
+                    'warn'
+                );
+            }
             this.manager.stopBroadcasting();
             this.manager._clearWorkingGridRef();
 
@@ -2190,12 +2302,7 @@ class DEXBot {
      * @private
      */
     async _processBatchResults(result, opContexts) {
-        const results =
-            (result && Array.isArray(result.operation_results) && result.operation_results) ||
-            (result && result.raw && Array.isArray(result.raw.operation_results) && result.raw.operation_results) ||
-            (result && result.raw && result.raw.trx && Array.isArray(result.raw.trx.operation_results) && result.raw.trx.operation_results) ||
-            (result && Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results) ||
-            [];
+        const results = this._extractOperationResults(result, '_processBatchResults');
         const { getAssetFees } = require('./order/utils/math');
         // IMPORTANT: Call without amount to get fee schedule fields
         // ({ createFee, updateFee, ... }), not proceeds projection fields.

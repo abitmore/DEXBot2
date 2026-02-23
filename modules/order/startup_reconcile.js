@@ -58,7 +58,7 @@
 
 const { ORDER_TYPES, ORDER_STATES, TIMING } = require('../constants');
 const { getMinAbsoluteOrderSize, getAssetFees } = require('./utils/math');
-const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, isOrderOnChain, getPartialsByType } = require('./utils/order');
+const { isOrderPlaced, parseChainOrder, buildCreateOrderArgs, isOrderOnChain, getPartialsByType, buildOutsideInPairGroups, extractBatchOperationResults } = require('./utils/order');
 const { resolveAccountRef } = require('./utils/system');
 const Format = require('./format');
 
@@ -111,6 +111,29 @@ function _pickVirtualSlotsToActivate(manager, type, count) {
 
     return valid;
 }
+
+function _getStartupSideComparators(orderType, assets) {
+    const isSell = orderType === ORDER_TYPES.SELL;
+
+    const sortUpdateComparator = isSell
+        ? (a, b) => (parseChainOrder(a, assets)?.price || 0) - (parseChainOrder(b, assets)?.price || 0)
+        : (a, b) => (parseChainOrder(b, assets)?.price || 0) - (parseChainOrder(a, assets)?.price || 0);
+
+    const sortExcessCancelComparator = isSell
+        ? (a, b) => (b.parsed.price || 0) - (a.parsed.price || 0)
+        : (a, b) => (a.parsed.price || 0) - (b.parsed.price || 0);
+
+    const sortMatchedCancelComparator = isSell
+        ? (a, b) => (b.price || 0) - (a.price || 0)
+        : (a, b) => (a.price || 0) - (b.price || 0);
+
+    return {
+        sortUpdateComparator,
+        sortExcessCancelComparator,
+        sortMatchedCancelComparator,
+    };
+}
+
 /**
  * Detect if grid edge is fully occupied with active orders.
  * When all outermost (furthest from market) orders are ACTIVE with orderId,
@@ -429,6 +452,220 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
     }
 }
 
+async function _createStartupOrderWithHandling({
+    chainOrders,
+    account,
+    privateKey,
+    manager,
+    gridOrder,
+    orderLabel,
+    dryRun,
+    recovery
+}) {
+    try {
+        await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
+    } catch (err) {
+        manager?.logger?.log?.(`Startup: Failed to create ${orderLabel}: ${err.message}`, 'error');
+
+        if (recovery && recovery.triggerMessage && recovery.source) {
+            await _recoverStartupSyncFailure({
+                chainOrders,
+                manager,
+                account,
+                logger: manager?.logger,
+                triggerMessage: recovery.triggerMessage,
+                source: recovery.source,
+            });
+        }
+    }
+}
+
+// _extractBatchOperationResults — thin wrapper over shared utility,
+// returns empty array (not null) for callers that iterate directly.
+function _extractBatchOperationResults(result) {
+    return extractBatchOperationResults(result) || [];
+}
+
+function _resolveGroupRecovery(group, fallbackMessage, fallbackSource) {
+    for (const plan of group || []) {
+        if (plan?.recovery?.triggerMessage && plan?.recovery?.source) {
+            return { triggerMessage: plan.recovery.triggerMessage, source: plan.recovery.source };
+        }
+    }
+    return { triggerMessage: fallbackMessage, source: fallbackSource };
+}
+
+async function _executeStartupCreateGroupBatch({
+    group,
+    chainOrders,
+    account,
+    privateKey,
+    manager,
+    dryRun,
+    groupIndex,
+    totalGroups,
+}) {
+    if (!Array.isArray(group) || group.length === 0 || dryRun) return;
+    if (typeof chainOrders?.buildCreateOrderOp !== 'function' || typeof chainOrders?.executeBatch !== 'function') {
+        throw new Error('chainOrders does not support batch create operations');
+    }
+
+    const logger = manager?.logger;
+    const prepared = [];
+
+    for (const plan of group) {
+        const gridOrder = plan?.gridOrder;
+        if (!gridOrder || !gridOrder.id) continue;
+
+        const currentSlot = manager.orders.get(gridOrder.id);
+        if (currentSlot?.orderId) {
+            logger?.log?.(`Startup: Skip create ${plan.orderLabel} - slot ${gridOrder.id} already has orderId ${currentSlot.orderId}`, 'warn');
+            continue;
+        }
+
+        const { amountToSell, sellAssetId, minToReceive, receiveAssetId } = buildCreateOrderArgs(
+            gridOrder,
+            manager.assets.assetA,
+            manager.assets.assetB
+        );
+
+        const buildResult = await chainOrders.buildCreateOrderOp(
+            account,
+            amountToSell,
+            sellAssetId,
+            minToReceive,
+            receiveAssetId,
+            null
+        );
+
+        if (!buildResult) {
+            logger?.log?.(`Startup: Skip create ${plan.orderLabel} - order amounts too small to place on-chain`, 'warn');
+            continue;
+        }
+
+        prepared.push({ plan, op: buildResult.op });
+    }
+
+    if (prepared.length === 0) return;
+
+    const recovery = _resolveGroupRecovery(
+        group,
+        `Startup: Triggering recovery sync after create group ${groupIndex + 1}/${totalGroups} failure`,
+        'startupCreateGroupFailure'
+    );
+
+    try {
+        logger?.log?.(
+            `Startup: Broadcasting create group ${groupIndex + 1}/${totalGroups} in single batch (${prepared.length} op${prepared.length > 1 ? 's' : ''})`,
+            'info'
+        );
+
+        const batchResult = await chainOrders.executeBatch(account, privateKey, prepared.map(p => p.op));
+        const opResults = _extractBatchOperationResults(batchResult);
+        const btsFeeData = getAssetFees('BTS');
+
+        let missingChainOrderId = false;
+        for (let i = 0; i < prepared.length; i++) {
+            const chainOrderId = opResults[i] && opResults[i][1];
+            const plan = prepared[i].plan;
+            if (!chainOrderId) {
+                logger?.log?.(`Startup: create result missing chainOrderId for ${plan.orderLabel}`, 'error');
+                missingChainOrderId = true;
+                continue;
+            }
+
+            await manager._applySync({
+                gridOrderId: plan.gridOrder.id,
+                chainOrderId,
+                isPartialPlacement: false,
+                fee: btsFeeData.createFee
+            }, 'createOrder');
+        }
+
+        if (missingChainOrderId) {
+            await _recoverStartupSyncFailure({
+                chainOrders,
+                manager,
+                account,
+                logger,
+                triggerMessage: recovery.triggerMessage,
+                source: recovery.source,
+            });
+        }
+    } catch (err) {
+        logger?.log?.(`Startup: Failed to create group ${groupIndex + 1}/${totalGroups}: ${err.message}`, 'error');
+        await _recoverStartupSyncFailure({
+            chainOrders,
+            manager,
+            account,
+            logger,
+            triggerMessage: recovery.triggerMessage,
+            source: recovery.source,
+        });
+    }
+}
+
+function _buildOutsideInCreateGroups(createPlans) {
+    return buildOutsideInPairGroups(createPlans, {
+        isValid: p => Boolean(p?.gridOrder),
+        getType: p => p.orderType,
+        getPrice: p => p.gridOrder?.price,
+    });
+}
+
+async function _executePlannedStartupCreates({
+    createPlans,
+    chainOrders,
+    account,
+    privateKey,
+    manager,
+    dryRun,
+}) {
+    const logger = manager?.logger;
+    const groups = _buildOutsideInCreateGroups(createPlans);
+    if (groups.length === 0) return;
+
+    logger?.log?.(`Startup: Executing ${createPlans.length} planned create(s) in ${groups.length} outside->center group(s)`, 'info');
+
+    for (let i = 0; i < groups.length; i++) {
+        const group = groups[i];
+        const labels = group.map(p => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
+        logger?.log?.(`Startup: Create group ${i + 1}/${groups.length} (${labels})`, 'info');
+
+        const canBatchCreate = typeof chainOrders?.buildCreateOrderOp === 'function' && typeof chainOrders?.executeBatch === 'function';
+        if (group.length > 1 && canBatchCreate) {
+            await _executeStartupCreateGroupBatch({
+                group,
+                chainOrders,
+                account,
+                privateKey,
+                manager,
+                dryRun,
+                groupIndex: i,
+                totalGroups: groups.length,
+            });
+            continue;
+        }
+
+        if (group.length > 1 && !canBatchCreate) {
+            logger?.log?.('Startup: Batch create helpers unavailable; falling back to sequential creates for this group', 'warn');
+        }
+
+        for (const plan of group) {
+            await _createStartupOrderWithHandling({
+                chainOrders,
+                account,
+                privateKey,
+                manager,
+                gridOrder: plan.gridOrder,
+                orderLabel: plan.orderLabel,
+                dryRun,
+                recovery: plan.recovery,
+            });
+        }
+    }
+}
+
 async function _reconcileStartupSide({
     orderType,
     targetCount,
@@ -439,20 +676,17 @@ async function _reconcileStartupSide({
     account,
     privateKey,
     dryRun,
+    plannedCreates,
 }) {
     const logger = manager?.logger;
     const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
     const balanceKey = orderType === ORDER_TYPES.SELL ? 'sellFree' : 'buyFree';
     const balanceSymbol = orderType === ORDER_TYPES.SELL ? manager.assets.assetA.symbol : manager.assets.assetB.symbol;
-    const sortUpdateComparator = orderType === ORDER_TYPES.SELL
-        ? (a, b) => (parseChainOrder(a, manager.assets)?.price || 0) - (parseChainOrder(b, manager.assets)?.price || 0)
-        : (a, b) => (parseChainOrder(b, manager.assets)?.price || 0) - (parseChainOrder(a, manager.assets)?.price || 0);
-    const sortExcessCancelComparator = orderType === ORDER_TYPES.SELL
-        ? (a, b) => (b.parsed.price || 0) - (a.parsed.price || 0)
-        : (a, b) => (a.parsed.price || 0) - (b.parsed.price || 0);
-    const sortMatchedCancelComparator = orderType === ORDER_TYPES.SELL
-        ? (a, b) => (b.price || 0) - (a.price || 0)
-        : (a, b) => (a.price || 0) - (b.price || 0);
+    const {
+        sortUpdateComparator,
+        sortExcessCancelComparator,
+        sortMatchedCancelComparator,
+    } = _getStartupSideComparators(orderType, manager.assets);
 
     const matchedOnGrid = _countActiveOnGrid(manager, orderType);
     const neededSlots = Math.max(0, targetCount - matchedOnGrid);
@@ -537,19 +771,15 @@ async function _reconcileStartupSide({
                 `Startup: Creating new ${sideUpper} for cancelled slot at grid ${targetGridOrder.id} (price=${Format.formatPrice6(targetGridOrder.price)}, size=${Format.formatSizeByOrderType(targetGridOrder.size, orderType, manager.assets)})`,
                 'info'
             );
-            try {
-                await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder: targetGridOrder, dryRun });
-            } catch (err) {
-                logger?.log?.(`Startup: Failed to create ${sideUpper} for cancelled slot: ${err.message}`, 'error');
-                await _recoverStartupSyncFailure({
-                    chainOrders,
-                    manager,
-                    account,
-                    logger,
+            plannedCreates.push({
+                orderType,
+                gridOrder: targetGridOrder,
+                orderLabel: `${sideUpper} for cancelled slot`,
+                recovery: {
                     triggerMessage: `Startup: Triggering recovery sync after ${sideUpper} creation failure`,
                     source: 'phase3CreationFailure',
-                });
-            }
+                },
+            });
         }
     }
 
@@ -564,11 +794,14 @@ async function _reconcileStartupSide({
             `Startup: Creating ${sideUpper} for grid ${gridOrder.id} (price=${Format.formatPrice6(gridOrder.price)}, size=${Format.formatSizeByOrderType(gridOrder.size, orderType, manager.assets)})`,
             'info'
         );
-        try {
-            await _createOrderFromGrid({ chainOrders, account, privateKey, manager, gridOrder, dryRun });
-        } catch (err) {
-            logger?.log?.(`Startup: Failed to create ${sideUpper}: ${err.message}`, 'error');
-        }
+        plannedCreates.push({
+            orderType,
+            gridOrder,
+            orderLabel: sideUpper,
+            // Intentionally no recovery metadata here.
+            // This preserves legacy behavior: regular virtual-slot creates only log failures,
+            // while cancelled-slot replacement creates trigger a startup recovery sync.
+        });
     }
 
     let cancelCount = Math.max(0, chainCount - targetCount);
@@ -797,6 +1030,7 @@ async function reconcileStartupOrders({
 
         let unmatchedBuys = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
         let unmatchedSells = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
+        const plannedCreates = [];
 
         logger && logger.log && logger.log(
             `Startup reconcile starting: unmatched(sell=${unmatchedSells.length}, buy=${unmatchedBuys.length}), target(sell=${targetSell}, buy=${targetBuy})`,
@@ -813,6 +1047,7 @@ async function reconcileStartupOrders({
             account,
             privateKey,
             dryRun,
+            plannedCreates,
         });
         const chainSellCount = sellResult.chainCount;
 
@@ -826,8 +1061,18 @@ async function reconcileStartupOrders({
             account,
             privateKey,
             dryRun,
+            plannedCreates,
         });
         const chainBuyCount = buyResult.chainCount;
+
+        await _executePlannedStartupCreates({
+            createPlans: plannedCreates,
+            chainOrders,
+            account,
+            privateKey,
+            manager,
+            dryRun,
+        });
 
         logger && logger.log && logger.log(
             `Startup reconcile complete: target(sell=${targetSell}, buy=${targetBuy}), chain(sell=${chainSellCount}, buy=${chainBuyCount}), ` +

@@ -74,9 +74,72 @@ async function testLegacyProjectionIntoWorkingGrid() {
     assert.strictEqual(updateAction.orderId, '1.7.200', 'normalized update action should use partialOrder.orderId');
 }
 
+async function testOutsideInPairGrouping() {
+    const bot = new DEXBot({
+        botKey: 'test_outside_in_pair_grouping',
+        dryRun: true,
+        assetA: 'IOB.XRP',
+        assetB: 'BTS',
+        startPrice: 100,
+        incrementPercent: 1
+    });
+
+    const groups = bot._buildOutsideInPairGroupsForOrders([
+        { id: 's-near', type: ORDER_TYPES.SELL, price: 101, size: 1 },
+        { id: 's-mid', type: ORDER_TYPES.SELL, price: 102, size: 1 },
+        { id: 's-out', type: ORDER_TYPES.SELL, price: 103, size: 1 },
+        { id: 'b-near', type: ORDER_TYPES.BUY, price: 99, size: 1 },
+        { id: 'b-out', type: ORDER_TYPES.BUY, price: 97, size: 1 }
+    ]);
+
+    assert.strictEqual(groups.length, 3, 'should build outside-in groups with singleton tail when one side is longer');
+
+    assert.deepStrictEqual(
+        groups[0].map(o => o.id),
+        ['s-out', 'b-out'],
+        'first group should pair outermost sell+buy'
+    );
+
+    assert.deepStrictEqual(
+        groups[1].map(o => o.id),
+        ['s-mid', 'b-near'],
+        'second group should move inward on both sides'
+    );
+
+    assert.deepStrictEqual(
+        groups[2].map(o => o.id),
+        ['s-near'],
+        'final group should contain remaining near-center side'
+    );
+}
+
+async function testOutsideInPairGroupingForCreateEntries() {
+    const bot = new DEXBot({
+        botKey: 'test_outside_in_create_entries',
+        dryRun: true,
+        assetA: 'IOB.XRP',
+        assetB: 'BTS',
+        startPrice: 100,
+        incrementPercent: 1
+    });
+
+    const groups = bot._buildOutsideInPairGroupsForCreateEntries([
+        { operation: { op_name: 'limit_order_create' }, context: { kind: 'create', order: { id: 's-near', type: ORDER_TYPES.SELL, price: 101, size: 1 } } },
+        { operation: { op_name: 'limit_order_create' }, context: { kind: 'create', order: { id: 's-out', type: ORDER_TYPES.SELL, price: 104, size: 1 } } },
+        { operation: { op_name: 'limit_order_create' }, context: { kind: 'create', order: { id: 'b-near', type: ORDER_TYPES.BUY, price: 99, size: 1 } } },
+        { operation: { op_name: 'limit_order_create' }, context: { kind: 'create', order: { id: 'b-out', type: ORDER_TYPES.BUY, price: 96, size: 1 } } }
+    ]);
+
+    assert.strictEqual(groups.length, 2, 'should build two paired groups when both sides have equal depth');
+    assert.deepStrictEqual(groups[0].map(e => e.context.order.id), ['s-out', 'b-out'], 'first create group should be outermost pair');
+    assert.deepStrictEqual(groups[1].map(e => e.context.order.id), ['s-near', 'b-near'], 'second create group should move toward center');
+}
+
 async function run() {
     console.log('Running legacy COW projection tests...');
     await testLegacyProjectionIntoWorkingGrid();
+    await testOutsideInPairGrouping();
+    await testOutsideInPairGroupingForCreateEntries();
     console.log('✓ Legacy COW projection tests passed');
 }
 

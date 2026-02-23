@@ -5,7 +5,7 @@
  * Includes grid indexing, order comparison, delta building, and strategy calculations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS (43 exported functions)
+ * TABLE OF CONTENTS (45 exported functions)
  * ===============================================================================
  *
  * SECTION 1: CHAIN ORDER MATCHING & RECONCILIATION (5 functions)
@@ -24,10 +24,12 @@
  *   - virtualizeOrder(order) - Convert order to VIRTUAL state
  *   - convertToSpreadPlaceholder(order) - Convert order to SPREAD placeholder
  *
- * SECTION 4: FILTERING & COUNTING (3 functions)
+ * SECTION 4: FILTERING & COUNTING (4 functions)
  *   - filterOrdersByType(orders, orderType) - Filter orders by type
  *   - getPartialsByType(orders) - Get partials grouped by type
  *   - countOrdersByType(orderType, ordersMap) - Count orders by type
+ *   - buildOutsideInPairGroups(items, accessors) - Outside->center pair grouping
+ *   - extractBatchOperationResults(result) - Extract operation_results from chain batch result
  *
  * SECTION 5: STATE PREDICATES (7 functions)
  *   - isOrderOnChain(order) - Check if order is ACTIVE or PARTIAL
@@ -429,6 +431,60 @@ function convertToSpreadPlaceholder(order) {
  */
 function filterOrdersByType(orders, orderType) {
     return Array.isArray(orders) ? orders.filter(o => o && o.type === orderType) : [];
+}
+
+/**
+ * Build outside->center paired groups from mixed BUY/SELL items.
+ * SELL items are ordered highest->lowest price, BUY items lowest->highest,
+ * then zipped into groups: [sell0,buy0], [sell1,buy1], ...
+ *
+ * @param {Array<*>} items - Source items containing order-like data.
+ * @param {Object} accessors - Accessor functions for item shape.
+ * @param {(item: any) => boolean} [accessors.isValid=Boolean] - Validity predicate.
+ * @param {(item: any) => string} accessors.getType - Returns ORDER_TYPES value.
+ * @param {(item: any) => number|string} accessors.getPrice - Returns item price.
+ * @returns {Array<Array<*>>} Grouped items in outside->center pair order.
+ */
+function buildOutsideInPairGroups(items, { isValid = Boolean, getType, getPrice }) {
+    const safeItems = Array.isArray(items) ? items.filter(item => isValid(item)) : [];
+    if (safeItems.length === 0) return [];
+
+    const sellItems = safeItems
+        .filter(item => getType(item) === ORDER_TYPES.SELL)
+        .sort((a, b) => Number(getPrice(b) || 0) - Number(getPrice(a) || 0));
+
+    const buyItems = safeItems
+        .filter(item => getType(item) === ORDER_TYPES.BUY)
+        .sort((a, b) => Number(getPrice(a) || 0) - Number(getPrice(b) || 0));
+
+    const groups = [];
+    const maxLen = Math.max(sellItems.length, buyItems.length);
+    for (let i = 0; i < maxLen; i++) {
+        const group = [];
+        if (i < sellItems.length) group.push(sellItems[i]);
+        if (i < buyItems.length) group.push(buyItems[i]);
+        if (group.length > 0) groups.push(group);
+    }
+
+    return groups;
+}
+
+/**
+ * Extract operation_results from a chain batch execution result.
+ * Handles the multiple result shapes returned by different chain library versions
+ * and wrapped/unwrapped transaction formats.
+ *
+ * @param {Object|Array} result - Raw chain batch execution result.
+ * @returns {Array} Array of operation result tuples, or empty array if unrecognized.
+ */
+function extractBatchOperationResults(result) {
+    return (
+        (result && Array.isArray(result.operation_results) && result.operation_results) ||
+        (result && result.raw && Array.isArray(result.raw.operation_results) && result.raw.operation_results) ||
+        (result && result.raw && result.raw.trx && Array.isArray(result.raw.trx.operation_results) && result.raw.trx.operation_results) ||
+        (result && Array.isArray(result) && result[0] && result[0].trx && Array.isArray(result[0].trx.operation_results) && result[0].trx.operation_results) ||
+        null
+    );
 }
 
 /**
@@ -909,6 +965,8 @@ module.exports = {
     virtualizeOrder,
     convertToSpreadPlaceholder,
     filterOrdersByType,
+    buildOutsideInPairGroups,
+    extractBatchOperationResults,
     getPartialsByType,
     countOrdersByType,
     isOrderOnChain,
