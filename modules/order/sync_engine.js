@@ -710,7 +710,7 @@ class SyncEngine {
                     const side = orderType === ORDER_TYPES.BUY ? 'buy' : 'sell';
                     const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
                     if (isDoubled) {
-                        mgr.logger.log(`[SYNC] Full fill on doubled side (${side}). Resetting flag and triggering double replacement.`, 'info');
+                        mgr.logger.log(`[SYNC] Full fill on doubled side (${side}). Resetting flag and triggering double replacement (2 boundary shifts).`, 'info');
                         if (side === 'buy') mgr.buySideIsDoubled = false;
                         else mgr.sellSideIsDoubled = false;
                         filledOrder.isDoubleReplacementTrigger = true;
@@ -719,6 +719,13 @@ class SyncEngine {
                     const spreadOrder = convertToSpreadPlaceholder(matchedGridOrder);
                     await mgr._updateOrder(spreadOrder, 'handle-fill-full', { skipAccounting: false, fee: 0 });
                     filledOrders.push(filledOrder);
+                    // Synthetic second fill entry must come after the real fill. deriveTargetBoundary shifts
+                    // boundary once per non-partial fill, so the extra entry produces the second shift
+                    // for the doubled-side's 2x capacity.
+                    if (isDoubled) {
+                        const syntheticFill = { ...filledOrder, isSyntheticDoubleFill: true };
+                        filledOrders.push(syntheticFill);
+                    }
                     return { filledOrders, updatedOrders, partialFill: false };
                 } else {
                     mgr.logger.log(`[SYNC] Partial fill for order ${orderId} (slot ${matchedGridOrder.id}): newSize=${newSize}`, 'info');
@@ -751,10 +758,13 @@ class SyncEngine {
                     const isDoubled = side === 'buy' ? mgr.buySideIsDoubled : mgr.sellSideIsDoubled;
 
                     if (isDoubled) {
-                        mgr.logger.log(`[SYNC] Partial fill on doubled side (${side}). Resetting flag.`, 'info');
+                        mgr.logger.log(`[SYNC] Partial fill on doubled side (${side}). Escalating to rebalance trigger (1 boundary shift).`, 'info');
                         if (side === 'buy') mgr.buySideIsDoubled = false;
                         else mgr.sellSideIsDoubled = false;
-                        // Note: partial fill on doubled side does NOT trigger double replacement
+                        // Escalate without changing partial semantics: keep isPartial=true so
+                        // processFillsOnly does not virtualize this still-open on-chain order.
+                        // Boundary logic treats this trigger as shift-eligible.
+                        filledPortion.isDoubleReplacementTrigger = true;
                     }
 
                     await mgr._updateOrder(updatedOrder, 'handle-fill-partial', { skipAccounting: false, fee: 0 });

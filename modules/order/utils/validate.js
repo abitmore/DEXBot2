@@ -406,7 +406,7 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         }
 
         if (masterOrder.type !== targetOrder.type) {
-            actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
+            actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId, reason: 'type-mismatch' });
             if (targetOrder.size > 0 && targetOrder.state === ORDER_STATES.ACTIVE && isCreateHealthy(targetOrder)) {
                 actions.push({ type: COW_ACTIONS.CREATE, id, order: targetOrder });
             }
@@ -426,7 +426,7 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
 
         if (masterOrder.size !== targetOrder.size) {
             if (targetOrder.size === 0) {
-                actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
+                actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId, reason: 'target-size-zero' });
             }
             // Intentionally no in-place size UPDATE here.
             // Fill-driven COW rebalance keeps updates rotation-only (newGridId path).
@@ -435,11 +435,22 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         }
     }
 
-    const pairRotations = (surpluses, holes) => {
-        if (holes.length === 0) return;
+    const cancelSurpluses = (surpluses) => {
+        for (const surplus of surpluses) {
+            if (surplus.master.orderId) {
+                actions.push({ type: COW_ACTIONS.CANCEL, id: surplus.id, orderId: surplus.master.orderId, reason: 'surplus-no-rotation-target' });
+            }
+        }
+    };
 
+    const pairRotations = (surpluses, holes) => {
         const healthyHoles = holes.filter(hole => isCreateHealthy(hole.order));
-        if (healthyHoles.length === 0) return;
+
+        if (healthyHoles.length === 0) {
+            // No viable rotation targets — cancel all unmatched surpluses
+            cancelSurpluses(surpluses);
+            return;
+        }
 
         if (surpluses.length === 0) {
             for (const hole of healthyHoles) {
@@ -474,6 +485,9 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
         for (let i = rotationCount; i < healthyHoles.length; i++) {
             actions.push({ type: COW_ACTIONS.CREATE, id: healthyHoles[i].id, order: healthyHoles[i].order });
         }
+
+        // Cancel any surpluses that couldn't be paired with a hole
+        cancelSurpluses(surpluses.slice(rotationCount));
     };
     
     pairRotations(surplusesBuy, holesBuy);
@@ -481,7 +495,7 @@ function reconcileGrid(masterGrid, targetGrid, targetBoundary, options = {}) {
 
     for (const [id, masterOrder] of masterGrid) {
         if (!targetGrid.has(id) && isOrderOnChain(masterOrder)) {
-            actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId });
+            actions.push({ type: COW_ACTIONS.CANCEL, id, orderId: masterOrder.orderId, reason: 'orphan-slot' });
         }
     }
 

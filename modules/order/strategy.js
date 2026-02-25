@@ -303,8 +303,11 @@ class StrategyEngine {
         const allSellSlots = updatedSlots.filter(o => o.type === ORDER_TYPES.SELL);
 
         // Apply Window Discipline (activeOrders count)
-        const targetCountBuy = Math.max(1, config.activeOrders?.buy || 1);
-        const targetCountSell = Math.max(1, config.activeOrders?.sell || 1);
+        // When a side is doubled (has a merged dust partial), reduce its target by 1
+        // so the outermost active slot becomes VIRTUAL — making it surplus-eligible
+        // for rotation/cancellation and clearing the squeezed partial.
+        const targetCountBuy = Math.max(1, (config.activeOrders?.buy || 1) - (params.buySideIsDoubled ? 1 : 0));
+        const targetCountSell = Math.max(1, (config.activeOrders?.sell || 1) - (params.sellSideIsDoubled ? 1 : 0));
 
         // Sort Closest-First for windowing
         const buySlots = allBuySlots

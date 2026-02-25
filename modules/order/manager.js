@@ -1230,6 +1230,25 @@ class OrderManager {
         });
     }
 
+    /**
+     * Detect dust partials in the active buy/sell window and set the corresponding
+     * doubled-side flag so calculateTargetGrid widens the spread enough to push the
+     * squeezed partial into VIRTUAL territory, making it a surplus rotation candidate.
+     *
+     * Only sets the flag to true; sync_engine resets it to false after each fill cycle.
+     */
+    async _detectAndSetDoubledState() {
+        const { buyDust, sellDust } = await Grid.checkWindowDust(this);
+        if (buyDust) {
+            this.buySideIsDoubled = true;
+            this.logger.log('[DOUBLED] Buy-side dust partial in active window — buySideIsDoubled set', 'info');
+        }
+        if (sellDust) {
+            this.sellSideIsDoubled = true;
+            this.logger.log('[DOUBLED] Sell-side dust partial in active window — sellSideIsDoubled set', 'info');
+        }
+    }
+
     async _applySafeRebalanceCOW(fills = [], excludeIds = new Set()) {
         const cowEngine = this._getCOWEngine();
         if (!cowEngine) {
@@ -1237,6 +1256,7 @@ class OrderManager {
         }
 
         this._setRebalanceState(REBALANCE_STATES.REBALANCING);
+        await this._detectAndSetDoubledState();
 
         const result = await cowEngine.execute({
             masterGrid: this.orders,

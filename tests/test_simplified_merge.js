@@ -56,17 +56,21 @@ async function testSimplifiedMergeStrategy() {
         price: 0.98, size: 500, orderId: 'chain-buy-1'
     });
 
-    console.log('  Scenario 1: Rebalance with dust partial');
-    const result1 = await mgr.performSafeRebalance();
-    
-    // Check if the order was updated to ideal size
-    const update = result1.actions.find(a => a.id === 'buy-0' && a.type === 'update');
-    assert(update, 'Dust order should be in actions as update');
-    assert(update.newSize > 400, `New size should be increased, got ${update.newSize}`);
-    
-    // In COW, sideIsDoubled is flagged during planning if it's a dust partial update
-    // But calculateTargetGrid might not set it on the manager instance directly yet?
-    // Actually, it should because it's a side effect in current implementation.
+    mgr.finishBootstrap();
+
+    console.log('  Scenario 1: Health check with dust partial');
+    const collectedPlan = { ordersToUpdate: [], ordersToPlace: [] };
+    await mgr.checkGridHealth(async (plan) => {
+        if (plan.ordersToUpdate) collectedPlan.ordersToUpdate.push(...plan.ordersToUpdate);
+        if (plan.ordersToPlace) collectedPlan.ordersToPlace.push(...plan.ordersToPlace);
+    });
+
+    const updateEntry = collectedPlan.ordersToUpdate.find(u => {
+        const id = u.partialOrder?.id || u.id;
+        return id === 'buy-0';
+    });
+    assert(updateEntry, 'Dust order should be queued for update in health check');
+    assert(updateEntry.newSize > 400, `New size should be increased, got ${updateEntry.newSize}`);
     assert.strictEqual(mgr.buySideIsDoubled, true, 'Buy side should be marked as doubled after merging dust');
     console.log('  ✓ Side marked as doubled and order planned for update');
 
@@ -85,8 +89,11 @@ async function testSimplifiedMergeStrategy() {
 
     const syncResult1 = await mgr.syncFromFillHistory(fill1);
     assert.strictEqual(mgr.buySideIsDoubled, false, 'Doubled flag should be reset after any fill');
-    assert(!syncResult1.filledOrders[0].isDoubleReplacementTrigger, 'Partial fill should NOT trigger double replacement');
-    console.log('  ✓ Doubled flag reset after partial fill');
+    assert.strictEqual(syncResult1.filledOrders[0].isDoubleReplacementTrigger, true, 'Partial fill on doubled side SHOULD trigger double replacement');
+    assert.strictEqual(syncResult1.filledOrders[0].isPartial, true, 'Partial fill on doubled side should preserve isPartial so slot remains open');
+    assert.strictEqual(syncResult1.partialFill, true, 'Return value should still indicate partial fill');
+    assert.strictEqual(syncResult1.filledOrders.length, 1, 'Partial fill on doubled side should produce exactly 1 fill entry (1 boundary shift)');
+    console.log('  ✓ Partial fill on doubled side escalated: triggers rebalance with 1 boundary shift');
 
     // 3. Setup again and simulate a full fill on doubled side
     mgr.buySideIsDoubled = true;
@@ -104,8 +111,11 @@ async function testSimplifiedMergeStrategy() {
 
     const syncResult2 = await mgr.syncFromFillHistory(fill2);
     assert.strictEqual(mgr.buySideIsDoubled, false, 'Doubled flag should be reset after full fill');
-    assert.strictEqual(syncResult2.filledOrders[0].isDoubleReplacementTrigger, true, 'Full fill on doubled side SHOULD trigger double replacement');
-    console.log('  ✓ Full fill on doubled side triggers double replacement');
+    assert.strictEqual(syncResult2.filledOrders.length, 2, 'Full fill on doubled side should produce 2 fill entries (2 boundary shifts)');
+    assert.strictEqual(syncResult2.filledOrders[0].isDoubleReplacementTrigger, true, 'First fill entry should trigger double replacement');
+    assert.strictEqual(syncResult2.filledOrders[1].isSyntheticDoubleFill, true, 'Second fill entry should be synthetic double fill');
+    assert.strictEqual(syncResult2.filledOrders[1].isPartial, undefined, 'Synthetic fill should not have isPartial');
+    console.log('  ✓ Full fill on doubled side produces 2 boundary shifts');
 
     // 4. Verify rebalance performs actions
     console.log('  Scenario 4: Rebalance after fill');

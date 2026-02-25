@@ -883,7 +883,12 @@ function deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSl
 
     // Apply shift from fills
     for (const fill of fills) {
-        if (fill.isPartial) continue;
+        const isShiftEligible =
+            fill?.isPartial !== true ||
+            fill?.isDelayedRotationTrigger === true ||
+            fill?.isDoubleReplacementTrigger === true;
+
+        if (!isShiftEligible) continue;
         if (fill.type === ORDER_TYPES.SELL) newBoundaryIdx++;
         else if (fill.type === ORDER_TYPES.BUY) newBoundaryIdx--;
     }

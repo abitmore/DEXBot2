@@ -12,7 +12,7 @@
  * - Detects and flags out-of-spread conditions
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Grid Class (23 static methods)
+ * TABLE OF CONTENTS - Grid Class (25 static methods)
  * ===============================================================================
  *
  * CONFIGURATION & CALCULATION (2 methods)
@@ -57,15 +57,17 @@
  *   16. calculateCurrentSpread(manager) - Calculate current bid-ask spread
  *   17. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
  *
- * GRID HEALTH MONITORING (4 methods)
+ * GRID HEALTH MONITORING (6 methods)
  *   18. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
- *   19. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
- *   20. hasAnyDust(manager, partials, side) - Check for dust orders (public)
- *   21. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ *   19. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
+ *   20. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
+ *   21. hasAnyDust(manager, partials, side) - Check for dust orders (public)
+ *   22. _applyPartialActions(manager, updateOrdersOnChainBatch) - Apply merge/split for partials (internal)
+ *   23. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
  * SPREAD CORRECTION (2 methods)
- *   22. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
- *   23. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ *   24. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
+ *   25. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
  *
  * ===============================================================================
  *
@@ -1299,7 +1301,8 @@ class Grid {
 
     /**
      * Grid health check for structural violations.
-     * Monitors for "Dust Partials" that are too small to be traded on-chain.
+     * Monitors for "Dust Partials" that are too small to be traded on-chain,
+     * scoped to the active buy/sell window.
      *
      * NOTE: Internal gaps (virtual slots between active ones) are no longer
      * flagged as violations. The "Edge-First" placement strategy intentionally
@@ -1315,11 +1318,67 @@ class Grid {
         // Skip health checks during bootstrap to prevent spamming warnings
         if (manager._state.isBootstrapping()) return { buyDust: false, sellDust: false };
 
+        // Health checks are scoped to the active on-chain window only.
+        // This keeps detection aligned with maintenance actions that operate on
+        // active window partials.
+        const { buyDust, sellDust } = await Grid.checkWindowDust(manager);
+
+        if (updateOrdersOnChainBatch && (buyDust || sellDust)) {
+            await Grid._applyPartialActions(manager, updateOrdersOnChainBatch);
+        }
+
+        return { buyDust, sellDust };
+    }
+
+    /**
+     * Dust check scoped to the active buy/sell window.
+     *
+     * Unlike checkGridHealth (which scans all partials), this method only considers
+     * partials that fall within the top `activeOrders.buy` buy slots and the bottom
+     * `activeOrders.sell` sell slots by price — the slots that are actively on-chain
+     * and can become "squeezed" when the boundary crawls past a dust partial.
+     *
+     * Returns the same shape as checkGridHealth: { buyDust, sellDust }.
+     *
+     * @param {OrderManager} manager
+     * @returns {Promise<{buyDust: boolean, sellDust: boolean}>}
+     */
+    static async checkWindowDust(manager) {
+        if (!manager) return { buyDust: false, sellDust: false };
+
         const allOrders = Array.from(manager.orders.values());
         const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
 
-        const buyDust = buyPartials.length > 0 && await Grid._hasAnyDust(manager, buyPartials, ORDER_TYPES.BUY);
-        const sellDust = sellPartials.length > 0 && await Grid._hasAnyDust(manager, sellPartials, ORDER_TYPES.SELL);
+        const activeBuyCount = manager.config.activeOrders?.buy ?? 0;
+        const activeSellCount = manager.config.activeOrders?.sell ?? 0;
+
+        let buyDust = false;
+        if (buyPartials.length > 0 && activeBuyCount > 0) {
+            const windowBuyIds = new Set(
+                allOrders
+                    .filter(o => o.type === ORDER_TYPES.BUY && o.price != null)
+                    .sort((a, b) => b.price - a.price)
+                    .slice(0, activeBuyCount)
+                    .map(o => o.id)
+            );
+            const windowBuyPartials = buyPartials.filter(p => windowBuyIds.has(p.id));
+            buyDust = windowBuyPartials.length > 0 &&
+                await Grid._hasAnyDust(manager, windowBuyPartials, ORDER_TYPES.BUY);
+        }
+
+        let sellDust = false;
+        if (sellPartials.length > 0 && activeSellCount > 0) {
+            const windowSellIds = new Set(
+                allOrders
+                    .filter(o => o.type === ORDER_TYPES.SELL && o.price != null)
+                    .sort((a, b) => a.price - b.price)
+                    .slice(0, activeSellCount)
+                    .map(o => o.id)
+            );
+            const windowSellPartials = sellPartials.filter(p => windowSellIds.has(p.id));
+            sellDust = windowSellPartials.length > 0 &&
+                await Grid._hasAnyDust(manager, windowSellPartials, ORDER_TYPES.SELL);
+        }
 
         return { buyDust, sellDust };
     }
@@ -1357,6 +1416,178 @@ class Grid {
             const threshold = getSingleDustThreshold(idealSizes[idx]);
             return p.size < threshold;
         });
+    }
+
+    /**
+     * Apply merge (dust) or split (non-dust) corrections for partial orders in the active window.
+     * Dust partials are merged toward ideal size with safety caps.
+     * Non-dust partials are split: updated toward ideal size and a priority free slot is activated.
+     * @private
+     * @param {OrderManager} manager
+     * @param {Function} updateOrdersOnChainBatch
+     */
+    static async _applyPartialActions(manager, updateOrdersOnChainBatch) {
+        const ordersToUpdate = [];
+        const ordersToPlace = [];
+
+        for (const side of ['buy', 'sell']) {
+            const orderType = side === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+
+            const ctx = await Grid._getSizingContext(manager, side);
+            if (!ctx || ctx.budget <= 0) continue;
+
+            const sideSlots = Array.from(manager.orders.values())
+                .filter(o => o.type === orderType)
+                .sort((a, b) => a.price - b.price);
+
+            if (sideSlots.length === 0) continue;
+
+            const idealSizes = allocateFundsByWeights(
+                ctx.budget,
+                sideSlots.length,
+                manager.config.weightDistribution[side],
+                manager.config.incrementPercent / 100,
+                orderType === ORDER_TYPES.BUY,
+                0,
+                ctx.precision
+            );
+
+            let remainingAvail = Math.max(0, Number(manager.funds?.available?.[side] || 0));
+            const cacheFundsFallback = Math.max(0, Number(manager.funds?.cacheFunds?.[side] || 0));
+            let dustResizeBudget = cacheFundsFallback;
+            let budgetRemaining = Math.max(1, Number(manager.config.activeOrders?.[side] || 1));
+
+            const reservedPlacementIds = new Set();
+            const sidePrioritySlots = [...sideSlots].sort((a, b) =>
+                orderType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price
+            );
+            let priorityScanStart = 0;
+
+            const pickPriorityFreeSlot = (excludeSlotId = null) => {
+                for (let i = priorityScanStart; i < sidePrioritySlots.length; i++) {
+                    const candidate = sidePrioritySlots[i];
+                    if (!candidate || !candidate.id) continue;
+                    if (reservedPlacementIds.has(candidate.id)) continue;
+                    if (candidate.id === excludeSlotId) continue;
+
+                    const current = manager.orders.get(candidate.id);
+                    if (!current) continue;
+                    if (current.state !== ORDER_STATES.VIRTUAL) continue;
+                    if (hasOnChainId(current)) continue;
+                    if (typeof manager.isOrderLocked === 'function' && manager.isOrderLocked(current.id)) continue;
+
+                    priorityScanStart = i + 1;
+                    return current;
+                }
+                return null;
+            };
+
+            const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, manager.assets);
+
+            // Compute active window set
+            const activeCount = manager.config.activeOrders?.[side] ?? 0;
+            const allOrders = Array.from(manager.orders.values());
+            let windowIds;
+            if (orderType === ORDER_TYPES.BUY) {
+                windowIds = new Set(
+                    allOrders
+                        .filter(o => o.type === ORDER_TYPES.BUY && o.price != null)
+                        .sort((a, b) => b.price - a.price)
+                        .slice(0, activeCount)
+                        .map(o => o.id)
+                );
+            } else {
+                windowIds = new Set(
+                    allOrders
+                        .filter(o => o.type === ORDER_TYPES.SELL && o.price != null)
+                        .sort((a, b) => a.price - b.price)
+                        .slice(0, activeCount)
+                        .map(o => o.id)
+                );
+            }
+
+            // Process each partial in the window
+            const partials = sideSlots.filter(o => o.state === ORDER_STATES.PARTIAL && windowIds.has(o.id));
+            for (const partial of partials) {
+                if (budgetRemaining <= 0) {
+                    manager.logger.log(
+                        `[PARTIAL] Budget exhausted on ${side}. Deferring remaining partial corrections to next cycle.`,
+                        'debug'
+                    );
+                    break;
+                }
+
+                const idx = sideSlots.findIndex(s => s.id === partial.id);
+                if (idx === -1) continue;
+
+                const idealSize = Number(idealSizes[idx] || 0);
+                if (!(idealSize > 0)) continue;
+
+                const threshold = getSingleDustThreshold(idealSize);
+                if (partial.size < threshold) {
+                    // Dust: merge toward ideal size with available-funds cap and cache fallback
+                    const currentSize = Number(partial.size || 0);
+                    const sizeIncrease = Math.max(0, idealSize - currentSize);
+                    let cappedIncrease = Math.min(sizeIncrease, remainingAvail);
+                    let finalSize = currentSize + cappedIncrease;
+                    let usedDustFallback = false;
+
+                    if (finalSize < minAbsoluteSize && hasOnChainId(partial) && dustResizeBudget > 0) {
+                        cappedIncrease = Math.min(sizeIncrease, dustResizeBudget);
+                        finalSize = currentSize + cappedIncrease;
+                        usedDustFallback = true;
+                    }
+
+                    if (!(idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize && cappedIncrease > 0)) {
+                        continue;
+                    }
+
+                    if (orderType === ORDER_TYPES.BUY) {
+                        manager.buySideIsDoubled = true;
+                    } else {
+                        manager.sellSideIsDoubled = true;
+                    }
+
+                    ordersToUpdate.push({ partialOrder: partial, newSize: finalSize });
+                    if (usedDustFallback) {
+                        dustResizeBudget = Math.max(0, dustResizeBudget - cappedIncrease);
+                    } else {
+                        remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    }
+                    budgetRemaining--;
+                } else {
+                    // Non-dust: split — update toward ideal size and place old size on priority free slot
+                    const oldSize = Number(partial.size || 0);
+                    const nextSlot = pickPriorityFreeSlot(partial.id);
+                    if (!nextSlot) {
+                        manager.logger.log(
+                            `[PARTIAL] Skipping non-dust partial at ${partial.id}: no priority free slot available`,
+                            'warn'
+                        );
+                        continue;
+                    }
+
+                    const sizeIncrease = Math.max(0, idealSize - oldSize);
+                    const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
+                    const finalSize = oldSize + cappedIncrease;
+
+                    if (!(idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize)) {
+                        continue;
+                    }
+
+                    ordersToUpdate.push({ partialOrder: partial, newSize: finalSize });
+                    ordersToPlace.push({ ...nextSlot, type: orderType, size: oldSize, state: ORDER_STATES.ACTIVE });
+                    reservedPlacementIds.add(nextSlot.id);
+
+                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
+                    budgetRemaining--;
+                }
+            }
+        }
+
+        if (ordersToUpdate.length > 0 || ordersToPlace.length > 0) {
+            await updateOrdersOnChainBatch({ ordersToUpdate, ordersToPlace });
+        }
     }
 
     /**
