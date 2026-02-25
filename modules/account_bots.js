@@ -508,11 +508,15 @@ async function askNumberWithBounds(promptText, defaultValue, minVal, maxVal) {
  * @returns {Promise<number|string>} The spread percentage or '\x1b' if ESC.
  */
 async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor = 2.1) {
-    const minRequired = parseFloat((incrementPercent * minSpreadFactor).toFixed(2));
-    const suffix = defaultValue !== undefined && defaultValue !== null ? ` [${defaultValue.toFixed(2)}]` : '';
-    const raw = (await readInput(`${promptText} (>= ${minRequired.toFixed(2)})${suffix}: `)).trim();
+    const safeIncrement = Number.isFinite(incrementPercent) ? incrementPercent : 0;
+    const safeMinSpreadFactor = Number.isFinite(minSpreadFactor) ? minSpreadFactor : 2.1;
+    const minRequired = safeIncrement * safeMinSpreadFactor;
+    const minRequiredLabel = Number(minRequired.toFixed(6));
+    const effectiveDefault = Number.isFinite(defaultValue) ? Math.max(defaultValue, minRequired) : defaultValue;
+    const suffix = effectiveDefault !== undefined && effectiveDefault !== null ? ` [${effectiveDefault.toFixed(2)}]` : '';
+    const raw = (await readInput(`${promptText} (>= ${minRequiredLabel})${suffix}: `)).trim();
     if (raw === '\x1b') return '\x1b';
-    if (raw === '') return defaultValue;
+    if (raw === '') return effectiveDefault;
     const parsed = Number(raw);
     if (Number.isNaN(parsed)) {
         console.log('Please enter a valid number.');
@@ -524,8 +528,8 @@ async function askTargetSpreadPercent(promptText, defaultValue, incrementPercent
         return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
     // Validate >= minSpreadFactor x incrementPercent (with floating point precision handling)
-    if (parsed < minRequired) {
-        console.log(`Invalid ${promptText}: ${parsed}. Must be >= ${minSpreadFactor}x incrementPercent (${minRequired.toFixed(2)})`);
+    if (parsed + Number.EPSILON < minRequired) {
+        console.log(`Invalid ${promptText}: ${parsed}. Must be >= ${safeMinSpreadFactor}x incrementPercent (${minRequiredLabel})`);
         return askTargetSpreadPercent(promptText, defaultValue, incrementPercent, minSpreadFactor);
     }
     // Validate no negative
@@ -853,6 +857,17 @@ async function promptBotData(base = {}) {
                 if (!data.name || !data.assetA || !data.assetB || !data.preferredAccount) {
                     console.log('\x1b[31mError: Name, Pair, and Account are required before saving.\x1b[0m');
                     break;
+                }
+                {
+                    const currentSettings = loadGeneralSettings();
+                    const spreadFactor = Number.isFinite(currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR)
+                        ? currentSettings.GRID_LIMITS.MIN_SPREAD_FACTOR
+                        : 2.1;
+                    const minRequiredSpread = data.incrementPercent * spreadFactor;
+                    if (data.targetSpreadPercent + Number.EPSILON < minRequiredSpread) {
+                        console.log(`\x1b[31mError: targetSpreadPercent (${data.targetSpreadPercent}) must be >= ${spreadFactor}x incrementPercent (${Number(minRequiredSpread.toFixed(6))}).\x1b[0m`);
+                        break;
+                    }
                 }
                 finished = true;
                 break;
