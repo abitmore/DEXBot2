@@ -1699,96 +1699,6 @@ class DEXBot {
         );
     }
 
-    _resolvePrecisionForAssetId(assetId, assetA, assetB) {
-        if (!assetId) return null;
-        if (assetA?.id && assetId === assetA.id) return Number.isFinite(Number(assetA.precision)) ? Number(assetA.precision) : null;
-        if (assetB?.id && assetId === assetB.id) return Number.isFinite(Number(assetB.precision)) ? Number(assetB.precision) : null;
-        return null;
-    }
-
-    _resolveCacheSideFromContext(ctx, assetA, assetB) {
-        const sellAssetId = ctx?.finalInts?.sellAssetId;
-        if (sellAssetId && assetB?.id && sellAssetId === assetB.id) return 'buy';
-        if (sellAssetId && assetA?.id && sellAssetId === assetA.id) return 'sell';
-
-        const orderType = ctx?.order?.type || ctx?.rotation?.type || ctx?.updateInfo?.partialOrder?.type;
-        if (orderType === ORDER_TYPES.BUY) return 'buy';
-        if (orderType === ORDER_TYPES.SELL) return 'sell';
-        return null;
-    }
-
-    _extractOldSellInt(ctx, precision) {
-        const oldRawSellInt = Number(ctx?.rotation?.oldOrder?.rawOnChain?.for_sale ?? ctx?.updateInfo?.partialOrder?.rawOnChain?.for_sale);
-        if (Number.isFinite(oldRawSellInt) && oldRawSellInt >= 0) {
-            return oldRawSellInt;
-        }
-
-        const { floatToBlockchainInt } = require('./order/utils/math');
-        const oldSize = Number(ctx?.rotation?.oldOrder?.size ?? ctx?.updateInfo?.partialOrder?.size) || 0;
-        if (!(oldSize > 0) || !Number.isFinite(precision)) {
-            return 0;
-        }
-        return floatToBlockchainInt(oldSize, precision);
-    }
-
-    _calculateCacheConsumptionFromContexts(contexts, assetA, assetB) {
-        const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = require('./order/utils/math');
-        let placementBuy = 0;
-        let placementSell = 0;
-
-        const addAmount = (side, amount) => {
-            if (!(amount > 0)) return;
-            if (side === 'buy') {
-                const precision = Number.isFinite(Number(assetB?.precision)) ? Number(assetB.precision) : 8;
-                placementBuy = quantizeFloat(placementBuy + amount, precision);
-            } else if (side === 'sell') {
-                const precision = Number.isFinite(Number(assetA?.precision)) ? Number(assetA.precision) : 8;
-                placementSell = quantizeFloat(placementSell + amount, precision);
-            }
-        };
-
-        const list = Array.isArray(contexts) ? contexts : [];
-        for (const ctx of list) {
-            if (!ctx) continue;
-
-            const side = this._resolveCacheSideFromContext(ctx, assetA, assetB);
-            if (!side) continue;
-
-            const fallbackPrecision = side === 'buy'
-                ? (Number.isFinite(Number(assetB?.precision)) ? Number(assetB.precision) : 8)
-                : (Number.isFinite(Number(assetA?.precision)) ? Number(assetA.precision) : 8);
-            const precision = this._resolvePrecisionForAssetId(ctx?.finalInts?.sellAssetId, assetA, assetB) ?? fallbackPrecision;
-
-            if (ctx.kind === 'create') {
-                const sellInt = Number(ctx?.finalInts?.sell);
-                if (Number.isFinite(sellInt) && sellInt > 0) {
-                    addAmount(side, blockchainToFloat(sellInt, precision));
-                } else {
-                    const size = Number(ctx?.order?.size) || 0;
-                    if (size > 0) addAmount(side, size);
-                }
-                continue;
-            }
-
-            if (ctx.kind === 'rotation' || ctx.kind === 'size-update') {
-                const newSellIntRaw = Number(ctx?.finalInts?.sell);
-                const newSellInt = (Number.isFinite(newSellIntRaw) && newSellIntRaw >= 0)
-                    ? newSellIntRaw
-                    : floatToBlockchainInt(
-                        Number(ctx?.rotation?.newSize ?? ctx?.updateInfo?.newSize) || 0,
-                        precision
-                    );
-                const oldSellInt = this._extractOldSellInt(ctx, precision);
-                const growthInt = Math.max(0, newSellInt - oldSellInt);
-                if (growthInt > 0) {
-                    addAmount(side, blockchainToFloat(growthInt, precision));
-                }
-            }
-        }
-
-        return { buy: placementBuy, sell: placementSell };
-    }
-
     async _executeBatchIfNeeded(rebalanceResult, contextLabel = 'rebalance') {
         if (!hasExecutableActions(rebalanceResult)) {
             this.manager?.logger?.log?.(`[COW] No actions needed for ${contextLabel}`, 'debug');
@@ -2274,33 +2184,11 @@ class DEXBot {
                         { skipRecalc: true }
                     );
                     
-                    // Deduct cacheFunds for capital-consuming operations:
-                    //   CREATE      -> full on-chain committed amount
-                    //   ROTATION    -> net on-chain growth only
-                    //   SIZE-UPDATE -> net on-chain growth only
-                    //   CANCEL      -> no cache deduction
-                    //
-                    // IMPORTANT: use executedContexts, not planned opContexts, and prefer
-                    // quantized finalInts to avoid float drift vs blockchain amounts.
-                    const contextsForAccounting = Array.isArray(executedContexts) && executedContexts.length > 0
-                        ? executedContexts
-                        : opContexts;
-                    const cacheConsumption = this._calculateCacheConsumptionFromContexts(
-                        contextsForAccounting,
-                        assetA,
-                        assetB
-                    );
-                    const newPlacementBuy = cacheConsumption.buy;
-                    const newPlacementSell = cacheConsumption.sell;
-                    
-                    // Deduct from cacheFunds (fill proceeds consumed by placements/resizes)
-                    if (newPlacementBuy > 0) {
-                        await this.manager.modifyCacheFunds('buy', -newPlacementBuy, 'cow-placements');
-                    }
-                    if (newPlacementSell > 0) {
-                        await this.manager.modifyCacheFunds('sell', -newPlacementSell, 'cow-placements');
-                    }
-                    
+                    // Cache consumption is now handled in real-time by
+                    // updateOptimisticFreeBalance when capital is committed to orders.
+                    // The old _calculateCacheConsumptionFromContexts deduction was removed
+                    // to prevent double-deducting from cacheFunds.
+
                     // Process batch results for logging/metrics
                     const batchResult = await this._processBatchResults(result, executedContexts);
                     

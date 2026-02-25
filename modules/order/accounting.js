@@ -727,6 +727,17 @@ class Accountant {
                 // Lock capital: move from Free to Committed
                 const commitmentSide = newSideType || newOrder.type;
                 const deducted = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
+                if (deducted) {
+                    // Align cacheFunds: fill proceeds consumed by this commitment
+                    const sideName = this._normalizeSideHint(commitmentSide);
+                    if (sideName) {
+                        const currentCache = mgr.funds?.cacheFunds?.[sideName] || 0;
+                        if (currentCache > 0) {
+                            const cacheDeduction = Math.min(commitmentDelta, currentCache);
+                            await this._modifyCacheFunds(sideName, -cacheDeduction, `${context}-cache-align`);
+                        }
+                    }
+                }
                 if (!deducted) {
                     const failure = {
                         code: 'ACCOUNTING_COMMITMENT_FAILED',

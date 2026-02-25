@@ -267,8 +267,8 @@ async function testRejectsCreateOnOccupiedSlotBeforeBroadcast() {
     console.log('✓ COW-COMMIT-004 passed');
 }
 
-async function testCreateDeductionUsesQuantizedFinalInts() {
-    console.log('\n[COW-COMMIT-005] cache deduction uses quantized create finalInts...');
+async function testNoPostBatchCacheDeductionForCreates() {
+    console.log('\n[COW-COMMIT-005] no post-batch cache deduction (handled in real-time by updateOptimisticFreeBalance)...');
 
     const { bot, manager, cacheDeductions } = createCowExecutionFixture();
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
@@ -325,17 +325,17 @@ async function testCreateDeductionUsesQuantizedFinalInts() {
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
     }
 
-    assert.strictEqual(cacheDeductions.length, 1, 'Exactly one cache deduction expected');
-    assert.strictEqual(cacheDeductions[0].side, 'buy', 'BUY create should deduct buy cache');
-    assert.strictEqual(cacheDeductions[0].operation, 'cow-placements', 'Deduction operation tag should match COW placement');
-    assert(Math.abs(cacheDeductions[0].delta - (-1.23456)) < 1e-12,
-        'Deduction must use quantized finalInts (1.23456), not raw order.size');
+    // Cache deduction now happens in real-time via updateOptimisticFreeBalance
+    // (inside _commitWorkingGrid), not as a separate post-batch step.
+    // No cow-placements deductions should occur (would be double-deducting).
+    assert.strictEqual(cacheDeductions.length, 0,
+        'No post-batch cache deduction expected (handled in real-time by updateOptimisticFreeBalance)');
 
     console.log('✓ COW-COMMIT-005 passed');
 }
 
-async function testCacheDeductionUsesExecutedContextsOnly() {
-    console.log('\n[COW-COMMIT-006] cache deduction uses executed contexts only...');
+async function testNoPostBatchCacheDeductionForMixedCreates() {
+    console.log('\n[COW-COMMIT-006] no post-batch cache deduction for mixed creates...');
 
     const { bot, manager, cacheDeductions } = createCowExecutionFixture();
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
@@ -425,16 +425,16 @@ async function testCacheDeductionUsesExecutedContextsOnly() {
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
     }
 
-    assert.strictEqual(cacheDeductions.length, 1, 'Only executed context should generate deduction');
-    assert.strictEqual(cacheDeductions[0].side, 'sell', 'Executed SELL create should deduct sell cache');
-    assert(Math.abs(cacheDeductions[0].delta - (-2)) < 1e-12,
-        'SELL deduction should reflect executed context size only');
+    // Cache deduction now happens in real-time via updateOptimisticFreeBalance
+    // (inside _commitWorkingGrid), not as a separate post-batch step.
+    assert.strictEqual(cacheDeductions.length, 0,
+        'No post-batch cache deduction expected (handled in real-time by updateOptimisticFreeBalance)');
 
     console.log('✓ COW-COMMIT-006 passed');
 }
 
-async function testSizeUpdateDeductionUsesQuantizedNetGrowth() {
-    console.log('\n[COW-COMMIT-007] size-update deduction uses quantized net growth...');
+async function testNoPostBatchCacheDeductionForSizeUpdates() {
+    console.log('\n[COW-COMMIT-007] no post-batch cache deduction for size updates...');
 
     const master = new Map([
         ['slot-update-buy', createOrder('slot-update-buy', {
@@ -508,10 +508,10 @@ async function testSizeUpdateDeductionUsesQuantizedNetGrowth() {
         chainOrders.buildUpdateOrderOp = originalBuildUpdate;
     }
 
-    assert.strictEqual(cacheDeductions.length, 1, 'Exactly one cache deduction expected for size update');
-    assert.strictEqual(cacheDeductions[0].side, 'buy', 'BUY size update should deduct buy cache');
-    assert(Math.abs(cacheDeductions[0].delta - (-0.00001)) < 1e-12,
-        'Deduction must use quantized net growth from finalInts (1 blockchain unit)');
+    // Cache deduction now happens in real-time via updateOptimisticFreeBalance
+    // (inside _commitWorkingGrid), not as a separate post-batch step.
+    assert.strictEqual(cacheDeductions.length, 0,
+        'No post-batch cache deduction expected (handled in real-time by updateOptimisticFreeBalance)');
 
     console.log('✓ COW-COMMIT-007 passed');
 }
@@ -522,9 +522,9 @@ async function run() {
     await testNoPostCommitSideEffectsWhenDeltaEmpty();
     await testExecuteBatchIfNeededSkipsEmptyActions();
     await testRejectsCreateOnOccupiedSlotBeforeBroadcast();
-    await testCreateDeductionUsesQuantizedFinalInts();
-    await testCacheDeductionUsesExecutedContextsOnly();
-    await testSizeUpdateDeductionUsesQuantizedNetGrowth();
+    await testNoPostBatchCacheDeductionForCreates();
+    await testNoPostBatchCacheDeductionForMixedCreates();
+    await testNoPostBatchCacheDeductionForSizeUpdates();
     console.log('\n✓ All COW commit guard regression tests passed');
 }
 
