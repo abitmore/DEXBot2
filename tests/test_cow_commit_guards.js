@@ -80,7 +80,7 @@ function createCowExecutionFixture(masterOrders = new Map()) {
         incrementPercent: 0.5
     });
 
-    const cacheDeductions = [];
+    const postBatchAdjustments = [];
     const manager = {
         assets: {
             assetA: { id: '1.3.0', precision: 8, symbol: 'BTS' },
@@ -99,10 +99,6 @@ function createCowExecutionFixture(masterOrders = new Map()) {
         pauseFundRecalc: () => {},
         resumeFundRecalc: async () => {},
         _commitWorkingGrid: async () => {},
-        modifyCacheFunds: async (side, delta, operation) => {
-            cacheDeductions.push({ side, delta, operation });
-            return delta;
-        },
         persistGrid: async () => {},
         _clearWorkingGridRef: () => {}
     };
@@ -113,7 +109,7 @@ function createCowExecutionFixture(masterOrders = new Map()) {
     bot._validateOperationFunds = () => ({ isValid: true, summary: 'ok', violations: [] });
     bot._processBatchResults = async () => ({ executed: true, hadRotation: false, updateOperationCount: 0 });
 
-    return { bot, manager, cacheDeductions };
+    return { bot, manager, postBatchAdjustments };
 }
 
 async function testRejectsVersionMismatchWithoutCommit() {
@@ -270,7 +266,7 @@ async function testRejectsCreateOnOccupiedSlotBeforeBroadcast() {
 async function testNoPostBatchCacheDeductionForCreates() {
     console.log('\n[COW-COMMIT-005] no post-batch cache deduction (handled in real-time by updateOptimisticFreeBalance)...');
 
-    const { bot, manager, cacheDeductions } = createCowExecutionFixture();
+    const { bot, manager, postBatchAdjustments } = createCowExecutionFixture();
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
 
     const actions = [{
@@ -328,7 +324,7 @@ async function testNoPostBatchCacheDeductionForCreates() {
     // Cache deduction now happens in real-time via updateOptimisticFreeBalance
     // (inside _commitWorkingGrid), not as a separate post-batch step.
     // No cow-placements deductions should occur (would be double-deducting).
-    assert.strictEqual(cacheDeductions.length, 0,
+    assert.strictEqual(postBatchAdjustments.length, 0,
         'No post-batch cache deduction expected (handled in real-time by updateOptimisticFreeBalance)');
 
     console.log('✓ COW-COMMIT-005 passed');
@@ -337,7 +333,7 @@ async function testNoPostBatchCacheDeductionForCreates() {
 async function testNoPostBatchCacheDeductionForMixedCreates() {
     console.log('\n[COW-COMMIT-006] no post-batch cache deduction for mixed creates...');
 
-    const { bot, manager, cacheDeductions } = createCowExecutionFixture();
+    const { bot, manager, postBatchAdjustments } = createCowExecutionFixture();
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
 
     const actions = [
@@ -427,7 +423,7 @@ async function testNoPostBatchCacheDeductionForMixedCreates() {
 
     // Cache deduction now happens in real-time via updateOptimisticFreeBalance
     // (inside _commitWorkingGrid), not as a separate post-batch step.
-    assert.strictEqual(cacheDeductions.length, 0,
+    assert.strictEqual(postBatchAdjustments.length, 0,
         'No post-batch cache deduction expected (handled in real-time by updateOptimisticFreeBalance)');
 
     console.log('✓ COW-COMMIT-006 passed');
@@ -445,7 +441,7 @@ async function testNoPostBatchCacheDeductionForSizeUpdates() {
             rawOnChain: { for_sale: '100000' }
         })]
     ]);
-    const { bot, manager, cacheDeductions } = createCowExecutionFixture(master);
+    const { bot, manager, postBatchAdjustments } = createCowExecutionFixture(master);
     const workingGrid = new WorkingGrid(manager.orders, { baseVersion: 1 });
 
     const actions = [{
@@ -510,7 +506,7 @@ async function testNoPostBatchCacheDeductionForSizeUpdates() {
 
     // Cache deduction now happens in real-time via updateOptimisticFreeBalance
     // (inside _commitWorkingGrid), not as a separate post-batch step.
-    assert.strictEqual(cacheDeductions.length, 0,
+    assert.strictEqual(postBatchAdjustments.length, 0,
         'No post-batch cache deduction expected (handled in real-time by updateOptimisticFreeBalance)');
 
     console.log('✓ COW-COMMIT-007 passed');

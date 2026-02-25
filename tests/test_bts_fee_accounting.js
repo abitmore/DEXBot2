@@ -141,7 +141,7 @@ async function testFeeAccounting() {
 }
 
 async function testFeeSettlementCorrectness() {
-    console.log('\nTesting Fee Settlement Correctness (Bug Fix)...');
+    console.log('\nTesting Fee Settlement Correctness...');
 
     const manager = new OrderManager({
         assetA: 'BTS',
@@ -164,29 +164,24 @@ async function testFeeSettlementCorrectness() {
         sellFree: 1000
     });
 
-    manager.funds.cacheFunds = { buy: 0, sell: 0 };
     manager.funds.btsFeesOwed = 0;
 
     const feesOwed = 50;
-    const cacheAmount = 30;
     const baseCapitalBefore = manager.accountTotals.sellFree;
 
     manager.funds.btsFeesOwed = feesOwed;
-    manager.funds.cacheFunds.sell = cacheAmount;
 
-    console.log(`  Setup: ${feesOwed} BTS owed, ${cacheAmount} in cache, ${baseCapitalBefore} base capital`);
+    console.log(`  Setup: ${feesOwed} BTS owed, ${baseCapitalBefore} base capital`);
 
     await manager.accountant.deductBtsFees('sell');
 
     const baseCapitalAfter = manager.accountTotals.sellFree;
     const baseCapitalReduction = baseCapitalBefore - baseCapitalAfter;
-    const cacheAfter = manager.funds.cacheFunds.sell;
 
-    console.log(`  Result: Cache ${cacheAmount} → ${cacheAfter}, Base capital reduced by ${baseCapitalReduction}`);
+    console.log(`  Result: Base capital reduced by ${baseCapitalReduction}`);
 
-    const expectedBaseCapitalReduction = feesOwed; 
+    const expectedBaseCapitalReduction = feesOwed;
 
-    assert.strictEqual(cacheAfter, 0);
     assert.strictEqual(baseCapitalReduction, expectedBaseCapitalReduction);
     assert.strictEqual(manager.funds.btsFeesOwed, 0);
 
@@ -217,19 +212,16 @@ async function testInsufficientFundsDeferral() {
         sellFree: 40
     });
 
-    manager.funds.cacheFunds = { buy: 0, sell: 30 };
     manager.funds.btsFeesOwed = 50;
 
     const sellFreeBefore = manager.accountTotals.sellFree;
-    const cacheBeforeBefore = manager.funds.cacheFunds.sell;
 
-    console.log(`  Setup: 50 BTS owed, 30 in cache, 40 chainFree (insufficient)`);
+    console.log('  Setup: 50 BTS owed, 40 chainFree (insufficient)');
 
     await manager.accountant.deductBtsFees('sell');
 
     assert.strictEqual(manager.funds.btsFeesOwed, 50);
     assert.strictEqual(manager.accountTotals.sellFree, sellFreeBefore);
-    assert.strictEqual(manager.funds.cacheFunds.sell, cacheBeforeBefore);
 
     console.log(`  ✓ Settlement correctly deferred`);
 }

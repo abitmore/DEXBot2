@@ -394,7 +394,6 @@ async function persistGridSnapshot(manager, accountOrders, botKey) {
         await accountOrders.storeMasterGrid(
             botKey,
             Array.from(manager.orders.values()),
-            manager.funds.cacheFunds,
             manager.funds.btsFeesOwed,
             manager.boundaryIdx,
             manager.assets || null,
@@ -638,16 +637,6 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
                     if (type === ORDER_TYPES.BUY) manager.buySideIsDoubled = false;
                     if (type === ORDER_TYPES.SELL) manager.sellSideIsDoubled = false;
                 }
-
-                // Reset cacheFunds for corrected sides (safety net for residual drift)
-                for (const type of manager._gridSidesUpdated) {
-                    const side = type === ORDER_TYPES.BUY ? 'buy' : 'sell';
-                    const oldCache = manager.funds?.cacheFunds?.[side] || 0;
-                    if (oldCache > 0) {
-                        await manager.modifyCacheFunds(side, -oldCache, 'divergence-reset');
-                    }
-                }
-
                 manager._gridSidesUpdated.clear();
                 // Grid already persisted via _commitWorkingGrid in updateOrdersOnChainBatch
             } else {

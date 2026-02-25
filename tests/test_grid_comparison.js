@@ -34,7 +34,6 @@ function createMockManager(options = {}) {
         config: options.config || { botKey: 'test-bot' },
         funds: options.funds || { 
             total: { grid: { buy: 100, sell: 100 } },
-            cacheFunds: { buy: 0, sell: 0 },
             virtual: { buy: 100, sell: 100 }
         },
         orders: new Map(),

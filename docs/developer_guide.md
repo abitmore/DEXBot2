@@ -51,7 +51,7 @@ Follow this path through the codebase:
 |------|---------|-------------|
 | **VIRTUAL** | Order planned but not on-chain | Funds reserved in `virtual` pool |
 | **ACTIVE** | Order placed on blockchain | Funds locked in `committed.chain` |
-| **PARTIAL** | Order partially filled | Reduced `committed`, proceeds in `cacheFunds` |
+| **PARTIAL** | Order partially filled | Reduced `committed`, proceeds added to `chainFree` |
 | **SPREAD** | Placeholder for spread zone | Always VIRTUAL, no funds |
 
 ⚠️ **CRITICAL: Phantom Orders**
@@ -81,7 +81,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 
 | Term | Meaning |
 |------|---------|
-| **Cache Remainder Tracking** | Cache remainder derived from actual allocated sizes during capped grid resizes (not ideal sizes). Ensures accurate cache fund availability for next rebalance cycle. |
+| **Remainder Tracking** | Remainder derived from actual allocated sizes during capped grid resizes (not ideal sizes). Ensures accurate available fund calculations for next rebalance cycle. |
 | **Stale-Order Fast-Path** | Stale-cancel logic applies to single-op batches for fast recovery without triggering full state syncs. Prevents unnecessary expensive resynchronization. |
 | **Hard-Abort Cooldown Consistency** | Both primary and retry batch hard-abort paths explicitly arm `_maintenanceCooldownCycles` to prevent premature maintenance after recovery. |
 
@@ -93,8 +93,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **committed.chain** | Funds locked in on-chain orders | Sum of ACTIVE orders with `orderId` |
 | **committed.grid** | Internal tracking of ACTIVE sizes | Sum of all ACTIVE order sizes |
 | **virtual** | Reserved for VIRTUAL orders | Sum of VIRTUAL order sizes |
-| **cacheFunds** | Fill proceeds + rotation surplus | Added during fills, consumed during placements |
-| **available** | Free funds for new orders | `max(0, chainFree - virtual - cacheFunds - fees)` |
+| **available** | Free funds for new orders | `max(0, chainFree - virtual - fees)` |
 | **total.chain** | Total on-chain balance | `chainFree + committed.chain` |
 | **total.grid** | Total grid allocation | `committed.grid + virtual` |
 
@@ -714,7 +713,7 @@ for (const order of orders) {
 
 // 3. Calculate available
 funds.available[side] = max(0, 
-    chainFree - virtual - cacheFunds - btsFeesOwed - btsFeesReservation
+    chainFree - virtual - btsFeesOwed - btsFeesReservation
 )
 
 // 4. Verify invariants
@@ -800,10 +799,10 @@ createOrderGrid(config)
 initializeGrid(manager)
 
 // Detect divergence and trigger updates
-checkAndUpdateGridIfNeeded(manager, cacheFunds)
+checkAndUpdateGridIfNeeded(manager)
 
 // Compare ideal vs. persisted grid
-compareGrids(calculatedGrid, persistedGrid, manager, cacheFunds)
+compareGrids(calculatedGrid, persistedGrid, manager)
 ```
 
 **Grid Creation Flow**:
@@ -1137,12 +1136,14 @@ describe('LIMIT order type', () => {
 
 ## Testing Strategy
 
-### Unit Tests
-Located in `tests/unit/`:
-- `test_accounting.js` - Fund calculation tests
-- `test_grid.js` - Grid creation and sizing tests
-- `test_manager.js` - State management tests
-- `test_sync_engine.js` - Blockchain sync tests
+### Test Files
+Located in `tests/` (flat directory, no subdirectories):
+- `test_accounting_logic.js` - Fund calculation and accounting tests
+- `test_grid_logic.js` - Grid creation, sizing, and divergence tests
+- `test_manager.js` / `test_manager_logic.js` - State management and COW tests
+- `test_sync_logic.js` - Blockchain synchronization tests
+- `test_strategy_logic.js` - Rebalancing and rotation logic
+- `test_bts_fee_logic.js` - BTS fee deduction and settlement
 
 **Run tests**:
 ```bash
@@ -1544,11 +1545,11 @@ describe('Fund Tracking - Fund Updates', () => {
 
 | File | Purpose | Test Count |
 |------|---------|-----------|
-| `tests/unit/strategy.test.js` | Rebalancing, placement, rotation | 16 |
-| `tests/unit/accounting.test.js` | Fund tracking, fees, precision | 10 |
-| `tests/unit/grid.test.js` | Grid creation, sizing | 8 |
-| `tests/unit/manager.test.js` | State machine, indexing | 8 |
-| `tests/unit/sync_engine.test.js` | Blockchain reconciliation | 6 |
+| `tests/test_strategy_logic.js` | Rebalancing, placement, rotation | 16 |
+| `tests/test_accounting_logic.js` | Fund tracking, fees, precision | 10 |
+| `tests/test_grid_logic.js` | Grid creation, sizing, divergence | 8 |
+| `tests/test_manager_logic.js` | State machine, indexing | 8 |
+| `tests/test_sync_logic.js` | Blockchain reconciliation | 6 |
 
 ### Adding Tests for Fund-Related Features
 
@@ -1561,7 +1562,7 @@ When adding features that affect funds, follow this checklist:
 // - committed.chain (ACTIVE orders with orderId)
 // - committed.grid (ACTIVE + PARTIAL orders)
 // - available (available pool)
-// - cacheFunds (fill proceeds)
+// - available (spending power)
 ```
 
 **2. Create Test Case**
@@ -1668,16 +1669,16 @@ The test suite provides comprehensive coverage of fund calculations and rebalanc
 **Running Tests**:
 ```bash
 # Test strategy rebalancing
-npx jest tests/unit/strategy.test.js
+node tests/test_strategy_logic.js
 
 # Test grid divergence
-npx jest tests/unit/grid.test.js
+node tests/test_grid_logic.js
 
 # Test accounting precision
-npx jest tests/unit/accounting.test.js
+node tests/test_accounting_logic.js
 
-# Test all funds-related
-npx jest --testNamePattern="fund"
+# Run full suite
+npm test
 ```
 
 See [TEST_UPDATES_SUMMARY.md](TEST_UPDATES_SUMMARY.md) for detailed coverage.
@@ -1729,7 +1730,7 @@ A: Check if it's locked (`isOrderLocked()`), in exclusion list, or below dust th
 A: Follow the "How to Add New Features" section above.
 
 **Q: Where are the tests?**  
-A: Unit tests in `tests/unit/`, integration tests in `tests/`.
+A: All tests are in the `tests/` directory. Run `npm test` for the full suite, or `node tests/<file>.js` for individual test files.
 
 ---
 

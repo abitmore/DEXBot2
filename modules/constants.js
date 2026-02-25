@@ -225,14 +225,14 @@ let GRID_LIMITS = {
     MIN_ORDER_SIZE_FACTOR: 50,
 
     // GRID_REGENERATION_PERCENTAGE: Trigger threshold for automatic grid size recalculation.
-    // Formula: IF (cacheFunds / total.grid) × 100 ≥ threshold → regenerate
-    // Rationale: After fills, proceeds accumulate in cacheFunds (surplus capital).
-    //   - 3% = regen triggered when cache represents ≥3% of committed grid size
+    // Formula: IF (availableFunds / allocatedCapital) × 100 ≥ threshold → regenerate
+    // Rationale: After fills, free balance rises relative to allocated grid capital.
+    //   - 3% = regen triggered when available funds represent ≥3% of side allocation
     //   - This allows gradual accumulation while preventing lag during high-fill periods
     //   - If threshold too low: constant regeneration (churn, fees)
-    //   - If threshold too high: capital trapped in cache, grid undersized
+    //   - If threshold too high: capital remains underutilized, grid undersized
     // Example: 20 active orders × 100 BTS each = 2000 BTS grid
-    //   - cacheFunds ≥ 60 BTS → (60/2000 = 3%) triggers regeneration
+    //   - availableFunds ≥ 60 BTS → (60/2000 = 3%) triggers regeneration
     //   - Allows ~3 fill-proceeds before resize (reduces churn)
     // Checked independently per side, allowing asymmetric fill patterns.
     GRID_REGENERATION_PERCENTAGE: 3,

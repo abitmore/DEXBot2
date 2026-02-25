@@ -4,8 +4,8 @@ This document summarizes the comprehensive test suite updates added based on the
 
 ## Overview
 Added two new test files to detect and prevent regressions from critical bugfixes:
-- `tests/unit/strategy.test.js` - Strategy engine rebalancing and placement logic
-- Enhanced `tests/unit/accounting.test.js` - Fund tracking and fee accounting
+- `tests/test_strategy_logic.js` - Strategy engine rebalancing and placement logic
+- `tests/test_accounting_logic.js` - Fund tracking and fee accounting
 
 ## Bugs Detected and Tests Added
 
@@ -75,15 +75,15 @@ Added two new test files to detect and prevent regressions from critical bugfixe
 
 ---
 
-### 6. CacheFunds Integration (32d81ea)
-**Problem**: Bootstrap flag and cacheFunds integration not tracking spread correction properly.
+### 6. Fund Tracking Integration (32d81ea)
+**Problem**: Bootstrap flag and fund tracking integration not tracking spread correction properly.
 
 **Tests Added** (strategy.test.js):
-- ✅ `should deduct from cacheFunds after new placements`
-- ✅ `should not deduct cacheFunds for updates and rotations`
+- ✅ `should deduct available funds after new placements`
+- ✅ `should not double-deduct for updates and rotations`
 
 **What These Tests Catch**:
-- Verifies cacheFunds tracking is correct
+- Verifies fund tracking is correct during placement operations
 - Prevents double-deduction for rotations
 
 ---
@@ -147,13 +147,13 @@ Added two new test files to detect and prevent regressions from critical bugfixe
 
 ```bash
 # Run all strategy tests
-npm test -- tests/unit/strategy.test.js
+node tests/test_strategy_logic.js
 
 # Run accounting tests (with fee enhancements)
-npm test -- tests/unit/accounting.test.js
+node tests/test_accounting_logic.js
 
-# Run all unit tests
-npm test -- tests/unit/
+# Run full test suite
+npm test
 ```
 
 ## Test Coverage Summary
@@ -190,8 +190,8 @@ These tests are integrated with the existing test suite:
 # Full test run (includes new tests)
 npm test
 
-# Jest-specific run
-npx jest tests/unit/ --no-coverage
+# Run individual test file
+node tests/test_strategy_logic.js
 ```
 
 ## Notes for Developers
@@ -204,6 +204,8 @@ npx jest tests/unit/ --no-coverage
 ---
 
 ## Fill Batching & Recovery Regression Tests (Feb 7-8, 2026)
+
+The tests above target individual bugfixes discovered during normal operation. The tests below target a different failure class: **cascading failures under market stress**. These were written after the Feb 7 crash where 29 rapid fills exposed race conditions in batch processing, orphan-fill handling, and recovery retry logic.
 
 ### Overview
 
@@ -223,7 +225,7 @@ Test file `tests/test_fill_batch_invariants.js` validates fixes for the Feb 7 ma
 
 | Test | File | Purpose |
 |------|------|---------|
-| `test_cache_remainder_parity` | `test_fill_batch_invariants.js` | Verifies cache remainder calculated from actual allocated sizes (not ideal sizes) during capped grid resizes |
+| `test_cache_remainder_parity` | `test_fill_batch_invariants.js` | Verifies unallocated remainder calculated from actual allocated sizes (not ideal sizes) during capped grid resizes |
 | `test_abort_cooldown_arming` | `test_fill_batch_invariants.js` | Ensures both primary and retry hard-abort paths arm `_maintenanceCooldownCycles` |
 | `test_single_stale_cancel_fast_path` | `test_fill_batch_invariants.js` | Validates single-op batch stale recovery doesn't trigger expensive full sync |
 
@@ -295,7 +297,7 @@ MAX_RECOVERY_ATTEMPTS: 5            // Max 5 retries
 - ✅ Ideal grid total: 1000 BTS
 - ✅ Available funds: 600 BTS
 - ✅ Allocated: 600 BTS (track per-slot applied sizes)
-- ✅ Cache remainder: 400 BTS (1000 - 600, not inflated)
+- ✅ Unallocated remainder: 400 BTS (1000 - 600, not inflated)
 - ✅ Next cycle gets correct 400 BTS available for allocation
 - ✅ No "stuck fund" situations
 
@@ -330,7 +332,7 @@ Status: ✅ All passing
 Modules Tested:
   - dexbot_class.js (batch processing, recovery, hard-abort, stale-cancel)
   - accounting.js (recovery state management, resetRecoveryState)
-  - order/grid.js (cache remainder tracking)
+  - order/grid.js (remainder tracking during capped resize)
   - order/strategy.js (fill boundary shifts, reaction cap precision)
 
 Configuration Validated:
@@ -344,7 +346,7 @@ Coverage Targets:
   ✅ Adaptive batch sizing (queue depth → batch size)
   ✅ Recovery retry system (count+time-based)
   ✅ Orphan-fill double-credit prevention
-  ✅ Cache remainder accuracy (per-slot tracking)
+  ✅ Remainder accuracy (per-slot tracking)
   ✅ Hard-abort cooldown consistency
   ✅ Stale-order fast-path recovery
 ```
@@ -379,7 +381,7 @@ These tests catch regressions in:
 - Fill batch processing logic (adaptive sizing)
 - Recovery retry state management (count+time system)
 - Orphan-fill deduplication guards (stale ID tracking)
-- Cache remainder calculation (per-slot accuracy)
+- Remainder calculation (per-slot accuracy)
 - Hard-abort cooldown arming (both paths)
 - Stale-order fast-path recovery (single-op optimization)
 
@@ -387,7 +389,7 @@ These tests catch regressions in:
 
 See complete technical details in:
 - [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 1.4](FUND_MOVEMENT_AND_ACCOUNTING.md#14-fill-batch-processing--cache-fund-timeline) - Fill batch processing
-- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 3.7](FUND_MOVEMENT_AND_ACCOUNTING.md#37-orphan-fill-deduplication--double-credit-prevention) - Orphan-fill prevention
+- [docs/FUND_MOVEMENT_AND_ACCOUNTING.md § 3.6](FUND_MOVEMENT_AND_ACCOUNTING.md#36-orphan-fill-deduplication--double-credit-prevention) - Orphan-fill prevention
 - [docs/architecture.md - Fill Processing Pipeline](architecture.md#fill-processing-pipeline) - Architecture & diagrams
 
 ---

@@ -21,8 +21,7 @@ function createMockManager(buyFunds = 10000, sellFunds = 100, startPrice = 100) 
 
     manager.funds = {
         buy: { total: buyFunds, free: buyFunds, committed: { grid: 0, chain: 0 } },
-        sell: { total: sellFunds, free: sellFunds, committed: { grid: 0, chain: 0 } },
-        cacheFunds: { buy: 0, sell: 0 }
+        sell: { total: sellFunds, free: sellFunds, committed: { grid: 0, chain: 0 } }
     };
 
     manager.assets = {
@@ -135,14 +134,14 @@ async function testStartupGridChecks() {
     // Test 1: Threshold check triggers on high fund ratio
     {
         const manager = createMockManager(10000, 100, 100);
-        manager.funds.cacheFunds = { buy: 5000, sell: 0 };
+        manager.funds.buy.free = 5000;
 
         const regenerationThreshold = 0.2; // 20%
-        const cacheRatio = manager.funds.cacheFunds.buy / manager.funds.buy.total;
-        const shouldTrigger = cacheRatio > regenerationThreshold;
+        const availableRatio = manager.funds.buy.free / manager.funds.buy.total;
+        const shouldTrigger = availableRatio > regenerationThreshold;
 
-        logTest('Threshold check triggers on high cache ratio', shouldTrigger === true,
-                `cache ratio: ${(cacheRatio * 100).toFixed(1)}%`);
+        logTest('Threshold check triggers on high available ratio', shouldTrigger === true,
+                `available ratio: ${(availableRatio * 100).toFixed(1)}%`);
     }
 
     // Test 2: Divergence check detects grid mismatch
@@ -170,11 +169,11 @@ async function testStartupGridChecks() {
     {
         const manager = createMockManager(10000, 100, 100);
         const isBootstrap = true;
-        const cacheFundsTriggeredThreshold = false; // Not triggered
-        const shouldRunDivergence = isBootstrap && !cacheFundsTriggeredThreshold;
+        const availableFundsTriggeredThreshold = false; // Not triggered
+        const shouldRunDivergence = isBootstrap && !availableFundsTriggeredThreshold;
 
         logTest('Bootstrap divergence runs only after threshold fails', shouldRunDivergence === true,
-                'threshold=${cacheFundsTriggeredThreshold}, divergence=${shouldRunDivergence}');
+                'threshold=${availableFundsTriggeredThreshold}, divergence=${shouldRunDivergence}');
     }
 }
 

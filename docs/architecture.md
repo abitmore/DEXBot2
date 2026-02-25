@@ -29,7 +29,7 @@ flowchart TD
         CFG["bots.json<br/>(grid params, funds, pair)"]
         GS["general.settings.json<br/>(timing, thresholds)"]
         KEYS["keys.json AES encrypted<br/>+ MASTER_PASSWORD env"]
-        PERSIST["orders/botKey.json<br/>grid snapshot, cacheFunds,<br/>feesOwed, boundaryIdx"]
+        PERSIST["orders/botKey.json<br/>grid snapshot,<br/>feesOwed, boundaryIdx"]
         FILLEV["Fill Events real-time<br/>BitShares block op-4"]
         OPENORD["Open Orders polling<br/>chain open-order list"]
         BALANCES["Account Balances<br/>FREE + COMMITTED assets"]
@@ -45,7 +45,7 @@ flowchart TD
     subgraph ENGINE["CORE ENGINE — OrderManager"]
         MASTERGRID["Master Grid — immutable/frozen<br/>slot-id, price, size, state<br/>orderId, blockchain, grid, proceeds"]
         TWOPASS["SyncEngine<br/>2-pass: grid-to-chain then chain-to-grid<br/>match orderId, detect partials, flag stale"]
-        FUNDS["Accounting — SSOT for funds<br/>available, virtual, committed<br/>cacheFunds, btsFeesOwed<br/>Avail = max 0 ChainFree minus Virtual minus Fees"]
+        FUNDS["Accounting — SSOT for funds<br/>available, virtual, committed<br/>btsFeesOwed<br/>Avail = max 0 ChainFree minus Virtual minus Fees"]
         TARGET["Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial-fill consolidation, rotation"]
         WORKGRID["WorkingGrid — COW copy<br/>all mutations here only<br/>commit to Master on confirmation"]
         FILLQUEUE["Fill Queue<br/>AsyncLock + dedup 5-60 min"]
@@ -177,9 +177,9 @@ The `OrderManager` is the central hub that coordinates all order operations. It 
 | Engine | File | Responsibility |
 |--------|------|----------------|
 | **Accountant** | `accounting.js` | **Single Source of Truth**. Centralized fund tracking via `recalculateFunds()`, fee management, invariant verification, recovery retry state management (`resetRecoveryState()`) |
-| **StrategyEngine** | `strategy.js` | Grid rebalancing, order rotation, partial order handling, fill boundary shifts, cache remainder tracking |
+| **StrategyEngine** | `strategy.js` | Grid rebalancing, order rotation, partial order handling, fill boundary shifts, remainder tracking |
 | **SyncEngine** | `sync_engine.js` | Blockchain synchronization, fill detection, stale-order cleanup, type-mismatch handling |
-| **Grid** | `grid.js` | Grid creation, sizing, divergence detection, cache remainder accuracy during capped resize |
+| **Grid** | `grid.js` | Grid creation, sizing, divergence detection, remainder accuracy during capped resize |
 
 ---
 
@@ -316,8 +316,8 @@ The fill pipeline handles incoming filled orders efficiently through adaptive ba
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
 │     processFillAccounting() - Single Call                    │
-│  All fills credited to cacheFunds in ONE operation         │
-│  cacheFunds += proceeds[fill1] + proceeds[fill2] + ...     │
+│  All fills credited to chainFree in ONE operation           │
+│  chainFree += proceeds[fill1] + proceeds[fill2] + ...      │
 │  Proceeds immediately available (same rebalance cycle)     │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
@@ -325,7 +325,7 @@ The fill pipeline handles incoming filled orders efficiently through adaptive ba
 │    rebalanceSideRobust() - Single Call                       │
 │  Size replacement orders using combined proceeds           │
 │  Apply rotations and boundary shifts                       │
-│  Use cache remainder for next allocation opportunities     │
+│  Use unallocated remainder for next allocation opportunities│
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -730,7 +730,7 @@ stateDiagram-v2
 | VIRTUAL | ACTIVE | Order placed | Deduct from `chainFree` |
 | ACTIVE | PARTIAL | Partial fill | Reduce `committed` by filled amount |
 | ACTIVE | VIRTUAL | Order cancelled | Add back to `chainFree` |
-| PARTIAL | ACTIVE | Consolidation | Update to `idealSize` (releases dust to `cacheFunds`) |
+| PARTIAL | ACTIVE | Consolidation | Update to `idealSize` (consumes available funds) |
 | PARTIAL | VIRTUAL | Order moved | Release funds, re-reserve |
 
 ### Critical: Phantom Order Prevention
@@ -770,7 +770,6 @@ graph LR
     
     subgraph "Internal Tracking"
         VIRTUAL[virtual<br/>Reserved for VIRTUAL orders]
-        CACHE[cacheFunds<br/>Fill proceeds + surplus]
         GRID_COMMITTED[committed.grid<br/>ACTIVE order sizes]
     end
     
@@ -801,8 +800,7 @@ graph LR
 - **committed.chain**: Funds locked in on-chain orders (ACTIVE orders with `orderId`)
 - **committed.grid**: Internal tracking of ACTIVE order sizes
 - **virtual**: Funds reserved for VIRTUAL orders (not yet on-chain)
-- **cacheFunds**: Fill proceeds and rotation surplus (added to sizing calculations)
-- **available**: Free funds for new orders = `max(0, chainFree - virtual - cacheFunds - fees)`
+- **available**: Free funds for new orders = `max(0, chainFree - virtual - fees)`
 
 ### Atomic Fund Operations
 
@@ -892,7 +890,7 @@ sequenceDiagram
     Sync->>Sync: Detect fill
     Sync->>Strat: processFilledOrders([fills])
     
-    Strat->>Acct: Add proceeds to cacheFunds
+    Strat->>Acct: Add proceeds to chainFree
         Strat->>Strat: Check for side-wide Double Token
         alt Side is Doubled
             Strat->>Strat: Trigger Double Replacement (2 slots)
@@ -1035,7 +1033,7 @@ graph LR
     end
     
     subgraph "Persisted State"
-        ACCOUNT_JSON[account.json<br/>Grid snapshot<br/>cacheFunds]
+        ACCOUNT_JSON[account.json<br/>Grid snapshot<br/>feesOwed, boundaryIdx]
         BOTS_JSON[bots.json<br/>Bot config]
     end
     
@@ -1051,7 +1049,7 @@ graph LR
 ### Persistence Strategy
 
 - **Grid state**: Persisted after every rebalance to `account.json`
-- **cacheFunds**: Persisted to survive bot restarts
+- **Fund state**: Available funds derived from blockchain balances at runtime (no separate persistence needed)
 - **Retry logic**: 3 attempts with exponential backoff
 - **Graceful degradation**: Bot continues if persistence fails (in-memory only)
 
@@ -1270,7 +1268,7 @@ The strategy engine has been significantly strengthened with improvements to fun
 - Prevents fund leaks from missing fee calculations
 - Located in: `modules/order/strategy.js` - `processFilledOrders()`
 
-**7. Precision Spread Management (Logarithmic Logic)**
+**6. Precision Spread Management (Logarithmic Logic)**
 - **Discrete Step Tracking**: Replaced the legacy linear multiplier (`SPREAD_WIDENING_MULTIPLIER`) with a discrete 1-slot logarithmic buffer. This ensures correction triggers exactly when the market moves by one full increment.
 - **Center-Gap Awareness**: Refined the grid initialization math to account for the "Center Gap" naturally created during symmetric centering. This reduces the initial spread by ~0.5% (one full increment) compared to the previous version.
 - **Collision-Free Safety**: Increased `MIN_SPREAD_FACTOR` to 2.1 to ensure that the security minimum (2 spread orders) never conflicts with the spread correction threshold, even at micro-spread configurations.

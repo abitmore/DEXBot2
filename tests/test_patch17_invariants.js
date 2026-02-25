@@ -50,7 +50,6 @@ function createBatchManagerStub(overrides = {}) {
         _clearWorkingGridRef: () => {},
         pauseFundRecalc: () => {},
         resumeFundRecalc: async () => {},
-        modifyCacheFunds: async () => {},
         _commitWorkingGrid: async () => {},
         consumeIllegalStateSignal: () => null,
         consumeAccountingFailureSignal: () => null,
@@ -262,7 +261,7 @@ async function testRoleAssignmentBlocksOnChainSpreadConversion() {
     );
 }
 
-async function testGridResizeCacheTracksAppliedSizesAfterCap() {
+async function testGridResizeRespectsBudgetAfterCap() {
     const mgr = await createManager();
     await mgr.setAccountTotals({ buy: 1000, sell: 1000, buyFree: 1, sellFree: 1000 });
     mgr.resetFunds();
@@ -287,12 +286,11 @@ async function testGridResizeCacheTracksAppliedSizesAfterCap() {
     const buyOrders = Array.from(mgr.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
     const allocatedBuy = buyOrders.reduce((sum, o) => sum + Number(o.size || 0), 0);
     const buyCtx = await Grid._getSizingContext(mgr, 'buy');
-    const expectedCache = Math.max(0, Number(buyCtx?.budget || 0) - allocatedBuy);
-    const actualCache = Number(mgr.funds?.cacheFunds?.buy || 0);
+    const buyBudget = Number(buyCtx?.budget || 0);
 
     assert(
-        Math.abs(actualCache - expectedCache) < 1e-5,
-        `BUY cache remainder should match post-cap allocated sizes (expected ${expectedCache}, got ${actualCache})`
+        allocatedBuy <= buyBudget + 1e-5,
+        `BUY allocation must not exceed budget after capping (allocated ${allocatedBuy}, budget ${buyBudget})`
     );
 }
 
@@ -426,7 +424,7 @@ async function runTests() {
     await testPipelineInFlightDefersMaintenance();
     await testIllegalStateAbortResyncAndCooldown();
     await testRoleAssignmentBlocksOnChainSpreadConversion();
-    await testGridResizeCacheTracksAppliedSizesAfterCap();
+    await testGridResizeRespectsBudgetAfterCap();
     await testIllegalBatchAbortArmsMaintenanceCooldown();
     await testSingleStaleCancelBatchUsesStaleOnlyFastPath();
     console.log('✓ Patch17 invariant tests passed!');

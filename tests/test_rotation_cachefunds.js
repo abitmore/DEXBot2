@@ -1,5 +1,5 @@
 const assert = require('assert');
-console.log('Running rotation cacheFunds tests');
+console.log('Running rotation available-funds tests');
 
 const { OrderManager, grid: Grid, constants } = require('../modules/order/index.js');
 const ORDER_TYPES = constants.ORDER_TYPES;
@@ -37,7 +37,7 @@ async function seedGridForRotation(mgr, targetType) {
 }
 
 (async () => {
-    // Test 1: Rebalance uses cacheFunds budget
+    // Test 1: Rebalance uses available-funds budget
     const mgr = await makeManager();
     await seedGridForRotation(mgr, ORDER_TYPES.BUY);
     
@@ -45,22 +45,21 @@ async function seedGridForRotation(mgr, targetType) {
     await mgr._updateOrder({ id: 'buy-1', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.1', price: 85, size: 50 });
     await mgr._updateOrder({ id: 'buy-2', type: ORDER_TYPES.BUY, state: ORDER_STATES.ACTIVE, orderId: '1.7.2', price: 75, size: 50 });
     
-    // Set up funds (cacheFunds is part of chainFree, not added separately)
+    // Set up funds
     mgr.funds.available.buy = 100;
-    mgr.funds.cacheFunds.buy = 100;
     await mgr.recalculateFunds();
 
     // Trigger rebalance with an opposite side fill to force inward rotation
     const result = await mgr.strategy.rebalance([{ type: ORDER_TYPES.SELL, price: 105 }]);
 
-    // New architecture now performs placements rather than direct rotations when budget comes from cacheFunds.
+    // New architecture performs placements rather than direct rotations.
     assert.strictEqual(result.ordersToPlace.length, 1);
     assert.strictEqual(result.ordersToRotate.length, 0);
     const placement = result.ordersToPlace[0];
     assert(placement && placement.size > 0, `Expected a placement with positive size, got ${placement?.size}`);
     assert(placement.type === ORDER_TYPES.SELL, 'Expected new placement to be on the SELL side');
 
-    console.log('Test 1 passed: rebalance still uses cacheFunds to seed new placements');
+    console.log('Test 1 passed: rebalance uses available funds to seed new placements');
 
-    console.log('rotation cacheFunds tests passed');
+    console.log('rotation available-funds tests passed');
 })();

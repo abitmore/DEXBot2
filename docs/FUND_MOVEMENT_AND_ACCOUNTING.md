@@ -12,7 +12,6 @@ The accounting system is designed around a **Single Source of Truth** principle 
 | **Virtual** | `funds.virtual` | **Planned Capital**. Sum of sizes for orders in `VIRTUAL` state. <br> *Purpose:* Prevents `ChainFree` from being re-spent on overlapping grid layers. |
 | **Committed (Chain)** | `funds.committed.chain` | **Locked Capital**. Sum of sizes for `ACTIVE` + `PARTIAL` orders (including those without `orderId` yet). <br> *Source:* Real-time grid state + on-chain orders. |
 | **Committed (Grid)** | `funds.committed.grid` | **Strategy Capital**. Alias for `committed.chain` in the current engine. |
-| **CacheFunds** | `funds.cacheFunds` | **Reporting Metric**. Cumulative fill proceeds and rotation surpluses. <br> *Note:* Physically part of `ChainFree`. Used for profit tracking and fee deduction prioritization. |
 | **FeesOwed** | `funds.btsFeesOwed` | **Liability**. Accumulated blockchain fees (BTS) that must be settled. |
 | **FeesReservation** | `btsFeesReservation` | **Safety Buffer**. Reserved BTS to ensure future grid operations (creation/cancellation) don't fail. |
 
@@ -23,14 +22,14 @@ This formula determines the bot's spending power. It is calculated atomically in
 $$Available = \max(0, \text{ChainFree} - \text{Virtual} - \text{FeesOwed} - \text{FeesReservation})$$
 
 **Critical Invariants:**
-1.  **CacheFunds is NOT subtracted.** Since fill proceeds are added to `ChainFree`, subtracting `CacheFunds` would be double-counting (removing the capital you just earned).
-2.  **Virtual represents Plan.** Orders remain in `Virtual` only while they are truly uncommitted. As soon as they move to `ACTIVE`, they move to `Committed` (Chain), even if the blockchain transaction is still in flight. This maintains the `Total = Free + Committed` invariant.
+1.  **Virtual represents Plan.** Orders remain in `Virtual` only while they are truly uncommitted. As soon as they move to `ACTIVE`, they move to `Committed` (Chain), even if the blockchain transaction is still in flight. This maintains the `Total = Free + Committed` invariant.
+2.  **Available Funds = True Spending Power.** This formula is the single source of truth for how much capital can be deployed immediately.
 
 ---
 
 ## 1.3 Mixed Order Fund Validation
 
-**Problem Fixed**: When `_buildCreateOps()` received both BUY and SELL orders in a batch, it used a single fund check on the first order's type, causing false fund warnings.
+**Problem Fixed**: When `_buildCreateOps()` received both BUY and SELL orders in a batch, it used a single fund check on the first order's type. This caused false "insufficient funds" warnings when placing mixed BUY/SELL batches, even though the bot had sufficient capital on both sides — the BUY check was applied to SELL orders (or vice versa).
 
 **Solution**: Separate validation per order type.
 
@@ -134,7 +133,7 @@ FILL_PROCESSING: {
 
 1. **Peek & Pop**: Check `_incomingFillQueue`, pop up to N fills (batch size)
 2. **Single Accounting Pass**: Call `processFillAccounting()` once for all N fills
-   - All proceeds credited to `cacheFunds` in one operation
+   - All proceeds credited directly to `chainFree` (via `adjustTotalBalance`)
    - All proceeds immediately available to next rebalance cycle (not split across cycles)
 3. **Single Rebalance**: Call `rebalanceSideRobust()` once
    - Sizes replacement orders using combined proceeds
@@ -146,18 +145,23 @@ FILL_PROCESSING: {
 
 **Result**: 29 fills now processed in ~8 broadcasts (~24s) instead of 29 broadcasts (~90s).
 
-### Cache Fund Crediting (Critical Detail)
+### Grid Regeneration Trigger (Available Funds Ratio)
 
-All fill proceeds from a batch are credited to `cacheFunds` simultaneously:
+The grid regenerates when accumulated proceeds create a significant funding imbalance. This is detected using the **Available Funds Ratio**:
+
 ```
-cacheFunds += proceeds[fill1] + proceeds[fill2] + ... + proceeds[fillN]
+ratio = (availableFunds / allocatedCapital) * 100
+
+IF ratio >= GRID_REGENERATION_PERCENTAGE (default: 3%):
+    → Trigger grid regeneration
 ```
 
-This means:
-- ✅ **All proceeds available immediately** in the same rebalance cycle
-- ✅ **No "wait next cycle"** delays for fund availability
-- ✅ **Single rebalance uses combined capital** for sizing calculations
-- ✅ **Rotation surplus also uses combined pool** for optimal placement
+**How It Works**:
+1. Fill occurs → proceeds added to `chainFree`
+2. `calculateAvailableFundsValue()` computes true spending power (chainFree minus reservations)
+3. Grid divergence check compares this ratio against allocated capital in active orders
+4. If ratio exceeds 3%, the grid has accumulated enough proceeds to warrant redeployment
+5. Grid regeneration recalculates all order sizes and applies new placements
 
 ### Recovery Retry System
 
@@ -225,23 +229,24 @@ _staleCleanedOrderIds = new Map();  // orderId → cleanupTimestamp
 
 ---
 
-## 1.5 Cache Remainder Accuracy During Capped Resize
+## 1.5 Remainder Accuracy During Capped Resize
 
 ### Problem Fixed
 
-When grid resize was capped by available funds, the cache remainder was computed from ideal sizes instead of actual allocated sizes. This led to:
-- Understated cache funds in tracking
-- Skewed sizing decisions in subsequent cycles
-- Inaccurate available fund calculations
+When grid resize was capped by available funds, the accounting system needed to track what portion of the ideal grid went unallocated. This required careful per-slot tracking to distinguish between:
+- **Fully allocated slots**: received their ideal size (no remainder)
+- **Fund-capped slots**: received less than ideal because available funds ran out mid-allocation
+
+Without per-slot tracking, the remainder was computed from totals, which overstated it when some slots were fully allocated and others were capped.
 
 ### Solution: Per-Slot Tracking
 
 **Old Behavior** (Incorrect):
 ```javascript
-// Compute cache remainder from ideal sizes
-const cacheRemainder = totalIdealSizes - totalAllocatedSizes;
+// Compute unallocated remainder from ideal sizes
+const remainder = totalIdealSizes - totalAllocatedSizes;
 // Problem: If actual allocation capped at 80% due to insufficient funds,
-// this uses 100% ideal in calculation → cache overstated
+// this uses 100% ideal in calculation → remainder overstated
 ```
 
 **New Behavior** (Correct):
@@ -254,13 +259,13 @@ for (const slot of slots) {
     availableFundsRemaining -= appliedSize;
 }
 
-// Compute cache remainder from actual allocated values
-const cacheRemainder = totalIdealSizes - sum(appliedSizes);
+// Compute unallocated remainder from actual allocated values
+const remainder = totalIdealSizes - sum(appliedSizes);
 // Result: Reflects true remaining capacity for next cycle
 ```
 
 **Impact**:
-- ✅ Cache remainder accurately reflects what was NOT allocated due to fund caps
+- ✅ Remainder accurately reflects what was NOT allocated due to fund caps
 - ✅ Next rebalance cycle gets correct available fund picture
 - ✅ No skewed sizing decisions
 
@@ -330,9 +335,9 @@ $$Increase_{capped} = \min(Ideal - Current, Available)$$
 
 #### Batch Sizing Impact
 
-During fill batch rebalancing, the cache remainder (amount NOT allocated due to fund caps) affects available funds for the next cycle:
+During fill batch rebalancing, the unallocated remainder (amount NOT allocated due to fund caps) affects available funds for the next cycle:
 
-**Cache Remainder Calculation**:
+**Remainder Calculation**:
 - **Old**: Computed from ideal sizes even when resize was capped
 - **New**: Tracked per-slot, derived from actual allocated values
 
@@ -352,15 +357,15 @@ Cycle N (Batch Processing):
 - Ideal grid total: 1000 BTS
 - Available funds: 600 BTS
 - Allocate: 600 BTS (per-slot tracking)
-- Cache remainder: 400 BTS (1000 - 600)
+- Unallocated remainder: 400 BTS (1000 - 600)
 
 Cycle N+1:
-- Cache remainder (400 BTS) available for next allocation
+- Unallocated remainder (400 BTS) available for next allocation
 - Prevents "stuck fund" situations where capital appeared allocated but wasn't
 ```
 
 **Impact**:
-- ✅ Accurate cache fund availability for next rebalance
+- ✅ Accurate available fund calculations for next rebalance
 - ✅ No overstated fund capping in subsequent cycles
 - ✅ Smooth rebalancing when market moves expand/contract positions
 
@@ -433,8 +438,8 @@ During Feb 7 market crash, stale-order batch failures cascaded into double-credi
 4. Batch execution fails: "Limit order X does not exist"
 5. Error handler: Clean up grid slot X, release funds to `chainFree`
 6. Meanwhile, fill event arrives: "Order X was filled at price Y for amount Z"
-7. Orphan-fill handler: Credits proceeds to `cacheFunds` AGAIN
-8. **Result**: Double-credit of proceeds, inflated `trackedTotal`, fund drift
+7. Orphan-fill handler: Credits proceeds to `chainFree` AGAIN
+8. **Result**: Double-credit of proceeds, inflated `chainTotal`, fund drift
 
 **In Crash Numbers**: 7 orphan fills × ~700 BTS = ~4,600 BTS inflated → cascaded to 47,842 BTS total drift.
 
@@ -469,7 +474,7 @@ if (_staleCleanedOrderIds.has(orderId)) {
 
 // Only credit if NOT in stale-cleaned map
 logger.info(`[ORPHAN-FILL] Processing orphan ${orderId}, crediting ${proceeds}`);
-cacheFunds += proceeds;
+adjustTotalBalance(orderType, proceeds, `orphan-fill-${orderId}`);
 ```
 
 ### Why This Works
@@ -479,12 +484,12 @@ cacheFunds += proceeds;
 3. **ID-Based**: Works with any error format (different BitShares versions have different error messages)
 4. **Explicit Logging**: "Skipping double-credit" messages create audit trail
 
-### Double-Check: Cache Remainder
+### Fund State Verification
 
-The `cacheFunds` itself is protected by cache remainder tracking (see §1.5):
-- Cache proceeds are only released when allocated to orders
+The available funds are verified at allocation time:
+- Proceeds are only added to `chainFree` when confirmed on blockchain
 - Stale-cleaned orders don't consume allocation funds
-- Next cycle sees correct remaining cache for sizing decisions
+- Next cycle sees accurate available funds for sizing decisions
 
 ### Impact
 
@@ -495,33 +500,71 @@ The `cacheFunds` itself is protected by cache remainder tracking (see §1.5):
 
 ---
 
-## 4. Partial Order Handling
+## 4. Partial Order Handling (Merge & Split Logic)
 
-The system treats partial orders differently based on their remaining size relative to the "Ideal" size for that slot.
+When a grid is regenerated or resized, existing partial orders (partially filled orders) may remain in slots. These are handled differently based on their remaining size relative to the "Ideal" size for that slot.
+
+### Decision Flow
+
+When the strategy engine encounters a partial order in a target slot, it follows this path:
+
+```
+Partial order in target slot?
+  ├─ YES: Is it Dust? (size < 5% of ideal)
+  │    ├─ YES → Merge: grow dust order toward ideal size (§4.2)
+  │    └─ NO  → Split: anchor partial + place new order at adjacent price (§4.3)
+  └─ NO: Place new order normally
+```
 
 ### 4.1 Dust Detection
-A partial order is "Dust" if:
+A partial order is classified as **Dust** if:
 $$Size_{current} < Size_{ideal} \times 0.05$$
 
-### 4.2 Dust Consolidation (Merge)
-**Trigger:** Dust partial exists in a target slot.
-**Action:**
-1.  Calculate `Deficit = Ideal - Current`.
-2.  Cap `Increase = min(Deficit, Available)`.
-3.  Update order size: `NewSize = Current + Increase`.
-4.  **Flag Side as Doubled** (`buySideIsDoubled = true`).
+Dust orders are too small to be efficient and are consolidated into other orders.
 
-**Effect of Doubling:**
-The *opposite* side receives a `ReactionCap` bonus (+1). This allows the bot to place an extra order on the other side to "capture" the liquidity provided by this consolidation.
+### 4.2 Dust Consolidation (Merge Operation)
 
-### 4.3 Significant Partial (Split)
-**Trigger:** Non-dust partial exists in a target slot.
-**Action:**
-1.  The existing partial order stays anchored at its price (maintains queue priority).
-2.  The anchored order is topped up toward ideal size with capped increase:
-    $$Increase_{capped} = \min(Ideal - Current, Available)$$
-3.  A **New Order** is placed at the *adjacent* price level with the **old anchored size** (`Current`).
-4.  Operationally, surplus/cache consumption for this action tracks the **net increase** (`Increase_{capped}`), while the split leg preserves queue-shaping structure.
+**When it happens:**
+- A dust partial exists in a target slot where the grid wants to place a new order
+- Available funds permit growth toward the ideal size
+
+**What happens:**
+1.  Calculate how much the dust order needs to grow to reach ideal:
+    $$Deficit = Ideal_{size} - Current_{size}$$
+2.  Cap the growth to available funds:
+    $$Increase = \min(Deficit, Available\_Funds)$$
+3.  Update the dust order in-place:
+    $$NewSize = Current + Increase$$
+4.  **Mark side as "Doubled"** (`buySideIsDoubled = true` or `sellSideIsDoubled = true`)
+    - This flag indicates the bot just consolidated dust on this side
+
+**Fund Consumption:**
+The consolidation consumes `Increase` amount of available funds from `chainFree`. Since this was a merge (not a split), only the net growth is deducted.
+
+**Effect of Doubling Flag:**
+The opposite side receives a bonus: it can place one extra order (+1 to `activeOrders` count for that side) to capture the liquidity freed by consolidating this dust. This rebalancing is called the "ReactionCap" bonus.
+
+### 4.3 Significant Partial (Split Operation)
+
+**When it happens:**
+- A non-dust partial exists in a target slot
+- The bot wants to place a new order at that price level but can't overwrite the existing partial
+
+**What happens:**
+1.  The existing partial order is **anchored in place** at its current price (preserves queue position)
+2.  The partial is topped up toward ideal size with available funds:
+    $$Increase_{capped} = \min(Ideal - Current, Available\_Funds)$$
+    $$NewSize_{anchored} = Current + Increase_{capped}$$
+3.  A **New Order** is placed at an **adjacent price level** with the **original partial size**:
+    $$NewOrder_{size} = Current_{original}$$
+
+**Why Split?**
+- **Preserves queue priority**: The anchored order keeps its queue position at the original price
+- **Maintains diversity**: Places orders across multiple price levels instead of stacking at one level
+- **Rebalances spreads**: The new order at an adjacent price widens the bid-ask spread
+
+**Fund Consumption:**
+Only the net growth (`Increase_{capped}`) is deducted from available funds, not the full new order size. This is because the underlying capital for the original partial was already locked in a previous cycle.
 
 ---
 
@@ -532,14 +575,14 @@ The bot manages two types of fees: **Blockchain Fees** (BTS) and **Market Fees**
 ### 5.1 BTS Fees (Blockchain Operations)
 BitShares charges fees for `limit_order_create` and `limit_order_cancel`.
 
--   **Reservation:**
-    $$Reserve = N_{active} \times Fee_{create} \times Multiplier$$
-    *(Multiplier defaults to ~2.0 to cover rotation cancel+create)*
+-   **Reservation** (`BTS_RESERVATION_MULTIPLIER` in `constants.js::FEE_PARAMETERS`):
+    $$Reserve = N_{active} \times BTS\_RESERVATION\_MULTIPLIER$$
+    *(Default: 5× per order — covers create, rotate (cancel+place), update, and cancel over the order's lifetime)*
 
 -   **Settlement (`deductBtsFees`):**
     1.  Check `Funds.btsFeesOwed`.
-    2.  Deduct from `CacheFunds` first (profit).
-    3.  If insufficient, deduct remainder from `ChainFree` (capital).
+    2.  If sufficient `chainFree` available: deduct full amount atomically.
+    3.  If insufficient: defer settlement and retry when funds become available.
 
 ### 5.2 Market Fees (Trade Cost)
 These are deducted from the *proceeds* of a fill.
@@ -790,16 +833,19 @@ This prevents the bug where `available = chainFree + required` created a tautolo
 
 ## 6. Safety & Invariants
 
-The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference.
+The `Accountant` enforces strict mathematical invariants to detect bugs or manual interference. Invariants are checked by `_verifyFundInvariants()` after every blockchain sync cycle. When a violation is detected, the system logs a `CRITICAL` error and attempts automatic recovery via `_recalculateFromBlockchain()` — resetting internal state to match on-chain reality. If the grid lock is held (mid-rebalance), recovery is deferred until the lock is released. The bot continues operating throughout; it does **not** halt on invariant violations.
 
 ### 6.1 The Equality Invariant
 Total funds on chain must equal free plus committed.
 $$Total_{chain} = Free_{chain} + Committed_{chain}$$
-*(Balanced Logic: The system handles high-concurrency races without drift by pre-deducting spent capital.)*
+
+This is the primary drift detector. A mismatch means the bot's internal ledger has diverged from blockchain reality — typically caused by a missed fill event, a double-credited orphan, or a fee deducted from the wrong side. Recovery resets `accountTotals` from the live blockchain balances.
 
 ### 6.2 The Ceiling Invariant
 Grid commitment cannot exceed total wealth.
 $$Committed_{grid} \leq Total_{chain}$$
+
+A violation here means the grid has allocated more capital than actually exists on-chain. This can happen if an order was cancelled externally (outside the bot) or if a fill was processed but the commitment was never released. Recovery rebuilds committed totals by walking the current grid state.
 
 ### 6.3 Race Condition Protection (TOCTOU)
 To prevent "Time-of-Check to Time-of-Use" errors:

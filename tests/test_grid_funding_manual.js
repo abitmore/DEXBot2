@@ -21,8 +21,7 @@ class MockManager {
         this.orders = new Map();
         this.funds = {
             available: { buy: 100, sell: 100 },
-            total: { grid: { buy: 500, sell: 500 } },
-            cacheFunds: { buy: 50, sell: 50 }
+            total: { grid: { buy: 500, sell: 500 } }
         };
         this.assets = {
             assetA: { precision: 8 },
@@ -76,10 +75,7 @@ async function runTest() {
 
     // Assertions
 
-    // 1. cacheFunds should be cleared (proceeds applied to rotation)
-    assert.strictEqual(manager.funds.cacheFunds.buy, 0, 'cacheFunds should be cleared');
-
-    // 2. Orders should be resized
+    // 1. Orders should be resized
     // Total input was 150. 5 orders. 
     // Approx size per order = 150 / 5 = 30.
     const orders = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
@@ -88,10 +84,7 @@ async function runTest() {
     console.log(`Total Size: ${totalSize} (Expected ~150)`);
     assert.ok(Math.abs(totalSize - 150) < 0.000001, 'Total grid size should equal total input');
 
-    // 3. Surplus/Cache
-    // With 150 and 5 orders, it should divide evenly or leave dust.
-    console.log(`Cache: ${manager.funds.cacheFunds.buy}`);
-    assert.ok(manager.funds.cacheFunds.buy >= 0, 'Cache should be non-negative');
+    // 2. Any leftover remains available until next cycle.
 
     console.log('✅ Test Passed!');
 }

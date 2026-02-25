@@ -23,7 +23,6 @@
  *
  * FUND TRACKING MODEL (see manager.js for details):
  * - available = max(0, chainFree - virtual - applicableBtsFeesOwed - btsFeesReservation)
- * - cacheFunds = fill proceeds and rotation surplus (kept separate)
  * - total.chain = chainFree + committed.chain (on-blockchain)
  * - total.grid = committed.grid + virtual (grid allocation)
  *

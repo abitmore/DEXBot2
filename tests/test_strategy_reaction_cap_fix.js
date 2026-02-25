@@ -37,8 +37,7 @@ function createManager(slots) {
         },
         funds: {
             available: { buy: 1000, sell: 1000 },
-            virtual: { buy: 0, sell: 0 },
-            cacheFunds: { buy: 0, sell: 0 }
+            virtual: { buy: 0, sell: 0 }
         },
         accountTotals: { buyFree: 1000, sellFree: 1000 },
         buySideIsDoubled: false,
@@ -52,8 +51,7 @@ function createManager(slots) {
         resumeFundRecalc: () => {},
         _updateOrder(order) {
             this.orders.set(order.id, { ...order });
-        },
-        modifyCacheFunds: async () => {}
+        }
     };
 }
 

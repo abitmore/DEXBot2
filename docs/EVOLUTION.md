@@ -39,7 +39,7 @@ DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares 
 #### Architecture Decisions
 1. **Modular Architecture**: Separation into chain_orders, account_orders, account_bots
 2. **Grid System**: OrderGridGenerator (later renamed to Grid) with precise spacing
-3. **Fund Management**: Centralized fund calculation with cacheFunds tracking
+3. **Fund Management**: Centralized fund calculation with available-funds tracking
 4. **State Management**: Introduction of PARTIAL state for partial fills
 5. **Process Management**: PM2 integration for production deployment
 

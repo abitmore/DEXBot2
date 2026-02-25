@@ -167,9 +167,9 @@ const sellRotationTotal = sellRotationSizes.reduce((a, b) => a + b, 0);
 console.log(`  TOTAL DISTRIBUTED: ${Format.formatMetric2(sellRotationTotal)} BTS\n`);
 
 // ==========================================
-// Final Comparison & Cache Fund Logic
+// Final comparison and leftover analysis
 // ==========================================
-console.log('=== FINAL COMPARISON & CACHE FUND UPDATE ===\n');
+console.log('=== FINAL COMPARISON ===\n');
 
 const buyExpected = availableFundsBuy + buyGridTotal;
 const buyLeftover = buyExpected - buyRotationTotal;
@@ -180,9 +180,9 @@ console.log(`  Calculated Rotation Sizes: ${Format.formatMetric2(buyRotationTota
 console.log(`  Leftover: ${Format.formatRatio(buyLeftover, 4)} USDT`);
 
 if (buyRotationTotal < buyExpected) {
-     console.log(`  → Calculated < Available: ADD ${Format.formatRatio(buyLeftover, 4)} USDT to cacheFunds.buy\n`);
+     console.log(`  → Calculated < Available: ${Format.formatRatio(buyLeftover, 4)} USDT remains free\n`);
 } else {
-     console.log(`  → Calculated >= Available: cacheFunds.buy UNCHANGED\n`);
+     console.log('  → Calculated >= Available\n');
 }
 
 const sellExpected = availableFundsSell + sellGridTotal;
@@ -194,9 +194,9 @@ console.log(`  Calculated Rotation Sizes: ${Format.formatMetric2(sellRotationTot
 console.log(`  Leftover: ${Format.formatRatio(sellLeftover, 4)} BTS`);
 
 if (sellRotationTotal < sellExpected) {
-     console.log(`  → Calculated < Available: ADD ${Format.formatRatio(sellLeftover, 4)} BTS to cacheFunds.sell\n`);
+     console.log(`  → Calculated < Available: ${Format.formatRatio(sellLeftover, 4)} BTS remains free\n`);
 } else {
-     console.log(`  → Calculated >= Available: cacheFunds.sell UNCHANGED\n`);
+     console.log('  → Calculated >= Available\n');
 }
 
 // ==========================================

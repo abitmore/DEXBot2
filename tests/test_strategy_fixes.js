@@ -32,7 +32,6 @@ function createMockManager(slots = []) {
         funds: {
             available: { buy: 1000, sell: 1000 },
             virtual: { buy: 0, sell: 0 },
-            cacheFunds: { buy: 100, sell: 100 },
             total: { grid: { buy: 1000, sell: 1000 } }
         },
         boundaryIdx: undefined,

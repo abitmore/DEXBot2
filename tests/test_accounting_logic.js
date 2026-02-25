@@ -202,7 +202,6 @@ async function runTests() {
         };
 
         const sellTotalBefore = manager.accountTotals.sell;
-        const cacheSellBefore = manager.funds.cacheFunds.sell;
         const rawReceives = 2.5;
 
         try {
@@ -215,7 +214,6 @@ async function runTests() {
         }
 
         assert.strictEqual(manager.accountTotals.sell, sellTotalBefore + rawReceives, 'Sell total should credit raw proceeds when fee lookup fails');
-        assert.strictEqual(manager.funds.cacheFunds.sell, cacheSellBefore + rawReceives, 'cacheFunds should track credited raw proceeds');
     }
 
     // Test: Recovery retry cooldown and reset behavior
@@ -289,15 +287,6 @@ async function runTests() {
         }
     }
 
-    // Test: Absolute cacheFunds setter is atomic and authoritative
-    console.log(' - Testing setCacheFundsAbsolute()...');
-    {
-        const manager = await createManager();
-        await manager.modifyCacheFunds('buy', 5, 'seed-cache');
-        const updated = await manager.setCacheFundsAbsolute('buy', 2.25, 'unit-set-absolute');
-        assert.strictEqual(updated, 2.25, 'Absolute setter should return applied value');
-        assert.strictEqual(manager.funds.cacheFunds.buy, 2.25, 'Absolute setter should override previous cache value');
-    }
 
     // Restore original
     OrderUtils.getAssetFees = originalGetAssetFees;

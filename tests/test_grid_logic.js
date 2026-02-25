@@ -196,12 +196,11 @@ async function runTests() {
             },
             funds: {
                 total: { grid: { buy: 100, sell: 100 } },
-                cacheFunds: { buy: 4, sell: 0 },
                 virtual: { buy: 0, sell: 0 },
                 btsFeesOwed: 0
             },
             accountTotals: {
-                buyFree: 0,
+                buyFree: 4,
                 sellFree: 0
             },
             _gridSidesUpdated: new Set(),
@@ -215,18 +214,14 @@ async function runTests() {
             }
         };
 
-        const fromCache = Grid.checkAndUpdateGridIfNeeded(mockManager);
-        assert.strictEqual(fromCache.buyUpdated, true, 'Cache surplus above threshold should trigger buy-side update');
+        // Grid.checkAndUpdateGridIfNeeded uses calculateAvailableFundsValue internally
+        // For this mock to work, we set up buyFree = 4 (>= 3% of 100 grid = 3)
+        const above = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(above.buyUpdated, true, 'Available funds above threshold (4%) should trigger buy-side update');
 
-        mockManager.funds.cacheFunds.buy = 0;
-        mockManager.accountTotals.buyFree = 4;
-        const fromAvailable = Grid.checkAndUpdateGridIfNeeded(mockManager);
-        assert.strictEqual(fromAvailable.buyUpdated, true, 'Available funds above threshold should also trigger buy-side update');
-
-        mockManager.funds.cacheFunds.buy = 0;
-        mockManager.accountTotals.buyFree = 0;
-        const belowThreshold = Grid.checkAndUpdateGridIfNeeded(mockManager);
-        assert.strictEqual(belowThreshold.buyUpdated, false, 'No surplus should not trigger update');
+        mockManager.accountTotals.buyFree = 2;
+        const below = Grid.checkAndUpdateGridIfNeeded(mockManager);
+        assert.strictEqual(below.buyUpdated, false, 'Available funds below threshold (<2%) should not trigger update');
     }
 
     console.log('✓ Grid logic tests passed!');

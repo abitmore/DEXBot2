@@ -43,7 +43,6 @@ class MockManager {
         this.funds = {
             available: { buy: 0, sell: 0 },
             total: { grid: { buy: gridBuy, sell: gridSell } },
-            cacheFunds: { buy: 0, sell: 0 },
             virtual: { buy: 0, sell: 0 },
             btsFeesOwed: 0
         };

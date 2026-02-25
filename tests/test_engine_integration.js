@@ -98,7 +98,6 @@ async function setupManager() {
     }
 
     mgr.accountOrders = {
-        updateCacheFunds: async () => true,
         updateBtsFeesOwed: async () => true
     };
 

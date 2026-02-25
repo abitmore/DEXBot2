@@ -33,10 +33,9 @@ const logger = {
     logFundsStatus: () => {}
 };
 
-// Mock account orders (pendingProceeds persistence removed; use cacheFunds)
+// Mock account orders
 const accountOrders = {
-    updateCacheFunds: async () => {},
-    loadCacheFunds: () => ({ buy: 0, sell: 0 })
+    updateBtsFeesOwed: async () => {}
 };
 
 // Run tests
@@ -51,18 +50,18 @@ const tests = [
             await manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
 
             // Sell-side fills produce buy-side proceeds (quote asset = BTS)
-            manager.funds.cacheFunds = { buy: 100, sell: 0 };
+            manager.funds.available = { buy: 100, sell: 0 };
             manager.funds.btsFeesOwed = 10;
 
             const available1 = manager.calculateAvailableFunds('buy');
-            assert.strictEqual(manager.funds.cacheFunds.buy, 100, 'Proceeds not modified by calculateAvailableFunds');
+            assert.strictEqual(manager.funds.available.buy, 100, 'Funds not modified by calculateAvailableFunds');
 
             const available2 = manager.calculateAvailableFunds('buy');
             assert.strictEqual(available1, available2, 'Multiple calls should return same value');
-            assert.strictEqual(manager.funds.cacheFunds.buy, 100, 'Proceeds unchanged after multiple calls');
+            assert.strictEqual(manager.funds.available.buy, 100, 'Funds unchanged after multiple calls');
 
             await manager.deductBtsFees();
-            assert.strictEqual(manager.funds.cacheFunds.buy, 90, 'Fees deducted once (100 - 10)');
+            assert.strictEqual(manager.funds.available.buy, 90, 'Fees deducted once (100 - 10)');
         }
     },
     {
@@ -72,11 +71,11 @@ const tests = [
             manager.resetFunds();
             await manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
 
-            manager.funds.cacheFunds = { buy: 100, sell: 0 };
+            manager.funds.available = { buy: 100, sell: 0 };
             manager.funds.btsFeesOwed = 50;
 
             await manager.deductBtsFees();
-            assert.strictEqual(manager.funds.cacheFunds.buy, 50);
+            assert.strictEqual(manager.funds.available.buy, 50);
             assert.strictEqual(manager.funds.btsFeesOwed, 0);
         }
     }

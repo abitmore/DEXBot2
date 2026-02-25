@@ -6,7 +6,7 @@
  * Exports a single Accountant class that manages all fund accounting operations.
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Accountant Class (16 methods)
+ * TABLE OF CONTENTS - Accountant Class (15 methods)
  * ===============================================================================
  *
  * CORE INITIALIZATION & RECALCULATION (2 methods)
@@ -32,13 +32,12 @@
  *   11. _resolveOrderSide(order, fallbackOrder, explicitSideHint) - Resolve order side (internal)
  *   12. updateOptimisticFreeBalance(oldOrder, newOrder, context, fee, skipAssetAccounting) - Update optimistic balance during transitions
  *
- * FEE MANAGEMENT (3 methods)
+ * FEE MANAGEMENT (2 methods)
  *   13. deductBtsFees(requestedSide) - Deduct BTS fees using adjustTotalBalance with deferral strategy (async)
  *   14. _deductFeesFromProceeds(assetSymbol, rawAmount, isMaker) - Deduct fees from fill proceeds (internal)
- *   15. modifyCacheFunds(side, delta, operation) - Modify cache funds (rotation surplus + fill proceeds)
  *
  * FILL PROCESSING (1 method)
- *   16. processFillAccounting(fillOp) - Process fund impact of order fill (atomically updates accountTotals)
+ *   15. processFillAccounting(fillOp) - Process fund impact of order fill (atomically updates accountTotals)
  *
  * ===============================================================================
  * FUND STRUCTURE (managed by Accountant)
@@ -49,8 +48,7 @@
  *     total:       { chain, grid }        // Total across blockchain + grid
  *     virtual:     { buy, sell }          // Virtual order capital
  *     committed:   { chain, grid }        // Capital locked in active orders
- *     cacheFunds:  { buy, sell }          // Surplus from rotation + fill proceeds
- *     btsFeesOwed: number                 // Unpaid BTS fees (deducted from cache)
+ *     btsFeesOwed: number                 // Unpaid BTS fees
  * }
  *
  * manager.accountTotals = {
@@ -64,7 +62,6 @@
  *
  * FUND INVARIANTS (verified by _verifyFundInvariants):
  * - blockchainTotal = chainFreeBalance + committedAmount
- * - cacheFunds <= chainFreeBalance (surplus detection)
  * - Virtual orders don't reduce FREE balance
  *
  * ===============================================================================
@@ -115,8 +112,7 @@ class Accountant {
             total: { chain: { buy: 0, sell: 0 }, grid: { buy: 0, sell: 0 } },
             virtual: { buy: 0, sell: 0 },
             committed: { chain: { buy: 0, sell: 0 }, grid: { buy: 0, sell: 0 } },
-            cacheFunds: { buy: 0, sell: 0 },       // Surplus from rotation + fill proceeds
-            btsFeesOwed: 0                         // Unpaid BTS fees (deducted from cache)
+            btsFeesOwed: 0                         // Unpaid BTS fees
         };
     }
 
@@ -290,8 +286,6 @@ class Accountant {
       * INVARIANTS CHECKED:
       * 1. Total Balance Drift: accountTotals.buy/sell vs (chainFree + committed)
       *    - Detects: Fees deducted twice, missing fills, blockchain state desync
-      * 2. Surplus Over-estimation: cacheFunds > chainFree balance
-      *    - Detects: Over-counting fill proceeds, double-crediting cache
       */
       async _verifyFundInvariants(mgr, chainFreeBuy, chainFreeSell, chainBuy, chainSell) {
           const buyPrecision = mgr.assets?.assetB?.precision;
@@ -331,20 +325,6 @@ class Accountant {
             hasViolation = true;
             // CRITICAL FIX: Log as ERROR instead of WARN
             mgr.logger?.log?.(`CRITICAL: Fund invariant violation (SELL): blockchainTotal (${Format.formatAmountByPrecision(actualSell, sellPrecision)}) != trackedTotal (${Format.formatAmountByPrecision(expectedSell, sellPrecision)}) (diff: ${Format.formatAmountByPrecision(diffSell, sellPrecision)}, allowed: ${Format.formatAmountByPrecision(allowedSellTolerance, sellPrecision)})`, 'error');
-        }
-
-        // INVARIANT 2: Surplus check
-        const cacheBuy = mgr.funds?.cacheFunds?.buy || 0;
-        const cacheSell = mgr.funds?.cacheFunds?.sell || 0;
-        if (cacheBuy > chainFreeBuy + allowedBuyTolerance) {
-            hasViolation = true;
-            // CRITICAL FIX: Log as ERROR - surplus over-estimation can cause overdrafts
-            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (BUY): cacheFunds (${Format.formatAmountByPrecision(cacheBuy, buyPrecision)}) > chainFree (${Format.formatAmountByPrecision(chainFreeBuy, buyPrecision)})`, 'error');
-        }
-        if (cacheSell > chainFreeSell + allowedSellTolerance) {
-            hasViolation = true;
-            // CRITICAL FIX: Log as ERROR
-            mgr.logger?.log?.(`CRITICAL: Surplus over-estimation (SELL): cacheFunds (${Format.formatAmountByPrecision(cacheSell, sellPrecision)}) > chainFree (${Format.formatAmountByPrecision(chainFreeSell, sellPrecision)})`, 'error');
         }
 
         // NEW: Attempt immediate recovery if violation detected
@@ -561,62 +541,14 @@ class Accountant {
                 // Bot paid assetA (Selling assetA, buying assetB)
                 this.adjustTotalBalance(ORDER_TYPES.SELL, -paysAmount, `${context}-pays`);
                 this.adjustTotalBalance(ORDER_TYPES.BUY, receivesAmount, `${context}-receives`);
-                await this._modifyCacheFunds('buy', receivesAmount, `${context}-proceeds`);
             } else {
                 // Bot paid assetB (Buying assetA, selling assetB)
                 this.adjustTotalBalance(ORDER_TYPES.BUY, -paysAmount, `${context}-pays`);
                 this.adjustTotalBalance(ORDER_TYPES.SELL, receivesAmount, `${context}-receives`);
-                await this._modifyCacheFunds('sell', receivesAmount, `${context}-proceeds`);
             }
         });
     }
 
-    /**
-     * Atomically set cache funds to an absolute value.
-     * PUBLIC API: Acquires _fundLock.
-     *
-     * @param {string} side - 'buy' or 'sell'
-     * @param {number} absoluteValue - New absolute cache value
-     * @param {string} operation - Logging context
-     * @returns {Promise<number>} New cached value
-     */
-    async setCacheFundsAbsolute(side, absoluteValue, operation = 'set-absolute') {
-        return await this.manager._fundLock.acquire(async () => {
-            const mgr = this.manager;
-            if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
-
-            const oldValue = toFiniteNumber(mgr.funds.cacheFunds[side]);
-            const nextValue = toFiniteNumber(absoluteValue);
-            mgr.funds.cacheFunds[side] = nextValue;
-
-            if (mgr.logger && mgr.logger.level === 'debug') {
-                const delta = nextValue - oldValue;
-                mgr.logger.log(
-                    `[CACHEFUNDS] ${side} set ${Format.formatAmount8(oldValue)} -> ${Format.formatAmount8(nextValue)} ` +
-                    `(${operation}, delta=${delta >= 0 ? '+' : ''}${Format.formatAmount8(delta)})`,
-                    'debug'
-                );
-            }
-            return nextValue;
-        });
-    }
-
-    /**
-     * Internal logic for modifying cache funds.
-     * PRIVATE: Must be called while holding _fundLock.
-     */
-    async _modifyCacheFunds(side, delta, operation = 'update') {
-         const mgr = this.manager;
-         
-         if (!mgr.funds.cacheFunds) mgr.funds.cacheFunds = { buy: 0, sell: 0 };
-         const oldValue = mgr.funds.cacheFunds[side] || 0;
-         const newValue = Math.max(0, oldValue + delta);
-         mgr.funds.cacheFunds[side] = newValue;
-
-         if (mgr.logger && mgr.logger.level === 'debug') {
-             mgr.logger.log(`[CACHEFUNDS] ${side} ${delta > 0 ? '+' : ''}${Format.formatAmount8(delta)} (${operation}) -> ${Format.formatAmount8(newValue)}`, 'debug');
-         }
-    }
 
     /**
      * Adjust both total and free balances (for fills, fees, deposits).
@@ -727,17 +659,6 @@ class Accountant {
                 // Lock capital: move from Free to Committed
                 const commitmentSide = newSideType || newOrder.type;
                 const deducted = await this.tryDeductFromChainFree(commitmentSide, commitmentDelta, `${context}`);
-                if (deducted) {
-                    // Align cacheFunds: fill proceeds consumed by this commitment
-                    const sideName = this._normalizeSideHint(commitmentSide);
-                    if (sideName) {
-                        const currentCache = mgr.funds?.cacheFunds?.[sideName] || 0;
-                        if (currentCache > 0) {
-                            const cacheDeduction = Math.min(commitmentDelta, currentCache);
-                            await this._modifyCacheFunds(sideName, -cacheDeduction, `${context}-cache-align`);
-                        }
-                    }
-                }
                 if (!deducted) {
                     const failure = {
                         code: 'ACCOUNTING_COMMITMENT_FAILED',
@@ -787,7 +708,6 @@ class Accountant {
      * Strategy: Accumulate fees in btsFeesOwed, then settle when sufficient funds available.
      * - Fees are part of chainFree (not separate capital)
      * - Full fee amount must reduce chainFree
-     * - Cache is drawn down first, then base capital
      * - Defers settlement if insufficient funds (will retry when funds become available)
      */
     async deductBtsFees(requestedSide = null) {
@@ -824,20 +744,11 @@ class Accountant {
             return;
         }
 
-        // SETTLEMENT: Deduct from cache first, then base capital
-        const cache = mgr.funds.cacheFunds?.[side] || 0;
-         const cacheDeduction = Math.min(fees, cache);
-
-         if (cacheDeduction > 0) {
-             await this.modifyCacheFunds(side, -cacheDeduction, 'bts-fee-settlement');
-         }
-
-        // FULL DEDUCTION from chainFree (cache is part of chainFree, so always deduct full amount)
+        // FULL DEDUCTION from chainFree
         this.adjustTotalBalance(orderType, -fees, 'bts-fee-settlement');
 
         if (mgr.logger && mgr.logger.level === 'debug') {
-            const baseCapitalDeduction = fees - cacheDeduction;
-            mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS (${Format.formatAmount8(cacheDeduction)} from cache, ${Format.formatAmount8(baseCapitalDeduction)} from base capital)`, 'debug');
+            mgr.logger.log(`[BTS-FEE] Settled: ${Format.formatAmount8(fees)} BTS`, 'debug');
         }
 
         // Reset fees after successful settlement
@@ -914,12 +825,6 @@ class Accountant {
         };
      }
 
-    async modifyCacheFunds(side, delta, operation = 'update') {
-         return await this.manager._fundLock.acquire(async () => {
-             await this._modifyCacheFunds(side, delta, operation);
-             return this.manager.funds.cacheFunds[side];
-         });
-    }
 
     /**
      * Centralized fee deduction helper - prevents duplicate logic across codebase.
@@ -976,7 +881,6 @@ class Accountant {
       * Process the fund impact of an order fill.
       * Atomically updates accountTotals to keep internal state in sync with blockchain.
       * CRITICAL: Called within fill processing lock context to prevent race conditions.
-      * NOTE: Now async due to modifyCacheFunds() being async (Race Condition #4).
       */
     async processFillAccounting(fillOp) {
          const mgr = this.manager;
@@ -1021,13 +925,11 @@ class Accountant {
             const netAmount = this._deductFeesFromProceeds(assetASymbol, rawAmount, isMaker);
 
              this.adjustTotalBalance(ORDER_TYPES.SELL, netAmount, 'fill-receives');
-             await this.modifyCacheFunds('sell', netAmount, 'fill-proceeds');
          } else if (receives.asset_id === assetBId) {
              const rawAmount = blockchainToFloat(receives.amount, assetBPrecision, true);
              const netAmount = this._deductFeesFromProceeds(assetBSymbol, rawAmount, isMaker);
 
              this.adjustTotalBalance(ORDER_TYPES.BUY, netAmount, 'fill-receives');
-             await this.modifyCacheFunds('buy', netAmount, 'fill-proceeds');
         }
     }
 }

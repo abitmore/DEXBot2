@@ -239,7 +239,7 @@ Each category can be enabled/disabled independently:
 | **[HARD-ABORT]** | `dexbot_class.js` | `[HARD-ABORT] Illegal state during batch processing with 12 ops` | Batch hard-abort with operation count telemetry |
 | **[COOLDOWN]** | `dexbot_class.js` | `[COOLDOWN] Arming maintenance cooldown after hard-abort` | Confirms cooldown consistency |
 | **[STALE-CANCEL]** | `dexbot_class.js` | `[STALE-CANCEL] Single-op batch stale recovery (fast-path)` | Fast-path recovery for single operations |
-| **[CACHE-REMAINDER]** | `grid.js` | `[CACHE-REMAINDER] Tracking per-slot allocations (actual: 450/500)` | Cache remainder accuracy tracking |
+| **[REMAINDER]** | `grid.js` | `[REMAINDER] Tracking per-slot allocations (actual: 450/500)` | Unallocated remainder accuracy tracking |
 
 ### Configuration for Batch Processing Logs
 
@@ -264,7 +264,7 @@ Enable batch processing diagnostics (useful during development/troubleshooting):
 [FILL-BATCH] Stress tier: [8,3] → batch size 3
 [FILL-BATCH] Popping 3 fills from queue (5 remaining)
 [FILL-BATCH] Processing batch: fill1@100.5, fill2@100.6, fill3@100.7
-[FILL-BATCH] Crediting 45000 BTS to cacheFunds (batched proceeds)
+[FILL-BATCH] Crediting 45000 BTS proceeds (batched)
 [FILL-BATCH] Rebalance: placed 4 orders, rotated 2 orders
 [FILL-BATCH] Batch broadcast completed, persisting grid
 

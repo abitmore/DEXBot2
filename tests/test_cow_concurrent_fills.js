@@ -38,8 +38,7 @@ function createManagerFixture(orders = []) {
         updateOptimisticFreeBalance: async () => {},
         recalculateFunds: async () => {},
         tryDeductFromChainFree: async () => true,
-        addToChainFree: async () => true,
-        setCacheFundsAbsolute: async () => 0
+        addToChainFree: async () => true
     };
 
     // Build initial master grid

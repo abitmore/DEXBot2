@@ -14,11 +14,11 @@
  *
  * PERSISTENCE OPERATIONS:
  *   1. readOrders(botKey) - Read persisted grid for bot (async)
- *      Returns { grid, cacheFunds, buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
+ *      Returns { grid, buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
  *
  *   2. writeOrders(botKey, meta, grid, state) - Write grid snapshot (async)
  *      Writes atomic file update with metadata
- *      state: { cacheFunds, buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
+ *      state: { buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
  *
  *   3. deleteOrders(botKey) - Delete persisted grid for bot (async)
  *
@@ -40,7 +40,6 @@
  *     { "id": "slot-0", "type": "buy", "state": "virtual", "price": 100, "size": 1, "orderId": null },
  *     ...
  *   ],
- *   "cacheFunds": { "buy": 0.5, "sell": 0.3 },
  *   "buySideIsDoubled": false,
  *   "sellSideIsDoubled": false,
  *   "btsFeesOwed": 0.1,
@@ -204,7 +203,7 @@ class AccountOrders {
   async ensureBotEntries(botEntries = []) {
     if (!Array.isArray(botEntries)) return;
 
-    // Use AsyncLock to serialize with other write operations (storeMasterGrid, updateCacheFunds, etc.)
+    // Use AsyncLock to serialize with other write operations (storeMasterGrid, fee/state updates, etc.)
     // Prevents race conditions during hot-reload or concurrent initialization scenarios
     await this._persistenceLock.acquire(async () => {
       // Reload from disk to ensure we have the latest state
@@ -233,7 +232,6 @@ class AccountOrders {
           entry = {
             meta,
             grid: [],
-            cacheFunds: { buy: 0, sell: 0 },
             btsFeesOwed: 0,
             createdAt: meta.createdAt,
             lastUpdated: meta.updatedAt
@@ -241,12 +239,6 @@ class AccountOrders {
           this.data.bots[key] = entry;
           changed = true;
         } else {
-          // Ensure cacheFunds exists even for existing bots
-          if (!entry.cacheFunds || typeof entry.cacheFunds.buy !== 'number') {
-            entry.cacheFunds = { buy: 0, sell: 0 };
-            changed = true;
-          }
-
           // Ensure btsFeesOwed exists even for existing bots
           if (typeof entry.btsFeesOwed !== 'number') {
             entry.btsFeesOwed = 0;
@@ -336,13 +328,12 @@ class AccountOrders {
    *
    * @param {string} botKey - Bot identifier key
    * @param {Array} orders - Array of order objects from OrderManager
-  * @param {Object} cacheFunds - Optional cached funds { buy: number, sell: number }
-  * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
+   * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
    * @param {number} boundaryIdx - Optional master boundary index for StrategyEngine
   * @param {Object} assets - Optional asset metadata { assetA, assetB }
   * @param {Object} doubleSideFlags - Optional { buySideIsDoubled, sellSideIsDoubled }
   */
-  async storeMasterGrid(botKey, orders = [], cacheFunds = null, btsFeesOwed = null, boundaryIdx = null, assets = null, doubleSideFlags = null) {
+  async storeMasterGrid(botKey, orders = [], btsFeesOwed = null, boundaryIdx = null, assets = null, doubleSideFlags = null) {
     if (!botKey) return;
 
     // Use AsyncLock to serialize read-modify-write operations (fixes Issue #1, #5)
@@ -359,7 +350,6 @@ class AccountOrders {
         this.data.bots[botKey] = {
           meta,
           grid: snapshot,
-          cacheFunds: cacheFunds || { buy: 0, sell: 0 },
           buySideIsDoubled: doubleSideFlags ? !!doubleSideFlags.buySideIsDoubled : false,
           sellSideIsDoubled: doubleSideFlags ? !!doubleSideFlags.sellSideIsDoubled : false,
           btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
@@ -371,9 +361,6 @@ class AccountOrders {
         };
       } else {
         this.data.bots[botKey].grid = snapshot;
-        if (cacheFunds) {
-          this.data.bots[botKey].cacheFunds = cacheFunds;
-        }
 
         if (doubleSideFlags) {
           this.data.bots[botKey].buySideIsDoubled = !!doubleSideFlags.buySideIsDoubled;
@@ -443,28 +430,6 @@ class AccountOrders {
   }
 
   /**
-   * Load cached funds for a bot (difference between available and calculated rotation sizes).
-   * @param {string} botKey - Bot identifier key
-   * @param {boolean} forceReload - If true, reload from disk to ensure fresh data (fixes Issue #2)
-   * @returns {Object|null} Cached funds { buy, sell } or null if not found
-   */
-  loadCacheFunds(botKey, forceReload = false) {
-    // Optionally reload from disk to prevent using stale in-memory data
-    if (forceReload) {
-      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
-    }
-
-    if (this.data && this.data.bots && this.data.bots[botKey]) {
-      const botData = this.data.bots[botKey];
-      const cf = botData.cacheFunds;
-      if (cf && typeof cf.buy === 'number' && typeof cf.sell === 'number') {
-        return cf;
-      }
-    }
-    return { buy: 0, sell: 0 };
-  }
-
-  /**
    * Load the master boundary index for a bot.
    * @param {string} botKey - Bot identifier key
    * @param {boolean} forceReload - If true, reload from disk
@@ -483,28 +448,6 @@ class AccountOrders {
       }
     }
     return null;
-  }
-
-  /**
-   * Update cached funds for a bot.
-   * @param {string} botKey - Bot identifier key
-   * @param {Object} cacheFunds - Cached funds { buy, sell }
-   */
-  async updateCacheFunds(botKey, cacheFunds) {
-    if (!botKey) return;
-
-    // Use AsyncLock to serialize writes and prevent stale data issues (fixes Issue #3)
-    // Always reload from disk regardless of mode to ensure latest state
-    await this._persistenceLock.acquire(async () => {
-      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
-
-      if (!this.data || !this.data.bots || !this.data.bots[botKey]) {
-        return;
-      }
-      this.data.bots[botKey].cacheFunds = cacheFunds || { buy: 0, sell: 0 };
-      this.data.lastUpdated = nowIso();
-      this._persist();
-    });
   }
 
   /**
@@ -605,7 +548,6 @@ class AccountOrders {
       this.data = this._loadData() || { bots: {} };
       if (this.data.bots[this.botKey]) {
         this.data.bots[this.botKey].grid = [];
-        this.data.bots[this.botKey].cacheFunds = { buy: 0, sell: 0 };
         this.data.bots[this.botKey].btsFeesOwed = 0;
         this.data.lastUpdated = nowIso();
         this._persist();
@@ -837,4 +779,3 @@ module.exports = {
   AccountOrders,
   createBotKey
 };
-

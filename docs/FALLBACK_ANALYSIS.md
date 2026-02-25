@@ -14,15 +14,14 @@ Found **37+ distinct instances** of "fallback" across the codebase, organized in
 
 ## 1. FUND ACCOUNTING & BUDGET FALLBACK
 
-### 1.1 Dust Resize Fallback (Cache Funds)
-**Category**: When standard available funds are exhausted, use fill-proceeds cache for correcting small orders.
+### 1.1 Dust Resize (Available Funds)
+**Category**: When resizing dust partial orders, use available funds to grow them toward ideal size.
 
 | File | Line | Context |
 |------|------|---------|
-| `modules/order/strategy.js` | 533-541 | `// Dust resize fallback budget: use cacheFunds (fill proceeds earmarked for grid ops) when normal available funds (after virtual deductions) are insufficient. cacheFunds is not yet consumed during rebalance (deducted after at lines 366-372), so it's safely available here for correcting existing on-chain dust orders.` |
-| `modules/order/strategy.js` | 572-580 | `// Dust resize fallback: when normal available funds (after virtual deductions) are insufficient, use chain free balance for on-chain orders. This corrects an existing order — not new capital deployment. if (finalSize < minAbsoluteSize && hasOnChainId(partial) && dustResizeBudget > 0)` |
+| `modules/order/grid.js` | `_applyPartialActions` | Dust merge toward ideal size with available-funds cap |
 
-**Behavior**: When resizing partial orders and available funds are low, fallback to `cacheFunds` (earmarked fill proceeds) instead of failing the resize operation.
+**Behavior**: When resizing partial orders, growth is capped to available funds. If insufficient funds exist, the merge is skipped.
 
 ---
 
@@ -181,7 +180,7 @@ Found **37+ distinct instances** of "fallback" across the codebase, organized in
 | 139 | "Extracted common account reference fallback logic" | Account Selection |
 | 183 | "use `allocated` funds with `chainTotal` fallback (free + locked balance)" | Fund Denominator |
 | 193 | "Dust resize operations used `chainFree` (raw on-chain balance) as fallback" | Dust Resize |
-| 195 | "Replaced `chainFree` fallback with `cacheFunds`" | Fund Fallback |
+| 195 | "Replaced `chainFree` fallback with available-funds cap" | Fund Fallback |
 | 346 | "Added fallback for MAX_ORDER_FACTOR in _getMaxOrderSize() with \|\| 1.1 fallback" | Grid Calculation |
 | 364 | "Activate SPREAD slots at the edge (fallback if no partials available)" | Slot Selection |
 | 382 | "Safety fallback for currency symbols: uses \"BASE\"/\"QUOTE\" if null" | Symbol Fallback |

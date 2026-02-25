@@ -2,6 +2,115 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0-patch.25] - 2026-02-25 - CacheFunds Removal & Grid Regeneration Simplification
+
+This patch removes the redundant `cacheFunds` tracking infrastructure and simplifies the grid regeneration trigger to use the directly-calculated `availableFunds` metric. Since fill proceeds are immediately added to `chainFree` (via `adjustTotalBalance`), a separate cache tracking mechanism creates unnecessary complexity without providing unique information beyond what `availableFunds` already calculates.
+
+### Removed
+
+- **CacheFunds Tracking Removed Entirely** (`modules/order/accounting.js`, `modules/order/manager.js`, `modules/account_orders.js`, `modules/dexbot_class.js`, `modules/order/utils/system.js`)
+  - **Problem**: `cacheFunds` tracked accumulated fill proceeds and rotation surplus, but since these amounts are immediately available as part of `chainFree`, dual tracking creates redundancy and complexity.
+  - **Impact**: Simplified codebase, removed async locking complexity from cache deductions, eliminated the need for separate cache consumption calculation during COW batch execution.
+  - **Solution**:
+    - Removed `_modifyCacheFunds()`, `modifyCacheFunds()`, `setCacheFundsAbsolute()` methods from Accountant
+    - Removed `_getCacheFunds()`, `modifyCacheFunds()`, `setCacheFundsAbsolute()` wrappers from OrderManager
+    - Removed `loadCacheFunds()`, `updateCacheFunds()` persistence methods from AccountOrders
+    - Removed cacheFunds parameter from `storeMasterGrid()` and `persistGridSnapshot()`
+    - Removed cacheFunds deductions from `processFillAccounting()` (proceeds now only go to `chainFree`)
+    - Removed cacheFunds initialization/reset from startup and grid regeneration flows
+
+- **Simplified Grid Regeneration Trigger** (`modules/order/grid.js`)
+  - **Problem**: Grid regeneration ratio check used `MAX(cacheFunds, availableFunds)` which was overly conservative.
+  - **Impact**: Unnecessary complexity with two-input max() when a single signal suffices.
+  - **Solution**: Changed to use `availableFunds` directly as the sole ratio numerator:
+    ```
+    ratio = (availableFunds / allocatedCapital) * 100
+    ```
+  - Removed `cacheInput` and `cachePending` variables from ratio check
+  - Removed `cacheFunds` parameter from `checkAndUpdateGridIfNeeded()` method signature
+
+- **Removed Redundant COW Cache Deduction** (`modules/dexbot_class.js`)
+  - **Problem**: `_calculateCacheConsumptionFromContexts` in `_updateOrdersOnChainBatchCOW()` was attempting to deduct from cacheFunds after capital was already consumed in `updateOptimisticFreeBalance`.
+  - **Impact**: Double-deduction would have been a correctness bug (prevented by locking around modifyCacheFunds).
+  - **Solution**: Removed the entire `_calculateCacheConsumptionFromContexts` call and associated cache deduction block from the COW batch post-execution flow.
+
+### Updated Documentation
+
+All `cacheFunds` and `cache remainder` references removed from the 7 core docs referenced by `docs/README.md`. Terminology updated to use `availableFunds`, `chainFree`, and `unallocated remainder` consistently.
+
+- **docs/FUND_MOVEMENT_AND_ACCOUNTING.md**:
+  - Removed `cacheFunds` from fund components table and all formulas
+  - Updated critical invariants section to focus on `availableFunds` as sole signal
+  - Clarified grid regeneration trigger uses `availableFunds` ratio only
+  - Enhanced split/merge documentation with clearer examples and fund consumption tracking
+  - Added decision flow diagram for partial order handling (Dust → Merge, Significant → Split)
+  - Added violation response detail to Safety & Invariants section (what happens when invariants fail)
+  - Completed dangling sentence in §1.5 (listed fully-allocated vs fund-capped slot distinction)
+  - Added user-visible symptom to Mixed Order Fund Validation problem description
+  - Updated BTS fee reservation to reference `BTS_RESERVATION_MULTIPLIER` constant with correct 5× default
+  - Updated fee settlement and orphan-fill handler to reflect direct `chainFree` accounting
+
+- **docs/architecture.md**:
+  - Removed `cacheFunds` from all mermaid diagrams (inputs, engine, internal tracking, persisted state)
+  - Updated fill crediting flow (`chainFree` instead of `cacheFunds`)
+  - Updated persistence strategy (fund state derived at runtime, not separately persisted)
+  - Fixed missing item 6 in "Recent Improvements" numbering
+  - Updated module responsibility descriptions to remove "cache remainder" terminology
+
+- **docs/developer_guide.md**:
+  - Removed `cacheFunds` from fund components table and available funds formula
+  - Fixed all `tests/unit/` paths to actual `tests/` directory (broken references)
+  - Updated test file table to match real filenames (`test_strategy_logic.js`, etc.)
+  - Updated test runner commands from `npx jest` to `node tests/<file>.js`
+  - Updated FAQ entry for test locations
+
+- **docs/TEST_UPDATES_SUMMARY.md**:
+  - Fixed all `tests/unit/` paths to actual `tests/` directory
+  - Fixed cross-reference from `§ 3.7` to correct `§ 3.6` for orphan-fill deduplication
+  - Updated test runner commands
+  - Added transition paragraph between bugfix regression tests and crash stress tests
+  - Rewrote cacheFunds integration test section as fund tracking integration
+
+- **docs/LOGGING.md**:
+  - Updated batch processing log example and log tag table
+
+- **docs/EVOLUTION.md**:
+  - Updated fund management description
+
+- **docs/COPY_ON_WRITE_MASTER_PLAN.md**:
+  - Replaced dangling `/docs/INCIDENT_REPORT_XRP_BTS_PRICE_JUMP.md` reference with inline incident description
+
+### Tests Updated
+
+- `tests/test_cow_commit_guards.js` - Removed cache deduction assertions from 3 tests (005, 006, 007)
+- `tests/test_bts_fee_accounting.js` - Simplified fee settlement test to verify baseCapital reduction only
+- `tests/test_accounting_logic.js` - Removed cacheFunds-specific test
+- `tests/test_grid_logic.js` - Updated ratio check test for availableFunds-only logic
+- `tests/test_bts_fee_logic.js` - Removed cache verification from 2 fee settlement tests
+
+**Test Result**: All 36+ test suites still passing (exit code 0)
+
+### Core Lines Changed
+**Total: ~700** (445 added, 694 removed, net: -249 across 40 files)
+- `modules/order/accounting.js`: -85 lines (3 methods removed, 2 calls removed)
+- `modules/order/manager.js`: -12 lines (3 methods removed)
+- `modules/account_orders.js`: -48 lines (2 methods removed, 3 initialization blocks)
+- `modules/dexbot_class.js`: -18 lines (removed persist call, startup restore)
+- `modules/order/utils/system.js`: -6 lines (removed reset, param from persist call)
+- `modules/order/grid.js`: -23 lines (simplified ratio check)
+- Test updates: -35 lines across 20 test files
+- Documentation: +180/-134 lines across 8 doc files (cleanup, fixes, added explanatory content)
+
+### Benefit
+
+- **Reduced Complexity**: Eliminated dual-tracking and async locking overhead in fund calculations
+- **Cleaner Accounting**: Grid regeneration now uses single source of truth (`availableFunds`)
+- **Simplified COW**: No longer needs to calculate/deduct cache consumption in COW batch flow
+- **Same Behavior**: Grid still regenerates when available funds exceed 3% of allocated capital
+- **Safer Code**: Fewer fund-tracking paths = fewer places for off-by-one errors
+
+---
+
 ## [0.6.0-patch.24] - 2026-02-23 - Fill/Sync Consistency, Startup Ordering & COW Integer-Exact Accounting
 
 This patch closes several post-patch.23 correctness gaps discovered in production-like fill/sync timing: stale-size residuals at 1-satoshi precision, startup sequencing that could reconcile before sync-detected fill rebalance, and COW optimistic cache deductions that could diverge from executed chain integers. It also hardens reconnect/recovery state transitions and unifies paired-create ordering across startup and COW execution.

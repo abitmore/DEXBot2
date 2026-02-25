@@ -19,55 +19,51 @@
  *   1. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
  *   2. getSizingContext(manager, side) - Get budget and sizing parameters (public wrapper)
  *
- * GRID SIZING & CONTEXT (2 methods)
+ * GRID SIZING & CONTEXT (1 method)
  *   3. _getSizingContext(manager, side) - Get budget and sizing parameters (internal)
  *      Determines budget from allocated funds, deducts BTS fees if needed
- *   4. _ensureCacheFundsInitialized(manager) - Ensure cache funds structure exists (internal)
- *
- * CACHE FUND MANAGEMENT (1 method)
- *   5. _updateCacheFundsAtomic(manager, sideName, newValue) - Update cache funds atomically (async, internal)
  *
  * GRID CREATION (1 method)
- *   6. createOrderGrid(config) - Create geometric price grid
+ *   4. createOrderGrid(config) - Create geometric price grid
  *      Returns price levels from minPrice to maxPrice with increment spacing
  *
  * ORDER CACHE MANAGEMENT (2 methods - async, internal)
- *   7. _clearOrderCachesAtomic(manager) - Clear order caches (_ordersByType, _ordersByState)
- *   8. _updateOrderAtomic(manager, order, context, skipAccounting, fee) - Update order atomically with caches
+ *   5. _clearOrderCachesAtomic(manager) - Clear order caches (_ordersByType, _ordersByState)
+ *   6. _updateOrderAtomic(manager, order, context, skipAccounting, fee) - Update order atomically with caches
  *
  * GRID LOADING & INITIALIZATION (2 methods - async)
- *   9. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
- *   10. initializeGrid(manager) - Full grid initialization from config
+ *   7. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
+ *   8. initializeGrid(manager) - Full grid initialization from config
  *
  * GRID RECALCULATION (1 method - async)
- *   11. recalculateGrid(manager, opts) - Recalculate grid based on current state
+ *   9. recalculateGrid(manager, opts) - Recalculate grid based on current state
  *
  * GRID STATE CHECKING (1 method)
- *   12. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
+ *   10. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
  *
  * BLOCKCHAIN SYNCHRONIZATION (2 methods - async)
- *   13. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
- *   14. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
+ *   11. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
+ *   12. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
  *
  * GRID COMPARISON (1 method - async)
- *   15. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
+ *   13. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
  *       Validates grid structure and reports divergence metrics
  *
  * SPREAD MANAGEMENT (2 methods - async)
- *   16. calculateCurrentSpread(manager) - Calculate current bid-ask spread
- *   17. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
+ *   14. calculateCurrentSpread(manager) - Calculate current bid-ask spread
+ *   15. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
  *
  * GRID HEALTH MONITORING (6 methods)
- *   18. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
- *   19. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
- *   20. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
- *   21. hasAnyDust(manager, partials, side) - Check for dust orders (public)
- *   22. _applyPartialActions(manager, updateOrdersOnChainBatch) - Apply merge/split for partials (internal)
- *   23. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ *   16. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
+ *   17. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
+ *   18. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
+ *   19. hasAnyDust(manager, partials, side) - Check for dust orders (public)
+ *   20. _applyPartialActions(manager, updateOrdersOnChainBatch) - Apply merge/split for partials (internal)
+ *   21. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
  * SPREAD CORRECTION (2 methods)
- *   24. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
- *   25. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ *   22. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
+ *   23. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
  *
  * ===============================================================================
  *
@@ -205,36 +201,6 @@ class Grid {
             precision: getPrecisionByOrderType(manager.assets, type),
             config: manager.config
         };
-    }
-
-    /**
-     * RACE CONDITION FIXES: Synchronization primitives
-     * These helpers assume manager has async-lock or similar primitives
-     */
-
-    /**
-     * Safely ensure cacheFunds is initialized (fixes RC-9)
-     * RC-9: Prevents concurrent initialization races
-     * @private
-     */
-    static _ensureCacheFundsInitialized(manager) {
-        if (!manager.funds.cacheFunds) {
-            manager.funds.cacheFunds = { buy: 0, sell: 0 };
-        }
-    }
-
-    /**
-     * Safely update cacheFunds with synchronization (fixes RC-1)
-     * RC-1: TOCTOU protection - wraps modifications in atomic operation
-     * @private
-     */
-    static async _updateCacheFundsAtomic(manager, sideName, newValue) {
-        if (typeof manager.setCacheFundsAbsolute === 'function') {
-            return await manager.setCacheFundsAbsolute(sideName, newValue, 'recalculate-remainder');
-        }
-        const current = manager.funds?.cacheFunds?.[sideName] || 0;
-        const delta = newValue - current;
-        return await manager.modifyCacheFunds(sideName, delta, 'recalculate-remainder');
     }
 
     /**
@@ -465,11 +431,9 @@ class Grid {
             // RC-2: Use logic helper
             Grid._clearOrderCachesLogic(manager);
 
-            const savedCacheFunds = { ...manager.funds.cacheFunds };
             const savedBtsFeesOwed = manager.funds.btsFeesOwed;
 
             manager.resetFunds();
-            manager.funds.cacheFunds = savedCacheFunds;
             manager.funds.btsFeesOwed = savedBtsFeesOwed;
 
             // Restore boundary index for StrategyEngine
@@ -700,23 +664,12 @@ class Grid {
      * @returns {boolean} returns.buyUpdated - Buy side exceeded regeneration threshold
      * @returns {boolean} returns.sellUpdated - Sell side exceeded regeneration threshold
      */
-    static checkAndUpdateGridIfNeeded(manager, cacheFunds = null) {
+    static checkAndUpdateGridIfNeeded(manager) {
         const threshold = GRID_LIMITS.GRID_REGENERATION_PERCENTAGE || 1;
         const chainSnap = manager.getChainFundsSnapshot();
         const gridBuy = Number(manager.funds?.total?.grid?.buy || 0);
         const gridSell = Number(manager.funds?.total?.grid?.sell || 0);
         const result = { buyUpdated: false, sellUpdated: false };
-
-        const cacheState = {
-            buy: Number(manager.funds?.cacheFunds?.buy || 0),
-            sell: Number(manager.funds?.cacheFunds?.sell || 0)
-        };
-        const cacheInput = (cacheFunds && typeof cacheFunds === 'object')
-            ? {
-                buy: Number(cacheFunds.buy || 0),
-                sell: Number(cacheFunds.sell || 0)
-            }
-            : cacheState;
 
         const sides = [
             { name: 'buy', grid: gridBuy, orderType: ORDER_TYPES.BUY },
@@ -734,16 +687,14 @@ class Grid {
                 manager.config.assetB,
                 manager.config.activeOrders
             );
-            const cachePending = Number(cacheInput[s.name] || 0);
-            const totalPending = Math.max(cachePending, availableFunds);
 
             // Denominator: side's allocated capital (or chain total fallback).
             const allocated = s.name === 'buy' ? chainSnap.allocatedBuy : chainSnap.allocatedSell;
-            const denominator = (allocated > 0) ? allocated : (s.grid + totalPending);
-            const ratio = (denominator > 0) ? (totalPending / denominator) * 100 : 0;
+            const denominator = (allocated > 0) ? allocated : (s.grid + availableFunds);
+            const ratio = (denominator > 0) ? (availableFunds / denominator) * 100 : 0;
 
             manager.logger?.log?.(
-                `[DIVERGENCE] ${s.name.toUpperCase()} ratio check: cachePending=${cachePending.toFixed(5)}, availableFunds=${availableFunds.toFixed(5)}, totalPending=${totalPending.toFixed(5)}, allocated=${allocated.toFixed(5)}, ratio=${ratio.toFixed(4)}% (threshold=${threshold}%) → ${ratio >= threshold ? 'TRIGGER' : 'no trigger'}`,
+                `[DIVERGENCE] ${s.name.toUpperCase()} ratio check: availableFunds=${availableFunds.toFixed(5)}, allocated=${allocated.toFixed(5)}, ratio=${ratio.toFixed(4)}% (threshold=${threshold}%) → ${ratio >= threshold ? 'TRIGGER' : 'no trigger'}`,
                 'debug'
             );
 
@@ -759,7 +710,6 @@ class Grid {
 
     /**
      * Standardize grid sizes using blockchain total context.
-     * RC-1: Made async to support atomic cacheFunds updates
      *
      * FUND CAPPING STRATEGY:
      * =====================
@@ -842,7 +792,6 @@ class Grid {
         );
 
         const actions = [];
-        const appliedSizes = [];
         let changed = false;
 
         const freeKey = isBuy ? 'buyFree' : 'sellFree';
@@ -920,7 +869,6 @@ class Grid {
                     }
                 }
 
-                appliedSizes[i] = newSize;
             }
 
             if (!collectActions) {
@@ -933,14 +881,6 @@ class Grid {
         if (collectActions) {
             return { actions, changed };
         }
-
-        // Calculate remaining cache for this side only
-        const totalInputInt = floatToBlockchainInt(ctx.budget, ctx.precision);
-        let totalAllocatedInt = 0;
-        appliedSizes.forEach(s => totalAllocatedInt += floatToBlockchainInt(s, ctx.precision));
-
-        const newCacheValue = blockchainToFloat(totalInputInt - totalAllocatedInt, ctx.precision);
-        await Grid._updateCacheFundsAtomic(manager, sideName, newCacheValue);
 
         return undefined;
     }
@@ -1060,7 +1000,7 @@ class Grid {
 
         // Filter to ACTIVE orders only (excludes PARTIAL/VIRTUAL/SPREAD)
         // Partial orders are excluded from divergence calculation as they are expected to deviate;
-        // they are instead handled by the simple cacheFunds ratio check or the follow-up correction.
+        // they are instead handled by the available-funds ratio check or follow-up correction.
         // Must be sorted ASC for calculateRotationOrderSizes to match geometric weight distribution
         const filterForRms = (orders, type) => {
             const result = Array.isArray(orders) ? orders.filter(o => o && o.type === type && o.state === ORDER_STATES.ACTIVE) : [];
@@ -1154,7 +1094,7 @@ class Grid {
      * @returns {Promise<Object>} Unified result { needsUpdate, buy, sell, orderType }
      */
     static async monitorDivergence(manager, calculatedGrid, persistedGrid) {
-        // 1. Check Ratio-based divergence (cacheFunds vs allocated)
+        // 1. Check ratio-based divergence (available funds vs allocated)
         const ratioResult = Grid.checkAndUpdateGridIfNeeded(manager);
 
         if (ratioResult.buyUpdated || ratioResult.sellUpdated) {
@@ -1453,8 +1393,6 @@ class Grid {
             );
 
             let remainingAvail = Math.max(0, Number(manager.funds?.available?.[side] || 0));
-            const cacheFundsFallback = Math.max(0, Number(manager.funds?.cacheFunds?.[side] || 0));
-            let dustResizeBudget = cacheFundsFallback;
             let budgetRemaining = Math.max(1, Number(manager.config.activeOrders?.[side] || 1));
 
             const reservedPlacementIds = new Set();
@@ -1525,18 +1463,11 @@ class Grid {
 
                 const threshold = getSingleDustThreshold(idealSize);
                 if (partial.size < threshold) {
-                    // Dust: merge toward ideal size with available-funds cap and cache fallback
+                    // Dust: merge toward ideal size with available-funds cap
                     const currentSize = Number(partial.size || 0);
                     const sizeIncrease = Math.max(0, idealSize - currentSize);
                     let cappedIncrease = Math.min(sizeIncrease, remainingAvail);
                     let finalSize = currentSize + cappedIncrease;
-                    let usedDustFallback = false;
-
-                    if (finalSize < minAbsoluteSize && hasOnChainId(partial) && dustResizeBudget > 0) {
-                        cappedIncrease = Math.min(sizeIncrease, dustResizeBudget);
-                        finalSize = currentSize + cappedIncrease;
-                        usedDustFallback = true;
-                    }
 
                     if (!(idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize && cappedIncrease > 0)) {
                         continue;
@@ -1549,11 +1480,7 @@ class Grid {
                     }
 
                     ordersToUpdate.push({ partialOrder: partial, newSize: finalSize });
-                    if (usedDustFallback) {
-                        dustResizeBudget = Math.max(0, dustResizeBudget - cappedIncrease);
-                    } else {
-                        remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
-                    }
+                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
                     budgetRemaining--;
                 } else {
                     // Non-dust: split — update toward ideal size and place old size on priority free slot

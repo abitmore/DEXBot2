@@ -48,7 +48,7 @@ The COW architecture evolved from earlier attempts to achieve grid immutability:
 - **Approach:** Direct in-memory mutation of master grid during planning
 - **Pattern:** Modify master directly → Broadcast to blockchain → No recovery mechanism
 - **Vulnerability:** State corruption during any failure, no isolation between planning and committed state, no rollback capability
-- **Incident:** This approach caused the XRP-BTS Price Jump incident (see `/docs/INCIDENT_REPORT_XRP_BTS_PRICE_JUMP.md`)
+- **Incident:** This approach caused the XRP-BTS Price Jump incident — a sudden market move corrupted in-flight grid state because planning mutations were applied directly to the master grid, with no isolation or rollback
 - **Status:** ❌ **Vulnerable** - Replaced by frozen master approach
 
 ### Phase 1: Frozen Master State (v1.0)

@@ -587,20 +587,8 @@ class OrderManager {
         return await this.accountant.addToChainFree(orderType, size, operation);
     }
 
-    _getCacheFunds(side) {
-        return this.funds?.cacheFunds?.[side] || 0;
-    }
-
     _getGridTotal(side) {
         return (this.funds?.committed?.grid?.[side] || 0) + (this.funds?.virtual?.[side] || 0);
-    }
-
-    async modifyCacheFunds(side, delta, op) {
-        return await this.accountant.modifyCacheFunds(side, delta, op);
-    }
-
-    async setCacheFundsAbsolute(side, value, op = 'set-absolute') {
-        return await this.accountant.setCacheFundsAbsolute(side, value, op);
     }
 
     getChainFundsSnapshot() {

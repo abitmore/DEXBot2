@@ -1,7 +1,7 @@
 const assert = require('assert');
 
 // NOTE: This test was written for an earlier version of the accounting system
-// where proceeds were accumulated in cacheFunds. In the current system,
+// where proceeds persisted as a separate intermediate state. In the current system,
 // proceeds are immediately consumed by rebalance operations (grid placement),
 // making the old test assertions invalid. The fee calculation itself still works,
 // but the test expectations need to be updated to account for this behavior change.
@@ -65,9 +65,9 @@ async function testFees() {
     // Better: Check that proceedsSell was reduced by 0.5.
     // Raw proceeds for buy-0 (partial): 20 / 0.9 = 22.22222222
     // If fee was 0.5, net proceeds should be 21.72222222
-    console.log(`Final Cache Funds Sell: ${mgr.funds.cacheFunds.sell}`);
+    console.log(`Final Sell Available: ${mgr.funds.available.sell}`);
     const expectedProceeds = (20 / 0.9) - 0.5;
-    assert(Math.abs(mgr.funds.cacheFunds.sell - expectedProceeds) < 1e-8, `Expected proceeds ~${expectedProceeds}, got ${mgr.funds.cacheFunds.sell}`);
+    assert(Math.abs(mgr.funds.available.sell - expectedProceeds) < 1e-8, `Expected proceeds ~${expectedProceeds}, got ${mgr.funds.available.sell}`);
 
     console.log('Verification: Only the full fill triggered a fee, which was then deducted from proceeds.');
 

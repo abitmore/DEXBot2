@@ -64,7 +64,6 @@ function createManagerWithGridSize(gridSize = 14, budgetBuy = 1000, budgetSell =
     // Initialize funds
     mgr.funds.total = { grid: { buy: budgetBuy, sell: budgetSell } };
     mgr.funds.available = { buy: budgetBuy, sell: budgetSell };
-    mgr.funds.cacheFunds = { buy: 0, sell: 0 };
     mgr.accountTotals = { buy: budgetBuy, sell: budgetSell, buyFree: budgetBuy, sellFree: budgetSell };
 
     // Create grid orders

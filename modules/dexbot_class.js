@@ -396,7 +396,7 @@ class DEXBot {
             this.manager = new OrderManager(this.config || {});
             this.manager.account = this.account;
             this.manager.accountId = this.accountId;
-            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
+            this.manager.accountOrders = this.accountOrders;
         }
         this.manager.startBootstrap();
 
@@ -440,14 +440,12 @@ class DEXBot {
             }
         }
 
-        const persistedCacheFunds = this.accountOrders.loadCacheFunds(this.config.botKey);
         const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
         const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
         const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
 
         return {
             persistedGrid: repairedGrid,
-            persistedCacheFunds,
             persistedBtsFeesOwed,
             persistedBoundaryIdx,
             persistedDoubleSideFlags
@@ -462,7 +460,6 @@ class DEXBot {
     async _finishStartupSequence(startupState) {
         let {
             persistedGrid,
-            persistedCacheFunds,
             persistedBtsFeesOwed,
             persistedBoundaryIdx,
             persistedDoubleSideFlags
@@ -565,16 +562,12 @@ class DEXBot {
                 return; // Skip normal startup path
             }
 
-            // Restore and consolidate cacheFunds and BTS fees
+            // Restore persisted BTS fee and side flags
             // SAFE: Done at startup before orders are created, and within fill lock when needed
             this.manager.resetFunds();
             // CRITICAL FIX: Restore BTS fees owed from persistence
             if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
                 this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
-            }
-            if (persistedCacheFunds) {
-                await this.manager.modifyCacheFunds('buy', Number(persistedCacheFunds.buy || 0), 'startup-restore');
-                await this.manager.modifyCacheFunds('sell', Number(persistedCacheFunds.sell || 0), 'startup-restore');
             }
 
             // Restore doubled side flags
@@ -628,8 +621,7 @@ class DEXBot {
                     this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
                 }
             } else {
-                this._log(`ℹ Grid regenerating - resetting cacheFunds, BTS fees and doubled flags to clean state`);
-                this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
+                this._log(`ℹ Grid regenerating - resetting BTS fees and doubled flags to clean state`);
                 this.manager.funds.btsFeesOwed = 0;
                 this.manager.buySideIsDoubled = false;
                 this.manager.sellSideIsDoubled = false;
@@ -1407,7 +1399,7 @@ class DEXBot {
     async placeInitialOrders() {
         if (!this.manager) {
             this.manager = new OrderManager(this.config);
-            this.manager.accountOrders = this.accountOrders;  // Enable cacheFunds persistence
+            this.manager.accountOrders = this.accountOrders;
         }
         try {
             const botFunds = this.config && this.config.botFunds ? this.config.botFunds : {};
@@ -2184,10 +2176,9 @@ class DEXBot {
                         { skipRecalc: true }
                     );
                     
-                    // Cache consumption is now handled in real-time by
+                    // Commitment accounting is handled in real-time by
                     // updateOptimisticFreeBalance when capital is committed to orders.
-                    // The old _calculateCacheConsumptionFromContexts deduction was removed
-                    // to prevent double-deducting from cacheFunds.
+                    // The old post-batch deduction path was removed to avoid double-counting.
 
                     // Process batch results for logging/metrics
                     const batchResult = await this._processBatchResults(result, executedContexts);
@@ -2542,9 +2533,6 @@ class DEXBot {
                 config: this.config,
             });
 
-            // Reset cacheFunds when grid is regenerated (already handled inside recalculateGrid, but ensure local match)
-            // SAFE: Protected by _fillProcessingLock held by caller
-            this.manager.funds.cacheFunds = { buy: 0, sell: 0 };
             this.manager.funds.btsFeesOwed = 0;
             await this.manager.persistGrid();
             success = true;

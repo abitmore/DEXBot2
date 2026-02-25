@@ -22,7 +22,6 @@
  *
  * Fund Structure Display:
  * - available: Free funds for new orders (chainFree - virtual - fees - reservations)
- * - cacheFunds: Fill proceeds and rotation surplus
  * - total.chain: chainFree + committed.chain (on-chain balance)
  * - total.grid: committed.grid + virtual (grid allocation)
  * - virtual: VIRTUAL order sizes (reserved for future placement)
@@ -47,7 +46,7 @@
  *   5. logFundsStatus(manager, context, forceDetailed) - Print fund status summary with change detection
  *      Supports one-liner mode and optional detailed breakdown on critical events
  *   6. _logDetailedFunds(manager, headerContext) - Internal: Log complete fund structure breakdown
- *      Shows available, chain balances, grid allocations, virtual, committed, cache, fees
+ *      Shows available, chain balances, grid allocations, virtual, committed, fees
  *
  * COMPREHENSIVE DIAGNOSTICS (2 methods)
  *   7. displayStatus(manager, forceOutput) - Print comprehensive status summary (market, funds, order counts, spread)
@@ -255,8 +254,6 @@ class Logger {
         const fundState = {
             availableBuy: manager.funds?.available?.buy,
             availableSell: manager.funds?.available?.sell,
-            cacheFundsBuy: manager.funds?.cacheFunds?.buy,
-            cacheFundsSell: manager.funds?.cacheFunds?.sell,
             btsFeesOwed: manager.funds?.btsFeesOwed
         };
 
@@ -307,7 +304,6 @@ class Logger {
      * - virtual: VIRTUAL order sizes (reserved)
      * - committed.grid: ACTIVE order sizes
      * - committed.chain: ACTIVE orders on blockchain
-     * - cacheFunds: Fill proceeds and rotation surplus
      * - btsFeesOwed: Pending BTS transaction fees
      *
      * @private
@@ -338,9 +334,7 @@ class Logger {
         const virtualBuy = manager.funds?.virtual?.buy ?? 0;
         const virtualSell = manager.funds?.virtual?.sell ?? 0;
 
-        // Cache & Committed
-        const cacheBuy = manager.funds?.cacheFunds?.buy ?? 0;
-        const cacheSell = manager.funds?.cacheFunds?.sell ?? 0;
+        // Committed & pending
         const committedGridBuy = manager.funds?.committed?.grid?.buy ?? 0;
         const committedGridSell = manager.funds?.committed?.grid?.sell ?? 0;
         const committedChainBuy = manager.funds?.committed?.chain?.buy ?? 0;
@@ -364,8 +358,7 @@ class Logger {
         console.log(`\n${debug}COMMITTED ON-CHAIN:${reset}`);
         console.log(`  ${buy}Buy ${this._formatAmountStrict(committedChainBuy, buyPrecision)}${reset} | ${sell}Sell ${this._formatAmountStrict(committedChainSell, sellPrecision)}${reset}`);
 
-        console.log(`\n${debug}DEDUCTIONS & PENDING:${reset}`);
-        console.log(`  cacheFunds: ${buy}Buy ${this._formatAmountStrict(cacheBuy, buyPrecision)}${reset} | ${sell}Sell ${this._formatAmountStrict(cacheSell, sellPrecision)}${reset}`);
+        console.log(`\n${debug}DEDUCTIONS:${reset}`);
         console.log(`  btsFeesOwed: ${Format.formatAmount8(btsFeesOwed)} BTS${reset}\n`);
     }
 
@@ -400,8 +393,6 @@ class Logger {
         const totalGridSell = manager.funds?.total?.grid?.sell ?? 0;
         const virtualBuy = manager.funds?.virtual?.buy ?? 0;
         const virtualSell = manager.funds?.virtual?.sell ?? 0;
-        const cacheBuy = manager.funds?.cacheFunds?.buy ?? 0;
-        const cacheSell = manager.funds?.cacheFunds?.sell ?? 0;
         const committedGridBuy = manager.funds?.committed?.grid?.buy ?? 0;
         const committedGridSell = manager.funds?.committed?.grid?.sell ?? 0;
         const committedChainBuy = manager.funds?.committed?.chain?.buy ?? 0;
@@ -416,7 +407,6 @@ class Logger {
         console.log(`total.chain: ${buy}Buy ${this._formatAmountStrict(totalChainBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${this._formatAmountStrict(totalChainSell, sellPrecision)}${reset} ${sellName}`);
         console.log(`total.grid: ${buy}Buy ${this._formatAmountStrict(totalGridBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${this._formatAmountStrict(totalGridSell, sellPrecision)}${reset} ${sellName}`);
         console.log(`virtual.grid: ${buy}Buy ${this._formatAmountStrict(virtualBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${this._formatAmountStrict(virtualSell, sellPrecision)}${reset} ${sellName}`);
-        console.log(`cacheFunds: ${buy}Buy ${this._formatAmountStrict(cacheBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${this._formatAmountStrict(cacheSell, sellPrecision)}${reset} ${sellName}`);
         console.log(`committed.grid: ${buy}Buy ${this._formatAmountStrict(committedGridBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${this._formatAmountStrict(committedGridSell, sellPrecision)}${reset} ${sellName}`);
         console.log(`committed.chain: ${buy}Buy ${this._formatAmountStrict(committedChainBuy, buyPrecision)}${reset} ${buyName} | ${sell}Sell ${this._formatAmountStrict(committedChainSell, sellPrecision)}${reset} ${sellName}`);
         console.log(`Orders: Virtual ${virtualOrders.length} | Active ${activeOrders.length} | Partial ${partialOrders.length}`);
