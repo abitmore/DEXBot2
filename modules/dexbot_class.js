@@ -1575,7 +1575,9 @@ class DEXBot {
 
         const { blockchainToFloat, floatToBlockchainInt, quantizeFloat } = require('./order/utils/math');
         const snap = this.manager.getChainFundsSnapshot();
-        const requiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+        const netRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+        const runningRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
+        const peakRequiredFunds = { [assetA.id]: 0, [assetB.id]: 0 };
 
         // Sum amounts and check individual order sizes
         for (const op of operations) {
@@ -1606,21 +1608,34 @@ class DEXBot {
                     };
                 }
 
-                // Accumulate required funds using quantized sums to match blockchain math
-                const floatAmount = blockchainToFloat(sellAmountInt, precision);
-
-                // For updates, we only deduct the DELTA (increase in commitment)
+                // Track signed per-op deltas in operation order.
+                // CREATE consumes full amount; UPDATE consumes/releases delta.
+                let signedDelta = 0;
                 if (op.op_name === 'limit_order_update') {
                     const deltaAssetId = op.op_data.delta_amount_to_sell?.asset_id;
                     const deltaSellInt = op.op_data.delta_amount_to_sell?.amount;
-                    if (deltaAssetId === sellAssetId && deltaSellInt > 0) {
-                        const floatDelta = blockchainToFloat(deltaSellInt, precision);
-                        requiredFunds[sellAssetId] = quantizeFloat((requiredFunds[sellAssetId] || 0) + floatDelta, precision);
+                    if (deltaAssetId === sellAssetId && Number.isFinite(Number(deltaSellInt))) {
+                        signedDelta = blockchainToFloat(deltaSellInt, precision);
                     }
                 } else {
-                    // For creates, we deduct the full amount
-                    requiredFunds[sellAssetId] = quantizeFloat((requiredFunds[sellAssetId] || 0) + floatAmount, precision);
+                    signedDelta = blockchainToFloat(sellAmountInt, precision);
                 }
+
+                netRequiredFunds[sellAssetId] = quantizeFloat(
+                    (netRequiredFunds[sellAssetId] || 0) + signedDelta,
+                    precision
+                );
+
+                runningRequiredFunds[sellAssetId] = quantizeFloat(
+                    (runningRequiredFunds[sellAssetId] || 0) + signedDelta,
+                    precision
+                );
+
+                const nextPeak = Math.max(
+                    Number(peakRequiredFunds[sellAssetId] || 0),
+                    Number(runningRequiredFunds[sellAssetId] || 0)
+                );
+                peakRequiredFunds[sellAssetId] = quantizeFloat(nextPeak, precision);
             }
         }
 
@@ -1635,8 +1650,9 @@ class DEXBot {
 
         // Check for fund violations using quantized comparison
         const fundViolations = [];
-        for (const assetId in requiredFunds) {
-            const required = requiredFunds[assetId];
+        for (const assetId in peakRequiredFunds) {
+            const required = peakRequiredFunds[assetId];
+            const netRequired = netRequiredFunds[assetId] || 0;
             const available = availableFunds[assetId] || 0;
 
             // Use precision-aware comparison
@@ -1644,7 +1660,10 @@ class DEXBot {
             if (floatToBlockchainInt(required, prec) > floatToBlockchainInt(available, prec)) {
                 fundViolations.push({
                     asset: assetId === assetA.id ? assetA.symbol : assetB.symbol,
-                    required, available, deficit: quantizeFloat(required - available, prec)
+                    required,
+                    netRequired,
+                    available,
+                    deficit: quantizeFloat(required - available, prec)
                 });
             }
         }
@@ -1652,7 +1671,7 @@ class DEXBot {
         if (fundViolations.length > 0) {
             let summary = `[VALIDATION] Fund validation FAILED:\n`;
             for (const v of fundViolations) {
-                summary += `  ${v.asset}: required=${Format.formatAmount8(v.required)}, available=${Format.formatAmount8(v.available)}, deficit=${Format.formatAmount8(v.deficit)}\n`;
+                summary += `  ${v.asset}: peakRequired=${Format.formatAmount8(v.required)}, netRequired=${Format.formatAmount8(v.netRequired)}, available=${Format.formatAmount8(v.available)}, deficit=${Format.formatAmount8(v.deficit)}\n`;
             }
             return { isValid: false, summary: summary.trim(), violations: fundViolations };
         }
@@ -1755,11 +1774,6 @@ class DEXBot {
             }
         }
 
-        for (const o of ordersToPlace) {
-            if (!o?.id) continue;
-            actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
-        }
-
         for (const r of ordersToRotate) {
             const oldOrder = r?.oldOrder || r;
             const id = oldOrder?.id || r?.id;
@@ -1815,6 +1829,13 @@ class DEXBot {
                     size: newSize
                 }
             });
+        }
+
+        // Run CREATE actions after UPDATE actions so same-batch downsizes can
+        // release balance before placements consume it.
+        for (const o of ordersToPlace) {
+            if (!o?.id) continue;
+            actions.push({ type: COW_ACTIONS.CREATE, id: o.id, order: o });
         }
 
         return actions;

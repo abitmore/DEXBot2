@@ -911,11 +911,11 @@ class OrderManager {
             const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
 
             if (buyPartials.length > 0 && sellPartials.length > 0) {
-                const buyHasDust = this.strategy.hasAnyDust(buyPartials, "buy");
-                const sellHasDust = this.strategy.hasAnyDust(sellPartials, "sell");
+                const buyHasDust = await this.strategy.hasAnyDust(buyPartials, 'buy');
+                const sellHasDust = await this.strategy.hasAnyDust(sellPartials, 'sell');
 
                 if (buyHasDust && sellHasDust) {
-                    this.logger.log("[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.", "info");
+                    this.logger.log('[BOUNDARY] Dual-side dust partials detected. Triggering rebalance.', 'info');
                     shouldRebalance = true;
                 }
             }

@@ -586,10 +586,19 @@ function isSlotAvailable(order) { return isOrderVirtual(order) && !hasOnChainId(
  * @returns {boolean} True if order is healthy
  */
 function isOrderHealthy(size, type, assets, idealSize) {
-    if (!size || size <= 0) return false;
-    const minAbsolute = MathUtils.getMinAbsoluteOrderSize(type, assets);
-    const minHealthy = MathUtils.getDoubleDustThreshold(idealSize);
-    return size >= minAbsolute && size >= minHealthy;
+    const numericSize = Number(size);
+    const numericIdeal = Number(idealSize);
+    if (!Number.isFinite(numericSize) || numericSize <= 0) return false;
+    if (!Number.isFinite(numericIdeal) || numericIdeal <= 0) return false;
+
+    return MathUtils.validateOrderSize(
+        numericSize,
+        type,
+        assets,
+        50,
+        numericIdeal,
+        5
+    ).isValid;
 }
 
 /**

@@ -12,7 +12,7 @@
  * - Detects and flags out-of-spread conditions
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Grid Class (25 static methods)
+ * TABLE OF CONTENTS - Grid Class (24 static methods)
  * ===============================================================================
  *
  * CONFIGURATION & CALCULATION (2 methods)
@@ -53,17 +53,16 @@
  *   14. calculateCurrentSpread(manager) - Calculate current bid-ask spread
  *   15. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
  *
- * GRID HEALTH MONITORING (6 methods)
+ * GRID HEALTH MONITORING (5 methods)
  *   16. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
  *   17. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
  *   18. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
  *   19. hasAnyDust(manager, partials, side) - Check for dust orders (public)
- *   20. _applyPartialActions(manager, updateOrdersOnChainBatch) - Apply merge/split for partials (internal)
- *   21. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ *   20. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
  * SPREAD CORRECTION (2 methods)
- *   22. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
- *   23. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
+ *   21. calculateGeometricSizeForSpreadCorrection(manager, targetType) - Calculate correction size
+ *   22. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
  *
  * ===============================================================================
  *
@@ -109,7 +108,6 @@ const {
     calculateGridSideDivergenceMetric,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
-    getDoubleDustThreshold,
     calculateSpreadFromOrders,
     allocateFundsByWeights,
     calculateGapSlots
@@ -1174,15 +1172,12 @@ class Grid {
         const executeSpreadCheck = async () => {
             const currentSpread = Grid.calculateCurrentSpread(manager);
 
-            // Nominal spread is the configured target spread percentage
-            // When a side is doubled, increase target spread by one increment to naturally widen the gap
-            let nominalSpread = manager.config.targetSpreadPercent || 2.0;
-            if (manager.buySideIsDoubled || manager.sellSideIsDoubled) {
-                nominalSpread += manager.config.incrementPercent;
-            }
+            // Nominal spread is the configured target spread percentage.
+            // Keep this fixed: doubled-side flags are fill/replacement mechanics only.
+            const nominalSpread = manager.config.targetSpreadPercent || 2.0;
 
-            // Tolerance allows some "floating" before correction (fixed 1 step + doubled state)
-            const toleranceSteps = 1 + (manager.buySideIsDoubled ? 1 : 0) + (manager.sellSideIsDoubled ? 1 : 0);
+            // Fixed tolerance only; do not widen tolerance from doubled-side flags.
+            const toleranceSteps = 1;
 
             const buyCount = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
                 .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL))
@@ -1196,15 +1191,15 @@ class Grid {
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
             if (manager.outOfSpread === 0) return false;
 
-            // Limit spread = nominal + increment per tolerance step (1, 2, or 3 increments based on doubled state)
+            // Limit spread = nominal + one fixed increment tolerance.
             const limitSpread = nominalSpread + (manager.config.incrementPercent * toleranceSteps);
             manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
             const decision = Grid.determineOrderSideByFunds(manager, startPrice);
             if (!decision.side) return false;
 
-        // Perform spread correction by placing orders on the side with more available funds
-        correction = await Grid.prepareSpreadCorrectionOrders(manager, decision.side);
+            // Perform spread correction by placing orders on the chosen side.
+            correction = await Grid.prepareSpreadCorrectionOrders(manager, decision.side);
             if (!correction) return false;
             const placeCount = correction.ordersToPlace?.length || 0;
             const updateCount = correction.ordersToUpdate?.length || 0;
@@ -1263,9 +1258,8 @@ class Grid {
         // active window partials.
         const { buyDust, sellDust } = await Grid.checkWindowDust(manager);
 
-        if (updateOrdersOnChainBatch && (buyDust || sellDust)) {
-            await Grid._applyPartialActions(manager, updateOrdersOnChainBatch);
-        }
+        // Partial split/merge maintenance is intentionally disabled.
+        // Health checks remain detection-only.
 
         return { buyDust, sellDust };
     }
@@ -1359,165 +1353,6 @@ class Grid {
     }
 
     /**
-     * Apply merge (dust) or split (non-dust) corrections for partial orders in the active window.
-     * Dust partials are merged toward ideal size with safety caps.
-     * Non-dust partials are split: updated toward ideal size and a priority free slot is activated.
-     * @private
-     * @param {OrderManager} manager
-     * @param {Function} updateOrdersOnChainBatch
-     */
-    static async _applyPartialActions(manager, updateOrdersOnChainBatch) {
-        const ordersToUpdate = [];
-        const ordersToPlace = [];
-
-        for (const side of ['buy', 'sell']) {
-            const orderType = side === 'buy' ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-
-            const ctx = await Grid._getSizingContext(manager, side);
-            if (!ctx || ctx.budget <= 0) continue;
-
-            const sideSlots = Array.from(manager.orders.values())
-                .filter(o => o.type === orderType)
-                .sort((a, b) => a.price - b.price);
-
-            if (sideSlots.length === 0) continue;
-
-            const idealSizes = allocateFundsByWeights(
-                ctx.budget,
-                sideSlots.length,
-                manager.config.weightDistribution[side],
-                manager.config.incrementPercent / 100,
-                orderType === ORDER_TYPES.BUY,
-                0,
-                ctx.precision
-            );
-
-            let remainingAvail = Math.max(0, Number(manager.funds?.available?.[side] || 0));
-            let budgetRemaining = Math.max(1, Number(manager.config.activeOrders?.[side] || 1));
-
-            const reservedPlacementIds = new Set();
-            const sidePrioritySlots = [...sideSlots].sort((a, b) =>
-                orderType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price
-            );
-            let priorityScanStart = 0;
-
-            const pickPriorityFreeSlot = (excludeSlotId = null) => {
-                for (let i = priorityScanStart; i < sidePrioritySlots.length; i++) {
-                    const candidate = sidePrioritySlots[i];
-                    if (!candidate || !candidate.id) continue;
-                    if (reservedPlacementIds.has(candidate.id)) continue;
-                    if (candidate.id === excludeSlotId) continue;
-
-                    const current = manager.orders.get(candidate.id);
-                    if (!current) continue;
-                    if (current.state !== ORDER_STATES.VIRTUAL) continue;
-                    if (hasOnChainId(current)) continue;
-                    if (typeof manager.isOrderLocked === 'function' && manager.isOrderLocked(current.id)) continue;
-
-                    priorityScanStart = i + 1;
-                    return current;
-                }
-                return null;
-            };
-
-            const minAbsoluteSize = getMinAbsoluteOrderSize(orderType, manager.assets);
-
-            // Compute active window set
-            const activeCount = manager.config.activeOrders?.[side] ?? 0;
-            const allOrders = Array.from(manager.orders.values());
-            let windowIds;
-            if (orderType === ORDER_TYPES.BUY) {
-                windowIds = new Set(
-                    allOrders
-                        .filter(o => o.type === ORDER_TYPES.BUY && o.price != null)
-                        .sort((a, b) => b.price - a.price)
-                        .slice(0, activeCount)
-                        .map(o => o.id)
-                );
-            } else {
-                windowIds = new Set(
-                    allOrders
-                        .filter(o => o.type === ORDER_TYPES.SELL && o.price != null)
-                        .sort((a, b) => a.price - b.price)
-                        .slice(0, activeCount)
-                        .map(o => o.id)
-                );
-            }
-
-            // Process each partial in the window
-            const partials = sideSlots.filter(o => o.state === ORDER_STATES.PARTIAL && windowIds.has(o.id));
-            for (const partial of partials) {
-                if (budgetRemaining <= 0) {
-                    manager.logger.log(
-                        `[PARTIAL] Budget exhausted on ${side}. Deferring remaining partial corrections to next cycle.`,
-                        'debug'
-                    );
-                    break;
-                }
-
-                const idx = sideSlots.findIndex(s => s.id === partial.id);
-                if (idx === -1) continue;
-
-                const idealSize = Number(idealSizes[idx] || 0);
-                if (!(idealSize > 0)) continue;
-
-                const threshold = getSingleDustThreshold(idealSize);
-                if (partial.size < threshold) {
-                    // Dust: merge toward ideal size with available-funds cap
-                    const currentSize = Number(partial.size || 0);
-                    const sizeIncrease = Math.max(0, idealSize - currentSize);
-                    let cappedIncrease = Math.min(sizeIncrease, remainingAvail);
-                    let finalSize = currentSize + cappedIncrease;
-
-                    if (!(idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize && cappedIncrease > 0)) {
-                        continue;
-                    }
-
-                    if (orderType === ORDER_TYPES.BUY) {
-                        manager.buySideIsDoubled = true;
-                    } else {
-                        manager.sellSideIsDoubled = true;
-                    }
-
-                    ordersToUpdate.push({ partialOrder: partial, newSize: finalSize });
-                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
-                    budgetRemaining--;
-                } else {
-                    // Non-dust: split — update toward ideal size and place old size on priority free slot
-                    const oldSize = Number(partial.size || 0);
-                    const nextSlot = pickPriorityFreeSlot(partial.id);
-                    if (!nextSlot) {
-                        manager.logger.log(
-                            `[PARTIAL] Skipping non-dust partial at ${partial.id}: no priority free slot available`,
-                            'warn'
-                        );
-                        continue;
-                    }
-
-                    const sizeIncrease = Math.max(0, idealSize - oldSize);
-                    const cappedIncrease = Math.min(sizeIncrease, remainingAvail);
-                    const finalSize = oldSize + cappedIncrease;
-
-                    if (!(idealSize >= minAbsoluteSize && finalSize >= minAbsoluteSize)) {
-                        continue;
-                    }
-
-                    ordersToUpdate.push({ partialOrder: partial, newSize: finalSize });
-                    ordersToPlace.push({ ...nextSlot, type: orderType, size: oldSize, state: ORDER_STATES.ACTIVE });
-                    reservedPlacementIds.add(nextSlot.id);
-
-                    remainingAvail = Math.max(0, remainingAvail - cappedIncrease);
-                    budgetRemaining--;
-                }
-            }
-        }
-
-        if (ordersToUpdate.length > 0 || ordersToPlace.length > 0) {
-            await updateOrdersOnChainBatch({ ordersToUpdate, ordersToPlace });
-        }
-    }
-
-    /**
      * Public dust helper shared by StrategyEngine and Grid health checks.
      * @param {OrderManager} manager
      * @param {Array<Object>} partials
@@ -1565,14 +1400,43 @@ class Grid {
         }
 
         if (!side) {
+            const committedBuy = Math.max(0, Number(manager.funds?.committed?.chain?.buy || 0));
+            const committedSell = Math.max(0, Number(manager.funds?.committed?.chain?.sell || 0));
+            const marketPrice = Number(currentMarketPrice);
+            const hasValidPrice = Number.isFinite(marketPrice) && marketPrice > 0;
+
+            if (committedBuy > buyMinUnit || committedSell > sellMinUnit) {
+                if (hasValidPrice) {
+                    const buyComparable = committedBuy;
+                    const sellComparable = committedSell * marketPrice;
+                    side = buyComparable >= sellComparable ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
+                } else if (committedBuy > buyMinUnit && committedSell <= sellMinUnit) {
+                    side = ORDER_TYPES.BUY;
+                } else if (committedSell > sellMinUnit && committedBuy <= buyMinUnit) {
+                    side = ORDER_TYPES.SELL;
+                } else {
+                    // Deterministic fallback when both sides hold inventory but market valuation is unavailable.
+                    side = ORDER_TYPES.BUY;
+                }
+
+                manager.logger?.log?.(
+                    `Spread correction using redistribution fallback on ${side} ` +
+                    `(free buy=${Format.formatAmount8(buyAvailable)}, free sell=${Format.formatAmount8(sellAvailable)}, ` +
+                    `price=${hasValidPrice ? Format.formatAmount8(marketPrice) : 'unavailable'})`,
+                    'info'
+                );
+            }
+        }
+
+        if (!side) {
             manager.logger?.log?.(
-                `Spread correction skipped: insufficient funds on both sides ` +
+                `Spread correction skipped: insufficient free funds and no committed inventory to redistribute ` +
                 `(buy=${Format.formatAmount8(buyAvailable)}, sell=${Format.formatAmount8(sellAvailable)})`,
                 'warn'
             );
         }
 
-        return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds' };
+        return { side, reason: side ? `Choosing ${side}` : 'Insufficient funds or committed inventory' };
     }
 
     /**
@@ -1628,8 +1492,13 @@ class Grid {
 
         const ordersToPlace = [];
         const ordersToUpdate = [];
+        const EPSILON = 1e-10;
         const railType = preferredSide;
         const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
+        const configuredMissingSlots = Number(manager.outOfSpread || 0);
+        const missingSlots = configuredMissingSlots > 0
+            ? Math.floor(configuredMissingSlots)
+            : 1;
 
         // STRATEGY: Edge-Based Correction (Safe Bridging)
         // Instead of calculating a "mid-price" (which can be dangerous in wide gaps),
@@ -1638,105 +1507,197 @@ class Grid {
         // 2. Fallback: Activate SPREAD slots at the edge (Lowest Spread for Buy / Highest Spread for Sell).
 
         const allOrders = Array.from(manager.orders.values());
-        let candidate = null;
-
-        // 1. Look for PARTIAL orders on the preferred side
-        const partials = allOrders.filter(o => o.type === railType && o.state === ORDER_STATES.PARTIAL);
-
+        let edgePartial = null;
+        const partials = allOrders
+            .filter(o => o.type === railType && o.state === ORDER_STATES.PARTIAL)
+            .sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
         if (partials.length > 0) {
-            // Sort to find the one closest to the gap
-            // BUY: Highest price (descending)
-            // SELL: Lowest price (ascending)
-            partials.sort((a, b) => railType === ORDER_TYPES.BUY ? b.price - a.price : a.price - b.price);
-            candidate = partials[0];
-            manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${candidate.price} for update`, 'debug');
+            edgePartial = partials[0];
+            manager.logger?.log?.(`[SPREAD-CORRECTION] Identified partial order at ${edgePartial.price} for update`, 'debug');
         }
 
-        // 2. If no partials, look for SPREAD slots to activate
-        if (!candidate) {
-            const spreads = allOrders.filter(o => o.type === ORDER_TYPES.SPREAD && isSlotAvailable(o));
+        const spreadCandidates = allOrders
+            .filter(o => o.type === ORDER_TYPES.SPREAD && isSlotAvailable(o))
+            .sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price)
+            .slice(0, missingSlots);
 
-            if (spreads.length > 0) {
-                // Sort to find the one closest to our existing wall
-                // BUY: We want to extend UPWARDS, so pick the LOWEST price spread slot (closest to Buys)
-                // SELL: We want to extend DOWNWARDS, so pick the HIGHEST price spread slot (closest to Sells)
-                spreads.sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
-                candidate = spreads[0];
-                manager.logger?.log?.(`[SPREAD-CORRECTION] Identified spread slot at ${candidate.price} for activation`, 'debug');
-            }
+        if (spreadCandidates.length > 0) {
+            manager.logger?.log?.(`[SPREAD-CORRECTION] Identified ${spreadCandidates.length}/${missingSlots} spread slot(s) for activation on ${sideName}`, 'debug');
         }
 
-        if (!candidate) {
+        if (!edgePartial && spreadCandidates.length === 0) {
             manager.logger?.log?.(`[SPREAD-CORRECTION] No suitable partials or spread slots found. Skipping.`, 'warn');
             return { ordersToPlace: [], ordersToUpdate: [] };
         }
 
-        // Process the selected candidate
-        const idealSize = await Grid.calculateGeometricSizeForSpreadCorrection(manager, railType);
-        const availableFund = Math.min(
-            Number(manager.funds?.available?.[sideName] || 0),
-            Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0
+        const sideSlots = allOrders
+            .filter(o => o.type === railType)
+            .sort((a, b) => a.price - b.price);
+        const syntheticSideSlots = [
+            ...sideSlots,
+            ...spreadCandidates.map(slot => ({ ...slot, type: railType }))
+        ].sort((a, b) => a.price - b.price);
+
+        const ctx = await Grid._getSizingContext(manager, sideName);
+        if (!ctx || ctx.budget <= 0 || syntheticSideSlots.length === 0) {
+            return { ordersToPlace: [], ordersToUpdate: [] };
+        }
+
+        const idealSizes = allocateFundsByWeights(
+            ctx.budget,
+            syntheticSideSlots.length,
+            manager.config.weightDistribution[sideName],
+            manager.config.incrementPercent / 100,
+            railType === ORDER_TYPES.BUY,
+            0,
+            ctx.precision
         );
 
-        if (idealSize) {
-            // For partials, we only need to fund the difference, but the system treats "size" as the target total size.
-            // The scaling logic below handles the "Total Target Size" vs "Available Funds" check.
-            // Note: recalculateFunds will handle the delta logic for partials.
+        const idealById = new Map();
+        syntheticSideSlots.forEach((slot, idx) => {
+            idealById.set(slot.id, Number(idealSizes[idx] || 0));
+        });
 
-            // Scale down to available funds if necessary
-            // For a new order (SPREAD), full size comes from funds.
-            // For a PARTIAL, the "cost" is (idealSize - currentSize), but here we perform a simplified check
-            // assuming we might need to fund the whole amount if it was very small.
-            // More accurately: size = currentSize + min(idealSize - currentSize, available)
-            
-            let targetSize = idealSize;
-            const currentSize = candidate.state === ORDER_STATES.PARTIAL ? (candidate.size || 0) : 0;
+        const availableFund = Math.max(0, Math.min(
+            Number(manager.funds?.available?.[sideName] || 0),
+            Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0
+        ));
 
-            if (candidate.state === ORDER_STATES.PARTIAL) {
-                 const needed = Math.max(0, idealSize - currentSize);
-                 const affordable = Math.min(needed, availableFund);
-                 targetSize = currentSize + affordable;
-            } else {
-                 targetSize = Math.min(idealSize, availableFund);
+        const minAbsoluteSize = getMinAbsoluteOrderSize(railType, manager.assets);
+        const prioritizedTargets = [];
+
+        if (edgePartial && edgePartial.id) {
+            const ideal = Number(idealById.get(edgePartial.id) || 0);
+            const current = Number(edgePartial.size || 0);
+            if (ideal > current + EPSILON) {
+                prioritizedTargets.push({
+                    kind: 'partial-topup',
+                    order: edgePartial,
+                    current,
+                    ideal,
+                    needed: Math.max(0, ideal - current)
+                });
+            }
+        }
+
+        for (const slot of spreadCandidates) {
+            const ideal = Number(idealById.get(slot.id) || 0);
+            if (ideal > EPSILON) {
+                prioritizedTargets.push({
+                    kind: 'create',
+                    order: slot,
+                    current: 0,
+                    ideal,
+                    needed: ideal
+                });
+            }
+        }
+
+        if (prioritizedTargets.length === 0) {
+            return { ordersToPlace: [], ordersToUpdate: [] };
+        }
+
+        const totalNeeded = prioritizedTargets.reduce((sum, t) => sum + Math.max(0, Number(t.needed || 0)), 0);
+        let recoveredBudget = 0;
+        const redistributionUpdates = [];
+
+        if (totalNeeded > availableFund + EPSILON) {
+            let shortfall = totalNeeded - availableFund;
+
+            const donors = sideSlots
+                .filter(o => hasOnChainId(o) && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
+                .filter(o => !edgePartial || o.id !== edgePartial.id)
+                .sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
+
+            for (const donor of donors) {
+                if (shortfall <= EPSILON) break;
+
+                const donorCurrent = Number(donor.size || 0);
+                const donorIdeal = Number(idealById.get(donor.id) || 0);
+                const donorFloor = Math.max(minAbsoluteSize, donorIdeal);
+                const donorReducible = Math.max(0, donorCurrent - donorFloor);
+                if (donorReducible <= EPSILON) continue;
+
+                const reduction = Math.min(donorReducible, shortfall);
+                const donorNext = donorCurrent - reduction;
+                if (donorNext <= EPSILON) continue;
+                if (!isOrderHealthy(donorNext, railType, manager.assets, donorIdeal || donorNext)) continue;
+
+                redistributionUpdates.push({ partialOrder: { ...donor }, newSize: donorNext });
+                recoveredBudget += reduction;
+                shortfall -= reduction;
             }
 
-            if (isOrderHealthy(targetSize, railType, manager.assets, idealSize)) {
-                // Use ACTIVE for partials (they are already on chain), VIRTUAL for new spreads
-                const newState = candidate.state === ORDER_STATES.PARTIAL ? ORDER_STATES.ACTIVE : ORDER_STATES.VIRTUAL;
-                
-                const activated = { ...candidate, type: railType, size: targetSize, state: newState };
-
-                 // Log if we are scaling down
-                 if (targetSize < idealSize) {
-                     manager.logger?.log?.(`Scaling down spread correction order at ${candidate.id}: ideal ${Format.formatSizeByOrderType(idealSize, railType, manager.assets)} -> target ${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} (ratio: ${Format.formatPercent2((targetSize/idealSize)*100)})`, 'info');
-                 }
-
-                if (candidate.state === ORDER_STATES.PARTIAL && candidate.orderId) {
-                    ordersToUpdate.push({
-                        partialOrder: { ...candidate },
-                        newSize: targetSize
-                    });
-                } else {
-                    ordersToPlace.push(activated);
-                }
-            } else {
-                const dustPercentage = (GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE || 5);
-                const minHealthy = getDoubleDustThreshold(idealSize);
-                const availablePrecision = sideName === 'buy' ? manager.assets?.assetB?.precision : manager.assets?.assetA?.precision;
-                const availableText = Number.isFinite(availablePrecision)
-                    ? Format.formatAmountByPrecision(availableFund, availablePrecision)
-                    : 'N/A';
+            if (recoveredBudget > EPSILON) {
                 manager.logger?.log?.(
-                    `Spread correction skipped at slot ${candidate.id}: ` +
-                    `size=${Format.formatSizeByOrderType(targetSize, railType, manager.assets)} < threshold=${Format.formatSizeByOrderType(minHealthy, railType, manager.assets)} ` +
-                    `(dust threshold: ${dustPercentage}% × 2 of ideal=${Format.formatSizeByOrderType(idealSize, railType, manager.assets)}). ` +
-                    `Available funds: ${availableText}`,
-                    'debug'
+                    `[SPREAD-CORRECTION] Recovered ${Format.formatSizeByOrderType(recoveredBudget, railType, manager.assets)} on ${sideName} via redistribution`,
+                    'info'
                 );
             }
         }
 
-        return { ordersToPlace, ordersToUpdate };
+        let remainingBudget = availableFund + recoveredBudget;
+
+        for (const target of prioritizedTargets) {
+            if (remainingBudget <= EPSILON) break;
+
+            if (target.kind === 'partial-topup') {
+                const topUp = Math.min(target.needed, remainingBudget);
+                const newSize = target.current + topUp;
+                if (newSize > target.current + EPSILON && isOrderHealthy(newSize, railType, manager.assets, target.ideal)) {
+                    ordersToUpdate.push({ partialOrder: { ...target.order }, newSize });
+                    remainingBudget -= topUp;
+                }
+                continue;
+            }
+
+            const createSize = Math.min(target.ideal, remainingBudget);
+            if (createSize <= EPSILON) continue;
+            if (!isOrderHealthy(createSize, railType, manager.assets, target.ideal)) continue;
+
+            ordersToPlace.push({
+                ...target.order,
+                type: railType,
+                size: createSize,
+                state: ORDER_STATES.VIRTUAL
+            });
+            remainingBudget -= createSize;
+        }
+
+        const combinedUpdates = [...redistributionUpdates];
+        for (const plannedUpdate of ordersToUpdate) {
+            const id = plannedUpdate?.partialOrder?.id || plannedUpdate?.id;
+            if (!id) continue;
+            const existingIdx = combinedUpdates.findIndex(u => (u?.partialOrder?.id || u?.id) === id);
+            if (existingIdx >= 0) {
+                combinedUpdates[existingIdx] = plannedUpdate;
+            } else {
+                combinedUpdates.push(plannedUpdate);
+            }
+        }
+
+        if (spreadCandidates.length < missingSlots) {
+            manager.logger?.log?.(
+                `[SPREAD-CORRECTION] Requested ${missingSlots} extra slot(s), found ${spreadCandidates.length} available spread slot(s) on ${sideName}`,
+                'warn'
+            );
+        }
+
+        if (ordersToPlace.length < spreadCandidates.length) {
+            manager.logger?.log?.(
+                `[SPREAD-CORRECTION] Fund-constrained placement on ${sideName}: planned ${spreadCandidates.length}, placing ${ordersToPlace.length}`,
+                'info'
+            );
+        }
+
+        if (combinedUpdates.length > 0 || ordersToPlace.length > 0) {
+            manager.logger?.log?.(
+                `[SPREAD-CORRECTION] Prepared updates=${combinedUpdates.length}, creates=${ordersToPlace.length}, remainingBudget=${Format.formatSizeByOrderType(Math.max(0, remainingBudget), railType, manager.assets)}`,
+                'debug'
+            );
+        }
+
+        return { ordersToPlace, ordersToUpdate: combinedUpdates };
     }
 
 

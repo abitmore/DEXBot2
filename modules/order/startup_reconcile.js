@@ -1086,11 +1086,11 @@ async function reconcileStartupOrders({
         const { buy: buyPartials, sell: sellPartials } = getPartialsByType(allOrders);
 
         if (buyPartials.length > 0 && sellPartials.length > 0) {
-            const buyHasDust = manager.strategy.hasAnyDust(buyPartials, "buy");
-            const sellHasDust = manager.strategy.hasAnyDust(sellPartials, "sell");
+            const buyHasDust = await manager.strategy.hasAnyDust(buyPartials, 'buy');
+            const sellHasDust = await manager.strategy.hasAnyDust(sellPartials, 'sell');
 
             if (buyHasDust && sellHasDust) {
-                logger && logger.log && logger.log("[STARTUP] Dual-side dust partials detected. Triggering full rebalance.", "info");
+                logger && logger.log && logger.log('[STARTUP] Dual-side dust partials detected. Triggering full rebalance.', 'info');
                 return await manager._applySafeRebalanceCOW();
             }
         }
