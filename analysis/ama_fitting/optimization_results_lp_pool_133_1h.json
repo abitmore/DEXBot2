@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "dataLabel": "LP Pool 1.19.133 (1.3.5537/1.3.0)",
+    "candles": 6206,
+    "totalCombos": 26520,
+    "bandCapRatio": 0.8,
+    "areaCapPct": 61.52609566978763,
+    "prodCapPct": 57.13969675238229,
+    "bestAreaMaxDist": {
+      "er": 185,
+      "fast": 10,
+      "slow": 100,
+      "area": {
+        "above": 109.3304250093181,
+        "below": 476.66338180026275,
+        "total": 585.9938068095809,
+        "maxUp": 0.2869137694933773,
+        "maxDown": 0.38453809793617266,
+        "maxDist": 0.38453809793617266
+      },
+      "repos": 0,
+      "reposRate": 0,
+      "bandFactorPct": 76.90761958723454,
+      "areaMaxDist": 1523.890116362012,
+      "prodMaxDist": 135523.13905513642
+    },
+    "bestProdMaxDist": {
+      "er": 90,
+      "fast": 10,
+      "slow": 100,
+      "area": {
+        "above": 137.96596831401322,
+        "below": 371.53626427434796,
+        "total": 509.50223258836115,
+        "maxUp": 0.31344682385298317,
+        "maxDown": 0.35712310470238934,
+        "maxDist": 0.35712310470238934
+      },
+      "repos": 0,
+      "reposRate": 0,
+      "bandFactorPct": 71.42462094047787,
+      "areaMaxDist": 1426.6851566855578,
+      "prodMaxDist": 143534.1477194505
+    },
+    "bestAreaMaxDistCapped": {
+      "er": 40,
+      "fast": 9.5,
+      "slow": 97.5,
+      "area": {
+        "above": 117.70358721665647,
+        "below": 290.30626424330273,
+        "total": 408.00985145995924,
+        "maxUp": 0.3073314935891902,
+        "maxDown": 0.30680688364011216,
+        "maxDist": 0.3073314935891902
+      },
+      "repos": 0.053715308863025966,
+      "reposRate": 0.0005371530886302597,
+      "bandFactorPct": 61.46629871783804,
+      "areaMaxDist": 1327.588808732195,
+      "prodMaxDist": 111183.16672933765
+    },
+    "bestProdMaxDistCapped": {
+      "er": 25,
+      "fast": 10,
+      "slow": 92.5,
+      "area": {
+        "above": 106.01324723573163,
+        "below": 253.43989763745122,
+        "total": 359.45314487318285,
+        "maxUp": 0.28559886222589026,
+        "maxDown": 0.2750900843954073,
+        "maxDist": 0.28559886222589026
+      },
+      "repos": 0.26857654431512984,
+      "reposRate": 0.0026857654431512983,
+      "bandFactorPct": 57.11977244517805,
+      "areaMaxDist": 1258.594456825527,
+      "prodMaxDist": 94075.95786003793
+    }
+  }
+}

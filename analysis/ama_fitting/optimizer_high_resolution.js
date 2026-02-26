@@ -24,16 +24,16 @@ const { calculateAMA } = require('./ama');
  * Usage:
  *   node optimizer_high_resolution.js --data ../../market_adapter/data/lp_pool_133_4h.json
  *
- * Capped variants use 75% of each base winner's Band Factor:
- *   areaCapPct = 0.75 × bandFactorPct(bestAreaMaxDist)
- *   prodCapPct = 0.75 × bandFactorPct(bestProdMaxDist)
+ * Capped variants use 80% of each base winner's Band Factor:
+ *   areaCapPct = 0.8 × bandFactorPct(bestAreaMaxDist)
+ *   prodCapPct = 0.8 × bandFactorPct(bestProdMaxDist)
  */
 
 const DATA_DIR = path.join(__dirname, 'data');
 
 // ── Geometric analysis constants ──────────────────────────────────────────────
 const REPOS_THRESHOLD      = 0.004;                          // 0.4% candle-to-candle AMA move
-const BAND_CAP_RATIO       = 0.75;                           // 75% of base winner's band factor
+const BAND_CAP_RATIO       = 0.8;                            // 80% of base winner's band factor
 
 // ── Parameter ranges ──────────────────────────────────────────────────────────
 function range(min, max, step) {
@@ -116,8 +116,8 @@ function run() {
     console.log(`  4 AMAs — pure geometric, no grid or bot settings`);
     console.log(`  MAX AREA/MAXDIST:  area.total / maxDist              (linear band penalty)`);
     console.log(`  MAX PROD/MAXDIST:  (above × below) / maxDist         (product per band)`);
-    console.log(`  MAX AREA/MAXDIST (BAND≤75% of base AREA): constrained area winner`);
-    console.log(`  MAX PROD/MAXDIST (BAND≤75% of base PROD): constrained product winner`);
+    console.log(`  MAX AREA/MAXDIST (BAND≤80% of base AREA): constrained area winner`);
+    console.log(`  MAX PROD/MAXDIST (BAND≤80% of base PROD): constrained product winner`);
     console.log(`  Ranges:     ER ${ER_VALUES[0]}–${ER_VALUES[ER_VALUES.length-1]}  Fast ${FAST_VALUES[0]}–${FAST_VALUES[FAST_VALUES.length-1]}  Slow ${SLOW_VALUES_AREA[0]}–${SLOW_VALUES_AREA[SLOW_VALUES_AREA.length-1]}`);
     console.log(`  Combos:     ${totalCombos}\n`);
 

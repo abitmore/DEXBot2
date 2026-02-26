@@ -1,0 +1,169 @@
+{
+  "meta": {
+    "generatedAt": "2026-02-26T14:00:29.601Z",
+    "dataPath": "market_adapter/data/lp_pool_133_1h.json",
+    "resultsPath": "analysis/ama_fitting/optimization_results_lp_pool_133_1h.json",
+    "candles": 6206,
+    "activeOrders": 5,
+    "feeRoundtripPct": 0.2,
+    "search": {
+      "spreadValues": [
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.9,
+        1,
+        1.1,
+        1.2,
+        1.3,
+        1.4,
+        1.5,
+        1.6
+      ],
+      "incrementValues": [
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8
+      ],
+      "ratioValues": [
+        1.5,
+        1.75,
+        2,
+        2.5,
+        3,
+        4,
+        5,
+        8,
+        10
+      ],
+      "minSpreadFactor": 2.1,
+      "combosPerAma": 819
+    },
+    "scoring": {
+      "baseScore": "totalNetCapturePct * (fillEfficiency / 100)",
+      "totalNetCapturePct": "matchedPairs * (spread - increment - fee)",
+      "riskPenalty": "avgOpenDurationBars*2 + peakOpenOrders*3 + avgImbalance*1.6 + canceledOnReposition*0.3",
+      "finalScore": "baseScore - riskPenalty"
+    }
+  },
+  "results": [
+    {
+      "strategy": {
+        "id": "bestAreaMaxDist",
+        "name": "MAX AREA/MAXDIST",
+        "er": 185,
+        "fast": 10,
+        "slow": 100
+      },
+      "best": {
+        "spreadPct": 0.8,
+        "incrementPct": 0.002,
+        "maxMinRatio": 1.5,
+        "touchedOrders": 372,
+        "matchedPairs": 184,
+        "fillEfficiency": 49.46236559139785,
+        "totalGrossCapturePct": 235.67626418274912,
+        "totalNetCapturePct": 73.60000000000001,
+        "avgNetPerPair": 0.4,
+        "canceledOnReposition": 0,
+        "avgOpenDurationBars": 79.21195652173913,
+        "peakOpenOrders": 4,
+        "avgImbalance": 3.935541629364369,
+        "riskPenalty": 176.72077965046125,
+        "baseScore": 36.40430107526882,
+        "utilization": 388.38166845685646,
+        "score": -140.31647857519243
+      }
+    },
+    {
+      "strategy": {
+        "id": "bestProdMaxDist",
+        "name": "MAX PROD/MAXDIST",
+        "er": 90,
+        "fast": 10,
+        "slow": 100
+      },
+      "best": {
+        "spreadPct": 1.2,
+        "incrementPct": 0.002,
+        "maxMinRatio": 1.5,
+        "touchedOrders": 390,
+        "matchedPairs": 192,
+        "fillEfficiency": 49.23076923076923,
+        "totalGrossCapturePct": 298.40089740135255,
+        "totalNetCapturePct": 153.60000000000002,
+        "avgNetPerPair": 0.8000000000000002,
+        "canceledOnReposition": 3,
+        "avgOpenDurationBars": 53.307291666666664,
+        "peakOpenOrders": 3,
+        "avgImbalance": 2.938585496866607,
+        "riskPenalty": 121.21632012831991,
+        "baseScore": 75.61846153846156,
+        "utilization": 284.71177944862154,
+        "score": -45.59785858985835
+      }
+    },
+    {
+      "strategy": {
+        "id": "bestAreaMaxDistCapped",
+        "name": "MAX AREA/MAXDIST (capped)",
+        "er": 40,
+        "fast": 9.5,
+        "slow": 97.5
+      },
+      "best": {
+        "spreadPct": 1.2,
+        "incrementPct": 0.002,
+        "maxMinRatio": 1.5,
+        "touchedOrders": 507,
+        "matchedPairs": 213,
+        "fillEfficiency": 42.01183431952663,
+        "totalGrossCapturePct": 335.1311518508254,
+        "totalNetCapturePct": 170.4,
+        "avgNetPerPair": 0.8,
+        "canceledOnReposition": 78,
+        "avgOpenDurationBars": 60.25352112676056,
+        "peakOpenOrders": 3,
+        "avgImbalance": 2.928021486123545,
+        "riskPenalty": 157.5918766313188,
+        "baseScore": 71.58816568047337,
+        "utilization": 283.54815610454705,
+        "score": -86.00371095084543
+      }
+    },
+    {
+      "strategy": {
+        "id": "bestProdMaxDistCapped",
+        "name": "MAX PROD/MAXDIST (capped)",
+        "er": 25,
+        "fast": 10,
+        "slow": 92.5
+      },
+      "best": {
+        "spreadPct": 1.6,
+        "incrementPct": 0.002,
+        "maxMinRatio": 1.5,
+        "touchedOrders": 374,
+        "matchedPairs": 142,
+        "fillEfficiency": 37.967914438502675,
+        "totalGrossCapturePct": 255.91397849462362,
+        "totalNetCapturePct": 170.40000000000003,
+        "avgNetPerPair": 1.2000000000000002,
+        "canceledOnReposition": 88,
+        "avgOpenDurationBars": 51.88732394366197,
+        "peakOpenOrders": 2,
+        "avgImbalance": 1.9455684870188004,
+        "riskPenalty": 139.287557466554,
+        "baseScore": 64.69732620320858,
+        "utilization": 189.00823487289654,
+        "score": -74.59023126334543
+      }
+    }
+  ]
+}
