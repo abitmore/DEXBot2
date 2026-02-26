@@ -1,4 +1,7 @@
-# High-Resolution Optimization Analysis
+# High-Resolution Optimization Analysis (Legacy Snapshot)
+
+> Note: This document captures an older MEXC-focused experiment and is kept for historical reference.
+> For the active LP workflow and current scripts, see `README.md` in this folder.
 
 ## 🎯 Key Finding: Better Configuration Found!
 

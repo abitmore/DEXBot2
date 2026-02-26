@@ -375,7 +375,7 @@ node optimizer_high_lag_ama.js
 # 5. Check that max distance is reasonable (3-4%)
 
 # 6. Plot it
-node generate_chart_enhanced.js  # Uses ER=60
+node generate_unified_comparison_chart.js --data ../../market_adapter/data/lp_pool_133_4h.json
 ```
 
 ### Result:

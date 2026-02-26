@@ -575,10 +575,10 @@ Priority: TRADING VOLUME               → Use MAX AREA (51.5/100)
 
 - `CALCULATION_GUIDE.md` - Deep technical calculations
 - `HIGH_RESOLUTION_ANALYSIS.md` - Optimization methodology
-- `chart_4h_UNIFIED_COMPARISON.html` - Visual comparison (open in browser)
+- `chart_lp_*.html` - Visual comparison output from `generate_unified_comparison_chart.js`
 
 ---
 
 **Last Updated:** 2026-01-18
-**Data Source:** MEXC XRP/BTS (500 4h candles)
-**Status:** All three strategies production-ready
+**Data Source:** Historical snapshot (legacy)
+**Status:** Reference material; see `README.md` for active workflow

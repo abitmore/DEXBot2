@@ -1,337 +1,249 @@
-const fs = require('fs');
+'use strict';
+
+const fs   = require('fs');
 const path = require('path');
 const { calculateAMA } = require('./ama');
 
 /**
- * HIGH-RESOLUTION COMBINED METRICS OPTIMIZER
+ * AMA GEOMETRIC OPTIMIZER
  *
- * ⚠️  DATA: 4-HOUR CANDLES ONLY
- * Input: 500 4h candles from MEXC (XRP/USDT + BTS/USDT)
- * Output: Optimal ER, Fast, Slow parameters
+ * Finds AMA parameters (ER, Fast, Slow) using geometric metrics only.
  *
- * Tests FRACTIONAL parameter values for finer optimization:
- * - ER: 0.5 step increments (2, 2.5, 3, 3.5, ..., 150)
- * - Fast: 0.5 step increments (2, 2.5, 3, 3.5, 4, 4.5, 5)
- * - Slow: 2.5 step increments (10, 12.5, 15, 17.5, ..., 30)
+ * Primary winners:
+ *   - MAX AREA/MAXDIST      = area.total / maxDist
+ *   - MAX PROD/MAXDIST      = (above * below) / maxDist
  *
- * Result: 18,711 combinations for maximum optimization
- * Previous: 252 combinations (integer-only, coarse resolution)
- * Improvement: 74x more combinations = better accuracy
+ * Capped winners:
+ *   - MAX AREA/MAXDIST (capped)
+ *   - MAX PROD/MAXDIST (capped)
  *
- * Metrics:
- * - Oscillation Area: Total space price oscillates from AMA
- * - Fill Efficiency: Percentage of orders that match (target: 50%)
- * - Combined Score: Normalized average of both metrics
+ * Cap is derived from each base winner's band factor:
+ *   areaCapPct = BAND_CAP_RATIO * bandFactorPct(bestAreaMaxDist)
+ *   prodCapPct = BAND_CAP_RATIO * bandFactorPct(bestProdMaxDist)
+ *
+ * Usage:
+ *   node optimizer_high_resolution.js --data ../../market_adapter/data/lp_pool_133_4h.json
+ *
+ * Capped variants use 75% of each base winner's Band Factor:
+ *   areaCapPct = 0.75 × bandFactorPct(bestAreaMaxDist)
+ *   prodCapPct = 0.75 × bandFactorPct(bestProdMaxDist)
  */
 
 const DATA_DIR = path.join(__dirname, 'data');
-const gridSpacing = 0.008;  // 0.80%
 
-// Parameter ranges with FINER resolution
-function generateRange(min, max, step) {
-    const result = [];
-    for (let i = min; i <= max; i += step) {
-        result.push(parseFloat(i.toFixed(1)));
+// ── Geometric analysis constants ──────────────────────────────────────────────
+const REPOS_THRESHOLD      = 0.004;                          // 0.4% candle-to-candle AMA move
+const BAND_CAP_RATIO       = 0.75;                           // 75% of base winner's band factor
+
+// ── Parameter ranges ──────────────────────────────────────────────────────────
+function range(min, max, step) {
+    const out = [];
+    for (let v = min; v <= max + 1e-9; v += step) out.push(parseFloat(v.toFixed(2)));
+    return [...new Set(out)];
+}
+
+const ER_VALUES        = range(5,  200, 5);   // 40 values
+const FAST_VALUES      = range(2,  10,  0.5); // 17 values
+const SLOW_VALUES_AREA = range(5,  100, 2.5); // 39 values  (for MAX AREA — no repos gate)
+
+// ── Data loaders ──────────────────────────────────────────────────────────────
+
+function toCandles(arr) {
+    return arr.map(c => ({ timestamp: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] }));
+}
+
+function loadMexc() {
+    const bts = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'BTS_USDT.json')));
+    const xrp = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'XRP_USDT.json')));
+    const btsC = toCandles(bts);
+    const xrpM = new Map(toCandles(xrp).map(c => [c.timestamp, c]));
+    return btsC
+        .filter(b => xrpM.has(b.timestamp))
+        .map(b => { const x = xrpM.get(b.timestamp); return { timestamp: b.timestamp, open: b.open / x.open, high: b.high / x.low, low: b.low / x.high, close: b.close / x.close }; })
+        .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function loadLp(filePath) {
+    const json = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return { candles: toCandles(json.candles ?? json), meta: json.meta ?? null };
+}
+
+// ── AMA Reposition Rate ───────────────────────────────────────────────────────
+
+function calcReposRate(amaValues) {
+    const skip = Math.max(20, Math.floor(amaValues.length * 0.1));
+    let repos = 0;
+    for (let i = skip + 1; i < amaValues.length; i++) {
+        if (Math.abs(amaValues[i] - amaValues[i - 1]) / amaValues[i - 1] > REPOS_THRESHOLD) repos++;
     }
-    return [...new Set(result)];  // Remove duplicates
+    return repos / (amaValues.length - 1 - skip);
 }
 
-const ER_VALUES = generateRange(2, 150, 0.5);
-const FAST_VALUES = generateRange(2, 5, 0.5);
-const SLOW_VALUES = generateRange(10, 30, 2.5);
+// ── Informational: area above/below AMA ──────────────────────────────────────
 
-// --- Helper Functions ---
-
-function loadData(filename) {
-    const raw = fs.readFileSync(path.join(DATA_DIR, filename));
-    const json = JSON.parse(raw);
-    return json.map(candle => ({
-        timestamp: candle[0],
-        open: candle[1],
-        high: candle[2],
-        low: candle[3],
-        close: candle[4],
-        volume: candle[5]
-    }));
-}
-
-function generateSyntheticPair(btsData, xrpData) {
-    const xrpMap = new Map();
-    xrpData.forEach(c => xrpMap.set(c.timestamp, c));
-
-    const synthetic = [];
-    btsData.forEach(bts => {
-        const xrp = xrpMap.get(bts.timestamp);
-        if (xrp) {
-            const high = bts.high / xrp.low;
-            const low = bts.low / xrp.high;
-            const close = bts.close / xrp.close;
-            const open = bts.open / xrp.open;
-
-            synthetic.push({
-                timestamp: bts.timestamp,
-                open: open,
-                high: high,
-                low: low,
-                close: close
-            });
-        }
-    });
-
-    return synthetic.sort((a, b) => a.timestamp - b.timestamp);
-}
-
-// Calculate Area Above/Below AMA
-function calculateAreaMetrics(amaValues, candles) {
-    let areaAbove = 0;
-    let areaBelow = 0;
-    let maxDriftUp = 0;
-    let maxDriftDown = 0;
-
+function calcArea(amaValues, candles) {
     const skip = Math.max(20, Math.floor(candles.length * 0.1));
-
+    let above = 0, below = 0, maxUp = 0, maxDown = 0;
     for (let i = skip; i < candles.length; i++) {
-        const high = candles[i].high;
-        const low = candles[i].low;
         const ama = amaValues[i];
-
-        const driftUpAmount = (high - ama) / ama;
-        const driftDownAmount = (ama - low) / ama;
-
-        if (driftUpAmount > maxDriftUp) maxDriftUp = driftUpAmount;
-        if (driftDownAmount > maxDriftDown) maxDriftDown = driftDownAmount;
-
-        if (high > ama) areaAbove += driftUpAmount;
-        if (low < ama) areaBelow += driftDownAmount;
-    }
-
-    return {
-        areaAbove,
-        areaBelow,
-        totalArea: areaAbove + areaBelow,
-        maxDriftUp,
-        maxDriftDown,
-        maxDistance: Math.max(maxDriftUp, maxDriftDown)
-    };
-}
-
-// Calculate Fill Efficiency (Order Matching)
-function calculateFillEfficiency(amaValues, candles) {
-    const gridLevels = [0.008, 0.016, 0.024, 0.032, 0.040];  // 0.8%, 1.6%, 2.4%, 3.2%, 4.0%
-    let buyOrdersOpen = new Map();
-    let sellOrdersOpen = new Map();
-    let matchedCount = 0;
-    let totalOrders = 0;
-
-    for (let i = 1; i < candles.length; i++) {
-        const ama = amaValues[i];
-        const high = candles[i].high;
-        const low = candles[i].low;
-
-        // Check each grid level
-        for (const level of gridLevels) {
-            const buyLevel = ama * (1 - level);
-            const sellLevel = ama * (1 + level);
-            const levelKey = level.toFixed(4);
-
-            // BUY order: if price touches buy level
-            if (low <= buyLevel) {
-                if (!buyOrdersOpen.has(levelKey)) {
-                    buyOrdersOpen.set(levelKey, true);
-                    totalOrders++;
-
-                    // Check if matching SELL order exists
-                    if (sellOrdersOpen.has(levelKey)) {
-                        matchedCount++;
-                        buyOrdersOpen.delete(levelKey);
-                        sellOrdersOpen.delete(levelKey);
-                    }
-                }
-            }
-
-            // SELL order: if price touches sell level
-            if (high >= sellLevel) {
-                if (!sellOrdersOpen.has(levelKey)) {
-                    sellOrdersOpen.set(levelKey, true);
-                    totalOrders++;
-
-                    // Check if matching BUY order exists
-                    if (buyOrdersOpen.has(levelKey)) {
-                        matchedCount++;
-                        buyOrdersOpen.delete(levelKey);
-                        sellOrdersOpen.delete(levelKey);
-                    }
-                }
-            }
+        if (candles[i].high > ama) {
+            const d = (candles[i].high - ama) / ama;
+            above += d;
+            if (d > maxUp) maxUp = d;
+        }
+        if (candles[i].low < ama) {
+            const d = (ama - candles[i].low) / ama;
+            below += d;
+            if (d > maxDown) maxDown = d;
         }
     }
-
-    const fillEfficiency = totalOrders > 0 ? matchedCount / totalOrders : 0;
-    return {
-        fillEfficiency: fillEfficiency * 100,  // Convert to percentage
-        matchedCount,
-        totalOrders
-    };
+    const total   = above + below;
+    const maxDist = Math.max(maxUp, maxDown);
+    return { above, below, total, maxUp, maxDown, maxDist };
 }
 
-function normalizeMetric(value, min, max) {
-    if (max === min) return 50;
-    return ((value - min) / (max - min)) * 100;
-}
+// ── Main ───────────────────────────────────────────────────────────────────────
 
 function run() {
-    console.log("================================================================================");
-    console.log("HIGH-RESOLUTION COMBINED METRICS OPTIMIZER");
-    console.log("================================================================================");
-    console.log(`\nTesting FRACTIONAL parameter values for finer optimization:\n`);
+    const dataArgIdx = process.argv.indexOf('--data');
+    const dataFile   = dataArgIdx !== -1 ? process.argv[dataArgIdx + 1] : null;
 
-    let btsData, xrpData;
-    try {
-        btsData = loadData('BTS_USDT.json');
-        xrpData = loadData('XRP_USDT.json');
-    } catch (e) {
-        console.error("Error loading data:", e.message);
-        return;
+    const totalCombos = ER_VALUES.length * FAST_VALUES.length * SLOW_VALUES_AREA.length;
+
+    console.log('================================================================================');
+    console.log(' AMA GEOMETRIC OPTIMIZER');
+    console.log('================================================================================');
+    console.log(`  4 AMAs — pure geometric, no grid or bot settings`);
+    console.log(`  MAX AREA/MAXDIST:  area.total / maxDist              (linear band penalty)`);
+    console.log(`  MAX PROD/MAXDIST:  (above × below) / maxDist         (product per band)`);
+    console.log(`  MAX AREA/MAXDIST (BAND≤75% of base AREA): constrained area winner`);
+    console.log(`  MAX PROD/MAXDIST (BAND≤75% of base PROD): constrained product winner`);
+    console.log(`  Ranges:     ER ${ER_VALUES[0]}–${ER_VALUES[ER_VALUES.length-1]}  Fast ${FAST_VALUES[0]}–${FAST_VALUES[FAST_VALUES.length-1]}  Slow ${SLOW_VALUES_AREA[0]}–${SLOW_VALUES_AREA[SLOW_VALUES_AREA.length-1]}`);
+    console.log(`  Combos:     ${totalCombos}\n`);
+
+    // Load data
+    let candles, dataLabel;
+    if (dataFile) {
+        const loaded = loadLp(path.resolve(dataFile));
+        candles   = loaded.candles;
+        const m   = loaded.meta;
+        dataLabel = m ? `LP Pool ${m.pool} (${m.assetA?.symbol}/${m.assetB?.symbol})` : path.basename(dataFile);
+    } else {
+        candles   = loadMexc();
+        dataLabel = 'MEXC Synthetic XRP/BTS';
     }
+    const closes = candles.map(c => c.close);
+    console.log(`  Data:       ${dataLabel}  (${candles.length} candles)\n`);
 
-    const synthetic = generateSyntheticPair(btsData, xrpData);
-    const closes = synthetic.map(c => c.close);
+    // ── Run: pure geometric search — no grid settings ─────────────────────────
+    let bestAreaMaxDist = null, bestProdMaxDist = null, bestAreaMaxDistCapped = null, bestProdMaxDistCapped = null;
+    const allEntries = [];
 
-    console.log(`Loaded ${synthetic.length} candles\n`);
-    console.log(`ER Values: ${ER_VALUES.length} options (step 0.5)`);
-    console.log(`Fast Values: ${FAST_VALUES.length} options (step 0.5)`);
-    console.log(`Slow Values: ${SLOW_VALUES.length} options (step 2.5)`);
-    console.log(`Total combinations: ${ER_VALUES.length * FAST_VALUES.length * SLOW_VALUES.length}\n`);
-
-    const results = [];
-    let count = 0;
-    const total = ER_VALUES.length * FAST_VALUES.length * SLOW_VALUES.length;
-
-    // Test all combinations
     for (const er of ER_VALUES) {
         for (const fast of FAST_VALUES) {
-            for (const slow of SLOW_VALUES) {
-                const params = { erPeriod: er, fastPeriod: fast, slowPeriod: slow };
-                const amaValues = calculateAMA(closes, params);
+            for (const slow of SLOW_VALUES_AREA) {
+                if (fast >= slow) continue;
 
-                const areaMetrics = calculateAreaMetrics(amaValues, synthetic);
-                const fillMetrics = calculateFillEfficiency(amaValues, synthetic);
+                const ama           = calculateAMA(closes, { erPeriod: er, fastPeriod: fast, slowPeriod: slow });
+                const area          = calcArea(ama, candles);
+                const reposRate     = calcReposRate(ama);
+                const repos         = reposRate * 100;
+                // Metric 1: area / maxDist — linear band penalty
+                const areaMaxDist   = area.total / area.maxDist;
+                // Metric 2: (above × below) / maxDist — product per band
+                const prodMaxDist   = (area.above * area.below) / area.maxDist;
+                const bandFactorPct = area.maxDist * 200;
+                const entry         = { er, fast, slow, area, repos, reposRate, bandFactorPct, areaMaxDist, prodMaxDist };
+                allEntries.push(entry);
 
-                results.push({
-                    er,
-                    fast,
-                    slow,
-                    ...areaMetrics,
-                    ...fillMetrics
-                });
-
-                count++;
-                if (count % 500 === 0) {
-                    process.stdout.write(`\rProgress: ${count}/${total} (${(count/total*100).toFixed(1)}%)`);
-                }
+                if (!bestAreaMaxDist || areaMaxDist > bestAreaMaxDist.areaMaxDist)   bestAreaMaxDist = entry;
+                if (!bestProdMaxDist || prodMaxDist > bestProdMaxDist.prodMaxDist)   bestProdMaxDist = entry;
             }
         }
     }
-    console.log(`\rProgress: ${total}/${total} (100%)\n`);
 
-    // Find min/max for normalization
-    const areas = results.map(r => r.totalArea);
-    const efficiencies = results.map(r => r.fillEfficiency);
-
-    const minArea = Math.min(...areas);
-    const maxArea = Math.max(...areas);
-    const minEfficiency = Math.min(...efficiencies);
-    const maxEfficiency = Math.max(...efficiencies);
-
-    // Calculate combined scores
-    for (const result of results) {
-        const normalizedArea = normalizeMetric(result.totalArea, minArea, maxArea);
-        const normalizedEfficiency = normalizeMetric(result.fillEfficiency, minEfficiency, maxEfficiency);
-        result.normalizedArea = normalizedArea;
-        result.normalizedEfficiency = normalizedEfficiency;
-        result.combinedScore = (normalizedArea + normalizedEfficiency) / 2;
+    function bestUnderCap(capPct, key) {
+        let best = null;
+        for (const e of allEntries) {
+            if (e.bandFactorPct <= capPct && (!best || e[key] > best[key])) best = e;
+        }
+        return best;
     }
 
-    // Sort by combined score
-    results.sort((a, b) => b.combinedScore - a.combinedScore);
+    const areaCapPct = bestAreaMaxDist ? bestAreaMaxDist.bandFactorPct * BAND_CAP_RATIO : null;
+    const prodCapPct = bestProdMaxDist ? bestProdMaxDist.bandFactorPct * BAND_CAP_RATIO : null;
+    const areaCapLabel = areaCapPct === null ? 'n/a' : areaCapPct.toFixed(1);
+    const prodCapLabel = prodCapPct === null ? 'n/a' : prodCapPct.toFixed(1);
+    bestAreaMaxDistCapped = areaCapPct ? bestUnderCap(areaCapPct, 'areaMaxDist') : null;
+    bestProdMaxDistCapped = prodCapPct ? bestUnderCap(prodCapPct, 'prodMaxDist') : null;
 
-    console.log("================================================================================");
-    console.log("TOP 30 CONFIGURATIONS - COMBINED METRICS (HIGH RESOLUTION)");
-    console.log("================================================================================\n");
-    console.log("Rank |  ER  | Fast | Slow | Area   | Fill%  | Norm A | Norm F | Combined");
-    console.log("─────┼──────┼──────┼──────┼────────┼────────┼────────┼────────┼──────────");
+    function detail(label, r, optimisedFor) {
+        if (!r) {
+            console.log(`  ${label}`);
+            console.log('  └─ No valid candidate under constraint\n');
+            return;
+        }
+        const asymmetry = Math.abs(r.area.above - r.area.below);
+        const bias      = r.area.above > r.area.below ? 'AMA below price' : 'AMA above price';
+        console.log(`  ${label}`);
+        console.log(`  ├─ Optimised for:  ${optimisedFor}`);
+        console.log(`  ├─ Params:         ER=${r.er}  Fast=${r.fast}  Slow=${r.slow}`);
+        console.log(`  ├─ Area total:     ${r.area.total.toFixed(2)}  (above ${r.area.above.toFixed(2)}  below ${r.area.below.toFixed(2)})`);
+        console.log(`  ├─ Asymmetry:      ${asymmetry.toFixed(2)}  (${bias})`);
+        console.log(`  └─ Repos rate:     ${r.repos.toFixed(1)}%  (${Math.round(r.repos / 100 * candles.length)} events)\n`);
+    }
 
-    for (let i = 0; i < Math.min(30, results.length); i++) {
-        const r = results[i];
+    console.log('================================================================================');
+    console.log(` 4 AMAs  —  pure geometric  (${ER_VALUES.length}×${FAST_VALUES.length}×${SLOW_VALUES_AREA.length} combinations)`);
+    console.log('================================================================================\n');
+
+    detail('MAX AREA/MAXDIST   — linear band penalty',
+        bestAreaMaxDist, `area(${bestAreaMaxDist.area.total.toFixed(2)}) / maxDist(${(bestAreaMaxDist.area.maxDist * 100).toFixed(1)}%) = ${bestAreaMaxDist.areaMaxDist.toFixed(2)}`);
+    detail('MAX PROD/MAXDIST   — product per band',
+        bestProdMaxDist, `(above(${bestProdMaxDist.area.above.toFixed(2)}) × below(${bestProdMaxDist.area.below.toFixed(2)})) / maxDist(${(bestProdMaxDist.area.maxDist * 100).toFixed(1)}%) = ${bestProdMaxDist.prodMaxDist.toFixed(2)}`);
+    detail(`MAX AREA/MAXDIST   — constrained (Band Factor <= ${areaCapLabel}%)`,
+        bestAreaMaxDistCapped,
+        bestAreaMaxDistCapped
+            ? `area(${bestAreaMaxDistCapped.area.total.toFixed(2)}) / maxDist(${(bestAreaMaxDistCapped.area.maxDist * 100).toFixed(1)}%) = ${bestAreaMaxDistCapped.areaMaxDist.toFixed(2)}`
+            : 'n/a');
+    detail(`MAX PROD/MAXDIST   — constrained (Band Factor <= ${prodCapLabel}%)`,
+        bestProdMaxDistCapped,
+        bestProdMaxDistCapped
+            ? `(above(${bestProdMaxDistCapped.area.above.toFixed(2)}) × below(${bestProdMaxDistCapped.area.below.toFixed(2)})) / maxDist(${(bestProdMaxDistCapped.area.maxDist * 100).toFixed(1)}%) = ${bestProdMaxDistCapped.prodMaxDist.toFixed(2)}`
+            : 'n/a');
+
+    // ── Side-by-side summary ───────────────────────────────────────────────────
+    console.log('================================================================================');
+    console.log(' SUMMARY');
+    console.log('================================================================================\n');
+    console.log('                |  ER  | Fast | Slow | Area    | Above  | Below  | MaxDist | Repos%');
+    console.log('────────────────┼──────┼──────┼──────┼─────────┼────────┼────────┼─────────┼───────');
+    for (const [name, r] of [['MAX AREA/MAXDIST', bestAreaMaxDist], ['MAX PROD/MAXDIST', bestProdMaxDist], [`MAX AREA/MAXDIST (<=${areaCapLabel}%)`, bestAreaMaxDistCapped], [`MAX PROD/MAXDIST (<=${prodCapLabel}%)`, bestProdMaxDistCapped]]) {
+        if (!r) continue;
         console.log(
-            `${(i + 1).toString().padStart(4)} | ` +
-            `${r.er.toFixed(1).padStart(5)} | ` +
+            `${name.padEnd(15)} | ` +
+            `${r.er.toString().padStart(4)} | ` +
             `${r.fast.toFixed(1).padStart(4)} | ` +
             `${r.slow.toFixed(1).padStart(4)} | ` +
-            `${r.totalArea.toFixed(2).padStart(6)} | ` +
-            `${r.fillEfficiency.toFixed(1).padStart(6)} | ` +
-            `${r.normalizedArea.toFixed(1).padStart(6)} | ` +
-            `${r.normalizedEfficiency.toFixed(1).padStart(6)} | ` +
-            `${r.combinedScore.toFixed(1).padStart(8)}`
+            `${r.area.total.toFixed(2).padStart(7)} | ` +
+            `${r.area.above.toFixed(2).padStart(6)} | ` +
+            `${r.area.below.toFixed(2).padStart(6)} | ` +
+            `${(r.area.maxDist * 100).toFixed(1).padStart(7)}% | ` +
+            `${r.repos.toFixed(1).padStart(6)}`
         );
     }
+    console.log();
 
-    // Detailed analysis of top 5
-    console.log("\n================================================================================");
-    console.log("DETAILED ANALYSIS - TOP 5 CONFIGURATIONS");
-    console.log("================================================================================\n");
-
-    for (let i = 0; i < Math.min(5, results.length); i++) {
-        const r = results[i];
-        console.log(`🏆 RANK #${i + 1}:`);
-        console.log(`   Parameters: ER=${r.er.toFixed(1)}, Fast=${r.fast.toFixed(1)}, Slow=${r.slow.toFixed(1)}`);
-        console.log(`\n   METRIC 1 - OSCILLATION AREA (Opportunity):`);
-        console.log(`   ├─ Total Area: ${r.totalArea.toFixed(2)}%`);
-        console.log(`   ├─ Area Above: ${r.areaAbove.toFixed(2)}%`);
-        console.log(`   ├─ Area Below: ${r.areaBelow.toFixed(2)}%`);
-        console.log(`   ├─ Max Distance UP: ${(r.maxDriftUp * 100).toFixed(2)}%`);
-        console.log(`   ├─ Max Distance DOWN: ${(r.maxDriftDown * 100).toFixed(2)}%`);
-        console.log(`   └─ NORMALIZED SCORE: ${r.normalizedArea.toFixed(1)}/100`);
-        console.log(`\n   METRIC 2 - FILL EFFICIENCY (Profitability):`);
-        console.log(`   ├─ Order Fill Rate: ${r.fillEfficiency.toFixed(1)}%`);
-        console.log(`   ├─ Matched Orders: ${r.matchedCount}`);
-        console.log(`   ├─ Total Orders: ${r.totalOrders}`);
-        console.log(`   └─ NORMALIZED SCORE: ${r.normalizedEfficiency.toFixed(1)}/100`);
-        console.log(`\n   COMBINED SCORE: ${r.combinedScore.toFixed(1)}/100`);
-        console.log(`   └─ Average of Area (${r.normalizedArea.toFixed(1)}) + Efficiency (${r.normalizedEfficiency.toFixed(1)})\n`);
-    }
-
-    // Comparison with integer-only optimization
-    console.log("================================================================================");
-    console.log("COMPARISON: Integer vs High-Resolution Optimization");
-    console.log("================================================================================\n");
-
-    const topHR = results[0];
-    console.log("HIGH-RESOLUTION (This Run):");
-    console.log(`  ER=${topHR.er.toFixed(1)}, Fast=${topHR.fast.toFixed(1)}, Slow=${topHR.slow.toFixed(1)}`);
-    console.log(`  ├─ Area: ${topHR.totalArea.toFixed(2)}%`);
-    console.log(`  ├─ Fill: ${topHR.fillEfficiency.toFixed(1)}%`);
-    console.log(`  └─ Combined: ${topHR.combinedScore.toFixed(1)}/100 ✓\n`);
-
-    console.log("Previous INTEGER-ONLY Best (ER=100, Fast=2, Slow=30):");
-    console.log(`  ├─ Area: 37.12%`);
-    console.log(`  ├─ Fill: 50.0%`);
-    console.log(`  └─ Combined: 78.2/100\n`);
-
-    const improvement = ((topHR.combinedScore - 78.2) / 78.2 * 100).toFixed(1);
-    if (topHR.combinedScore > 78.2) {
-        console.log(`✅ IMPROVEMENT: +${improvement}% better combined score!\n`);
-    } else {
-        console.log(`ℹ️  Similar performance: ${improvement}% difference\n`);
-    }
-
-    // Save results
-    const outputFile = path.join(__dirname, 'optimization_results_high_resolution.json');
-    fs.writeFileSync(outputFile, JSON.stringify(results, null, 2));
-
-    console.log("================================================================================");
-    console.log(`✅ Full results saved to: optimization_results_high_resolution.json`);
-    console.log(`   Total entries: ${results.length}\n`);
+    // ── Save ──────────────────────────────────────────────────────────────────
+    const outName = dataFile
+        ? `optimization_results_${path.basename(dataFile, '.json')}.json`
+        : 'optimization_results_high_resolution.json';
+    const outPath = path.join(__dirname, outName);
+    fs.writeFileSync(outPath, JSON.stringify({
+        meta: { dataLabel, candles: candles.length, totalCombos, bandCapRatio: BAND_CAP_RATIO, areaCapPct, prodCapPct, bestAreaMaxDist, bestProdMaxDist, bestAreaMaxDistCapped, bestProdMaxDistCapped },
+    }, null, 2));
+    console.log(`================================================================================`);
+    console.log(`  Saved: ${outName}\n`);
 }
 
 run();

@@ -6,32 +6,71 @@ const { calculateAMA } = require('./ama');
  * UNIFIED COMPARISON CHART GENERATOR
  *
  * ⚠️  DATA: 4-HOUR CANDLES ONLY
- * Input: 500 4h candles from MEXC (XRP/USDT + BTS/USDT)
- * Output: chart_4h_UNIFIED_COMPARISON.html
  *
- * Generates ONE comprehensive chart showing all three optimization strategies:
- * 1. ER=40 (MAX AREA) - Orange solid line
- *    └─ 47.10% oscillation area (maximum opportunities)
+ * Shows four AMA strategies on the same candlestick chart.
+ * Strategies are loaded automatically from the optimizer results JSON when
+ * using --data, with linear and capped winners:
+ *   1. MAX AREA/MAXDIST                (orange, solid)
+ *   2. MAX PROD/MAXDIST                (blue, dash)
+ *   3. MAX AREA/MAXDIST (capped band)  (green, longdash)
+ *   4. MAX PROD/MAXDIST (capped band)  (red, longdashdot)
  *
- * 2. ER=15 (MAX EFFICIENCY) - Green dotted line
- *    └─ 40.79% oscillation area, 50% fill efficiency (reliable matching)
+ * Falls back to hardcoded MEXC defaults when no results file is found.
  *
- * 3. ER=107 (BALANCED) - Blue dashed line
- *    └─ 38.85% oscillation area, 50% fill efficiency, 78.8/100 score (best balance)
- *
- * All three AMAs overlaid on same candlesticks for direct comparison
- * Includes grid bands (±max distance) for each strategy
+ * Usage:
+ *   node optimizer_high_resolution.js --data ../../market_adapter/data/lp_pool_133_4h.json
+ *   node generate_unified_comparison_chart.js --data ../../market_adapter/data/lp_pool_133_4h.json
+ *   node generate_unified_comparison_chart.js
  */
 
 const DATA_DIR = path.join(__dirname, 'data');
 const OUT_FILE = path.join(__dirname, 'chart_4h_UNIFIED_COMPARISON.html');
 
-// Three optimization strategies
-const STRATEGIES = [
-    { name: 'MAX AREA', erPeriod: 40, fastPeriod: 5, slowPeriod: 30, color: '#fb8c00', dash: 'solid' },
-    { name: 'MAX EFFICIENCY', erPeriod: 15, fastPeriod: 5, slowPeriod: 30, color: '#26a69a', dash: 'dot' },
-    { name: 'BALANCED', erPeriod: 107, fastPeriod: 2, slowPeriod: 30, color: '#2196F3', dash: 'dash' }
+// Fallback strategies used when no optimizer results file exists
+const FALLBACK_STRATEGIES = [
+    { name: 'FAST',     erPeriod: 15,  fastPeriod: 5, slowPeriod: 30, color: '#26a69a', dash: 'dot'   },
+    { name: 'MEDIUM',   erPeriod: 50,  fastPeriod: 5, slowPeriod: 30, color: '#fb8c00', dash: 'solid' },
+    { name: 'SLOW',     erPeriod: 100, fastPeriod: 2, slowPeriod: 30, color: '#9E9E9E', dash: 'dash'  },
 ];
+
+/**
+ * Load representative strategies from an optimizer results JSON.
+ *
+ * Returns null if the file doesn't exist or has no results.
+ */
+function strategiesFromResults(resultsPath) {
+    if (!fs.existsSync(resultsPath)) return null;
+    const json = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+    const meta = json.meta;
+    if (!meta) return null;
+
+    const strategies = [];
+
+    function add(key, label, color, dash) {
+        const r = meta[key];
+        if (!r) return;
+        strategies.push({ name: label, erPeriod: r.er, fastPeriod: r.fast, slowPeriod: r.slow, color, dash });
+    }
+
+    const areaCap = Number.isFinite(meta.areaCapPct) ? meta.areaCapPct : null;
+    const prodCap = Number.isFinite(meta.prodCapPct) ? meta.prodCapPct : null;
+    add('bestAreaMaxDist', 'MAX AREA/MAXDIST', '#fb8c00', 'solid'); // orange
+    add('bestProdMaxDist', 'MAX PROD/MAXDIST', '#42a5f5', 'dash');  // blue
+    add(
+        'bestAreaMaxDistCapped',
+        areaCap === null ? 'MAX AREA/MAXDIST (BAND CAP)' : `MAX AREA/MAXDIST (<=${areaCap.toFixed(1)}%)`,
+        '#2e7d32',
+        'longdash'
+    ); // green
+    add(
+        'bestProdMaxDistCapped',
+        prodCap === null ? 'MAX PROD/MAXDIST (BAND CAP)' : `MAX PROD/MAXDIST (<=${prodCap.toFixed(1)}%)`,
+        '#ef5350',
+        'longdashdot'
+    ); // red
+
+    return strategies.length ? strategies : null;
+}
 
 // --- Helper Functions ---
 
@@ -46,6 +85,20 @@ function loadData(filename) {
         close: candle[4],
         volume: candle[5]
     }));
+}
+
+// Load Kibana LP candle export { meta, candles: [[ts,o,h,l,c,vol],...] }
+function loadLpData(filePath) {
+    const json = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const candles = json.candles ?? json;
+    return { candles: candles.map(c => ({
+        timestamp: c[0],
+        open:      c[1],
+        high:      c[2],
+        low:       c[3],
+        close:     c[4],
+        volume:    c[5]
+    })), meta: json.meta ?? null };
 }
 
 function generateSyntheticPair(btsData, xrpData) {
@@ -107,7 +160,15 @@ function calculateMetrics(amaValues, candles) {
     };
 }
 
-function createChart(strategiesWithMetrics, candles) {
+function buildLegendHTML(strategies) {
+    return strategies.map(s => `
+            <div class="legend-item">
+                <div class="legend-line" style="background: ${s.color}; border-top: 2px ${s.dash === 'dot' ? 'dotted' : s.dash === 'dash' ? 'dashed' : 'solid'} ${s.color};"></div>
+                <span style="color: ${s.color};">${s.name} (ER=${s.erPeriod})</span>
+            </div>`).join('\n');
+}
+
+function createChart(strategiesWithMetrics, candles, dataLabel = 'XRP/BTS (MEXC)', outFile = OUT_FILE) {
     const dates = candles.map(c => new Date(c.timestamp).toISOString());
     const opens = candles.map(c => c.open);
     const highs = candles.map(c => c.high);
@@ -195,11 +256,14 @@ function createChart(strategiesWithMetrics, candles) {
         `;
     }
 
+    const legendHTML = buildLegendHTML(strategiesWithMetrics);
+    const stratCount = strategiesWithMetrics.length;
+
     const html = `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>XRP/BTS AMA - Unified Comparison (All 3 Strategies)</title>
+    <title>${dataLabel} - AMA Comparison (${stratCount} strategies)</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         body { margin: 0; padding: 0; background: #111; color: #eee; font-family: monospace; }
@@ -257,20 +321,9 @@ function createChart(strategiesWithMetrics, candles) {
 <body>
     <div class="info">
         <h3>UNIFIED COMPARISON</h3>
-        <p><strong>Three AMA Strategies Overlaid:</strong></p>
-        <div class="legend-info">
-            <div class="legend-item">
-                <div class="legend-line" style="background: #fb8c00; border-top: 2px solid #fb8c00;"></div>
-                <span>MAX AREA (ER=40)</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-line" style="background: #26a69a; border-top: 2px dotted #26a69a;"></div>
-                <span>MAX EFF (ER=15)</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-line" style="background: #2196F3; border-top: 2px dashed #2196F3;"></div>
-                <span>BALANCED (ER=107)</span>
-            </div>
+        <p><strong>${stratCount} AMA Strategies Overlaid:</strong></p>
+        <div class="legend-info" style="flex-direction: column; gap: 8px;">
+            ${legendHTML}
         </div>
         <p style="margin-top: 10px; color: #aaa;"><em>Dashed lines = grid bands (±max distance)</em></p>
     </div>
@@ -310,7 +363,7 @@ function createChart(strategiesWithMetrics, candles) {
             paper_bgcolor: '#111',
             font: { color: '#ccc', size: 12 },
             title: {
-                text: 'XRP/BTS (MEXC) - All 3 Optimization Strategies',
+                text: '${dataLabel} — ${stratCount} AMA Strategies Comparison',
                 font: { size: 16, color: '#fb8c00' }
             }
         };
@@ -321,40 +374,73 @@ function createChart(strategiesWithMetrics, candles) {
 </html>
     `;
 
-    fs.writeFileSync(OUT_FILE, html);
-    return OUT_FILE;
+    fs.writeFileSync(outFile, html);
+    return outFile;
 }
 
 function run() {
+    // --data PATH  → use LP candle JSON instead of MEXC synthetic pair
+    const dataArgIdx = process.argv.indexOf('--data');
+    const dataFile   = dataArgIdx !== -1 ? process.argv[dataArgIdx + 1] : null;
+
     console.log("================================================================================");
     console.log("GENERATING UNIFIED COMPARISON CHART");
     console.log("================================================================================\n");
 
-    let btsData, xrpData;
-    try {
-        btsData = loadData('BTS_USDT.json');
-        xrpData = loadData('XRP_USDT.json');
-    } catch (e) {
-        console.error("Error loading data:", e.message);
-        return;
+    let candles, dataLabel, outFile, STRATEGIES;
+    if (dataFile) {
+        try {
+            const loaded = loadLpData(path.resolve(dataFile));
+            candles   = loaded.candles;
+            const m   = loaded.meta;
+            dataLabel = m ? `LP Pool ${m.pool} · ${m.assetA?.symbol}/${m.assetB?.symbol} · ${m.intervalSeconds / 3600}h` : path.basename(dataFile);
+            outFile   = path.join(__dirname, `chart_lp_${path.basename(dataFile, '.json')}.html`);
+
+            // Load 4 best-in-class strategies from the optimizer results file
+            const resultsFile = path.join(__dirname, `optimization_results_${path.basename(dataFile, '.json')}.json`);
+            const fromResults = strategiesFromResults(resultsFile);
+            STRATEGIES = fromResults ?? FALLBACK_STRATEGIES;
+            if (fromResults) {
+                console.log(`Strategies:  loaded from ${path.basename(resultsFile)}`);
+                fromResults.forEach(s => console.log(`  ${s.name.padEnd(14)} ER=${s.erPeriod}  Fast=${s.fastPeriod}  Slow=${s.slowPeriod}`));
+            } else {
+                console.log(`Strategies:  results file not found — using fallback`);
+            }
+        } catch (e) {
+            console.error("Error loading LP data:", e.message);
+            return;
+        }
+    } else {
+        let btsData, xrpData;
+        try {
+            btsData = loadData('BTS_USDT.json');
+            xrpData = loadData('XRP_USDT.json');
+        } catch (e) {
+            console.error("Error loading data:", e.message);
+            return;
+        }
+        candles    = generateSyntheticPair(btsData, xrpData);
+        dataLabel  = 'XRP/BTS (MEXC)';
+        outFile    = OUT_FILE;
+        STRATEGIES = [...FALLBACK_STRATEGIES];
     }
 
-    const synthetic = generateSyntheticPair(btsData, xrpData);
-    const closes = synthetic.map(c => c.close);
+    const closes = candles.map(c => c.close);
 
-    console.log(`Loaded ${synthetic.length} candles\n`);
+    console.log(`Data source: ${dataLabel}`);
+    console.log(`Loaded ${candles.length} candles\n`);
 
-    // Calculate all three strategies
+    // Calculate all strategies
     const strategiesWithMetrics = [];
 
     for (const strategy of STRATEGIES) {
-        console.log(`📊 Calculating ${strategy.name} (ER=${strategy.erPeriod})`);
+        console.log(`Calculating ${strategy.name}`);
         const amaValues = calculateAMA(closes, {
             erPeriod: strategy.erPeriod,
             fastPeriod: strategy.fastPeriod,
             slowPeriod: strategy.slowPeriod
         });
-        const metrics = calculateMetrics(amaValues, synthetic);
+        const metrics = calculateMetrics(amaValues, candles);
 
         strategiesWithMetrics.push({
             ...strategy,
@@ -369,8 +455,8 @@ function run() {
     }
 
     // Create unified chart
-    console.log("📊 Generating unified chart with all three strategies...\n");
-    const file = createChart(strategiesWithMetrics, synthetic);
+    console.log(`Generating unified chart with ${strategiesWithMetrics.length} strategies...\n`);
+    const file = createChart(strategiesWithMetrics, candles, dataLabel, outFile);
 
     console.log("================================================================================");
     console.log("COMPARISON SUMMARY\n");
@@ -389,20 +475,13 @@ function run() {
     }
 
     console.log("\n================================================================================");
-    console.log("✅ UNIFIED CHART GENERATED:\n");
-    console.log(`   📄 ${path.basename(file)}`);
-    console.log(`\n   Features:`);
-    console.log(`   ├─ All three AMA strategies overlaid`);
-    console.log(`   ├─ Different colors for each strategy`);
-    console.log(`   ├─ Grid bands shown for each (dashed lines)`);
-    console.log(`   ├─ Interactive legend (click to toggle)`);
-    console.log(`   ├─ Hover for exact values`);
-    console.log(`   └─ Zoom and pan capabilities\n`);
-
-    console.log("Legend:");
-    console.log("  🟠 Orange (solid) = MAX AREA (ER=40, Fast=5, Slow=30)");
-    console.log("  🟢 Green (dotted) = MAX EFFICIENCY (ER=15, Fast=5, Slow=30)");
-    console.log("  🔵 Blue (dashed) = BALANCED OPTIMAL (ER=107, Fast=2, Slow=30)\n");
+    console.log(`UNIFIED CHART GENERATED:\n`);
+    console.log(`  ${path.basename(file)}`);
+    console.log(`\n  Strategies:`);
+    for (const s of strategiesWithMetrics) {
+        console.log(`  ├─ ${s.name.padEnd(30)} ER=${String(s.erPeriod).padStart(3)}  Fast=${s.fastPeriod}  Slow=${s.slowPeriod}`);
+    }
+    console.log(`\n  Features: candlesticks + ${strategiesWithMetrics.length} AMA lines + grid bands · interactive · hover for values\n`);
 }
 
 run();
