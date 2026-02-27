@@ -254,8 +254,6 @@ class StrategyEngine {
      *   - committed {Object}: Committed funds per side
      * @param {Array<Object>} params.fills - Recent fills that triggered calculation
      * @param {number} params.currentBoundaryIdx - Current boundary index
-     * @param {boolean} [params.buySideIsDoubled=false] - Whether buy side has doubled orders
-     * @param {boolean} [params.sellSideIsDoubled=false] - Whether sell side has doubled orders
      * @returns {Object} Target grid state:
      *   - targetGrid {Map}: Map of slotId -> target order state
      *     - id {string}: Slot ID
@@ -289,11 +287,7 @@ class StrategyEngine {
         if (allSlots.length === 0) return { targetGrid: new Map(), boundaryIdx: currentBoundaryIdx };
 
         // 1. Determine new boundary based on fills (Boundary Crawl)
-        const effectiveTargetSpread = (params.buySideIsDoubled || params.sellSideIsDoubled) 
-            ? config.targetSpreadPercent + config.incrementPercent 
-            : config.targetSpreadPercent;
-            
-        const gapSlots = Grid.calculateGapSlots(config.incrementPercent, effectiveTargetSpread);
+        const gapSlots = Grid.calculateGapSlots(config.incrementPercent, config.targetSpreadPercent);
         const newBoundaryIdx = deriveTargetBoundary(fills, currentBoundaryIdx, allSlots, config, gapSlots);
 
         // 2. Assign Roles (Buy/Sell/Spread)
@@ -312,11 +306,8 @@ class StrategyEngine {
         const allSellSlots = updatedSlots.filter(o => o.type === ORDER_TYPES.SELL);
 
         // Apply Window Discipline (activeOrders count)
-        // When a side is doubled (has a merged dust partial), reduce its target by 1
-        // so the outermost active slot becomes VIRTUAL — making it surplus-eligible
-        // for rotation/cancellation and clearing the squeezed partial.
-        const targetCountBuy = Math.max(1, (config.activeOrders?.buy || 1) - (params.buySideIsDoubled ? 1 : 0));
-        const targetCountSell = Math.max(1, (config.activeOrders?.sell || 1) - (params.sellSideIsDoubled ? 1 : 0));
+        const targetCountBuy = Math.max(1, (config.activeOrders?.buy || 1));
+        const targetCountSell = Math.max(1, (config.activeOrders?.sell || 1));
 
         // Sort Closest-First for windowing
         const buySlots = allBuySlots

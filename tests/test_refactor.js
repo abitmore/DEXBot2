@@ -158,10 +158,8 @@ try {
   const { OrderManager } = require('../modules/order/manager');
   const manager = new OrderManager({});
 
-  // Test that old property access still works via getters
+  // Test that core compatibility getters still work
   assert(manager._rebalanceState !== undefined, '_rebalanceState getter broken');
-  assert(manager.buySideIsDoubled !== undefined, 'buySideIsDoubled getter broken');
-  assert(manager.sellSideIsDoubled !== undefined, 'sellSideIsDoubled getter broken');
 
   console.log('   ✓ Backward compatibility maintained');
 } catch (err) {

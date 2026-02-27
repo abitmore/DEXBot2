@@ -14,11 +14,11 @@
  *
  * PERSISTENCE OPERATIONS:
  *   1. readOrders(botKey) - Read persisted grid for bot (async)
- *      Returns { grid, buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
+ *      Returns { grid, btsFeesOwed }
  *
  *   2. writeOrders(botKey, meta, grid, state) - Write grid snapshot (async)
  *      Writes atomic file update with metadata
- *      state: { buySideIsDoubled, sellSideIsDoubled, btsFeesOwed }
+ *      state: { btsFeesOwed }
  *
  *   3. deleteOrders(botKey) - Delete persisted grid for bot (async)
  *
@@ -40,8 +40,6 @@
  *     { "id": "slot-0", "type": "buy", "state": "virtual", "price": 100, "size": 1, "orderId": null },
  *     ...
  *   ],
- *   "buySideIsDoubled": false,
- *   "sellSideIsDoubled": false,
  *   "btsFeesOwed": 0.1,
  *   "createdAt": "ISO timestamp",
  *   "lastUpdated": "ISO timestamp"
@@ -331,9 +329,8 @@ class AccountOrders {
    * @param {number} btsFeesOwed - Optional BTS blockchain fees owed
    * @param {number} boundaryIdx - Optional master boundary index for StrategyEngine
   * @param {Object} assets - Optional asset metadata { assetA, assetB }
-  * @param {Object} doubleSideFlags - Optional { buySideIsDoubled, sellSideIsDoubled }
-  */
-  async storeMasterGrid(botKey, orders = [], btsFeesOwed = null, boundaryIdx = null, assets = null, doubleSideFlags = null) {
+   */
+  async storeMasterGrid(botKey, orders = [], btsFeesOwed = null, boundaryIdx = null, assets = null) {
     if (!botKey) return;
 
     // Use AsyncLock to serialize read-modify-write operations (fixes Issue #1, #5)
@@ -350,8 +347,6 @@ class AccountOrders {
         this.data.bots[botKey] = {
           meta,
           grid: snapshot,
-          buySideIsDoubled: doubleSideFlags ? !!doubleSideFlags.buySideIsDoubled : false,
-          sellSideIsDoubled: doubleSideFlags ? !!doubleSideFlags.sellSideIsDoubled : false,
           btsFeesOwed: Number.isFinite(btsFeesOwed) ? btsFeesOwed : 0,
           boundaryIdx: Number.isFinite(boundaryIdx) ? boundaryIdx : null,
           assets: assets || null,
@@ -361,11 +356,6 @@ class AccountOrders {
         };
       } else {
         this.data.bots[botKey].grid = snapshot;
-
-        if (doubleSideFlags) {
-          this.data.bots[botKey].buySideIsDoubled = !!doubleSideFlags.buySideIsDoubled;
-          this.data.bots[botKey].sellSideIsDoubled = !!doubleSideFlags.sellSideIsDoubled;
-        }
 
         if (Number.isFinite(btsFeesOwed)) {
           this.data.bots[botKey].btsFeesOwed = btsFeesOwed;
@@ -491,49 +481,6 @@ class AccountOrders {
         return;
       }
       this.data.bots[botKey].btsFeesOwed = btsFeesOwed || 0;
-      this.data.lastUpdated = nowIso();
-      this._persist();
-    });
-  }
-
-  /**
-   * Load doubled side flags for a bot.
-   * @param {string} botKey - Bot identifier key
-   * @param {boolean} forceReload - If true, reload from disk
-   * @returns {Object} { buySideIsDoubled, sellSideIsDoubled }
-   */
-  loadDoubleSideFlags(botKey, forceReload = false) {
-    if (forceReload) {
-      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
-    }
-
-    if (this.data && this.data.bots && this.data.bots[botKey]) {
-      const botData = this.data.bots[botKey];
-      return {
-        buySideIsDoubled: !!botData.buySideIsDoubled,
-        sellSideIsDoubled: !!botData.sellSideIsDoubled
-      };
-    }
-    return { buySideIsDoubled: false, sellSideIsDoubled: false };
-  }
-
-  /**
-   * Update (persist) doubled side flags for a bot.
-   * @param {string} botKey - Bot identifier key
-   * @param {boolean} buySideIsDoubled - Buy side doubled flag
-   * @param {boolean} sellSideIsDoubled - Sell side doubled flag
-   */
-  async updateDoubleSideFlags(botKey, buySideIsDoubled, sellSideIsDoubled) {
-    if (!botKey) return;
-
-    await this._persistenceLock.acquire(async () => {
-      this.data = this._loadData() || { bots: {}, lastUpdated: nowIso() };
-
-      if (!this.data || !this.data.bots || !this.data.bots[botKey]) {
-        return;
-      }
-      this.data.bots[botKey].buySideIsDoubled = !!buySideIsDoubled;
-      this.data.bots[botKey].sellSideIsDoubled = !!sellSideIsDoubled;
       this.data.lastUpdated = nowIso();
       this._persist();
     });

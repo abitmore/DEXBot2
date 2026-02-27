@@ -14,8 +14,6 @@ function createManager(slots) {
             assetA: { precision: 6 },
             assetB: { precision: 6 }
         },
-        buySideIsDoubled: false,
-        sellSideIsDoubled: false,
         logger: {
             level: 'warn',
             log: () => {}

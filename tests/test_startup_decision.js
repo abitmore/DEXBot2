@@ -103,8 +103,6 @@ const { _setFeeCache } = require('../modules/order/utils/math');
                 assetB: { id: '1.3.2', symbol: 'ASSETB', precision: 5 },
             },
             config: { activeOrders: { sell: 2, buy: 2 } },
-            buySideIsDoubled: false,
-            sellSideIsDoubled: false,
             accountTotals: { sellFree: 1000, buyFree: 1000 },
             logger: { log: () => {} },
             strategy: { hasAnyDust: () => false },

@@ -40,8 +40,6 @@ function createManager(slots) {
             virtual: { buy: 0, sell: 0 }
         },
         accountTotals: { buyFree: 1000, sellFree: 1000 },
-        buySideIsDoubled: false,
-        sellSideIsDoubled: false,
         boundaryIdx: undefined,
         logger: {
             level: 'warn',

@@ -442,13 +442,11 @@ class DEXBot {
 
         const persistedBtsFeesOwed = this.accountOrders.loadBtsFeesOwed(this.config.botKey);
         const persistedBoundaryIdx = this.accountOrders.loadBoundaryIdx(this.config.botKey);
-        const persistedDoubleSideFlags = this.accountOrders.loadDoubleSideFlags(this.config.botKey);
 
         return {
             persistedGrid: repairedGrid,
             persistedBtsFeesOwed,
-            persistedBoundaryIdx,
-            persistedDoubleSideFlags
+            persistedBoundaryIdx
         };
     }
 
@@ -461,8 +459,7 @@ class DEXBot {
         let {
             persistedGrid,
             persistedBtsFeesOwed,
-            persistedBoundaryIdx,
-            persistedDoubleSideFlags
+            persistedBoundaryIdx
         } = startupState;
 
         try {
@@ -562,21 +559,12 @@ class DEXBot {
                 return; // Skip normal startup path
             }
 
-            // Restore persisted BTS fee and side flags
+            // Restore persisted BTS fee
             // SAFE: Done at startup before orders are created, and within fill lock when needed
             this.manager.resetFunds();
             // CRITICAL FIX: Restore BTS fees owed from persistence
             if (persistedBtsFeesOwed && persistedBtsFeesOwed > 0) {
                 this.manager.funds.btsFeesOwed = Number(persistedBtsFeesOwed);
-            }
-
-            // Restore doubled side flags
-            if (persistedDoubleSideFlags) {
-                this.manager.buySideIsDoubled = !!persistedDoubleSideFlags.buySideIsDoubled;
-                this.manager.sellSideIsDoubled = !!persistedDoubleSideFlags.sellSideIsDoubled;
-                if (this.manager.buySideIsDoubled || this.manager.sellSideIsDoubled) {
-                    this.manager.logger.log(`✓ Restored double side flags: buy=${this.manager.buySideIsDoubled}, sell=${this.manager.sellSideIsDoubled}`, 'info');
-                }
             }
 
             if (!this.config.dryRun && !this.accountId) {
@@ -621,10 +609,8 @@ class DEXBot {
                     this._log(`✓ Restored BTS fees owed: ${Format.formatAmount8(persistedBtsFeesOwed)} BTS`);
                 }
             } else {
-                this._log(`ℹ Grid regenerating - resetting BTS fees and doubled flags to clean state`);
+                this._log(`ℹ Grid regenerating - resetting BTS fees to clean state`);
                 this.manager.funds.btsFeesOwed = 0;
-                this.manager.buySideIsDoubled = false;
-                this.manager.sellSideIsDoubled = false;
             }
 
             // CRITICAL: Use fill lock during ENTIRE startup synchronization to prevent races.

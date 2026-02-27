@@ -30,8 +30,6 @@ function createMockManager(buyFunds = 10000, sellFunds = 100, startPrice = 100) 
     };
 
     manager.boundaryIdx = 0;
-    manager.buySideIsDoubled = false;
-    manager.sellSideIsDoubled = false;
     manager.targetSpreadCount = 2;
     manager.outOfSpread = 0;
 
@@ -100,14 +98,12 @@ async function testBoundarySync() {
         logTest('Rotation pairing matches all existing orders', matchCount === 3, `${matchCount}/3 matched`);
     }
 
-    // Test 3: Target count reduction for doubled side
+    // Test 3: Target count follows configured active window
     {
-        const manager = createMockManager(10000, 100, 100);
-        manager.buySideIsDoubled = true;
         const baseTargetCount = 5;
-        const targetCount = manager.buySideIsDoubled ? Math.max(1, baseTargetCount - 1) : baseTargetCount;
+        const targetCount = Math.max(1, baseTargetCount);
 
-        logTest('Doubled side reduces target count by 1', targetCount === 4, `${baseTargetCount} -> ${targetCount}`);
+        logTest('Target count keeps configured window size', targetCount === 5, `${baseTargetCount} -> ${targetCount}`);
     }
 
     // Test 4: Prevents overfunding when boundary syncs

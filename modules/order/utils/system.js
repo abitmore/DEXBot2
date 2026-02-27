@@ -396,8 +396,7 @@ async function persistGridSnapshot(manager, accountOrders, botKey) {
             Array.from(manager.orders.values()),
             manager.funds.btsFeesOwed,
             manager.boundaryIdx,
-            manager.assets || null,
-            { buySideIsDoubled: !!manager.buySideIsDoubled, sellSideIsDoubled: !!manager.sellSideIsDoubled }
+            manager.assets || null
         );
         return true;
     } catch (e) {
@@ -503,8 +502,7 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             const baseTargetCount = (manager.config.activeOrders && Number.isFinite(manager.config.activeOrders[sideName]))
                 ? Math.max(1, manager.config.activeOrders[sideName])
                 : currentOnChainOrders.length;
-            const isDoubledSide = orderType === ORDER_TYPES.BUY ? manager.buySideIsDoubled : manager.sellSideIsDoubled;
-            const targetCount = isDoubledSide ? Math.max(1, baseTargetCount - 1) : baseTargetCount;
+            const targetCount = baseTargetCount;
             
             // Determine desired slots (closest to market)
             const desiredSlots = allSideSlots.slice(0, targetCount);
@@ -643,10 +641,6 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             if (result && result.executed) {
                 manager.logger.log(`[DIVERGENCE-COW] Successfully applied divergence corrections`, 'info');
                 manager.outOfSpread = 0;
-                for (const type of manager._gridSidesUpdated) {
-                    if (type === ORDER_TYPES.BUY) manager.buySideIsDoubled = false;
-                    if (type === ORDER_TYPES.SELL) manager.sellSideIsDoubled = false;
-                }
                 manager._gridSidesUpdated.clear();
                 // Grid already persisted via _commitWorkingGrid in updateOrdersOnChainBatch
             } else {

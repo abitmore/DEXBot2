@@ -227,16 +227,6 @@ function analyzeOrder(botData, config) {
     // Config exists - calculate variance from target
     targetSpread = config.targetSpreadPercent / 100;
 
-    // Adjust target spread when sides are doubled
-    // Each doubled side adds one increment to compensate for fewer orders on that side
-    // If both sides are doubled, add increment twice
-    if (botData.buySideIsDoubled) {
-      targetSpread += config.incrementPercent / 100;
-    }
-    if (botData.sellSideIsDoubled) {
-      targetSpread += config.incrementPercent / 100;
-    }
-
     spreadDiff = realSpread - targetSpread;
     incrementCheck = checkGeometricIncrement(grid, config.incrementPercent / 100);
   } else {
@@ -271,8 +261,6 @@ function analyzeOrder(botData, config) {
     gridMinPrice: gridMinPrice,
     marketPrice: marketPrice,
     gridMaxPrice: gridMaxPrice,
-    buySideIsDoubled: botData.buySideIsDoubled,
-    sellSideIsDoubled: botData.sellSideIsDoubled,
     hasConfig: !!config,
     // Spread metrics
     spread: {
@@ -745,21 +733,12 @@ function formatAnalysis(analysis) {
    * Status: ✓ if within 0.1% of target, ✗ if not
    * Direction: ↑ if above target, ↓ if below target
    */
-  // Add notation for doubled sides
-  let doubledNotation = '';
-  if (analysis.buySideIsDoubled || analysis.sellSideIsDoubled) {
-    const sides = [];
-    if (analysis.buySideIsDoubled) sides.push('BUY');
-    if (analysis.sellSideIsDoubled) sides.push('SELL');
-    doubledNotation = ` [${sides.join('+')}]`;
-  }
-
   if (analysis.hasConfig) {
     lines.push(
-      `   Spread:${formatPercent(analysis.spread.real).padStart(6)} (target: ${formatPercent(analysis.spread.target)})${doubledNotation}`
+      `   Spread:${formatPercent(analysis.spread.real).padStart(6)} (target: ${formatPercent(analysis.spread.target)})`
     );
   } else {
-    lines.push(`   Spread:${formatPercent(analysis.spread.real).padStart(6)}${doubledNotation}`);
+    lines.push(`   Spread:${formatPercent(analysis.spread.real).padStart(6)}`);
   }
 
   /**

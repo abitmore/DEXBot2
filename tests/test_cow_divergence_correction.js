@@ -29,8 +29,6 @@ async function testCOWDivergenceCorrection() {
     };
 
     manager.boundaryIdx = 5; // Slots 0-5 = BUY, 6+ = SELL
-    manager.buySideIsDoubled = false;
-    manager.sellSideIsDoubled = false;
     manager.outOfSpread = 0;
     manager._gridVersion = 1;
 

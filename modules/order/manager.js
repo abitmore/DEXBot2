@@ -131,9 +131,7 @@ class COWRebalanceEngine {
         boundaryIdx,
         funds,
         fills = [],
-        excludeIds = new Set(),
-        buySideIsDoubled = false,
-        sellSideIsDoubled = false
+        excludeIds = new Set()
     }) {
         const startTime = Date.now();
 
@@ -146,9 +144,7 @@ class COWRebalanceEngine {
             funds,
             excludeIds,
             fills,
-            currentBoundaryIdx: boundaryIdx,
-            buySideIsDoubled,
-            sellSideIsDoubled
+            currentBoundaryIdx: boundaryIdx
         };
 
         const { targetGrid, boundaryIdx: targetBoundary } = this.strategy.calculateTargetGrid(strategyParams);
@@ -255,10 +251,6 @@ class StateManager {
             recoveryAttempted: false
         };
 
-        this.sides = {
-            buySideIsDoubled: false,
-            sellSideIsDoubled: false
-        };
     }
 
     getRebalanceState() {
@@ -397,20 +389,6 @@ class StateManager {
 
     isPipelineBlocked() {
         return this.pipeline.blockedSince !== null;
-    }
-
-    setSideDoubled(side, isDoubled) {
-        if (side === 'buy') {
-            this.sides.buySideIsDoubled = isDoubled;
-        } else if (side === 'sell') {
-            this.sides.sellSideIsDoubled = isDoubled;
-        }
-    }
-
-    isSideDoubled(side) {
-        return side === 'buy' 
-            ? this.sides.buySideIsDoubled 
-            : this.sides.sellSideIsDoubled;
     }
 
     getState() {
@@ -902,7 +880,7 @@ class OrderManager {
         // Criteria for rebalance:
         // 1. We have actual fills (non-partial)
         // 2. We have dual-side dust (unhealthy partials on both sides)
-        const triggerFills = orders.filter(f => !f.isPartial || f.isDelayedRotationTrigger || f.isDoubleReplacementTrigger);
+        const triggerFills = orders.filter(f => !f.isPartial || f.isDelayedRotationTrigger);
         let shouldRebalance = triggerFills.length > 0;
 
         if (!shouldRebalance) {
@@ -941,12 +919,8 @@ class OrderManager {
 
     getInitialOrdersToActivate() {
         // Apply activeOrders limit from config
-        const sellCountRaw = Math.max(0, toFiniteNumber(this.config.activeOrders?.sell, 1));
-        const buyCountRaw = Math.max(0, toFiniteNumber(this.config.activeOrders?.buy, 1));
-
-        // Reduce target by 1 on doubled sides to maintain grid balance
-        const sellCount = this.sellSideIsDoubled ? Math.max(1, sellCountRaw - 1) : sellCountRaw;
-        const buyCount = this.buySideIsDoubled ? Math.max(1, buyCountRaw - 1) : buyCountRaw;
+        const sellCount = Math.max(0, toFiniteNumber(this.config.activeOrders?.sell, 1));
+        const buyCount = Math.max(0, toFiniteNumber(this.config.activeOrders?.buy, 1));
 
         // Get minimum sizes for validation
         const minSellSize = getMinAbsoluteOrderSize(ORDER_TYPES.SELL, this.assets, GRID_LIMITS.MIN_ORDER_SIZE_FACTOR);
@@ -1218,25 +1192,6 @@ class OrderManager {
         });
     }
 
-    /**
-     * Detect dust partials in the active buy/sell window and set the corresponding
-     * doubled-side flag so calculateTargetGrid widens the spread enough to push the
-     * squeezed partial into VIRTUAL territory, making it a surplus rotation candidate.
-     *
-     * Only sets the flag to true; sync_engine resets it to false after each fill cycle.
-     */
-    async _detectAndSetDoubledState() {
-        const { buyDust, sellDust } = await Grid.checkWindowDust(this);
-        if (buyDust) {
-            this.buySideIsDoubled = true;
-            this.logger.log('[DOUBLED] Buy-side dust partial in active window — buySideIsDoubled set', 'info');
-        }
-        if (sellDust) {
-            this.sellSideIsDoubled = true;
-            this.logger.log('[DOUBLED] Sell-side dust partial in active window — sellSideIsDoubled set', 'info');
-        }
-    }
-
     async _applySafeRebalanceCOW(fills = [], excludeIds = new Set()) {
         const cowEngine = this._getCOWEngine();
         if (!cowEngine) {
@@ -1244,17 +1199,13 @@ class OrderManager {
         }
 
         this._setRebalanceState(REBALANCE_STATES.REBALANCING);
-        await this._detectAndSetDoubledState();
-
         const result = await cowEngine.execute({
             masterGrid: this.orders,
             gridVersion: this._gridVersion,
             boundaryIdx: this.boundaryIdx,
             funds: this.getChainFundsSnapshot(),
             fills,
-            excludeIds,
-            buySideIsDoubled: this._state.isSideDoubled('buy'),
-            sellSideIsDoubled: this._state.isSideDoubled('sell')
+            excludeIds
         });
 
         if (result.aborted) {
@@ -1557,21 +1508,6 @@ class OrderManager {
         };
     }
 
-    get buySideIsDoubled() {
-        return this._state.isSideDoubled('buy');
-    }
-
-    set buySideIsDoubled(value) {
-        this._state.setSideDoubled('buy', value);
-    }
-
-    get sellSideIsDoubled() {
-        return this._state.isSideDoubled('sell');
-    }
-
-    set sellSideIsDoubled(value) {
-        this._state.setSideDoubled('sell', value);
-    }
 }
 
 module.exports = { OrderManager };

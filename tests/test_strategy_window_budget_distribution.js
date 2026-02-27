@@ -42,9 +42,7 @@ async function run() {
             allocatedSell: 6
         },
         fills: [],
-        currentBoundaryIdx: 19,
-        buySideIsDoubled: false,
-        sellSideIsDoubled: false
+        currentBoundaryIdx: 19
     });
 
     // All buy slots should have sizes (grid integrity)
