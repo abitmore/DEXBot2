@@ -966,7 +966,9 @@ function evaluateCommit(workingGrid, options = {}) {
     }
 
     if (masterGrid && typeof workingGrid.buildDelta === 'function') {
-        const delta = workingGrid.buildDelta(masterGrid);
+        const delta = workingGrid.buildDelta(masterGrid, {
+            precisions: options?.comparePrecisions || null
+        });
         if (Array.isArray(delta) && delta.length === 0) {
             return {
                 canCommit: false,

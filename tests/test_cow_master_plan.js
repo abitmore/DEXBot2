@@ -123,13 +123,31 @@ async function testCOW004_FundRecalculation() {
 async function testCOW005_OrderComparison() {
     console.log('\n[COW-005] Testing order comparison...');
     
-    const order1 = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100.000001, 10, 'chain1');
-    const order2 = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100.000002, 10, 'chain1');
+    const order1 = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100.0000011, 10, 'chain1');
+    const order2 = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100.0000012, 10, 'chain1');
     
-    assert.strictEqual(ordersEqual(order1, order2), true, 'Should be equal within epsilon');
+    assert.strictEqual(
+        ordersEqual(order1, order2, { precisions: { buyPrecision: 8, sellPrecision: 8, priceRelativeTolerance: 0.0005 } }),
+        true,
+        'Should be equal within configured COW price tolerance'
+    );
     
-    const order3 = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100.1, 10, 'chain1');
+    const order3 = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100.2, 10, 'chain1');
     assert.strictEqual(ordersEqual(order1, order3), false, 'Should not be equal with large price diff');
+
+    const tinySizeA = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100, 0.00000010, 'chain1');
+    const tinySizeB = createTestOrder('1', ORDER_TYPES.BUY, ORDER_STATES.ACTIVE, 100, 0.000000105, 'chain1');
+    assert.strictEqual(
+        ordersEqual(tinySizeA, tinySizeB, { precisions: { buyPrecision: 8, sellPrecision: 8 } }),
+        true,
+        'Should be equal when relative tolerance falls below buy precision quantum'
+    );
+
+    assert.strictEqual(
+        ordersEqual(tinySizeA, tinySizeB, { precisions: { buyPrecision: 9, sellPrecision: 9 } }),
+        false,
+        'Should not be equal when configured precision quantum is tighter than diff'
+    );
     
     const order4 = createTestOrder('1', ORDER_TYPES.SELL, ORDER_STATES.ACTIVE, 100, 10, 'chain1');
     assert.strictEqual(ordersEqual(order1, order4), false, 'Should not be equal with different type');
@@ -273,6 +291,15 @@ async function testCOW011_NoSpuriousUpdatesOnUnchangedGrid() {
             size: 20,
             orderId: '1.7.101',
             gridIndex: 2
+        }],
+        ['slot-3', {
+            id: 'slot-3',
+            type: ORDER_TYPES.SPREAD,
+            state: ORDER_STATES.VIRTUAL,
+            price: 1.29,
+            size: 0,
+            orderId: null,
+            gridIndex: 3
         }]
     ]);
 

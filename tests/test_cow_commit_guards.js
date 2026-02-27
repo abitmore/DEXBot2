@@ -53,6 +53,14 @@ function createManagerFixture() {
 
     manager._gridVersion = 5;
     manager.boundaryIdx = 0;
+    manager.config = {
+        ...(manager.config || {}),
+        incrementPercent: 0.5
+    };
+    manager.assets = {
+        assetA: { id: '1.3.0', symbol: 'BTS', precision: 8 },
+        assetB: { id: '1.3.121', symbol: 'USD', precision: 5 }
+    };
 
     const master = new Map([
         ['slot-1', createOrder('slot-1')]

@@ -49,12 +49,16 @@ function testDeltaBuilding() {
 function testOrderComparison() {
     const { ordersEqual } = require('../modules/order/utils/order');
     
-    const order1 = { id: '1', price: 100.00000001, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };
-    const order2 = { id: '1', price: 100.00000002, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };
+    const order1 = { id: '1', price: 100.000000001, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };
+    const order2 = { id: '1', price: 100.000000002, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };
     
-    assert.strictEqual(ordersEqual(order1, order2), true, 'Should be equal within epsilon');
+    assert.strictEqual(
+        ordersEqual(order1, order2, { precisions: { buyPrecision: 8, sellPrecision: 8, priceRelativeTolerance: 0.0005 } }),
+        true,
+        'Should be equal within configured COW price tolerance'
+    );
     
-    const order3 = { id: '1', price: 100.1, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };
+    const order3 = { id: '1', price: 100.2, amount: 10, type: 'BUY', state: 'ACTIVE', orderId: 'chain1', gridIndex: 0 };
     assert.strictEqual(ordersEqual(order1, order3), false, 'Should not be equal');
     
     console.log('✓ Order comparison test passed');

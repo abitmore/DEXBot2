@@ -67,7 +67,7 @@
  * ===============================================================================
  */
 
-const { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS } = require('../../constants');
+const { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS } = require('../../constants');
 const Format = require('../format');
 const { isValidNumber, toFiniteNumber } = Format;
 const MathUtils = require('./math');
@@ -613,11 +613,14 @@ function isOrderHealthy(size, type, assets, idealSize) {
  */
 function checkSizeThreshold(sizes, threshold, precision, includeNonFinite = false) {
     if (threshold <= 0 || !Array.isArray(sizes) || sizes.length === 0) return false;
+    const precisionSlack = isValidNumber(precision)
+        ? MathUtils.getPrecisionSlack(precision, 1)
+        : Number.EPSILON;
     return sizes.some(sz => {
         if (!Number.isFinite(sz)) return includeNonFinite;
         if (sz <= 0) return false;
         if (isValidNumber(precision)) return floatToBlockchainInt(sz, precision) < floatToBlockchainInt(threshold, precision);
-        return sz < (threshold - 1e-8);
+        return sz < (threshold - precisionSlack);
     });
 }
 
@@ -793,7 +796,99 @@ function validateIndexes(grid, indexes) {
 // SECTION 9: ORDER COMPARISON & DELTA
 // ================================================================================
 
-const EPSILON = 1e-6;
+const ORDER_RELATIVE_TOLERANCE = (Number(GRID_LIMITS.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT) || 0) / 100;
+
+function getDecimalPlaces(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+
+    const text = numeric.toString().toLowerCase();
+    if (!text.includes('e')) {
+        const parts = text.split('.');
+        return parts[1] ? parts[1].length : 0;
+    }
+
+    const [mantissa, exponentRaw] = text.split('e');
+    const exponent = Number(exponentRaw);
+    const dotIndex = mantissa.indexOf('.');
+    const mantissaDecimals = dotIndex >= 0 ? (mantissa.length - dotIndex - 1) : 0;
+    return Math.max(0, mantissaDecimals - exponent);
+}
+
+function parseOptionalPrecision(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < 0) return null;
+    return numeric;
+}
+
+function precisionToQuantum(precision) {
+    const p = parseOptionalPrecision(precision);
+    if (p === null) return null;
+    const quantum = Math.pow(10, -p);
+    return quantum > 0 ? quantum : Number.EPSILON;
+}
+
+function observedQuantum(a, b) {
+    const maxDecimals = Math.max(getDecimalPlaces(a), getDecimalPlaces(b));
+    if (maxDecimals <= 0) return Number.EPSILON;
+    const quantum = Math.pow(10, -maxDecimals);
+    return quantum > 0 ? quantum : Number.EPSILON;
+}
+
+function resolveOrderSizePrecision(orderType, precisions = {}) {
+    if (!precisions || typeof precisions !== 'object') return null;
+
+    if (orderType === ORDER_TYPES.BUY) return parseOptionalPrecision(precisions.buyPrecision);
+    if (orderType === ORDER_TYPES.SELL) return parseOptionalPrecision(precisions.sellPrecision);
+
+    return parseOptionalPrecision(precisions.defaultPrecision);
+}
+
+function resolvePriceTolerance(precisions = {}, order, referenceOrder) {
+    const leftPrice = Number(order?.price);
+    const rightPrice = Number(referenceOrder?.price);
+    const relativeToleranceRatio = Number(precisions.priceRelativeTolerance);
+    if (!Number.isFinite(relativeToleranceRatio) || relativeToleranceRatio < 0) return 0;
+
+    const scale = Math.max(Math.abs(leftPrice || 0), Math.abs(rightPrice || 0));
+    return scale * relativeToleranceRatio;
+}
+
+function nearlyEqualAbsolute(a, b, tolerance) {
+    const left = Number(a);
+    const right = Number(b);
+
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+        return left === right;
+    }
+
+    if (left === right) return true;
+
+    const tol = Number.isFinite(Number(tolerance)) && Number(tolerance) > 0
+        ? Number(tolerance)
+        : Number.EPSILON;
+
+    return Math.abs(left - right) <= tol;
+}
+
+function nearlyEqualRelative(a, b, options = {}) {
+    const left = Number(a);
+    const right = Number(b);
+
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+        return left === right;
+    }
+
+    if (left === right) return true;
+
+    const diff = Math.abs(left - right);
+    const scale = Math.max(Math.abs(left), Math.abs(right));
+    const configuredPrecisionQuantum = precisionToQuantum(options.precision);
+    const minimumTolerance = configuredPrecisionQuantum || observedQuantum(left, right);
+    const tolerance = Math.max(scale * ORDER_RELATIVE_TOLERANCE, minimumTolerance);
+    return diff <= tolerance;
+}
 
 /**
  * Extract order size with fallback
@@ -810,17 +905,23 @@ function getOrderSize(order) {
  * Compare two orders for equality
  * @param {Object} a - First order
  * @param {Object} b - Second order
+ * @param {Object} [options={}] - Comparison options
+ * @param {Object} [options.precisions] - Optional precision hints {buyPrecision, sellPrecision, defaultPrecision, priceRelativeTolerance}
  * @returns {boolean} - True if orders are equivalent
  */
-function ordersEqual(a, b) {
+function ordersEqual(a, b, options = {}) {
     if (!a || !b) return false;
     if (a === b) return true;
+
+    const precisionHints = options.precisions || {};
+    const sizePrecision = resolveOrderSizePrecision(a.type, precisionHints);
+    const priceTolerance = resolvePriceTolerance(precisionHints, a, b);
 
     return a.id === b.id &&
            a.type === b.type &&
            a.state === b.state &&
-           Math.abs(a.price - b.price) < EPSILON &&
-           Math.abs(getOrderSize(a) - getOrderSize(b)) < EPSILON &&
+           nearlyEqualAbsolute(a.price, b.price, priceTolerance) &&
+           nearlyEqualRelative(getOrderSize(a), getOrderSize(b), { precision: sizePrecision }) &&
            a.orderId === b.orderId &&
            a.gridIndex === b.gridIndex;
 }
@@ -829,9 +930,10 @@ function ordersEqual(a, b) {
  * Build delta actions between master and working grid
  * @param {Map} masterGrid - Source of truth grid
  * @param {Map} workingGrid - Modified working copy
+ * @param {Object} [options={}] - Delta options forwarded to ordersEqual
  * @returns {Array} - Array of action objects
  */
-function buildDelta(masterGrid, workingGrid) {
+function buildDelta(masterGrid, workingGrid, options = {}) {
     const actions = [];
 
     for (const [id, workingOrder] of workingGrid.entries()) {
@@ -843,7 +945,7 @@ function buildDelta(masterGrid, workingGrid) {
                 id,
                 order: workingOrder
             });
-        } else if (!ordersEqual(workingOrder, masterOrder)) {
+        } else if (!ordersEqual(workingOrder, masterOrder, options)) {
             actions.push({
                 type: 'update',
                 id,

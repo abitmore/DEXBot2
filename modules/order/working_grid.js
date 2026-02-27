@@ -148,10 +148,11 @@ class WorkingGrid {
     /**
      * Build delta actions from master grid
      * @param {Map} masterGrid - Original master grid
+     * @param {Object} [options={}] - Delta options forwarded to ordersEqual
      * @returns {Array} - Array of action objects
      */
-    buildDelta(masterGrid) {
-        return buildDelta(masterGrid, this.grid);
+    buildDelta(masterGrid, options = {}) {
+        return buildDelta(masterGrid, this.grid, options);
     }
 
     /**

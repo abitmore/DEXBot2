@@ -618,14 +618,24 @@ async function applyGridDivergenceCorrections(manager, accountOrders, botKey, up
             let result = null;
 
             if (cowResult.localOnly) {
-                await manager._commitWorkingGrid(cowResult.workingGrid, cowResult.workingIndexes, cowResult.workingBoundary);
-                if (typeof manager.persistGrid === 'function') {
-                    await manager.persistGrid();
+                const committed = await manager._commitWorkingGrid(
+                    cowResult.workingGrid,
+                    cowResult.workingIndexes,
+                    cowResult.workingBoundary
+                );
+
+                if (committed) {
+                    if (typeof manager.persistGrid === 'function') {
+                        await manager.persistGrid();
+                    } else {
+                        await persistGridSnapshot(manager, accountOrders, botKey);
+                    }
+                    result = { executed: true, localOnly: true };
+                    manager.logger.log(`[DIVERGENCE-COW] Applied local-only sizing updates (no blockchain ops)`, 'info');
                 } else {
-                    await persistGridSnapshot(manager, accountOrders, botKey);
+                    result = { executed: false, localOnly: true, commitSkipped: true };
+                    manager.logger.log(`[DIVERGENCE-COW] Skipped local-only commit (working grid not committed)`, 'warn');
                 }
-                result = { executed: true, localOnly: true };
-                manager.logger.log(`[DIVERGENCE-COW] Applied local-only sizing updates (no blockchain ops)`, 'info');
             } else {
                 result = await updateOrdersOnChainBatchFn(cowResult);
             }

@@ -302,16 +302,16 @@ let GRID_LIMITS = {
         RMS_PERCENTAGE: 14.3
     },
 
-    // SATOSHI_CONVERSION_FACTOR: Multiplier to convert decimal amounts to integer satoshis.
-    // Used for fee event deduplication to avoid float precision issues.
-    // Formula: decimalAmount × SATOSHI_CONVERSION_FACTOR = integerSatoshis
-    // Default: 100,000,000 (10^8) for 8 decimal places (standard blockchain precision).
-    SATOSHI_CONVERSION_FACTOR: 1e8,
-
     // STATE_CHANGE_HISTORY_MAX: Maximum number of state changes to retain in circular buffer.
     // Used by StateChangeLogger for tracking recent grid/fund mutations.
     // Default: 100 entries (balances memory usage with debugging utility).
-    STATE_CHANGE_HISTORY_MAX: 100
+    STATE_CHANGE_HISTORY_MAX: 100,
+
+    // RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: Relative threshold for in-memory
+    // order equality checks in COW delta planning.
+    // Example: 0.1 means two values are considered equal when diff < 0.1% of magnitude.
+    // Note: Final blockchain update filtering still happens with integer precision checks.
+    RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT: 0.1
 };
 
 // Increment percentage bounds for grid configuration

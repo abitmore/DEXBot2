@@ -513,9 +513,13 @@ Run these tests before promotion:
 - `PIPELINE_TIMING.RECOVERY_DECAY_FALLBACK_MS` - Recovery decay fallback (180 seconds)
 
 ### Grid & Timing
-- `GRID_LIMITS.SATOSHI_CONVERSION_FACTOR` - Precision conversion factor (1e8)
+- `GRID_LIMITS.RELATIVE_ORDER_UPDATE_THRESHOLD_PERCENT` - Relative threshold (%) for in-memory COW order equality checks
 - `GRID_LIMITS.STATE_CHANGE_HISTORY_MAX` - Max state change history entries (100)
 - `TIMING.LOCK_REFRESH_MIN_MS` - Minimum lock refresh interval (250ms)
+
+### Fee Dedup Precision
+- Fee-event dedupe keys now quantize size with `floatToBlockchainInt(size, orderPrecision)` (derived from BUY/SELL side precision)
+- Fixed `1e8` satoshi conversion is no longer used
 
 ## Safety Guardrails
 

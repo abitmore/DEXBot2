@@ -106,6 +106,7 @@ const {
     calculateRotationOrderSizes,
     calculateAvailableFundsValue,
     calculateGridSideDivergenceMetric,
+    getPrecisionSlack,
     getMinAbsoluteOrderSize,
     getSingleDustThreshold,
     calculateSpreadFromOrders,
@@ -1492,7 +1493,6 @@ class Grid {
 
         const ordersToPlace = [];
         const ordersToUpdate = [];
-        const EPSILON = 1e-10;
         const railType = preferredSide;
         const sideName = railType === ORDER_TYPES.BUY ? 'buy' : 'sell';
         const configuredMissingSlots = Number(manager.outOfSpread || 0);
@@ -1542,6 +1542,7 @@ class Grid {
         if (!ctx || ctx.budget <= 0 || syntheticSideSlots.length === 0) {
             return { ordersToPlace: [], ordersToUpdate: [] };
         }
+        const precisionEpsilon = getPrecisionSlack(ctx.precision, 1);
 
         const idealSizes = allocateFundsByWeights(
             ctx.budget,
@@ -1569,7 +1570,7 @@ class Grid {
         if (edgePartial && edgePartial.id) {
             const ideal = Number(idealById.get(edgePartial.id) || 0);
             const current = Number(edgePartial.size || 0);
-            if (ideal > current + EPSILON) {
+            if (ideal > current + precisionEpsilon) {
                 prioritizedTargets.push({
                     kind: 'partial-topup',
                     order: edgePartial,
@@ -1582,7 +1583,7 @@ class Grid {
 
         for (const slot of spreadCandidates) {
             const ideal = Number(idealById.get(slot.id) || 0);
-            if (ideal > EPSILON) {
+            if (ideal > precisionEpsilon) {
                 prioritizedTargets.push({
                     kind: 'create',
                     order: slot,
@@ -1601,7 +1602,7 @@ class Grid {
         let recoveredBudget = 0;
         const redistributionUpdates = [];
 
-        if (totalNeeded > availableFund + EPSILON) {
+        if (totalNeeded > availableFund + precisionEpsilon) {
             let shortfall = totalNeeded - availableFund;
 
             const donors = sideSlots
@@ -1610,17 +1611,17 @@ class Grid {
                 .sort((a, b) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
 
             for (const donor of donors) {
-                if (shortfall <= EPSILON) break;
+                if (shortfall <= precisionEpsilon) break;
 
                 const donorCurrent = Number(donor.size || 0);
                 const donorIdeal = Number(idealById.get(donor.id) || 0);
                 const donorFloor = Math.max(minAbsoluteSize, donorIdeal);
                 const donorReducible = Math.max(0, donorCurrent - donorFloor);
-                if (donorReducible <= EPSILON) continue;
+                if (donorReducible <= precisionEpsilon) continue;
 
                 const reduction = Math.min(donorReducible, shortfall);
                 const donorNext = donorCurrent - reduction;
-                if (donorNext <= EPSILON) continue;
+                if (donorNext <= precisionEpsilon) continue;
                 if (!isOrderHealthy(donorNext, railType, manager.assets, donorIdeal || donorNext)) continue;
 
                 redistributionUpdates.push({ partialOrder: { ...donor }, newSize: donorNext });
@@ -1628,7 +1629,7 @@ class Grid {
                 shortfall -= reduction;
             }
 
-            if (recoveredBudget > EPSILON) {
+            if (recoveredBudget > precisionEpsilon) {
                 manager.logger?.log?.(
                     `[SPREAD-CORRECTION] Recovered ${Format.formatSizeByOrderType(recoveredBudget, railType, manager.assets)} on ${sideName} via redistribution`,
                     'info'
@@ -1639,12 +1640,12 @@ class Grid {
         let remainingBudget = availableFund + recoveredBudget;
 
         for (const target of prioritizedTargets) {
-            if (remainingBudget <= EPSILON) break;
+            if (remainingBudget <= precisionEpsilon) break;
 
             if (target.kind === 'partial-topup') {
                 const topUp = Math.min(target.needed, remainingBudget);
                 const newSize = target.current + topUp;
-                if (newSize > target.current + EPSILON && isOrderHealthy(newSize, railType, manager.assets, target.ideal)) {
+                if (newSize > target.current + precisionEpsilon && isOrderHealthy(newSize, railType, manager.assets, target.ideal)) {
                     ordersToUpdate.push({ partialOrder: { ...target.order }, newSize });
                     remainingBudget -= topUp;
                 }
@@ -1652,7 +1653,7 @@ class Grid {
             }
 
             const createSize = Math.min(target.ideal, remainingBudget);
-            if (createSize <= EPSILON) continue;
+            if (createSize <= precisionEpsilon) continue;
             if (!isOrderHealthy(createSize, railType, manager.assets, target.ideal)) continue;
 
             ordersToPlace.push({

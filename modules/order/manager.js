@@ -1297,6 +1297,39 @@ class OrderManager {
         });
     }
 
+    _getCowComparePrecisions() {
+        const buyPrecisionRaw = this.assets?.assetB?.precision;
+        const sellPrecisionRaw = this.assets?.assetA?.precision;
+        const incrementPercentRaw = this.config?.incrementPercent;
+        const buyPrecision = Number(buyPrecisionRaw);
+        const sellPrecision = Number(sellPrecisionRaw);
+        const incrementPercent = Number(incrementPercentRaw);
+
+        if (!Number.isFinite(buyPrecision) || !Number.isFinite(sellPrecision)) {
+            throw new Error(
+                `CRITICAL: Missing asset precision for COW compare (buy=${buyPrecisionRaw}, sell=${sellPrecisionRaw}). ` +
+                `Refusing commit-time delta comparison.`
+            );
+        }
+
+        if (!Number.isFinite(incrementPercent) || incrementPercent <= 0) {
+            throw new Error(
+                `CRITICAL: Missing/invalid incrementPercent for COW compare (${incrementPercentRaw}). ` +
+                `Refusing commit-time delta comparison.`
+            );
+        }
+
+        // Relative price threshold = 1/10 of one configured increment step.
+        // Example: incrementPercent=0.5 -> relative tolerance ratio=0.0005 (0.05%).
+        const priceRelativeTolerance = incrementPercent / 1000;
+
+        return {
+            buyPrecision,
+            sellPrecision,
+            priceRelativeTolerance
+        };
+    }
+
     _buildStateUpdates(actions, masterGrid) {
         return buildStateUpdates(actions, masterGrid);
     }
@@ -1309,23 +1342,35 @@ class OrderManager {
         const { skipRecalc } = this._normalizeCommitOptions(options);
         const startTime = Date.now();
         const stats = workingGrid.getMemoryStats();
+        let committed = false;
+        let comparePrecisions;
+
+        try {
+            comparePrecisions = this._getCowComparePrecisions();
+        } catch (precisionErr) {
+            this.logger.log(`[COW] ${precisionErr.message}`, 'error');
+            this._clearWorkingGridRef();
+            return false;
+        }
 
         const preCommitGuard = evaluateCommit(workingGrid, {
             hasLock: false,
             currentVersion: this._gridVersion,
-            masterGrid: this.orders
+            masterGrid: this.orders,
+            comparePrecisions
         });
         if (!preCommitGuard.canCommit) {
             this.logger.log(`[COW] ${preCommitGuard.reason}`, preCommitGuard.level || 'warn');
             this._clearWorkingGridRef();
-            return;
+            return false;
         }
 
         await this._gridLock.acquire(async () => {
             const lockCommitGuard = evaluateCommit(workingGrid, {
                 hasLock: true,
                 currentVersion: this._gridVersion,
-                masterGrid: this.orders
+                masterGrid: this.orders,
+                comparePrecisions
             });
             if (!lockCommitGuard.canCommit) {
                 this.logger.log(`[COW] ${lockCommitGuard.reason}`, lockCommitGuard.level || 'warn');
@@ -1350,6 +1395,7 @@ class OrderManager {
             this.orders = Object.freeze(finalMap);
             this.boundaryIdx = workingBoundary;
             this._gridVersion++;
+            committed = true;
 
             const freshIndexes = workingGrid.getIndexes();
             this._ordersByState = {
@@ -1363,6 +1409,11 @@ class OrderManager {
                 [ORDER_TYPES.SPREAD]: freshIndexes[ORDER_TYPES.SPREAD] || new Set()
             };
         });
+
+        if (!committed) {
+            this._clearWorkingGridRef();
+            return false;
+        }
 
         try {
             if (!skipRecalc) {
@@ -1382,6 +1433,8 @@ class OrderManager {
         } finally {
             this._clearWorkingGridRef();
         }
+
+        return true;
     }
 
     validateGridStateForPersistence() {
@@ -1426,10 +1479,22 @@ class OrderManager {
     }
 
     _evaluateWorkingGridCommit(workingGrid, hasLock = false) {
+        let comparePrecisions;
+        try {
+            comparePrecisions = this._getCowComparePrecisions();
+        } catch (precisionErr) {
+            return {
+                canCommit: false,
+                reason: precisionErr.message,
+                level: 'error'
+            };
+        }
+
         return evaluateCommit(workingGrid, {
             hasLock,
             currentVersion: this._gridVersion,
-            masterGrid: this.orders
+            masterGrid: this.orders,
+            comparePrecisions
         });
     }
 

@@ -56,6 +56,7 @@ const {
     hasOnChainId,
     isOrderPlaced
 } = require("./utils/order");
+const { floatToBlockchainInt, getPrecisionByOrderType } = require('./utils/math');
 const Grid = require('./grid');
 
 class StrategyEngine {
@@ -105,10 +106,18 @@ class StrategyEngine {
     }
 
     _buildFeeEventId(filledOrder) {
-        // Use integer satoshi representation for size to avoid float imprecision
-        // (e.g. 0.1 + 0.2 = 0.30000000000000004 vs 0.3 producing different keys).
-        const { SATOSHI_CONVERSION_FACTOR } = require('../constants').GRID_LIMITS;
-        const sizeInt = Math.round(Number(filledOrder.size || 0) * SATOSHI_CONVERSION_FACTOR);
+        // Use integer blockchain representation for size to avoid float imprecision.
+        // Precision is derived from order side and manager assets.
+        let precision = 8;
+        try {
+            if (this.manager?.assets && filledOrder?.type) {
+                precision = getPrecisionByOrderType(this.manager.assets, filledOrder.type);
+            }
+        } catch (_) {
+            precision = 8;
+        }
+
+        const sizeInt = floatToBlockchainInt(Number(filledOrder?.size || 0), precision);
         return filledOrder.historyId || [
             filledOrder.orderId || filledOrder.id,
             filledOrder.blockNum || 'na',

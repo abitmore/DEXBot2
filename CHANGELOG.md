@@ -433,7 +433,7 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
   - Fixed `rawOnChain` cleared to undefined in sync_engine.js:551
   - Fixed `syncFromMaster` version mismatch in working_grid.js
   - Removed 208 lines of dead duplicate methods in accounting.js
-  - Fixed float precision in `_buildFeeEventId` using satoshi-based keys
+- Fixed float precision in `_buildFeeEventId` using blockchain-integer dedupe keys
   - Fixed recovery `attemptCount` never decaying after max retries
 
 **Refactoring:**
@@ -458,7 +458,7 @@ This patch introduces a major architectural refactoring replacing the snapshot/r
 
 **Magic Number Elimination** (`modules/constants.js`) - commit 55ab7d1
 - Added `TIMING.LOCK_REFRESH_MIN_MS: 250`
-- Added `GRID_LIMITS.SATOSHI_CONVERSION_FACTOR: 1e8`
+- Added `GRID_LIMITS.SATOSHI_CONVERSION_FACTOR: 1e8` (later removed; fee dedupe now uses per-asset precision via `floatToBlockchainInt`)
 - Added `GRID_LIMITS.STATE_CHANGE_HISTORY_MAX: 100`
 - Added `COW_PERFORMANCE.WORKING_GRID_BYTES_PER_ORDER: 500`
 - Added `PIPELINE_TIMING.CACHE_EVICTION_RETENTION_RATIO: 0.75`
