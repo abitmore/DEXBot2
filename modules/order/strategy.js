@@ -294,7 +294,7 @@ class StrategyEngine {
         const updatedSlots = assignGridRoles(allSlots, newBoundaryIdx, gapSlots, ORDER_TYPES, ORDER_STATES, { assignOnChain: true });
 
         this.manager.logger.log(`[DEBUG] calculateTargetGrid: boundary=${newBoundaryIdx}, gap=${gapSlots}, allSlots=${updatedSlots.length}`, 'debug');
-        updatedSlots.forEach((s, i) => this.manager.logger.log(`  Slot ${i}: id=${s.id}, price=${s.price}, type=${s.type}`, 'debug'));
+        updatedSlots.forEach((s) => this.manager.logger.log(`  Slot ${s.id}: price=${s.price}, size=${s.size ?? 'n/a'}, type=${s.type}`, 'debug'));
 
         // 3. Calculate Ideal Sizes (Budgeting)
         const totalTarget = Math.max(0, config.activeOrders?.buy || 1) + Math.max(0, config.activeOrders?.sell || 1);
