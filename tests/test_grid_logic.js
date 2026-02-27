@@ -11,6 +11,7 @@ const Grid = require('../modules/order/grid');
 const { ORDER_TYPES, ORDER_STATES, DEFAULT_CONFIG, GRID_LIMITS } = require('../modules/constants');
 const { OrderManager } = require('../modules/order/manager');
 const { allocateFundsByWeights, getSingleDustThreshold } = require('../modules/order/utils/math');
+const { shouldFlagOutOfSpread } = require('../modules/order/utils/order');
 
 async function runTests() {
     console.log('Running Grid Logic Tests...');
@@ -222,6 +223,41 @@ async function runTests() {
         mockManager.accountTotals.buyFree = 2;
         const below = Grid.checkAndUpdateGridIfNeeded(mockManager);
         assert.strictEqual(below.buyUpdated, false, 'Available funds below threshold (<2%) should not trigger update');
+    }
+
+    console.log(' - Testing shouldFlagOutOfSpread with toleranceSteps = 0.5...');
+    {
+        // Test case: 1.6% target spread, 0.4% increment, toleranceSteps = 0.5
+        // Expected: in spread up to ~1.8%, out of spread above 1.8%
+        const targetSpread = 1.6;
+        const increment = 0.4;
+        const toleranceSteps = 0.5;
+        const buyCount = 5;
+        const sellCount = 5;
+
+        // At exactly target spread: should be in spread
+        let result = shouldFlagOutOfSpread(1.6, targetSpread, toleranceSteps, buyCount, sellCount, increment);
+        assert.strictEqual(result, 0, 'At target spread (1.6%), should be in spread');
+
+        // At limit spread (target + 0.5*increment = 1.6 + 0.2 = 1.8): should be in spread
+        result = shouldFlagOutOfSpread(1.8, targetSpread, toleranceSteps, buyCount, sellCount, increment);
+        assert.strictEqual(result, 0, 'At limit spread (1.8%), should be in spread');
+
+        // Slightly above limit: should be out of spread with 1 slot
+        result = shouldFlagOutOfSpread(1.9, targetSpread, toleranceSteps, buyCount, sellCount, increment);
+        assert.strictEqual(result, 1, 'Above limit (1.9%), should flag 1 slot excess');
+
+        // Further above limit: should still be 1 slot (capped by Math.max(1, ceil))
+        result = shouldFlagOutOfSpread(2.0, targetSpread, toleranceSteps, buyCount, sellCount, increment);
+        assert.strictEqual(result, 1, 'At 2.0%, should still flag 1 slot (capped)');
+
+        // Much further above: should be 2 slots
+        result = shouldFlagOutOfSpread(2.5, targetSpread, toleranceSteps, buyCount, sellCount, increment);
+        assert.strictEqual(result, 2, 'At 2.5%, should flag 2 slots');
+
+        // Edge case: empty side should return 0 (no correction possible)
+        result = shouldFlagOutOfSpread(2.0, targetSpread, toleranceSteps, 0, 5, increment);
+        assert.strictEqual(result, 0, 'With empty buy side, should return 0');
     }
 
     console.log('✓ Grid logic tests passed!');

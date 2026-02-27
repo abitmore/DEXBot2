@@ -1177,8 +1177,8 @@ class Grid {
             // Keep this fixed: doubled-side flags are fill/replacement mechanics only.
             const nominalSpread = manager.config.targetSpreadPercent || 2.0;
 
-            // Fixed tolerance only; do not widen tolerance from doubled-side flags.
-            const toleranceSteps = 1;
+            // Fixed tolerance: 0.5 steps = half increment (tighter spread check).
+            const toleranceSteps = 0.5;
 
             const buyCount = manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.ACTIVE)
                 .concat(manager.getOrdersByTypeAndState(ORDER_TYPES.BUY, ORDER_STATES.PARTIAL))
@@ -1192,7 +1192,7 @@ class Grid {
             manager.outOfSpread = shouldFlagOutOfSpread(currentSpread, nominalSpread, toleranceSteps, buyCount, sellCount, manager.config.incrementPercent);
             if (manager.outOfSpread === 0) return false;
 
-            // Limit spread = nominal + one fixed increment tolerance.
+            // Limit spread = nominal + half increment tolerance (0.5 steps).
             const limitSpread = nominalSpread + (manager.config.incrementPercent * toleranceSteps);
             manager.logger?.log?.(`Spread too wide (${Format.formatPercent(currentSpread)} > ${Format.formatPercent(limitSpread)}), correcting with ${manager.outOfSpread} extra slot(s)...`, 'warn');
 
