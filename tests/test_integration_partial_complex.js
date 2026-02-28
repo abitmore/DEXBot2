@@ -272,8 +272,18 @@ async function testStartupDualDustTrigger() {
         privateKey: 'test-key',
         chainOrders: {
             updateOrder: async () => {},
+            buildUpdateOrderOp: async () => ({
+                op: {
+                    op_name: 'limit_order_update',
+                    op_data: {
+                        fee: { amount: 0, asset_id: '1.3.0' }
+                    }
+                }
+            }),
+            executeBatch: async () => ({ success: true, operation_results: [] }),
             cancelOrder: async () => {},
-            createOrder: async () => [[{ trx: { operation_results: [[null, 'test-order-id']] } }]]
+            createOrder: async () => [[{ trx: { operation_results: [[null, 'test-order-id']] } }]],
+            readOpenOrders: async () => chainDustOrders,
         },
         chainOpenOrders: chainDustOrders
     });

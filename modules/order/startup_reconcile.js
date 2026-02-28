@@ -31,17 +31,19 @@
  *      Decides whether to resume persisted grid, create new grid, or abort
  *      Returns { action, reason } where action is 'resume', 'create_new', or 'abort'
  *
- * INTERNAL HELPERS (10 functions):
+ * INTERNAL HELPERS:
  *   4. _countActiveOnGrid(manager, type) - Count active/partial orders by type
  *   5. _pickVirtualSlotsToActivate(manager, type, count) - Pick virtual slots for activation
  *   6. _isGridEdgeFullyActive(manager, orderType, updateCount) - Check if grid edge is fully active on one side
- *   7. _updateChainOrderToGrid({...}) - Update a chain order's grid slot position (async)
- *   8. _findLargestOrder(unmatchedOrders, updateCount) - Find the largest unmatched chain order
- *   9. _cancelLargestOrder({...}) - Cancel the largest unmatched chain order (async)
- *   10. _createOrderFromGrid({...}) - Create a new on-chain order from a grid slot (async)
- *   11. _cancelChainOrder({...}) - Cancel a specific on-chain order (async)
- *   12. _recoverStartupSyncFailure({...}) - Handle sync failure recovery at startup (async)
- *   13. _reconcileStartupSide({...}) - Reconcile one side (buy/sell) against chain at startup (async)
+ *   7. _findLargestOrder(unmatchedOrders, updateCount) - Find the largest unmatched chain order
+ *   8. _cancelLargestOrder({...}) - Cancel the largest unmatched chain order (async)
+ *   9. _createOrderFromGrid({...}) - Create a new on-chain order from a grid slot (async)
+ *   10. _cancelChainOrder({...}) - Cancel a specific on-chain order (async)
+ *   11. _recoverStartupSyncFailure({...}) - Handle sync failure recovery at startup (async)
+ *   12. _executeStartupUpdateBatch({...}) - Execute startup updates in one batch (async)
+ *   13. _executeStartupSingleUpdate({...}) - Execute one startup update (async)
+ *   14. _executeStartupSequentialUpdateFallback({...}) - Sequential backup after batch retries (async)
+ *   15. _reconcileStartupSide({...}) - Reconcile one side (buy/sell) against chain at startup (async)
  *
  * ===============================================================================
  *
@@ -168,78 +170,6 @@ function _isGridEdgeFullyActive(manager, orderType, updateCount) {
     const allEdgeActive = edgeOrders.every(o => isOrderPlaced(o));
 
     return allEdgeActive;
-}
-
-/**
- * Update an existing chain order to match a grid slot.
- * @param {Object} params - Update parameters.
- * @param {Object} params.chainOrders - Chain orders module.
- * @param {string} params.account - Account name.
- * @param {string} params.privateKey - Private key.
- * @param {Object} params.manager - OrderManager instance.
- * @param {string} params.chainOrderId - ID of the chain order to update.
- * @param {Object} params.gridOrder - Grid order object.
- * @param {boolean} params.dryRun - Whether to simulate.
- * @returns {Promise<void>}
- * @private
- */
-async function _updateChainOrderToGrid({ chainOrders, account, privateKey, manager, chainOrderId, gridOrder, dryRun, chainOrderObj }) {
-    if (dryRun) return;
-
-    // ATOMIC RE-VERIFICATION: Ensure slot hasn't been matched or changed since reconciliation started
-    const currentSlot = manager.orders.get(gridOrder.id);
-    if (!currentSlot || (currentSlot.orderId && currentSlot.orderId !== chainOrderId)) {
-        manager.logger?.log?.(`[_updateChainOrderToGrid] SKIP: Slot ${gridOrder.id} already updated/matched (expected ${chainOrderId}, got ${currentSlot?.orderId})`, 'warn');
-        return;
-    }
-
-    // Recovery sync may have already matched this chain order to this slot.
-    // Skip to avoid double-crediting chainFree and redundant on-chain updates.
-    if (currentSlot.orderId === chainOrderId) {
-        manager.logger?.log?.(`[_updateChainOrderToGrid] SKIP: Slot ${gridOrder.id} already mapped to ${chainOrderId}`, 'debug');
-        return;
-    }
-
-    // CRITICAL ACCOUNTING ALIGNMENT:
-    // This order already exists on chain. To track its funds correctly:
-    // 1. Add its CURRENT size to our optimistic Free balance (bring external funds into tracking)
-    // 2. synchronizeWithChain will then deduct the NEW grid size from Free
-    // Result: Free balance is adjusted by the delta (Released funds or extra Commitment)
-    if (chainOrderObj && manager.accountant) {
-        const parsed = parseChainOrder(chainOrderObj, manager.assets);
-        if (parsed && parsed.size > 0) {
-            await manager.accountant.addToChainFree(gridOrder.type, parsed.size, 'startup-align');
-        }
-    }
-
-    const { amountToSell, minToReceive } = buildCreateOrderArgs(gridOrder, manager.assets.assetA, manager.assets.assetB);
-
-    const logger = manager && manager.logger;
-    logger?.log?.(
-        `[_updateChainOrderToGrid] BEFORE updateOrder: chainOrderId=${chainOrderId}, gridOrder.type=${gridOrder.type}, ` +
-        `gridOrder.size=${Format.formatSizeByOrderType(gridOrder.size, gridOrder.type, manager.assets)}, gridOrder.price=${Format.formatPrice(gridOrder.price)}, ` +
-        `amountToSell=${amountToSell}, minToReceive=${minToReceive}`,
-        'info'
-    );
-
-    await chainOrders.updateOrder(account, privateKey, chainOrderId, {
-        newPrice: gridOrder.price,
-        amountToSell,
-        minToReceive,
-        orderType: gridOrder.type,
-    });
-
-    const btsFeeData = getAssetFees('BTS');
-
-    // skipAccounting: false ensures the NEW size is deducted from our (now increased) Free balance
-    // CRITICAL: Use _applySync (lock-free) since caller holds _gridLock
-    await manager._applySync({
-        gridOrderId: gridOrder.id,
-        chainOrderId,
-        isPartialPlacement: false,
-        fee: btsFeeData.updateFee,
-        skipAccounting: false
-    }, 'createOrder');
 }
 
 /**
@@ -447,9 +377,227 @@ async function _recoverStartupSyncFailure({ chainOrders, manager, account, logge
             source,
             gridLockAlreadyHeld: true
         });
+        return freshChainOrders;
     } catch (syncErr) {
         logger?.log?.(`Startup: Recovery sync failed: ${syncErr.message}`, 'error');
+        return null;
     }
+}
+
+function _refreshStartupUpdatePlans(updatePlans, chainOpenOrders) {
+    if (!Array.isArray(updatePlans) || updatePlans.length === 0) return [];
+    const chainById = new Map(
+        (Array.isArray(chainOpenOrders) ? chainOpenOrders : [])
+            .filter(o => o && o.id)
+            .map(o => [o.id, o])
+    );
+
+    const refreshed = [];
+    for (const plan of updatePlans) {
+        if (!plan?.chainOrderId || !plan?.gridOrder?.id) continue;
+        const freshChainOrder = chainById.get(plan.chainOrderId);
+        if (!freshChainOrder) continue;
+        refreshed.push({
+            ...plan,
+            chainOrderObj: freshChainOrder,
+        });
+    }
+    return refreshed;
+}
+
+function _prepareStartupUpdatePlan(plan, manager, logger) {
+    const chainOrderId = plan?.chainOrderId;
+    const gridOrder = plan?.gridOrder;
+    if (!chainOrderId || !gridOrder?.id) return null;
+
+    const currentSlot = manager.orders.get(gridOrder.id);
+    if (!currentSlot || (currentSlot.orderId && currentSlot.orderId !== chainOrderId)) {
+        logger?.log?.(`Startup: Skip update ${chainOrderId} -> ${gridOrder.id}; slot already mapped (${currentSlot?.orderId || 'none'})`, 'warn');
+        return null;
+    }
+    if (currentSlot.orderId === chainOrderId) {
+        logger?.log?.(`Startup: Skip update ${chainOrderId} -> ${gridOrder.id}; slot already matched`, 'debug');
+        return null;
+    }
+
+    const { amountToSell, minToReceive } = buildCreateOrderArgs(
+        gridOrder,
+        manager.assets.assetA,
+        manager.assets.assetB
+    );
+
+    return {
+        plan,
+        chainOrderId,
+        gridOrder,
+        parsedChain: parseChainOrder(plan.chainOrderObj, manager.assets),
+        updateParams: {
+            newPrice: gridOrder.price,
+            amountToSell,
+            minToReceive,
+            orderType: gridOrder.type,
+        }
+    };
+}
+
+async function _finalizeStartupUpdate({ manager, preparedUpdate }) {
+    const { plan, parsedChain } = preparedUpdate;
+    if (parsedChain && parsedChain.size > 0 && manager.accountant) {
+        await manager.accountant.addToChainFree(plan.gridOrder.type, parsedChain.size, 'startup-align');
+    }
+
+    const btsFeeData = getAssetFees('BTS');
+    await manager._applySync({
+        gridOrderId: plan.gridOrder.id,
+        chainOrderId: plan.chainOrderId,
+        isPartialPlacement: false,
+        fee: btsFeeData.updateFee,
+        skipAccounting: false
+    }, 'createOrder');
+}
+
+async function _executeStartupUpdateBatch({
+    updatePlans,
+    chainOrders,
+    account,
+    privateKey,
+    manager,
+    dryRun,
+}) {
+    if (!Array.isArray(updatePlans) || updatePlans.length === 0 || dryRun) {
+        return { executed: false, prepared: 0, skipped: true };
+    }
+
+    if (typeof chainOrders?.buildUpdateOrderOp !== 'function' || typeof chainOrders?.executeBatch !== 'function') {
+        throw new Error('chainOrders does not support batch update operations');
+    }
+
+    const logger = manager?.logger;
+    const prepared = [];
+
+    for (const plan of updatePlans) {
+        const preparedPlan = _prepareStartupUpdatePlan(plan, manager, logger);
+        if (!preparedPlan) continue;
+
+        const buildResult = await chainOrders.buildUpdateOrderOp(
+            account,
+            preparedPlan.chainOrderId,
+            preparedPlan.updateParams,
+            plan.chainOrderObj || null
+        );
+
+        if (!buildResult) {
+            logger?.log?.(`Startup: Skip update ${preparedPlan.chainOrderId} -> ${preparedPlan.gridOrder.id}; no blockchain delta`, 'debug');
+            continue;
+        }
+
+        prepared.push({
+            ...preparedPlan,
+            op: buildResult.op,
+        });
+    }
+
+    if (prepared.length === 0) {
+        return { executed: false, prepared: 0, skipped: true };
+    }
+
+    logger?.log?.(`Startup: Broadcasting update batch (${prepared.length} op${prepared.length > 1 ? 's' : ''})`, 'info');
+    await chainOrders.executeBatch(account, privateKey, prepared.map(p => p.op));
+
+    for (const entry of prepared) {
+        await _finalizeStartupUpdate({ manager, preparedUpdate: entry });
+    }
+
+    return { executed: true, prepared: prepared.length, skipped: false };
+}
+
+async function _executeStartupSingleUpdate({
+    plan,
+    chainOrders,
+    account,
+    privateKey,
+    manager,
+    dryRun,
+}) {
+    if (dryRun) return { executed: false, skipped: true };
+    if (typeof chainOrders?.updateOrder !== 'function') {
+        throw new Error('chainOrders.updateOrder is required for sequential update fallback');
+    }
+
+    const logger = manager?.logger;
+    const prepared = _prepareStartupUpdatePlan(plan, manager, logger);
+    if (!prepared) return { executed: false, skipped: true };
+
+    const result = await chainOrders.updateOrder(
+        account,
+        privateKey,
+        prepared.chainOrderId,
+        prepared.updateParams
+    );
+
+    if (!result) {
+        logger?.log?.(`Startup: Skip update ${prepared.chainOrderId} -> ${prepared.gridOrder.id}; no blockchain delta`, 'debug');
+        return { executed: false, skipped: true };
+    }
+
+    await _finalizeStartupUpdate({ manager, preparedUpdate: prepared });
+    return { executed: true, skipped: false };
+}
+
+async function _executeStartupSequentialUpdateFallback({
+    updatePlans,
+    chainOrders,
+    account,
+    privateKey,
+    manager,
+    dryRun,
+}) {
+    if (!Array.isArray(updatePlans) || updatePlans.length === 0 || dryRun) {
+        return { executed: 0, skipped: 0, failed: 0 };
+    }
+
+    const logger = manager?.logger;
+    let queue = updatePlans.slice(0);
+    let executed = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    logger?.log?.(`Startup: Falling back to sequential updates for ${queue.length} pending order(s)`, 'warn');
+
+    while (queue.length > 0) {
+        const plan = queue.shift();
+        if (!plan) continue;
+
+        try {
+            const result = await _executeStartupSingleUpdate({
+                plan,
+                chainOrders,
+                account,
+                privateKey,
+                manager,
+                dryRun,
+            });
+
+            if (result.executed) executed++;
+            else skipped++;
+        } catch (err) {
+            failed++;
+            logger?.log?.(`Startup: Sequential update failed for ${plan.chainOrderId} -> ${plan.gridOrderId || plan.gridOrder?.id}: ${err.message}`, 'error');
+
+            const refreshedChainOrders = await _recoverStartupSyncFailure({
+                chainOrders,
+                manager,
+                account,
+                logger,
+                triggerMessage: `Startup: Triggering recovery sync after sequential update failure for ${plan.chainOrderId}`,
+                source: 'startupReconcileSequentialUpdateFailure',
+            });
+
+            queue = _refreshStartupUpdatePlans(queue, refreshedChainOrders);
+        }
+    }
+
+    return { executed, skipped, failed };
 }
 
 async function _createStartupOrderWithHandling({
@@ -677,6 +825,7 @@ async function _reconcileStartupSide({
     privateKey,
     dryRun,
     plannedCreates,
+    plannedUpdates,
 }) {
     const logger = manager?.logger;
     const sideUpper = orderType === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
@@ -695,6 +844,7 @@ async function _reconcileStartupSide({
     const sortedUnmatched = unmatchedSideOrders.slice(0).sort(sortUpdateComparator);
     const updateCount = Math.min(sortedUnmatched.length, desiredSlots.length);
     let cancelledIndex = null;
+    let projectedSideBalance = Number(manager.accountTotals?.[balanceKey] || 0);
 
     logger?.log?.(
         `Startup ${sideUpper}: matchedOnGrid=${matchedOnGrid}, needSlots=${neededSlots}, unmatched=${sortedUnmatched.length}, updates=${updateCount}`,
@@ -725,7 +875,7 @@ async function _reconcileStartupSide({
         const parsedChain = parseChainOrder(chainOrder, manager.assets);
         const currentSize = parsedChain ? parsedChain.size : 0;
         const sizeIncrease = Math.max(0, gridSize - currentSize);
-        const currentAssetBalance = manager.accountTotals?.[balanceKey] || 0;
+        const currentAssetBalance = projectedSideBalance;
 
         if (sizeIncrease > currentAssetBalance) {
             logger?.log?.(
@@ -740,28 +890,15 @@ async function _reconcileStartupSide({
             'info'
         );
 
-        try {
-            await _updateChainOrderToGrid({
-                chainOrders,
-                account,
-                privateKey,
-                manager,
-                chainOrderId: chainOrder.id,
-                gridOrder,
-                dryRun,
-                chainOrderObj: chainOrder,
-            });
-        } catch (err) {
-            logger?.log?.(`Startup: Failed to update ${sideUpper} ${chainOrder.id}: ${err.message}`, 'error');
-            await _recoverStartupSyncFailure({
-                chainOrders,
-                manager,
-                account,
-                logger,
-                triggerMessage: `Startup: Triggering recovery sync after ${sideUpper} update failure`,
-                source: 'startupReconcileFailure',
-            });
-        }
+        plannedUpdates.push({
+            orderType,
+            chainOrderId: chainOrder.id,
+            chainOrderObj: chainOrder,
+            gridOrderId: gridOrder.id,
+            gridOrder: { ...gridOrder },
+        });
+
+        projectedSideBalance += (currentSize - gridSize);
     }
 
     if (cancelledIndex !== null && !dryRun) {
@@ -969,8 +1106,16 @@ async function reconcileStartupOrders({
     if (!account || !privateKey) {
         throw new Error('reconcileStartupOrders: account and privateKey are required');
     }
-    if (!chainOrders || typeof chainOrders.updateOrder !== 'function' || typeof chainOrders.cancelOrder !== 'function' || typeof chainOrders.createOrder !== 'function') {
-        throw new Error('reconcileStartupOrders: chainOrders must provide updateOrder, cancelOrder, and createOrder methods');
+    if (!chainOrders || typeof chainOrders.cancelOrder !== 'function' || typeof chainOrders.createOrder !== 'function') {
+        throw new Error('reconcileStartupOrders: chainOrders must provide cancelOrder and createOrder methods');
+    }
+    if (typeof chainOrders.readOpenOrders !== 'function') {
+        throw new Error('reconcileStartupOrders: chainOrders.readOpenOrders is required for recovery sync');
+    }
+    const supportsBatchUpdate = typeof chainOrders.buildUpdateOrderOp === 'function' && typeof chainOrders.executeBatch === 'function';
+    const supportsSequentialUpdate = typeof chainOrders.updateOrder === 'function';
+    if (!supportsBatchUpdate && !supportsSequentialUpdate) {
+        throw new Error('reconcileStartupOrders: chainOrders must provide updateOrder or (buildUpdateOrderOp + executeBatch) for startup updates');
     }
 
     const logger = manager && manager.logger;
@@ -1028,6 +1173,7 @@ async function reconcileStartupOrders({
         let unmatchedBuys = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.BUY).map(x => x.chain);
         let unmatchedSells = unmatchedParsed.filter(x => x.parsed.type === ORDER_TYPES.SELL).map(x => x.chain);
         const plannedCreates = [];
+        const plannedUpdates = [];
 
         logger && logger.log && logger.log(
             `Startup reconcile starting: unmatched(sell=${unmatchedSells.length}, buy=${unmatchedBuys.length}), target(sell=${targetSell}, buy=${targetBuy})`,
@@ -1045,6 +1191,7 @@ async function reconcileStartupOrders({
             privateKey,
             dryRun,
             plannedCreates,
+            plannedUpdates,
         });
         const chainSellCount = sellResult.chainCount;
 
@@ -1059,8 +1206,83 @@ async function reconcileStartupOrders({
             privateKey,
             dryRun,
             plannedCreates,
+            plannedUpdates,
         });
         const chainBuyCount = buyResult.chainCount;
+
+        if (!dryRun && plannedUpdates.length > 0) {
+            let updatePlans = plannedUpdates;
+            const maxBatchAttempts = 3;
+            let batchCompleted = false;
+
+            if (supportsBatchUpdate) {
+                for (let attempt = 1; attempt <= maxBatchAttempts; attempt++) {
+                    try {
+                        const batchResult = await _executeStartupUpdateBatch({
+                            updatePlans,
+                            chainOrders,
+                            account,
+                            privateKey,
+                            manager,
+                            dryRun,
+                        });
+
+                        if (batchResult.executed) {
+                            logger?.log?.(`Startup: Update batch complete (${batchResult.prepared} updated)`, 'info');
+                        }
+                        batchCompleted = true;
+                        break;
+                    } catch (err) {
+                        logger?.log?.(`Startup: Update batch attempt ${attempt}/${maxBatchAttempts} failed: ${err.message}`, 'error');
+
+                        const refreshedChainOrders = await _recoverStartupSyncFailure({
+                            chainOrders,
+                            manager,
+                            account,
+                            logger,
+                            triggerMessage: `Startup: Triggering recovery sync after update batch failure (attempt ${attempt}/${maxBatchAttempts})`,
+                            source: 'startupReconcileUpdateBatchFailure',
+                        });
+
+                        updatePlans = _refreshStartupUpdatePlans(updatePlans, refreshedChainOrders);
+                        if (updatePlans.length === 0) {
+                            logger?.log?.('Startup: No update plans remain after recovery sync; skipping further update attempts', 'warn');
+                            batchCompleted = true;
+                            break;
+                        }
+
+                        if (attempt >= maxBatchAttempts) {
+                            logger?.log?.('Startup: Update batch retries exhausted; switching to sequential fallback', 'warn');
+                            break;
+                        }
+                    }
+                }
+            } else {
+                logger?.log?.('Startup: Batch update helpers unavailable; using sequential fallback updates', 'warn');
+            }
+
+            if (!batchCompleted && updatePlans.length > 0) {
+                try {
+                    const fallbackResult = await _executeStartupSequentialUpdateFallback({
+                        updatePlans,
+                        chainOrders,
+                        account,
+                        privateKey,
+                        manager,
+                        dryRun,
+                    });
+
+                    if (fallbackResult.executed > 0 || fallbackResult.skipped > 0 || fallbackResult.failed > 0) {
+                        logger?.log?.(
+                            `Startup: Sequential fallback complete (updated=${fallbackResult.executed}, skipped=${fallbackResult.skipped}, failed=${fallbackResult.failed})`,
+                            fallbackResult.failed > 0 ? 'warn' : 'info'
+                        );
+                    }
+                } catch (err) {
+                    logger?.log?.(`Startup: Sequential fallback failed unexpectedly: ${err.message}`, 'error');
+                }
+            }
+        }
 
         await _executePlannedStartupCreates({
             createPlans: plannedCreates,

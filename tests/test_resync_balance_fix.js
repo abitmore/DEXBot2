@@ -28,6 +28,16 @@ async function testDeltaBalanceCheck() {
         synchronizeWithChain: async () => { },
         _updateOrder: (o) => { manager.orders.set(o.id, o); },
         _applyOrderUpdate: async (o) => { manager.orders.set(o.id, o); return true; },
+        _applySync: async (syncPayload, source) => {
+            if (source !== 'createOrder' || !syncPayload?.gridOrderId) return;
+            const current = manager.orders.get(syncPayload.gridOrderId);
+            if (!current) return;
+            manager.orders.set(syncPayload.gridOrderId, {
+                ...current,
+                orderId: syncPayload.chainOrderId,
+                state: ORDER_STATES.ACTIVE,
+            });
+        },
         _gridLock: { acquire: async (cb) => await cb() },
         startPrice: 0.5
     };
@@ -59,6 +69,18 @@ async function testDeltaBalanceCheck() {
         updateOrder: async () => {
             updateCalled = true;
             return { success: true };
+        },
+        buildUpdateOrderOp: async () => ({
+            op: {
+                op_name: 'limit_order_update',
+                op_data: {
+                    fee: { amount: 0, asset_id: '1.3.0' }
+                }
+            }
+        }),
+        executeBatch: async () => {
+            updateCalled = true;
+            return { success: true, operation_results: [[1, 'ok']] };
         },
         cancelOrder: async () => ({ success: true }),
         createOrder: async () => ({ success: true }),

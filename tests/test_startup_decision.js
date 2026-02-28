@@ -133,11 +133,21 @@ const { _setFeeCache } = require('../modules/order/utils/math');
 
         const chainOrders = {
             updateOrder: async () => ({ success: true }),
+            buildUpdateOrderOp: async () => ({
+                op: {
+                    op_name: 'limit_order_update',
+                    op_data: {
+                        fee: { amount: 0, asset_id: '1.3.0' }
+                    }
+                }
+            }),
+            executeBatch: async () => ({ success: true, operation_results: [] }),
             cancelOrder: async () => ({ success: true }),
             createOrder: async () => {
                 const chainOrderId = `1.7.${nextOrderNum++}`;
                 return [{ trx: { operation_results: [[1, chainOrderId]] } }];
             },
+            readOpenOrders: async () => [],
         };
 
         await reconcileStartupOrders({

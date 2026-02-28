@@ -29,8 +29,11 @@ function createManager(overrides = {}) {
         getOrdersByTypeAndState: (type, state) => {
             return Array.from(orders.values()).filter(o => o && o.type === type && o.state === state);
         },
+        _gridLock: { acquire: async (fn) => await fn() },
         synchronizeWithChain: async () => {},
+        _applySync: async () => {},
         _updateOrder: (order) => { orders.set(order.id, order); },
+        _applyOrderUpdate: async (order) => { orders.set(order.id, order); return true; },
         ...overrides,
     };
     return manager;
@@ -54,6 +57,15 @@ async function testUnmatchedCancelReleasesFundsAndHandlesNullEntries() {
     let cancelCalls = 0;
     const chainOrders = {
         updateOrder: async () => {},
+        buildUpdateOrderOp: async () => ({
+            op: {
+                op_name: 'limit_order_update',
+                op_data: {
+                    fee: { amount: 0, asset_id: '1.3.0' }
+                }
+            }
+        }),
+        executeBatch: async () => ({ success: true, operation_results: [] }),
         cancelOrder: async () => { cancelCalls++; },
         createOrder: async () => [],
         readOpenOrders: async () => [],
@@ -101,6 +113,15 @@ async function testSkipUpdateWhenSlotAlreadyMapped() {
     let updateCalls = 0;
     const chainOrders = {
         updateOrder: async () => { updateCalls++; },
+        buildUpdateOrderOp: async () => ({
+            op: {
+                op_name: 'limit_order_update',
+                op_data: {
+                    fee: { amount: 0, asset_id: '1.3.0' }
+                }
+            }
+        }),
+        executeBatch: async () => { updateCalls++; return { success: true, operation_results: [] }; },
         cancelOrder: async () => {},
         createOrder: async () => [],
         readOpenOrders: async () => [],
@@ -126,7 +147,7 @@ async function testSkipUpdateWhenSlotAlreadyMapped() {
         chainOpenOrders,
     });
 
-    assert.strictEqual(updateCalls, 0, 'Should skip updateOrder when slot already mapped to same chain order');
+    assert.strictEqual(updateCalls, 0, 'Should skip update batch when slot already mapped to same chain order');
     assert.strictEqual(addToChainFreeCalls, 0, 'Should not addToChainFree when update is skipped');
     console.log('✅ Regression 2 passed: stale-slot update is skipped without double credit');
 }

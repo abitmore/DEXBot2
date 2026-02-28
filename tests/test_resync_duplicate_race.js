@@ -29,6 +29,16 @@ async function testDuplicateRacePrevention() {
         },
         _updateOrder: (o) => { orders.set(o.id, o); },
         _applyOrderUpdate: async (o) => { orders.set(o.id, o); return true; },
+        _applySync: async (syncPayload, source) => {
+            if (source !== 'createOrder' || !syncPayload?.gridOrderId) return;
+            const current = orders.get(syncPayload.gridOrderId);
+            if (!current) return;
+            orders.set(syncPayload.gridOrderId, {
+                ...current,
+                orderId: syncPayload.chainOrderId,
+                state: ORDER_STATES.ACTIVE,
+            });
+        },
         startPrice: 0.5
     };
 
@@ -47,10 +57,25 @@ async function testDuplicateRacePrevention() {
     ];
 
     let createCalled = false;
+    let batchAttempts = 0;
+    let sequentialAttempts = 0;
     const chainOrdersMock = {
         updateOrder: async () => {
+            sequentialAttempts++;
             console.log("[MOCK] updateOrder failing, triggering recovery sync...");
             throw new Error("Simulated failure to trigger recovery sync");
+        },
+        buildUpdateOrderOp: async () => ({
+            op: {
+                op_name: 'limit_order_update',
+                op_data: {
+                    fee: { amount: 0, asset_id: '1.3.0' }
+                }
+            }
+        }),
+        executeBatch: async () => {
+            batchAttempts++;
+            throw new Error('Simulated batch failure to trigger recovery sync');
         },
         createOrder: async () => {
             createCalled = true;
@@ -77,6 +102,8 @@ async function testDuplicateRacePrevention() {
     });
 
     assert.strictEqual(createCalled, false, "Should NOT call createOrder for sell-2 because it was matched during recovery sync");
+    assert.strictEqual(batchAttempts, 3, 'Should attempt startup update batch 3 times (initial + 2 retries)');
+    assert.ok(sequentialAttempts > 0, 'Should fall back to sequential update attempts after batch retries are exhausted');
     console.log("✅ Race prevention test passed");
 }
 
