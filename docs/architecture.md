@@ -13,9 +13,19 @@ DEXBot2 is a grid trading bot for the BitShares blockchain. It maintains a geome
 ### Core Concepts
 
 - **Grid**: A geometric array of price levels with orders placed at each level
-- **Spread Zone**: A buffer of empty slots between buy and sell orders
+- **Spread Zone**: A buffer of empty slots between buy and sell orders (constant width)
 - **Order States**: VIRTUAL (planned) → ACTIVE (on-chain) → PARTIAL (partially filled)
 - **Fund Tracking**: Atomic accounting system preventing race conditions and overdrafts
+
+### Design Philosophy
+
+DEXBot2 prioritizes **simplicity and operational efficiency** over complex partial-handling mechanics:
+
+1. **Constant Spread**: The spread zone width remains fixed at `targetSpreadPercent`, eliminating dynamic inflation triggers.
+2. **Direct Consolidation**: Dust partials are absorbed into the next grid rebuild cycle, not handled by complex merge/split logic.
+3. **Minimal Blockchain Interaction**: Fund-driven rebalancing occurs once per fill batch, not per-partial. Grid generation uses only available funds—no forced allocations.
+4. **Closed-Loop Market Dynamics**: The boundary-crawl mechanism naturally handles price movement and fill flows without special-case logic.
+5. **Powerful Maintenance Tools**: Periodic grid regeneration, recovery retries, and fund invariant verification keep the system healthy over long operations.
 
 ---
 
@@ -439,61 +449,60 @@ Once the new boundary is determined, existing on-chain orders are matched to des
 
 ---
 
-## Scaled Spread Correction
+## Spread Correction (Fund-Aware Approach)
 
-Dynamic spread correction that scales the number of replacement slots based on how much the spread has widened.
+Simplified spread maintenance that keeps the gap consistent and fund-driven, avoiding complex split/merge mechanics.
 
-### The Problem
+### The Approach
 
-Legacy approach: Fixed number of spread-zone orders regardless of how far out of sync they are. New approach: Scale corrections to severity.
+Instead of complex partial handling, spread corrections are **conservative and fund-safe**:
+- Target spread width stays **constant** at `targetSpreadPercent`
+- Corrections scale with **actual available funds**, not arbitrary slot budgets
+- No dynamic spread inflation based on partial consolidation flags
+- Edge-first surplus selection ensures stable rotation candidates
 
 ### Algorithm
 
-**Location**: `modules/order/strategy.js::rebalance()`
+**Location**: `modules/order/strategy.js::rebalanceSideRobust()`
 
-```javascript
-// 1. Measure current spread (in number of steps)
-const currentSpreadSteps = calculateSpreadWidth();
-const targetSpreadSteps = calculateTargetSpread();
-const spreadWidening = currentSpreadSteps - targetSpreadSteps;
+The simplified approach prioritizes fund availability over aggressive corrections:
 
-// 2. Calculate replacement slots based on severity
-const baseReplacementSlots = Math.min(spreadWidening, maxReplacementSlots);
-
-// 3. Prevent "double-dust" - ensure each replacement is healthy
-const minHealthySize = getMinOrderSize(type, assets, DOUBLE_DUST_FACTOR);
-const correctionCap = Math.floor(availableFunds / minHealthySize);
-
-// 4. Final correction count is conservative
-const replacementCount = Math.min(baseReplacementSlots, correctionCap);
+```
+1. Detect that spread is wider than targetSpreadPercent
+2. Calculate how many edge slots are missing
+3. Attempt to place new edge orders with available funds
+4. If insufficient funds for all edges:
+   - Create what's affordable with available funds
+   - Log shortfall (smooth over next rebalance cycle)
+5. If a dust partial exists in the correction window:
+   - Mark for consolidation in next grid rebuild
+   - Don't create complex merge/split side effects
+6. Maintain constant target spread—no inflation based on partial flags
 ```
 
-### Double-Dust Safety Floor
+### Fund-Safe Constraints
 
-Before placing correction orders, validate that each order meets minimum healthy size:
-
-```javascript
-// Check: size >= DUST_RATIO * idealSize (typically 5%)
-const isDust = order.size < 0.05 * idealSize;
-
-if (isDust) {
-    // Log warning, skip this correction slot
-    logger.warn(`Correction would create dust order, skipping`);
-    continue;
-}
-```
-
-**Benefit**: Prevents fragmentation from aggressive spread corrections.
-
-### Configuration
+Spread corrections respect these hard limits:
 
 ```javascript
 // In modules/constants.js
 SPREAD_LIMITS: {
-    MAX_REPLACEMENT_SLOTS: 5,        // Max slots corrected per fill
-    DOUBLE_DUST_FACTOR: 1.0,         // Health threshold for corrections
+    MIN_SPREAD_ORDERS: 2,           // Always maintain minimum gap
+    TARGET_SPREAD_PERCENT: (user-configured),  // Fixed width, no inflation
+    MAX_REPLACEMENT_SLOTS: 5,       // Conservative correction cap
 }
+
+// Each correction order must be healthy
+const minHealthySize = calculateMinOrderSize(side);
+const affordableOrderCount = Math.floor(availableFunds / minHealthySize);
+const correctionOrders = Math.min(missingSlots, affordableOrderCount);
 ```
+
+**Benefits**:
+- ✅ No "double-dust" fragmentation
+- ✅ Constant, predictable spread width
+- ✅ Funds always respected (no forced allocation)
+- ✅ Natural smoothing over multiple rebalance cycles
 
 ---
 
@@ -889,16 +898,14 @@ sequenceDiagram
     Chain->>Sync: Order filled
     Sync->>Sync: Detect fill
     Sync->>Strat: processFilledOrders([fills])
-    
+
     Strat->>Acct: Add proceeds to chainFree
-        Strat->>Strat: Check for side-wide Double Token
-        alt Side is Doubled
-            Strat->>Strat: Trigger Double Replacement (2 slots)
-        end
-    
-    Strat->>Grid: Shift boundary
+
+    Strat->>Grid: Shift boundary index
     Strat->>Acct: Deduct BTS fees from cache
-    Strat->>Strat: Execute rotations
+    Strat->>Strat: Identify dust partials (if any)
+    Strat->>Strat: Execute rotations based on fund availability
+    Strat->>Grid: Apply boundary-driven slot reassignments
 ```
 
 ### 2. Order Rotation (Crawl Mechanism)

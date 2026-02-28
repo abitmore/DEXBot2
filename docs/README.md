@@ -8,12 +8,13 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 🏛️ [Architecture](architecture.md)
 *The blueprint of the system.*
+- **Design Philosophy**: Simplicity, constant spread, minimal blockchain interaction, and closed-loop market dynamics.
 - **System Design**: High-level overview of how the bot components interact.
 - **Module Responsibilities**: Detailed breakdown of the **Manager**, **Accountant**, **Strategy**, and **Grid** modules.
 - **Copy-on-Write Pattern**: Safe concurrent rebalancing with isolated working grids (see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md))
-- **Fill Processing Pipeline**: Adaptive batch fill processing with stress-scaled sizing
+- **Fill Processing Pipeline**: Adaptive batch fill processing (1-4 fills per broadcast, ~24s for 29 fills)
 - **Fund-Driven Boundary Sync**: Automatic grid alignment with inventory distribution
-- **Scaled Spread Correction**: Dynamic spread correction with double-dust safety
+- **Spread Correction**: Conservative, fund-aware maintenance of constant spread width
 - **Periodic Market Price Refresh**: Background 4-hour price updates
 - **Pipeline Safety & Diagnostics**: 5-minute timeout safeguard and health monitoring
 - **Data Flow**: Visualization of how market data becomes trading operations and then blockchain transactions.
@@ -44,7 +45,9 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *The most critical part of the bot: safe capital management.*
 - **Single Source of Truth**: How the bot avoids double-spending and out-of-sync balances.
 - **Optimistic ChainFree**: The mechanism that allows the bot to trade with fill proceeds before they are finalized on-chain.
-- **Fill Batch Processing**: Adaptive batch sizing for efficient fill processing
+- **Fill Batch Processing**: Adaptive batch sizing for efficient fill processing (1-4 fills per cycle)
+- **Partial Order Consolidation**: Simplified, direct consolidation through grid rebuilding (no merge/split mechanics)
+- **Dust Detection & Management**: Unhealthy partials are absorbed into next grid rebuild cycle
 - **BTS Fee Object Structure**: `netProceeds` field for accounting precision
 - **BUY Side Sizing & Fee Accounting**: Correct fee application by order side
 - **Mixed Order Fund Validation**: Separate validation for BUY vs SELL order fund checks

@@ -1,95 +1,14 @@
+/**
+ * DELETED: This test referenced Grid.updateGridOrderSizesForSide which no longer exists.
+ *
+ * Grid sizing logic has been refactored into the strategy engine. The functionality
+ * is now tested indirectly through integration tests and strategy module tests.
+ *
+ * If grid sizing needs direct unit testing, it should be tested through the
+ * current strategy module API instead.
+ */
 
-const assert = require('assert');
-// NOTE: This test references a deprecated method: Grid.updateGridOrderSizesForSide
-// The grid sizing logic has been refactored into the strategy engine.
-// Skipping this test as the API no longer exists.
-
-console.log('\n⚠️  TEST SKIPPED: Uses deprecated Grid API (updateGridOrderSizesForSide)');
-console.log('    Grid sizing is now handled by the strategy engine.');
+console.log('⚠️  Test deleted: test_grid_funding_manual');
+console.log('   Reason: Grid.updateGridOrderSizesForSide API no longer exists');
+console.log('   Grid sizing now handled by strategy engine');
 process.exit(0);
-
-const Grid = require('../modules/order/grid');
-const { ORDER_TYPES, ORDER_STATES } = require('../modules/constants');
-
-// Mock Manager
-class MockManager {
-    constructor() {
-        this.config = {
-            weightDistribution: { buy: 1, sell: 1 },
-            incrementPercent: 1
-        };
-        this.orders = new Map();
-        this.funds = {
-            available: { buy: 100, sell: 100 },
-            total: { grid: { buy: 500, sell: 500 } }
-        };
-        this.assets = {
-            assetA: { precision: 8 },
-            assetB: { precision: 8 }
-        };
-        this.logger = { log: (msg) => console.log(msg) };
-    }
-
-    recalculateFunds() {
-        // Simple mock: available = free - virt (assume free is static for test) + pending
-        // ideally we just verify pendingProceeds is cleared
-    }
-
-    _updateOrder(order) {
-        this.orders.set(order.id, order);
-        this.recalculateFunds();
-    }
-}
-
-// Helper to add orders
-const addOrders = (manager, count, type) => {
-    for (let i = 0; i < count; i++) {
-        const order = {
-            id: `${type}-${i}`,
-            type: type,
-            size: 10, // Initial size
-            price: 1,
-            state: ORDER_STATES.VIRTUAL
-        };
-        manager.orders.set(order.id, order);
-    }
-};
-
-async function runTest() {
-    console.log('--- Test: updateGridOrderSizesForSide with Available Funds ---');
-
-    const manager = new MockManager();
-    addOrders(manager, 5, ORDER_TYPES.BUY);
-
-    // Initial state
-    // Grid: 5 orders * 10 = 50 (ignoring total.grid mock for a second, let's sync them)
-    // Actually updateGridOrderSizesForSide trusts manager.funds.total.grid? No, it uses it as input.
-    // Let's make sure total.grid matches orders for realism.
-    manager.funds.total.grid.buy = 50;
-
-    // We have available = 100 (which includes pending = 50 + free=50).
-    // Total Input should correspond to Grid(50) + Cache(0) + Available(100) = 150.
-
-    // Action
-    Grid.updateGridOrderSizesForSide(manager, ORDER_TYPES.BUY, { buy: 0, sell: 0 });
-
-    // Assertions
-
-    // 1. Orders should be resized
-    // Total input was 150. 5 orders. 
-    // Approx size per order = 150 / 5 = 30.
-    const orders = Array.from(manager.orders.values()).filter(o => o.type === ORDER_TYPES.BUY);
-    const totalSize = orders.reduce((sum, o) => sum + o.size, 0);
-
-    console.log(`Total Size: ${totalSize} (Expected ~150)`);
-    assert.ok(Math.abs(totalSize - 150) < 0.000001, 'Total grid size should equal total input');
-
-    // 2. Any leftover remains available until next cycle.
-
-    console.log('✅ Test Passed!');
-}
-
-runTest().catch(err => {
-    console.error('❌ Test Failed:', err);
-    process.exit(1);
-});

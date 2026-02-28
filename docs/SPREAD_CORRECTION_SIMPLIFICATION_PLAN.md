@@ -1,6 +1,8 @@
 # Spread Correction Simplification Plan
 
-Date: 2026-02-26  
+⚠️ **ARCHIVED**: This document describes refactoring of split/merge partial handling for spread correction. The split/merge implementation was deprecated and removed in favor of a simplified grid-reset approach. This document is retained for historical reference and is not in the main branch.
+
+Date: 2026-02-26
 Branch target: `test`
 
 ## Goal

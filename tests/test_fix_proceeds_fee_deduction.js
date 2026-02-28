@@ -1,92 +1,21 @@
 /**
- * Test: BTS Fee Deduction Fix
+ * DELETED: This test referenced old API methods that no longer exist.
  *
- * NOTE: This test references an old API (calculateAvailableFunds, deductBtsFees)
- * that has been refactored into the unified accounting system.
- * The functionality is preserved in the current accounting.js module.
- * This test is kept for historical reference but uses an outdated API.
+ * Old Methods (no longer available):
+ * - OrderManager.calculateAvailableFunds()
+ * - OrderManager.deductBtsFees()
  *
- * Verifies that pendingProceeds are deducted only ONCE when fees are paid,
- * not repeatedly during calculateAvailableFunds() calls.
+ * Current Implementation:
+ * - Fee deduction is now handled by the Accountant class (modules/order/accounting.js)
+ * - The Accountant.deductBtsFees() method handles fee deduction with deferral strategy
+ * - Fee accounting is tested through integration tests and accounting-specific tests
  *
- * Problem: calculateAvailableFunds() was side-effecting by modifying pendingProceeds
- * every time it was called, causing proceeds to be zeroed out prematurely.
- *
- * Solution: Make calculateAvailableFunds() pure (no side effects), and deduct fees
- * immediately after proceeds are added in processFilledOrders().
+ * If fee deduction behavior needs specific testing, see:
+ * - test_bts_fee_accounting.js
+ * - test_accounting_logic.js
  */
 
-const assert = require('assert');
-const { OrderManager } = require('../modules/order/index.js');
-
-// Mock config
-const config = {
-    botKey: 'test-bot',
-    assetA: 'BTS',        // Buy side = BTS
-    assetB: 'IOB.XRP',    // Sell side = IOB.XRP
-};
-
-// Mock logger
-const logger = {
-    log: (msg, level) => {},
-    level: 'debug',
-    logFundsStatus: () => {}
-};
-
-// Mock account orders
-const accountOrders = {
-    updateBtsFeesOwed: async () => {}
-};
-
-// Run tests
-console.log('Running BTS Fee Deduction Fix tests...\n');
-
-const tests = [
-    {
-        name: 'should NOT deduct fees repeatedly in calculateAvailableFunds()',
-        run: async () => {
-            let manager = new OrderManager(config, logger, accountOrders);
-            manager.resetFunds();
-            await manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
-
-            // Sell-side fills produce buy-side proceeds (quote asset = BTS)
-            manager.funds.available = { buy: 100, sell: 0 };
-            manager.funds.btsFeesOwed = 10;
-
-            const available1 = manager.calculateAvailableFunds('buy');
-            assert.strictEqual(manager.funds.available.buy, 100, 'Funds not modified by calculateAvailableFunds');
-
-            const available2 = manager.calculateAvailableFunds('buy');
-            assert.strictEqual(available1, available2, 'Multiple calls should return same value');
-            assert.strictEqual(manager.funds.available.buy, 100, 'Funds unchanged after multiple calls');
-
-            await manager.deductBtsFees();
-            assert.strictEqual(manager.funds.available.buy, 90, 'Fees deducted once (100 - 10)');
-        }
-    },
-    {
-        name: 'should handle fee deduction on correct side based on asset',
-        run: async () => {
-            let manager = new OrderManager(config, logger, accountOrders);
-            manager.resetFunds();
-            await manager.setAccountTotals({ buyFree: 10000, sellFree: 100, buy: 10000, sell: 100 });
-
-            manager.funds.available = { buy: 100, sell: 0 };
-            manager.funds.btsFeesOwed = 50;
-
-            await manager.deductBtsFees();
-            assert.strictEqual(manager.funds.available.buy, 50);
-            assert.strictEqual(manager.funds.btsFeesOwed, 0);
-        }
-    }
-];
-
-(async () => {
-     // NOTE: This test uses a deprecated API. The functionality has been integrated
-     // into the unified accounting system (modules/order/accounting.js).
-     // Skipping this test as the old methods no longer exist.
-     console.log('\n⚠️  TEST SKIPPED: Uses deprecated API (calculateAvailableFunds, deductBtsFees)');
-     console.log('    This functionality is now integrated into the unified accounting system.');
-     console.log('    See modules/order/accounting.js for current fee deduction logic.');
-     process.exit(0);
-})();
+console.log('⚠️  Test deleted: test_fix_proceeds_fee_deduction');
+console.log('   Reason: Uses deprecated API (calculateAvailableFunds, deductBtsFees on OrderManager)');
+console.log('   Functionality now in Accountant class, tested by accounting tests');
+process.exit(0);

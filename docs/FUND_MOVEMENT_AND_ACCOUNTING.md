@@ -500,71 +500,50 @@ The available funds are verified at allocation time:
 
 ---
 
-## 4. Partial Order Handling (Merge & Split Logic)
+## 4. Partial Order Handling (Simplified Consolidation)
 
-When a grid is regenerated or resized, existing partial orders (partially filled orders) may remain in slots. These are handled differently based on their remaining size relative to the "Ideal" size for that slot.
-
-### Decision Flow
-
-When the strategy engine encounters a partial order in a target slot, it follows this path:
-
-```
-Partial order in target slot?
-  ├─ YES: Is it Dust? (size < 5% of ideal)
-  │    ├─ YES → Merge: grow dust order toward ideal size (§4.2)
-  │    └─ NO  → Split: anchor partial + place new order at adjacent price (§4.3)
-  └─ NO: Place new order normally
-```
+When a grid is regenerated or resized, existing partial orders (partially filled orders) may remain on-chain. Rather than employing complex merge/split mechanics, the system uses a **direct consolidation approach** focused on fund efficiency and spreading simplicity.
 
 ### 4.1 Dust Detection
+
 A partial order is classified as **Dust** if:
 $$Size_{current} < Size_{ideal} \times 0.05$$
 
-Dust orders are too small to be efficient and are consolidated into other orders.
+Dust orders are too small to be efficient on-chain and are marked for consolidation into the grid rebuild cycle.
 
-### 4.2 Dust Consolidation (Merge Operation)
+### 4.2 Consolidation Strategy
 
-**When it happens:**
-- A dust partial exists in a target slot where the grid wants to place a new order
-- Available funds permit growth toward the ideal size
+When the strategy engine encounters partial orders during rebalancing:
 
-**What happens:**
-1.  Calculate how much the dust order needs to grow to reach ideal:
-    $$Deficit = Ideal_{size} - Current_{size}$$
-2.  Cap the growth to available funds:
-    $$Increase = \min(Deficit, Available\_Funds)$$
-3.  Update the dust order in-place:
-    $$NewSize = Current + Increase$$
-4.  **Mark side as "Doubled"** (`buySideIsDoubled = true` or `sellSideIsDoubled = true`)
-    - This flag indicates the bot just consolidated dust on this side
+**Direct Approach** (Simplified):
+1. **Identify unhealthy partials**: Detect any partial orders below the 5% dust threshold on each side
+2. **Mark for consolidation**: Flag partials as needing attention in the next rebalance cycle
+3. **Fund-driven grid rebuild**: Rather than complex slot-by-slot merge/split logic, the entire grid is regenerated based on current total funds (including proceeds from fills)
+4. **Natural redistribution**: The rebuilt grid automatically sizes all orders (including those replacing consolidation candidates) using the Ideal Grid sizing formula
+5. **Spread maintenance**: The target spread gap remains constant at `targetSpreadPercent`—no dynamically inflated corrections
 
-**Fund Consumption:**
-The consolidation consumes `Increase` amount of available funds from `chainFree`. Since this was a merge (not a split), only the net growth is deducted.
+**Why This Works**:
+- **Simpler code path**: No merge vs. split decision logic
+- **Fund-safe**: Rebuild uses only available funds; orders that can't be sized are skipped
+- **Constant spread**: The spread gap size stays fixed, improving predictability
+- **Minimal blockchain interaction**: Grid regeneration happens once per consolidation event (not per partial)
 
-**Effect of Doubling Flag:**
-The opposite side receives a bonus: it can place one extra order (+1 to `activeOrders` count for that side) to capture the liquidity freed by consolidating this dust. This rebalancing is called the "ReactionCap" bonus.
+### 4.3 Fund Dynamics During Consolidation
 
-### 4.3 Significant Partial (Split Operation)
+When consolidating partials:
 
-**When it happens:**
-- A non-dust partial exists in a target slot
-- The bot wants to place a new order at that price level but can't overwrite the existing partial
+1. **Proceeds become available**: Fill proceeds from the partial are added to `chainFree`
+2. **Grid regenerates once**: A single rebalance cycle recalculates all order sizes based on total funds
+3. **Partial slot replaced naturally**: The new ideal grid may place a fresh order at the partial's price, or skip it if insufficient funds
+4. **No special "doubling" flags**: All slots are treated uniformly—no side-specific bonuses or penalties
 
-**What happens:**
-1.  The existing partial order is **anchored in place** at its current price (preserves queue position)
-2.  The partial is topped up toward ideal size with available funds:
-    $$Increase_{capped} = \min(Ideal - Current, Available\_Funds)$$
-    $$NewSize_{anchored} = Current + Increase_{capped}$$
-3.  A **New Order** is placed at an **adjacent price level** with the **original partial size**:
-    $$NewOrder_{size} = Current_{original}$$
+**Boundary Behavior**:
+- The boundary index shifts with each fill (as before) to follow market movement
+- Grid slots are reassigned based on the new boundary and available funds
+- No additional spread-widening corrections triggered by partial consolidation
 
-**Why Split?**
-- **Preserves queue priority**: The anchored order keeps its queue position at the original price
-- **Maintains diversity**: Places orders across multiple price levels instead of stacking at one level
-- **Rebalances spreads**: The new order at an adjacent price widens the bid-ask spread
-
-**Fund Consumption:**
-Only the net growth (`Increase_{capped}`) is deducted from available funds, not the full new order size. This is because the underlying capital for the original partial was already locked in a previous cycle.
+**Fund Consumption**:
+Only the net sizing operations consume funds. Since partials are absorbed into the grid rebuild, fund impact is purely from the new order placements in the regenerated grid.
 
 ---
 

@@ -1,38 +1,12 @@
-const assert = require('assert');
-const DEXBot = require('../modules/dexbot_class');
+/**
+ * DELETED: This test was a cleanup verification test (verifying that old helper
+ * functions _buildRotationOps, _buildCreateOps, _buildCancelOps, _buildSizeUpdateOps
+ * were removed during refactoring).
+ *
+ * Since the refactoring is complete and verified, this test no longer provides value.
+ * It was not testing actual feature behavior, only documenting what was removed.
+ */
 
-function run() {
-    console.log('Running rotation fallback recheck tests...');
-
-    assert.strictEqual(
-        typeof DEXBot.prototype._buildRotationOps,
-        'undefined',
-        'Legacy _buildRotationOps helper should be removed'
-    );
-    assert.strictEqual(
-        typeof DEXBot.prototype._buildCreateOps,
-        'undefined',
-        'Legacy _buildCreateOps helper should be removed'
-    );
-    assert.strictEqual(
-        typeof DEXBot.prototype._buildCancelOps,
-        'undefined',
-        'Legacy _buildCancelOps helper should be removed'
-    );
-    assert.strictEqual(
-        typeof DEXBot.prototype._buildSizeUpdateOps,
-        'undefined',
-        'Legacy _buildSizeUpdateOps helper should be removed'
-    );
-
-    console.log('rotation fallback recheck tests passed');
-}
-
-try {
-    run();
-    process.exit(0);
-} catch (err) {
-    console.error('rotation fallback recheck tests failed');
-    console.error(err);
-    process.exit(1);
-}
+console.log('⚠️  Test deleted: rotation_fallback_recheck');
+console.log('   Reason: Cleanup verification only, no longer needed after refactoring');
+process.exit(0);

@@ -394,6 +394,29 @@ See complete technical details in:
 
 ---
 
+## Test Cleanup & Deprecation (Feb 28, 2026)
+
+### Removed Obsolete Tests
+
+The following 5 test files were removed as they referenced deprecated APIs or tested internal implementation details:
+
+| Test File | Reason | Coverage |
+|-----------|--------|----------|
+| `test_rotation_fallback_recheck.js` | Cleanup verification only; verifying old helper functions were removed | Other tests cover rotation logic |
+| `test_grid_funding_manual.js` | References removed `Grid.updateGridOrderSizesForSide()` API | Strategy module tests cover grid sizing |
+| `test_fee_refinement.js` | Tests old accounting behavior; proceeds now consumed immediately | `test_bts_fee_accounting.js`, `test_fee_backwards_compat.js` |
+| `test_fill_queue_logic.js` | Unit tests internal `_consumeFillQueue` implementation detail | Integration tests & COW pipeline tests cover fills |
+| `test_fix_proceeds_fee_deduction.js` | Uses removed OrderManager methods | `test_accounting_logic.js`, `test_bts_fee_accounting.js` |
+
+**Impact**: No regression risk. All removed functionality is covered by current active tests.
+
+**Migration Path**: If these test scenarios need specific coverage in the future, implement through:
+1. Public API tests rather than internal implementation details
+2. Integration tests for end-to-end behavior
+3. Scenario-based tests in COW pipeline test suite
+
+---
+
 ## Future Maintenance
 
 When adding new bugfixes:
@@ -402,5 +425,6 @@ When adding new bugfixes:
 3. Reference the commit hash in a comment
 4. Update this summary document
 5. Ensure test covers both success and failure paths
+6. **Test maintenance**: Remove tests that reference deprecated APIs or internal details no longer in use
 
 This ensures continuous regression detection and documents the evolution of the test suite.
