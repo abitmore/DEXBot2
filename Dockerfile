@@ -3,7 +3,7 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 
 COPY --chown=node:node package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 COPY --chown=node:node . .
 RUN npm run build \
