@@ -71,6 +71,12 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Release Images**: Container release and startup guidance
 - **Security**: Notes on secure container launch behavior
 
+### 🛠️ [Scripts](../scripts/README.md)
+*CLI maintenance and diagnostic utilities.*
+- **Update**: Safe production update via `dexbot update`
+- **Reset & Cleanup**: Log wiping, setting resets, PM2 ecosystem regeneration
+- **Analysis Helpers**: Diagnostic connection tests and health probes
+
 ## Reference Docs
 
 ### 🏛️ [Architecture](architecture.md)
@@ -151,7 +157,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ## Source Code Map
 
-While these docs explain the *why*, the *how* lives in the code. Key source modules:
+While these docs explain the *why*, the *how* lives in the code. See the full [module index](../modules/README.md) for a complete directory walkthrough. Key source modules:
 
 - **`modules/dexbot_class.ts`**: Bot initialization, account setup, lifecycle orchestration, credit runtime startup, and shared runtime wiring
 - **`modules/dexbot_fill_runtime.ts`**: Fill processing, replay-safe accounting, and fill queue handling
