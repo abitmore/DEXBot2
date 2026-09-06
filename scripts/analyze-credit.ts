@@ -70,6 +70,19 @@ function formatAmount(value: number): string {
   return formatted + suffix;
 }
 
+function formatExpiryDate(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(2, 10);
+}
+
+function parseExpiryMs(raw: unknown): number | null {
+  if (raw == null || raw === '') return null;
+  const ms = new Date(String(raw)).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function hasLending(bot: any): boolean {
   return Boolean(bot && bot.debtPolicy && Array.isArray(bot.debtPolicy.lending) && bot.debtPolicy.lending.length > 0);
 }
@@ -392,9 +405,11 @@ async function main() {
 
     // Sum per asset: debt totals keyed by debt asset, collateral totals keyed
     // by collateral asset. Debt entries also track the biggest single
-    // position for the "(×N, ▲ …)" display.
+    // position for the "(×N, ▲ …)" display plus the earliest
+    // latest_repay_time per debt asset (next credit expiry).
+    type DebtEntry = { total: number; count: number; max: number; earliest?: number | null };
     async function sumPositions(kind: 'mpa' | 'credit', items: any[]) {
-      const debt = new Map<string, { total: number; count: number; max: number }>();
+      const debt = new Map<string, DebtEntry>();
       const coll = new Map<string, { total: number; count: number; max: number }>();
       for (const it of items) {
         if (kind === 'mpa') {
@@ -424,8 +439,11 @@ async function main() {
           if (dId && Number.isFinite(dRaw)) {
             const f = await toFloat(dRaw, dId);
             if (f != null) {
-              const e = debt.get(dId) || { total: 0, count: 0, max: 0 };
-              e.total += f; e.count += 1; e.max = Math.max(e.max, f); debt.set(dId, e);
+              const e = debt.get(dId) || { total: 0, count: 0, max: 0, earliest: null as number | null };
+              e.total += f; e.count += 1; e.max = Math.max(e.max, f);
+              const ms = parseExpiryMs((it as any)?.latest_repay_time ?? (it as any)?.latestRepayTime);
+              if (ms !== null && (e.earliest == null || ms < e.earliest)) e.earliest = ms;
+              debt.set(dId, e);
             }
           }
           if (cId && Number.isFinite(cRaw)) {
@@ -539,15 +557,20 @@ async function main() {
     const unpricedSupported = supportedRows.filter((r) => r.cr === null);
     const avgCr = averageCreditCr(pricedSupported.map((r) => ({ debt: r.debtFloat as number, value: r.value as number })));
 
-    async function fmtParts(m: Map<string, { total: number; count: number; max?: number }>, showBiggest = false): Promise<string[]> {
+    async function fmtParts(m: Map<string, { total: number; count: number; max?: number; earliest?: number | null }>, showBiggest = false): Promise<string[]> {
       if (m.size === 0) return [];
       const parts: string[] = [];
       for (const [id, e] of [...m.entries()].sort((a, b) => b[1].total - a[1].total)) {
         const sym = await symbolOf(id);
-        const biggest = showBiggest && e.count > 1 && Number.isFinite(e.max) && (e.max as number) > 0
-          ? `, ▲ ${formatAmount(e.max as number)}`
-          : '';
-        parts.push(`${formatAmount(e.total)} ${sym}${e.count > 1 ? ` ${colors.gray}(×${e.count}${biggest})${colors.reset}` : ''}`);
+        const inner: string[] = [];
+        const expiry = formatExpiryDate(e.earliest);
+        if (expiry) inner.push(`${colors.yellowBold}${expiry}${colors.gray}`);
+        if (showBiggest && e.count > 1 && Number.isFinite(e.max) && (e.max as number) > 0) {
+          inner.push(`▲ ${formatAmount(e.max as number)}`);
+        }
+        if (e.count > 1) inner.push(`×${e.count}`);
+        const suffix = inner.length > 0 ? ` ${colors.gray}(${inner.join(', ')})${colors.reset}` : '';
+        parts.push(`${formatAmount(e.total)} ${sym}${suffix}`);
       }
       return parts;
     }
@@ -556,7 +579,7 @@ async function main() {
     // (labels are all 11 chars wide, so `   <label>: ` is 16 chars).
     // Debt labels print red (money owed), collateral labels green (backing
     // locked) — same buy-green/sell-red semantics as `dexbot order`.
-    async function printAssetLines(label: string, m: Map<string, { total: number; count: number; max?: number }>, showBiggest = false, labelColor: string = colors.yellowBold): Promise<void> {
+    async function printAssetLines(label: string, m: Map<string, { total: number; count: number; max?: number; earliest?: number | null }>, showBiggest = false, labelColor: string = colors.yellowBold): Promise<void> {
       const plainPrefix = `   ${label}: `;
       const prefix = `   ${labelColor}${colors.bold}${label}:${colors.reset} `;
       const cont = ' '.repeat(plainPrefix.length);
