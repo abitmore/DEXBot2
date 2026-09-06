@@ -458,8 +458,12 @@ async function main() {
       return { debt, coll };
     }
 
-    const mpaSum = await sumPositions('mpa', mpaOrders);
-    const creditSum = await sumPositions('credit', creditDeals);
+    // Display sums are deliberately UNFILTERED (account truth): every live
+    // MPA position and credit deal on the account counts, including strays
+    // outside this bot's debtPolicy. CR rows, pair logic, the offer fetch,
+    // and the summary totals stay on the policy-filtered lists.
+    const mpaSumAll = await sumPositions('mpa', callOrders);
+    const creditSumAll = await sumPositions('credit', deals);
     totalMpa += mpaOrders.length;
     totalDeals += creditDeals.length;
     analyzed++;
@@ -591,16 +595,16 @@ async function main() {
 
     console.log(`\n${colors.yellowBold}📊 ${botName}${colors.reset} ${colors.gray}(${account})${colors.reset}${shared ? ` ${colors.gray}[shared account]${colors.reset}` : ''}`);
     // Only list sections with active positions — empty sides stay hidden.
-    if (mpaOrders.length > 0) {
-      await printAssetLines('MPA    debt', mpaSum.debt, false, colors.sell);
+    if (callOrders.length > 0) {
+      await printAssetLines('MPA    debt', mpaSumAll.debt, false, colors.sell);
       console.log('');
-      await printAssetLines('MPA    coll', mpaSum.coll, false, colors.buy);
+      await printAssetLines('MPA    coll', mpaSumAll.coll, false, colors.buy);
     }
-    if (creditDeals.length > 0) {
-      if (mpaOrders.length > 0) console.log('');
-      await printAssetLines('Credit debt', creditSum.debt, true, colors.sell);
+    if (deals.length > 0) {
+      if (callOrders.length > 0) console.log('');
+      await printAssetLines('Credit debt', creditSumAll.debt, true, colors.sell);
       console.log('');
-      await printAssetLines('Credit coll', creditSum.coll, true, colors.buy);
+      await printAssetLines('Credit coll', creditSumAll.coll, true, colors.buy);
       if (creditPairs.length > 0) console.log('');
       // Compact CR summary: one Avar. CR line per bot, then one Curr. CR
       // line per whitelisted pair. A CR exists only for pairs both whitelisted
@@ -637,6 +641,14 @@ async function main() {
         console.log(`   ${colors.orange}${colors.bold}Avar. CR:${colors.reset} ${avgColor}${formatAmount(avgCr)}${colors.reset}, ${segments} ${colors.gray}(x${pricedSupported.length})${colors.reset}`);
       } else if (supportedRows.length > 0) {
         console.log(`   ${colors.orange}${colors.bold}Avar. CR:${colors.reset} n/a (no priced, available credit)`);
+      }
+      const ignored = ignoredRows.length;
+      const unpriced = unpricedSupported.length;
+      if (ignored + unpriced > 0) {
+        const reasons: string[] = [];
+        if (ignored > 0) reasons.push(`${ignored} not whitelisted`);
+        if (unpriced > 0) reasons.push(`${unpriced} no offer price`);
+        console.log(`   ${colors.gray}Excluded: ${ignored + unpriced} deal${ignored + unpriced === 1 ? '' : 's'} (${reasons.join(', ')})${colors.reset}`);
       }
       if ((avgCr !== null || supportedRows.length > 0) && creditPairs.length > 0) console.log('');
       for (const pair of creditPairs) {
@@ -699,21 +711,8 @@ async function main() {
           : 'no funds avail.';
         console.log(`   ${colors.white}${colors.bold}Curr. CR:${colors.reset} ${crColor}${crText}${colors.reset}, ${pair.debtSym}←${pair.collSym} | ${availText}`);
       }
-      // Split by reason so the runtime/analyzer asymmetry is visible:
-      // "not whitelisted" never counts anywhere; "no offer price" is
-      // whitelisted but absent from the current offer (the live runtime
-      // still prices these via its pool/market fallback, the analyzer
-      // deliberately does not).
-      const ignored = ignoredRows.length;
-      const unpriced = unpricedSupported.length;
-      if (ignored + unpriced > 0) {
-        const reasons: string[] = [];
-        if (ignored > 0) reasons.push(`${ignored} not whitelisted`);
-        if (unpriced > 0) reasons.push(`${unpriced} no offer price`);
-        console.log(`   ${colors.gray}Excluded: ${ignored + unpriced} deal${ignored + unpriced === 1 ? '' : 's'} (${reasons.join(', ')})${colors.reset}`);
-      }
     }
-    if (mpaOrders.length === 0 && creditDeals.length === 0) {
+    if (callOrders.length === 0 && deals.length === 0) {
       console.log(`   ${colors.gray}no active MPA/credit positions${colors.reset}`);
     }
   }
