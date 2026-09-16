@@ -134,6 +134,8 @@ Fetches `fill_order` operations for a BitShares account from Kibana within a spe
 
 **Pipeline:** Kibana fill query → on-chain asset precision resolution → buy/sell classification → chronological matching (sequential LIFO by default) → per-pair summary + optional per-match detail.
 
+**Account resolution:** an account name (or a bare `1.2.x` ID) is resolved through the shared `account_resolver.ts` helper. When the name matches a bot in `profiles/bots.json`, the resolved ID is stamped onto that entry as `accountId`, so later runs resolve offline; `--refresh-account` forces a fresh lookup.
+
 ```bash
 # Account by ID, last 7 days (default)
 node dist/analysis/trade_profitability.js 1.2.123456
@@ -164,7 +166,6 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `--asset <id>` | all | Filter to one base asset ID |
 | `--lookup` | off | Legacy (no-op): account names always resolve automatically |
 | `--refresh-account` | off | Force re-resolution and update the stored `accountId` |
-| `--node <url>` | first healthy from built-in pool (10 nodes) | BitShares node for account + asset resolution |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
 | `--match-mode <mode>` | `sequential` | Matching mode: `sequential` (LIFO, default) or `fifo` |
@@ -177,8 +178,8 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 **Asset precision handling:**
 
 1. Assets listed in the static `ASSETS` table (BTS, TWENTIX, XBTSX.*, HONEST.*, IOB.*, etc.) resolve instantly.
-2. Unknown assets are resolved on-chain via `get_assets` when `--node` is provided, with results cached at runtime.
-3. If no `--node` is given and an asset is unknown, the fill is **skipped** with a warning (no abort).
+2. Unknown assets are resolved on-chain via `get_assets` against the built-in node pool, with results cached at runtime.
+3. If resolution fails or an asset is not found on chain, the affected fills are **skipped** with a warning (no abort).
 
 **PnL methodology:**
 
@@ -254,7 +255,6 @@ Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolv
 | `--account <id>` | bot `preferredAccount` | Override account ID or name |
 | `--lookup` | off | Legacy (no-op): account names always resolve via BitShares node when no stored ID exists |
 | `--refresh-account` | off | Force re-resolution of `preferredAccount` and update the stored `accountId` when it changed |
-| `--node <url>` | first built-in node | Node for account/asset resolution |
 | `--per-fill` | off | Check at fill granularity instead of per-order aggregated |
 | `--include-cross-pair` | off | Also check consecutive fills across different pairs |
 | `--tolerance <pct>` | `0` | Adverse price move (%) forgiven before flagging |
@@ -486,7 +486,12 @@ Details: [bot_fitting/README.md](bot_fitting/README.md)
 | `price_sources.ts` | Unified candle source abstraction (`json`, `market_adapter`) |
 | `chart_utils.ts` | Shared chart rendering utilities |
 | `math_utils.ts` | Shared math utilities |
-| `bot_key_utils.ts` | Bot-key resolution and candle file lookup |
+| `bot_key_utils.ts` | Bot-key resolution, candle file lookup, `accountId` persistence (`persistBotAccountId`) |
+| `account_resolver.ts` | Account resolution for all tools: `preferredAccount` / `--account` → `1.2.x`, stamping the result into `profiles/bots.json` |
+| `chain_pool.ts` | Ephemeral read-only chain client over the built-in node pool (account + asset lookups) |
+| `fills_source.ts` | Shared `fill_order` Kibana fetch/query and the static asset-precision table + on-chain cache |
+
+On-chain account and asset lookups in the fill-based tools go through `account_resolver.ts` / `fills_source.ts` (both built on `chain_pool.ts`): tool scripts must not open their own read-only clients or carry their own node list. The batch backfill `resolve_bot_accounts.ts` is the exception — it reuses the production chain client over one connection.
 
 ## npm Script Shortcuts
 

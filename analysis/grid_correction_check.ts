@@ -37,83 +37,23 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import * as KC from '../market_adapter/core/kibana_client.js';
 import * as C from '../modules/constants.js';
-import { loadBotMeta, loadBotSettings, computeBotKey, persistBotAccountId } from './bot_key_utils.js';
+import { loadBotSettings, computeBotKey } from './bot_key_utils.js';
+import { resolveBotAccount } from './account_resolver.js';
+import {
+    BTS_ID,
+    FillRecord,
+    assetPrec,
+    assetSymbol,
+    fetchAllFills,
+    resolveAssetPrecisions,
+    toReal,
+} from './fills_source.js';
 
 const { kibanaSearch, DEFAULT_CONFIG: BASE_CONFIG } = KC;
 
-const OP_FILL_ORDER = 4;
 const OP_LIMIT_ORDER_UPDATE = 77;
-const BTS_ID = '1.3.0';
-
-interface AssetInfo { symbol: string; precision: number; }
-const ASSETS: Record<string, AssetInfo> = {
-    '1.3.0':    { symbol: 'BTS',          precision: 5 },
-    '1.3.118':  { symbol: 'GBP',          precision: 4 },
-    '1.3.119':  { symbol: 'JPY',          precision: 2 },
-    '1.3.120':  { symbol: 'EUR',          precision: 4 },
-    '1.3.1325': { symbol: 'RUBLE',        precision: 5 },
-    '1.3.2512': { symbol: 'EVRAZ',        precision: 4 },
-    '1.3.3291': { symbol: 'TWENTIX',      precision: 5 },
-    '1.3.4099': { symbol: 'XBTSX.STH',    precision: 6 },
-    '1.3.4156': { symbol: 'XBTSX.DOGE',   precision: 5 },
-    '1.3.4157': { symbol: 'XBTSX.BTC',    precision: 8 },
-    '1.3.4159': { symbol: 'XBTSX.LTC',    precision: 8 },
-    '1.3.4176': { symbol: 'XBTSX.DASH',   precision: 8 },
-    '1.3.4274': { symbol: 'XBTSX.BCH',    precision: 8 },
-    '1.3.4760': { symbol: 'XBTSX.ETH',    precision: 7 },
-    '1.3.5537': { symbol: 'IOB.XRP',      precision: 4 },
-    '1.3.5541': { symbol: 'XBTSX.BNB',    precision: 7 },
-    '1.3.5589': { symbol: 'XBTSX.USDT',   precision: 6 },
-    '1.3.5641': { symbol: 'HONEST.CNY',   precision: 4 },
-    '1.3.5649': { symbol: 'HONEST.USD',   precision: 4 },
-    '1.3.5650': { symbol: 'HONEST.BTC',   precision: 8 },
-    '1.3.5659': { symbol: 'HONEST.ETH',   precision: 6 },
-    '1.3.5870': { symbol: 'XBTSX.FIL',    precision: 6 },
-    '1.3.5887': { symbol: 'XBTSX.RUB',    precision: 4 },
-    '1.3.5902': { symbol: 'XBTSX.USDC',   precision: 6 },
-    '1.3.6013': { symbol: 'XBTSX.HIVE',   precision: 6 },
-    '1.3.6124': { symbol: 'XBTSX.AVAX',   precision: 6 },
-    '1.3.6139': { symbol: 'XBTSX.XAUT',   precision: 6 },
-    '1.3.6166': { symbol: 'XBTSX.MATIC',  precision: 5 },
-    '1.3.6241': { symbol: 'XBTSX.ETC',    precision: 7 },
-    '1.3.6268': { symbol: 'BTWTY.EOS',    precision: 4 },
-    '1.3.6301': { symbol: 'HONEST.MONEY', precision: 8 },
-    '1.3.6304': { symbol: 'HONEST.ADA',   precision: 8 },
-    '1.3.6305': { symbol: 'HONEST.DOT',   precision: 8 },
-    '1.3.6309': { symbol: 'HONEST.ATOM',  precision: 8 },
-    '1.3.6311': { symbol: 'HONEST.ALGO',  precision: 8 },
-    '1.3.6312': { symbol: 'HONEST.FIL',   precision: 8 },
-    '1.3.6313': { symbol: 'HONEST.EOS',   precision: 8 },
-    '1.3.6315': { symbol: 'HONEST.EUR',   precision: 4 },
-    '1.3.6316': { symbol: 'HONEST.GBP',   precision: 4 },
-    '1.3.6317': { symbol: 'HONEST.JPY',   precision: 4 },
-    '1.3.6444': { symbol: 'IOB.XLM',      precision: 4 },
-    '1.3.6573': { symbol: 'XBTSX.DAI',    precision: 6 },
-    '1.3.6620': { symbol: 'XBTSX.A',      precision: 6 },
-    '1.3.6627': { symbol: 'XBTSX.LINK',   precision: 6 },
-};
-const resolvedPrecisions: Record<string, number> = {};
-function assetSymbol(id: string): string { return ASSETS[id]?.symbol ?? id; }
-function assetPrec(id: string): number | undefined { return ASSETS[id]?.precision ?? resolvedPrecisions[id]; }
-function toReal(amount: number, assetId: string): number {
-    const p = assetPrec(assetId);
-    if (p === undefined) return NaN;
-    return amount / Math.pow(10, p);
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface FillRecord {
-    time: string;
-    blockNum: number;
-    opNum: number;
-    orderId: string;
-    accountId: string;
-    pays: { amount: number; asset_id: string };
-    receives: { amount: number; asset_id: string };
-    fee: { amount: number; asset_id: string };
-    isMaker: boolean;
-    sort: any[];
-}
 interface OrderUpdate {
     orderId: string;
     sequence: number;
@@ -230,7 +170,6 @@ Options:
   --refresh-account      Force re-resolution of preferredAccount and update the
                          stored accountId when it changed (default: reuse the
                          stored accountId with no chain lookup)
-  --node <url>           BitShares node URL for account / precision resolution
   --increment <pct>      Grid increment percent (default: from bot config or ${Number((C as any)?.DEFAULT_CONFIG?.incrementPercent ?? 0.5)})
   --tolerance <pct>      Deprecated alias for --increment (kept for compat, prefer --increment)
   --per-fill             Check at fill granularity (default: per-order aggregated)
@@ -271,7 +210,6 @@ function parseArgs() {
         account: null,
         lookup: false,
         refreshAccount: false,
-        node: C.NODE_MANAGEMENT.DEFAULT_NODES[0],
         perFill: false,
         includeCrossPair: false,
         incrementPercent: null as number | null,
@@ -289,7 +227,6 @@ function parseArgs() {
             case '--account': opts.account = args[++i]; break;
             case '--lookup': opts.lookup = true; break;
             case '--refresh-account': opts.refreshAccount = true; break;
-            case '--node': opts.node = args[++i]; break;
             case '--per-fill': opts.perFill = true; break;
             case '--include-cross-pair': opts.includeCrossPair = true; break;
             case '--increment': opts.incrementPercent = parseFloat(args[++i]); break;
@@ -346,150 +283,26 @@ function resolveTimeRange(opts: any): { gte: string; lte: string; label: string 
     return { gte, lte, label };
 }
 
-// ─── Account resolution ───────────────────────────────────────────────────────
-async function resolveAccountId(name: string, nodeUrl: string): Promise<string | null> {
-    const { createReadOnlyClient } = await import('../modules/bitshares-native/index.js');
-    const client = createReadOnlyClient({ nodes: [nodeUrl] });
-    const prevLevel = process.env.LOG_LEVEL;
-    process.env.LOG_LEVEL = 'warn';
-    try {
-        await client.connect();
-        const accounts = await client.db('lookup_account_names', [[name]]);
-        if (Array.isArray(accounts) && accounts[0]?.id) return accounts[0].id;
-        return null;
-    } catch (e: any) {
-        console.warn(`  [warn] Account resolution failed: ${e.message}`);
-        return null;
-    } finally {
-        try { client.disconnect(); } catch (_) {}
-        process.env.LOG_LEVEL = prevLevel;
-    }
-}
-
-async function resolveAccountForBot(botKey: string, overrideAccount: string | null, nodeUrl: string, doRefresh: boolean): Promise<{ accountId: string; botMeta: any }> {
-    const botMeta = loadBotMeta(botKey);
-    if (!botMeta && !overrideAccount) {
-        console.error(`Error: bot key '${botKey}' not found in profiles/bots.json and no --account provided.`);
-        console.error(`Use --list-bots to see available keys, or pass --account <1.2.x> explicitly.`);
-        process.exit(1);
-    }
-    // An explicit --account always wins and is never persisted.
-    if (overrideAccount) {
-        if (/^1\.2\.\d+$/.test(String(overrideAccount))) {
-            return { accountId: String(overrideAccount), botMeta };
-        }
-        console.log(`  Resolving account name '${overrideAccount}'...`);
-        const resolvedOverride = await resolveAccountId(String(overrideAccount), nodeUrl);
-        if (!resolvedOverride) {
-            console.error(`Error: failed to resolve --account '${overrideAccount}' to 1.2.x`);
-            process.exit(1);
-        }
-        console.log(`  → ${resolvedOverride}`);
-        return { accountId: String(resolvedOverride), botMeta };
-    }
-    const prefRaw = botMeta?.preferredAccount != null ? String(botMeta.preferredAccount) : null;
-    const prefIsId = !!prefRaw && /^1\.2\.\d+$/.test(prefRaw);
-    const storedId = /^1\.2\.\d+$/.test(String(botMeta?.accountId ?? '')) ? String(botMeta.accountId) : null;
-    // An explicit 1.2.x preferredAccount is authoritative: the stored accountId
-    // is a derived cache and must never override it. Self-heal the cache.
-    if (prefIsId) {
-        if (storedId && storedId !== prefRaw && persistBotAccountId(botKey, prefRaw as string)) {
-            console.log(`  Updated stale stored accountId ${storedId} → ${prefRaw} from preferredAccount`);
-        }
-        return { accountId: prefRaw as string, botMeta };
-    }
-    if (!prefRaw) {
-        console.error(`Error: bot '${botKey}' has no preferredAccount and no --account provided.`);
-        process.exit(1);
-    }
-    // Name + fresh-enough cache + no refresh requested: offline-friendly fast path.
-    if (storedId && !doRefresh) {
-        console.log(`  Using stored accountId ${storedId} from profiles/bots.json (no lookup needed; pass --refresh-account to re-verify)`);
-        return { accountId: storedId, botMeta };
-    }
-    // No cache, or --refresh-account: resolve the name on-chain.
-    console.log(`  Resolving account name '${prefRaw}'...`);
-    const resolved = await resolveAccountId(prefRaw, nodeUrl);
-    if (!resolved) {
-        console.error(`Error: failed to resolve account name '${prefRaw}' to 1.2.x`);
-        process.exit(1);
-    }
-    console.log(`  → ${resolved}`);
-    if (!storedId && persistBotAccountId(botKey, resolved)) {
-        console.log(`  Stored accountId ${resolved} in profiles/bots.json for '${botKey}'`);
-    } else if (storedId && storedId !== resolved && persistBotAccountId(botKey, resolved)) {
-        console.log(`  Updated stored accountId ${storedId} → ${resolved} in profiles/bots.json for '${botKey}'`);
-    } else if (storedId === resolved) {
-        console.log(`  Stored accountId ${resolved} confirmed up to date`);
-    }
-    return { accountId: String(resolved), botMeta };
-}
-
-// ─── Asset precision resolution ───────────────────────────────────────────────
-async function resolveAssetPrecisions(fills: FillRecord[], nodeUrl: string | null): Promise<void> {
-    const unknownIds = new Set<string>();
-    for (const f of fills) {
-        for (const id of [f.pays.asset_id, f.receives.asset_id, f.fee.asset_id]) {
-            if (id !== BTS_ID && !(id in ASSETS) && !(id in resolvedPrecisions)) unknownIds.add(id);
-        }
-    }
-    if (unknownIds.size === 0 || !nodeUrl) return;
-    const ids = [...unknownIds];
-    console.log(`  Resolving ${ids.length} unknown asset(s) from blockchain...`);
-    const { createReadOnlyClient } = await import('../modules/bitshares-native/index.js');
-    const client = createReadOnlyClient({ nodes: [nodeUrl] });
-    try {
-        await client.connect();
-        const assets = await client.db('get_assets', [ids]);
-        if (Array.isArray(assets)) {
-            for (const asset of assets) {
-                if (asset?.id && asset.precision != null) {
-                    resolvedPrecisions[asset.id] = asset.precision;
-                    console.log(`    ${asset.id} → ${asset.symbol || '?'} (precision ${asset.precision})`);
-                }
-            }
-        }
-        const missing = ids.filter(id => !(id in resolvedPrecisions));
-        if (missing.length > 0) console.warn(`  [warn] ${missing.length} asset(s) not found on chain: ${missing.join(', ')}`);
-    } catch (e: any) {
-        console.warn(`  [warn] Asset resolution failed: ${e.message}`);
-    } finally {
-        try { client.disconnect(); } catch (_) {}
+// ─── Account resolution errors ────────────────────────────────────────────────
+/** Map a shared account-resolver failure onto this tool's operator-facing hint. */
+function reportAccountFailure(resolved: any, opts: any): void {
+    switch (resolved.reason) {
+        case 'bot-not-found':
+            console.error(`Error: bot key '${opts.botKey}' not found in profiles/bots.json and no --account provided.`);
+            console.error('Use --list-bots to see available keys, or pass --account <1.2.x> explicitly.');
+            break;
+        case 'override-unresolved':
+            console.error(`Error: failed to resolve --account '${opts.account}' to 1.2.x`);
+            break;
+        case 'no-preferred-account':
+            console.error(`Error: bot '${opts.botKey}' has no preferredAccount and no --account provided.`);
+            break;
+        default:
+            console.error(`Error: failed to resolve account name '${resolved?.botMeta?.preferredAccount ?? opts.botKey}' to 1.2.x`);
     }
 }
 
 // ─── Kibana fetch ─────────────────────────────────────────────────────────────
-function buildFillQuery(accountId: string, gte: string, lte: string, size: number) {
-    return {
-        size,
-        track_total_hits: false,
-        _source: [
-            'block_data.block_time',
-            'block_data.block_num',
-            'operation_id_num',
-            'operation_history.op_object.pays',
-            'operation_history.op_object.receives',
-            'operation_history.op_object.fee',
-            'operation_history.op_object.order_id',
-            'operation_history.op_object.account_id',
-            'operation_history.op_object.is_maker',
-        ],
-        query: {
-            bool: {
-                filter: [
-                    { term: { operation_type: OP_FILL_ORDER } },
-                    { term: { 'operation_history.op_object.account_id.keyword': accountId } },
-                    { range: { 'block_data.block_time': { gte, lte } } },
-                ],
-            },
-        },
-        sort: [
-            { 'block_data.block_time': { order: 'asc' } },
-            { operation_id_num: { order: 'asc' } },
-        ],
-    };
-}
-
 async function fetchAllOrderUpdates(config: any, accountId: string, gte: string, lte: string): Promise<OrderUpdate[]> {
     const pageSize = 10000;
     const updates: OrderUpdate[] = [];
@@ -532,41 +345,6 @@ async function fetchAllOrderUpdates(config: any, accountId: string, gte: string,
         if (!searchAfter || hits.length < pageSize) break;
     }
     return updates;
-}
-
-async function fetchAllFills(config: any, accountId: string, gte: string, lte: string): Promise<FillRecord[]> {
-    const pageSize = 10000;
-    const fills: FillRecord[] = [];
-    let searchAfter: any[] | null = null;
-    const cfg = { ...BASE_CONFIG, timeout: 60000, ...config };
-    while (true) {
-        const query = buildFillQuery(accountId, gte, lte, pageSize);
-        if (searchAfter) (query as any).search_after = searchAfter;
-        const result: any = await kibanaSearch(cfg, query);
-        const hits = result?.hits?.hits ?? [];
-        if (!hits.length) break;
-        for (const hit of hits) {
-            const src = hit?._source;
-            const op = src?.operation_history?.op_object;
-            if (!op || !op.pays || !op.receives) continue;
-            fills.push({
-                time: src.block_data?.block_time ?? '',
-                blockNum: src.block_data?.block_num ?? 0,
-                opNum: Number(src.operation_id_num ?? 0),
-                orderId: op.order_id ?? '',
-                accountId: op.account_id ?? '',
-                pays: { amount: Number(op.pays.amount ?? 0), asset_id: op.pays.asset_id ?? '' },
-                receives: { amount: Number(op.receives.amount ?? 0), asset_id: op.receives.asset_id ?? '' },
-                fee: { amount: Number(op.fee?.amount ?? 0), asset_id: op.fee?.asset_id ?? '' },
-                isMaker: op.is_maker ?? false,
-                sort: hit.sort,
-            });
-        }
-        if (hits.length < pageSize) break;
-        searchAfter = hits[hits.length - 1].sort;
-        if (!Array.isArray(searchAfter)) break;
-    }
-    return fills;
 }
 
 // ─── Fill classification ─────────────────────────────────────────────────────
@@ -934,7 +712,16 @@ async function main() {
     console.log(`\nGrid correction check — bot-key: ${opts.botKey}`);
     console.log(`Range: ${label}`);
 
-    const { accountId, botMeta } = await resolveAccountForBot(opts.botKey, opts.account, opts.node, opts.refreshAccount);
+    const resolvedAccount = await resolveBotAccount(opts.botKey, {
+        overrideAccount: opts.account,
+        refresh: opts.refreshAccount,
+    });
+    if (!resolvedAccount.accountId) {
+        reportAccountFailure(resolvedAccount, opts);
+        process.exit(1);
+    }
+    const accountId = resolvedAccount.accountId;
+    const botMeta = resolvedAccount.botMeta;
     console.log(`Account: ${accountId}${botMeta ? `  (${botMeta.assetA}/${botMeta.assetB})` : ''}`);
     const incrementPercent = resolveIncrementPercent(botMeta, opts.incrementPercent);
     console.log(`Increment: ${incrementPercent}% (halfInc ${incrementPercent/2}%)${opts.incrementPercent == null && botMeta?.incrementPercent != null ? ' — from bot config' : opts.incrementPercent != null ? ' — from --increment' : ' — default'}`);
@@ -952,7 +739,7 @@ async function main() {
         process.exit(0);
     }
 
-    await resolveAssetPrecisions(fills, opts.node);
+    await resolveAssetPrecisions(fills);
 
     const { trades, skipped } = classifyFills(fills);
     console.log(`  Classified ${trades.length} trade(s)${skipped > 0 ? `, ${skipped} skipped (unknown precision)` : ''}`);
