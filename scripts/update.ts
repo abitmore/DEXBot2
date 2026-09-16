@@ -499,6 +499,7 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
 
                     if (activeInConfig.length > 0) {
                         let runningProcesses: string[] = [];
+                        let pm2Usable = true;
                         try {
                             const output = execSync('pm2 jlist').toString().trim();
                             const jsonStart = output.indexOf('[');
@@ -510,43 +511,56 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
                                 log('Warning: PM2 jlist output did not contain JSON array.');
                             }
                         } catch (e: any) {
-                            log('Warning: Could not fetch PM2 process list. Falling back to config-only detection.');
-                            runningProcesses = activeInConfig;
+                            // pm2 is not installed (or not usable). Config-active
+                            // bots are not proof of running processes, so don't
+                            // fabricate a process list — skip PM2-managed restarts
+                            // and leave `restarted` false so the monolithic
+                            // auto-start fallback / manual-start notice applies.
+                            log('Warning: PM2 process list unavailable (is pm2 installed?). Skipping PM2-managed restarts.');
+                            pm2Usable = false;
                         }
 
-                        const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
-                        const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
-                        const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
-                        const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-                        const pm2Module = fs.existsSync(maPath)
-                            ? await import(maPath)
-                            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-                        const marketAdapterRequired = pm2Module.needsMarketAdapter(runningActiveBots);
+                        if (pm2Usable) {
+                            const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
+                            const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
+                            const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
+                            const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+                            const pm2Module = fs.existsSync(maPath)
+                                ? await import(maPath)
+                                : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
+                            const marketAdapterRequired = pm2Module.needsMarketAdapter(runningActiveBots);
 
-                        const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
-                        const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
-                        const allToRestart: string[] = [...botsToRestart, ...servicesToRestart];
+                            const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
+                            const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));
+                            const allToRestart: string[] = [...botsToRestart, ...servicesToRestart];
 
-                        if (allToRestart.length > 0) {
-                            log(`Active processes detected: ${allToRestart.join(', ')}`);
-                            for (const name of allToRestart) {
-                                try {
-                                    run(`pm2 restart "${name}"`);
-                                } catch (e) {
-                                    log(`Warning: Failed to restart process "${name}" (it might not be running).`);
+                            if (allToRestart.length > 0) {
+                                log(`Active processes detected: ${allToRestart.join(', ')}`);
+                                let restartOk = false;
+                                for (const name of allToRestart) {
+                                    try {
+                                        run(`pm2 restart "${name}"`);
+                                        restartOk = true;
+                                    } catch (e) {
+                                        log(`Warning: Failed to restart process "${name}" (it might not be running).`);
+                                    }
                                 }
+                                if (restartOk) {
+                                    restarted = true;
+                                } else {
+                                    log('Warning: none of the PM2 restart attempts succeeded.');
+                                }
+                            } else {
+                                log('No active processes currently running in PM2. Skipping restart.');
                             }
-                            restarted = true;
-                        } else {
-                            log('No active processes currently running in PM2. Skipping restart.');
-                        }
 
-                        if (marketAdapterRequired && !runningProcesses.includes('dexbot-adapter')) {
-                            log('dexbot-adapter is required by an AMA-grid bot but not running. Starting from ecosystem...');
-                            try {
-                                run(`pm2 start "${PATHS.PROFILES.ECOSYSTEM_CONFIG_JS}" --only dexbot-adapter`);
-                            } catch (e) {
-                                log('Warning: Failed to start dexbot-adapter from ecosystem config.');
+                            if (marketAdapterRequired && !runningProcesses.includes('dexbot-adapter')) {
+                                log('dexbot-adapter is required by an AMA-grid bot but not running. Starting from ecosystem...');
+                                try {
+                                    run(`pm2 start "${PATHS.PROFILES.ECOSYSTEM_CONFIG_JS}" --only dexbot-adapter`);
+                                } catch (e) {
+                                    log('Warning: Failed to start dexbot-adapter from ecosystem config.');
+                                }
                             }
                         }
                     } else {
