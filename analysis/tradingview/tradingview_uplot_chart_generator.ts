@@ -2,7 +2,7 @@
 
 import fs from 'node:fs';
 import { MARKET_ADAPTER } from '../../modules/constants.js';
-import { escapeHtml, serializeJsonForScript, UPLOT_SHARED_SCRIPT, embedFunctionSources } from '../chart_utils.js';
+import { escapeHtml, serializeJsonForScript, UPLOT_SHARED_SCRIPT, embedFunctionSources, uplotInlineTags } from '../chart_utils.js';
 import { cursorCSS, uplotBgCSS } from '../chart_css.js';
 import { zoomResetScript } from '../chart_ui.js';
 import { normalizeCandle } from '../math_utils.js';
@@ -240,8 +240,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
     <meta name="darkreader-lock">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="../uplot/uPlot.min.css">
-    <script src="../uplot/uPlot.iife.min.js"></script>
+    ${uplotInlineTags()}
     <style>
         * { box-sizing: border-box; }
         :root { color-scheme: dark; }

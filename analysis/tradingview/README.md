@@ -203,7 +203,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 
 ## Notes
 
-- The chart uses vendored `uPlot` from `analysis/uplot/` in the generated HTML (no CDN dependency).
+- The chart embeds the vendored `uPlot` runtime inline (no CDN, no sibling `uplot/` dir, no DEXBot2 install needed). Each export is a single self-contained HTML file that renders anywhere, even after being copied or mailed to a machine without DEXBot2.
 - The displayed indicators are computed from the 1h base candles and then sampled onto the selected timeframe.
 - The current volume-weighted overlay is a rolling `VWMA`, not a session-reset VWAP.
 - SMA is disabled by default.
@@ -218,7 +218,7 @@ market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
 - Mouse: drag the candles to pan time + price (price drag sets a manual range); wheel zooms time, except over the price axis where it zooms price. Shift+wheel zooms price anywhere over the price pane (cursor-anchored). Dragging the price-axis gutter scales price, dragging the time-axis gutter scales the timeframe; double-click the price axis to return to autofit. While the price range is manual, timeframe moves no longer refit it.
 - Indicator, timeframe, scale, and overlay-visibility changes are persisted in browser `localStorage` per pool/pair chart (`dexbot2-tradingview-uplot-v3:<pool>:<A>_<B>:<baseSecs|base>`); cursor sync between the price/volume panes uses a separate constant key.
 - The price axis defaults to log base `10`, with a toolbar switch for `Log` / `Linear`.
-- If you regenerate the HTML and then open it later, no CDN access is needed — `uPlot` is loaded from the vendored local copy at `analysis/uplot/`.
+- If you regenerate the HTML and then open it later, no CDN access is needed — the `uPlot` library (JS + CSS) is inlined into the file itself, so it renders fully offline and is independent of where the file lives on disk.
 
 ## Typical Workflow
 

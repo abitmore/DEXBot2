@@ -56,7 +56,7 @@ function testGenerateHtml() {
         'Derivative Trend Analysis'
     );
 
-    assert.ok(html.includes('uPlot.iife.min.js'));
+    assert.ok(html.includes('leeoniya/uPlot') && !html.includes('../uplot/'), 'uPlot runtime should be inlined, not referenced relatively');
     assert.ok(html.includes('price-chart'));
     assert.ok(html.includes('deriv-chart'));
     assert.ok(html.includes('interp-chart'));
