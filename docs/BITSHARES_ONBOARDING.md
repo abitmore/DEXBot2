@@ -14,7 +14,7 @@ trade, assuming you are new to BitShares and the Linux terminal:
 
 **Prerequisite:** DEXBot2 is installed. See the "Installation" section of the
 root [README](../README.md#-installation) for installation options
-(`npm i -g dexbot` or clone + `npm install`).
+(`npm i -g dexbot` or clone + `npm install` + `npm link`).
 
 ---
 
@@ -373,6 +373,41 @@ Stop the runtime with `dexbot stop`. `dexbot restart` restarts it.
 ---
 
 ## Troubleshooting first-run mistakes
+
+### "`npm link` says permission denied / `EACCES`"
+
+Don't use `sudo npm link` — it creates root-owned files that break later
+builds and runs. With a user-owned Node (nvm, Homebrew) `npm link` needs no
+root. Check that first:
+
+```bash
+which node npm       # both should point at your user install
+npm prefix -g        # must be a directory you own
+```
+
+- **System Node (`/usr/bin`, `/usr/local/bin`)?** Redirect npm to your home
+  directory instead of using `sudo`:
+
+  ```bash
+  mkdir -p ~/.npm-global
+  npm config set prefix ~/.npm-global
+  # add ~/.npm-global/bin to PATH, then re-open the shell
+  ```
+
+  Packages installed before the redirect (in the old prefix) stay in the old
+  location — reinstall the ones you need (`npm i -g dexbot`) and check
+  `which dexbot` points under `~/.npm-global`.
+
+- **Already ran `sudo npm link`?** Undo it and relink as yourself:
+
+  ```bash
+  sudo npm unlink -g dexbot
+  sudo chown -R "$(whoami)" <path-to-your-DEXBot2-checkout>
+  cd <path-to-your-DEXBot2-checkout>
+  npm install && npm link
+  ```
+
+Check with `dexbot --help`.
 
 ### "I imported my key but the bot's orders are rejected"
 
