@@ -122,6 +122,10 @@ npm install
 npm link
 ```
 
+If `npm link` fails with `EACCES` or `dexbot` isn't found afterwards, see the
+[first-run troubleshooting](docs/BITSHARES_ONBOARDING.md#troubleshooting-first-run-mistakes)
+section in the onboarding guide.
+
 ### Where your data lives
 
 Both installs use the same CLI and store all user state — keys, `bots.json`, logs — in `~/.config/dexbot2/profiles` (Windows: `%USERPROFILE%\.config\dexbot2\profiles`). State lives outside the repo/package tree, so it survives reinstalls and `npm update -g`. A source checkout that already contains a populated `profiles/` directory keeps using it. Override the location with `DEXBOT_PROFILE_ROOT` (see the [developer guide](docs/developer_guide.md)).

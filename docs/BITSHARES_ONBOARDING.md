@@ -409,6 +409,64 @@ npm prefix -g        # must be a directory you own
 
 Check with `dexbot --help`.
 
+### "npm says it blocked dexbot's install scripts (`prepare` / `postinstall`)"
+
+npm 12+ no longer runs lifecycle scripts of packages it installs unless they
+are covered by an `allowScripts` allowlist (npm's supply-chain hardening,
+[npm/rfcs#868](https://github.com/npm/rfcs/blob/master/text/0868-allow-scripts.md)).
+You'll see `npm warn install-scripts ... 1 package had install scripts
+blocked` listing `dexbot@x.y.z (postinstall: node scripts/postinstall.js;
+prepare: npm run build:clean)`.
+
+Why it shows up with `npm link`: without arguments, `npm link` adds your
+checkout (`file:<checkout>`) to the **global** install tree — so npm treats
+your own checkout like a third-party dependency and blocks its scripts
+because no allowlist covers a local path. This is the feature working as
+designed (your scripts are fine; npm just can't verify that), with one rough
+edge: the warning tells you to run `npm install-scripts ls` / `approve`, but
+that command can never list or approve the checkout itself — in your own
+project it is the project root, which npm deliberately excludes from review.
+Don't chase it.
+
+The important part: **the same block does not apply to a plain `npm
+install`** — a bare install in a project runs the project's own `prepare`
+directly, ungated. So the correct from-source order is:
+
+```bash
+cd <path-to-your-DEXBot2-checkout>
+npm install      # runs the project's prepare → builds dist/
+npm link         # creates the global symlink; a blocked prepare here is harmless
+```
+
+If you skipped the `npm install` (or want to be sure), just build manually:
+
+```bash
+npm run build
+```
+
+Notes:
+
+- The blocked `postinstall` is only the "DEXBot2 installed!" banner — purely
+  cosmetic. The blocked `prepare` is the build; the steps above replace it.
+- Bins are never gated by npm's script blocking, so once `dist/` exists the
+  linked `dexbot` command works.
+- `npm i -g dexbot` on npm 12+ may warn the same way about the `postinstall`
+  banner being skipped. That's harmless — the published package ships
+  prebuilt and the banner is informational.
+
+### "`Unknown command: dexbot` right after installing/linking"
+
+Two possible causes:
+
+- **The link or build silently failed** — see the two entries above. A quick
+  check: `which dexbot` must point into a directory you own (not `/usr/bin`,
+  `/usr/local/bin`, or another root-owned prefix), and `npm prefix -g` must be
+  a user-owned directory.
+
+- **The shell hasn't noticed the new command yet.** Open a fresh shell
+  (`exec fish`, `exec bash`, or just close and reopen the terminal). In bash
+  you can also run `hash -r` to clear the cached command lookup.
+
 ### "I imported my key but the bot's orders are rejected"
 
 You imported the wrong key type. DEXBot2 needs the account's **active**
