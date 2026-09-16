@@ -65,8 +65,8 @@ Install Git:
 sudo apt-get update
 sudo apt-get install git
 
-# Arch/Manjaro
-sudo pacman -Sy git
+# Arch/Manjaro/CachyOS
+sudo pacman -Syu git
 
 # Fedora/RHEL
 sudo dnf install git
