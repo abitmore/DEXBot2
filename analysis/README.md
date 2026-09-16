@@ -206,9 +206,10 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `Expectancy (gross)` | How much one trade is expected to earn before fees. Positive = edge exists. The `R` version normalises this by the average loss size (reports in R-multiples instead of BTS). The `net` version subtracts fees. |
 | `Median R` | The middle R-multiple value (half of trades are above, half below). `>1R` / `>2R` = % of trades that earned more than 1× or 2× the average loss. `<-1R` = % that lost more than 1× the average loss. |
 | `PnL distribution` | Median, P25, P75, Best, Worst — the centre, spread, and extremes of per-trade return %. Not annualised, just per cycle. |
-| `Sharpe (ann)` | How consistent your daily net PnL is per unit of volatility. Dimensionful (based on absolute daily PnL, not % returns) — use for ranking your own runs, not comparing across account sizes. |
-| `Sortino (ann)` | Same method but only penalises days where you lost money (downside volatility). Higher than the Sharpe is normal; a big gap means most volatility came from winning days. |
-| `Max Drawdown` | Largest peak-to-trough equity decline as a % of the peak. How bad things got. |
+| `Sharpe (ann)` | The window's net PnL per unit of volatility, annualised (`mean/std × √periods-per-year`). Binned daily for ≥ 3-day windows, hourly below; every period counts, flat ones as 0 PnL. Shown as `value ± estimation error [bin, n, confidence]` — short windows are low confidence, and only same-bin runs are comparable. Dimensionful (absolute PnL, not % returns). |
+| `Sortino (ann)` | As Sharpe, but only losing periods feed the downside deviation. `∞` means the window had no losing periods. |
+| `Projected net PnL` | Scored-window net PnL scaled linearly to a year (`÷ scored days × 365`) — same whole-period basis as Sharpe/Sortino, so a trailing partial period is excluded from both. A projection, not a forecast. |
+| `Max Drawdown` | Largest peak-to-trough decline of the realised-PnL curve, in quote units (with the same decline as a % of peak cumulative profit). Realised only — open inventory isn't marked. |
 | `Max Recovery Time` | Longest time (in days) from the deepest point of a drawdown back to a new equity high. |
 | `Max Consecutive W/L` | Longest streak of winning or losing round-trips. Grouped by sell order, so one order covering multiple buy lots counts as one result. Grid bots naturally cluster wins during trends — streaks of 100-200 are not alarming. |
 | `Avg hold time` | Average time (hours) between buying an asset and selling it. |
@@ -216,8 +217,8 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `Sell orders filled` | Number of distinct sell orders that were filled in the period. |
 | `Partial fills/order` | How many buy lots each sell order consumed (mean, median, max). For a grid bot: 2.0 median means half the orders clear 2 grid levels; 18 max means one big sweep. |
 | `One-shot orders` | % of orders that matched exactly 1 buy lot. Low % = your grid is thick enough that orders routinely cover multiple levels. |
-| `Fills/day` | Average matched lots per calendar day. Raw activity speed. |
-| `Avg vol/day` | Average daily trading volume in the quote asset. |
+| `Fills/day` | Average matched lots per scored day, on the same whole-period basis as the ratios above. Raw activity speed. |
+| `Avg vol/day` | Average daily trading volume in the quote asset over that same scored window. |
 
 </details>
 

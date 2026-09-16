@@ -829,6 +829,12 @@ function printPnlDetail(pairs: PairAnalysis[]) {
 
 // ─── Performance Metrics ──────────────────────────────────────────────────────
 
+interface WindowRange {
+    /** The analysis window actually queried — drives annualisation. */
+    startMs: number;
+    endMs: number;
+}
+
 interface TradingMetrics {
     totalLots: number;
     winRate: number;
@@ -840,8 +846,22 @@ interface TradingMetrics {
     expectancyPct: number;
     expectancyR: number;
     netExpectancyBts: number;
-    dailyPnlRatio: number;
-    dailyDownsideRatio: number;
+    // Risk-adjusted ratios annualised from the analysis window (see
+    // --hours/--start/--end). Binned 1d for windows >= 3 days, else 1h; every
+    // period in the window is zero-filled so flat periods count as 0 PnL and
+    // the window scales cleanly to a year. Only whole periods are scored: a
+    // trailing partial period is excluded from ratios AND projection alike,
+    // so both share the same denominator.
+    sharpeAnn: number;          // NaN when undefined (no dispersion / < 2 periods)
+    sortinoAnn: number;         // Infinity when the window has no losing periods
+    sharpeAnnSE: number;        // standard error of sharpeAnn (estimation uncertainty)
+    periodLabel: string;        // '1h' | '1d'
+    periodCount: number;        // whole periods scored, including zero-PnL ones
+    periodSpanDays: number;     // queried window length
+    scoredSpanDays: number;     // whole-period span actually scored (nPeriods × bin)
+    annualFactor: number;       // sqrt(periods per year)
+    projectedNetPnlPerDay: number;
+    projectedNetPnlAnn: number;
     maxConsecWins: number;
     maxConsecLosses: number;
     avgHoldHours: number;
@@ -849,6 +869,7 @@ interface TradingMetrics {
     bestTradePct: number;
     worstTradePct: number;
     mddPct: number;
+    mddAbsBts: number;
     mddHadStablePeak: boolean;
     isOngoingRecovery: boolean;
     currentDrawdownDays: number;
@@ -882,7 +903,7 @@ function percentile(sorted: number[], p: number): number {
     return sorted[f] * (c - k) + sorted[c] * (k - f);
 }
 
-function computeMetrics(pair: PairAnalysis): TradingMetrics {
+function computeMetrics(pair: PairAnalysis, window?: WindowRange): TradingMetrics {
     const pnls = pair.realizedPnls;
     const total = pnls.length;
     if (total === 0) {
@@ -891,11 +912,15 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
             avgWin: 0, avgLoss: 0, avgWinLossRatio: 0,
             expectancyBts: 0, expectancyPct: 0, expectancyR: 0,
             netExpectancyBts: 0,
-            dailyPnlRatio: 0, dailyDownsideRatio: 0,
+            sharpeAnn: NaN, sortinoAnn: NaN, sharpeAnnSE: NaN,
+            periodLabel: '—', periodCount: 0, periodSpanDays: 0, scoredSpanDays: 0,
+            annualFactor: 0,
+            projectedNetPnlPerDay: 0, projectedNetPnlAnn: 0,
             maxConsecWins: 0, maxConsecLosses: 0,
             avgHoldHours: 0, limitOrderRatio: 0,
             bestTradePct: 0, worstTradePct: 0,
             mddPct: 0,
+            mddAbsBts: 0,
             mddHadStablePeak: false,
             isOngoingRecovery: false,
             currentDrawdownDays: 0,
@@ -937,29 +962,91 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
 
     const netExpectancyBts = pair.totalRealizedPnlNet / total;
 
-    // Daily-binned net PnL for mean/std ratio (dimensionful — not a Sharpe ratio)
-    const dayBuckets: Record<string, number> = {};
+    // ─── Risk-adjusted ratios (window-aware annualisation) ────────────────
+    // Bin the window's net PnL into calendar periods and annualise with the
+    // matching periods-per-year. Every period in the window is represented
+    // (zero-filled): flat periods must count as 0 PnL, otherwise a bot that
+    // trades a few days a week is scored as if it traded every day, and the
+    // window cannot be scaled honestly to a year.
+    const HOUR_MS = 3600_000;
+    const DAY_MS = 86_400_000;
+    const times = pnls.map(r => Date.parse(r.exitTime)).filter(t => Number.isFinite(t));
+    const firstMs = window?.startMs ?? (times.length > 0 ? Math.min(...times) : 0);
+    const lastMs = window?.endMs ?? (times.length > 0 ? Math.max(...times) : firstMs + DAY_MS);
+    const spanMs = Math.max(lastMs - firstMs, window ? HOUR_MS : DAY_MS);
+    const periodSpanDays = spanMs / DAY_MS;
+    // Daily buckets need a handful of observations before a daily std means
+    // anything; shorter windows fall back to hourly bins so they still
+    // annualise instead of dividing by a one-sample std.
+    const useHourly = periodSpanDays < 3;
+    const periodMs = useHourly ? HOUR_MS : DAY_MS;
+    const periodsPerYear = useHourly ? 8760 : 365;
+    const periodLabel = useHourly ? '1h' : '1d';
+
+    // Score only whole periods: a trailing partial period (window not an exact
+    // multiple of the bin) would otherwise be a deflated observation. It is
+    // excluded from ratios, projection AND activity rates alike, so every
+    // window-derived metric shares one basis. Bins are aligned to the window
+    // start, so an exact-multiple window scores everything.
+    const nPeriods = Math.max(1, Math.floor(spanMs / periodMs));
+    const scoredSpanDays = nPeriods * periodMs / DAY_MS;
+    const scoredEndMs = firstMs + nPeriods * periodMs;
+    const exactWindow = spanMs === nPeriods * periodMs;
+    // A fill belongs to the scored window if it falls inside the whole
+    // periods. On an exact-multiple window the end boundary is inclusive (the
+    // ES range query includes `lte`); with a partial tail that boundary fill
+    // is trailing and excluded along with the rest of the tail.
+    const inScoredWindow = (t: number) =>
+        Number.isFinite(t) && t >= firstMs
+        && (t < scoredEndMs || (exactWindow && t === scoredEndMs));
+    const periodPnl = new Array<number>(nPeriods).fill(0);
+    let scoredFillCount = 0;
     for (const r of pnls) {
-        const day = r.exitTime.slice(0, 10);
-        dayBuckets[day] = (dayBuckets[day] || 0) + r.pnlNet;
+        const t = Date.parse(r.exitTime);
+        if (!inScoredWindow(t)) continue;
+        let idx = Math.floor((t - firstMs) / periodMs);
+        if (idx === nPeriods) idx = nPeriods - 1; // inclusive end boundary
+        periodPnl[idx] += r.pnlNet;
+        scoredFillCount++;
     }
-    const dailyRets = Object.values(dayBuckets);
-    const nDays = dailyRets.length;
 
-    const meanDailyRet = nDays > 0 ? dailyRets.reduce((s, v) => s + v, 0) / nDays : 0;
-    const dailyVar = nDays > 0
-        ? dailyRets.reduce((s, v) => s + (v - meanDailyRet) ** 2, 0) / nDays
+    const meanPeriod = periodPnl.reduce((s, v) => s + v, 0) / nPeriods;
+    // Sample variance (n-1): the window is a sample, not the whole population.
+    const periodVar = nPeriods > 1
+        ? periodPnl.reduce((s, v) => s + (v - meanPeriod) ** 2, 0) / (nPeriods - 1)
         : 0;
-    const dailyStd = Math.sqrt(dailyVar);
-    const annFactor = Math.sqrt(365);
-    const dailyPnlRatio = dailyStd > 0 ? (meanDailyRet / dailyStd) * annFactor : 0;
+    const periodStd = Math.sqrt(periodVar);
+    const annualFactor = Math.sqrt(periodsPerYear);
+    const sharpeAnn = periodStd > 0 ? (meanPeriod / periodStd) * annualFactor : NaN;
 
-    // Downside deviation uses only negative returns; same N denominator
-    const downsideVar = nDays > 0
-        ? dailyRets.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / nDays
+    // Estimation uncertainty of the annualised Sharpe (Lo 2002, i.i.d. returns).
+    const srPerPeriod = periodStd > 0 ? meanPeriod / periodStd : NaN;
+    const sharpeAnnSE = nPeriods > 1 && Number.isFinite(srPerPeriod)
+        ? Math.sqrt((1 + 0.5 * srPerPeriod * srPerPeriod) / nPeriods) * annualFactor
+        : NaN;
+
+    // Target downside deviation (MAR = 0), sample denominator (n-1) to match
+    // the Sharpe convention above — the two ratios stay internally
+    // comparable (many textbook Sortinos divide by N; we deliberately
+    // don't mix conventions). With no losing periods Sortino is undefined —
+    // reporting 0 would read as "terrible", the opposite of truth.
+    const downsideVar = nPeriods > 1
+        ? periodPnl.reduce((s, v) => s + (v < 0 ? v * v : 0), 0) / (nPeriods - 1)
         : 0;
     const downsideStd = Math.sqrt(downsideVar);
-    const dailyDownsideRatio = downsideStd > 0 ? (meanDailyRet / downsideStd) * annFactor : 0;
+    const sortinoAnn = nPeriods < 2
+        ? NaN
+        : (downsideStd > 0
+            ? (meanPeriod / downsideStd) * annualFactor
+            : (meanPeriod > 0 ? Infinity : NaN));
+
+    // "This window repeated all year" — linear projection of the scored
+    // window's net PnL. Uses the same whole-period basis as the ratios
+    // above (not the raw window total), so Sharpe and projection can never
+    // disagree about what the window contains.
+    const scoredPnl = periodPnl.reduce((s, v) => s + v, 0);
+    const projectedNetPnlPerDay = scoredPnl / scoredSpanDays;
+    const projectedNetPnlAnn = projectedNetPnlPerDay * 365;
 
     // Fills-per-order distribution (grouped by sell order)
     const fillCounts: number[] = [];
@@ -980,8 +1067,13 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
     const oneShotOrderRatio = sellOrdersFilled > 0
         ? fillCounts.filter(c => c === 1).length / sellOrdersFilled
         : 0;
-    const fillsPerDay = nDays > 0 ? total / nDays : 0;
-    const avgVolumePerDay = nDays > 0 ? (pair.totalBuyQuote + pair.totalSellQuote) / nDays : 0;
+    // Activity rates share the scored whole-period basis: numerator and
+    // denominator both cover exactly the lots/fills the ratios scored. A fill
+    // with an unparseable timestamp has no period, so it is excluded here too.
+    const scoredNotional = [...pair.buys, ...pair.sells]
+        .reduce((s, f) => s + (inScoredWindow(Date.parse(f.time)) ? f.quoteAmount : 0), 0);
+    const fillsPerDay = scoredSpanDays > 0 ? scoredFillCount / scoredSpanDays : 0;
+    const avgVolumePerDay = scoredSpanDays > 0 ? scoredNotional / scoredSpanDays : 0;
 
     // Avg hold duration
     let totalHours = 0;
@@ -1023,7 +1115,7 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
     const chronological = [...pnls].sort((a, b) =>
         new Date(a.exitTime).getTime() - new Date(b.exitTime).getTime()
     );
-    let equity = 0, peak = 0, mddPct = 0;
+    let equity = 0, peak = 0, mddPct = 0, mddAbsBts = 0;
     let maxRecoveryDays = 0;
     let isOngoingRecovery = false;
     let currentDrawdownDays = 0;
@@ -1067,6 +1159,8 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
             }
             const dd = (equity - peak) / peak;
             if (dd < mddPct) mddPct = dd;
+            const ddAbs = peak - equity;
+            if (ddAbs > mddAbsBts) mddAbsBts = ddAbs;
         }
 
         if (peak > 0 && !hadStablePeak) {
@@ -1090,6 +1184,7 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
         mddPct *= 100;
     } else {
         mddPct = hasPrePeakEquity ? prePeakMinEquity : 0;
+        mddAbsBts = 0;
     }
 
     // Payoff distribution stats
@@ -1121,8 +1216,16 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
         expectancyPct,
         expectancyR,
         netExpectancyBts,
-        dailyPnlRatio,
-        dailyDownsideRatio,
+        sharpeAnn,
+        sortinoAnn,
+        sharpeAnnSE,
+        periodLabel,
+        periodCount: nPeriods,
+        periodSpanDays,
+        scoredSpanDays,
+        annualFactor,
+        projectedNetPnlPerDay,
+        projectedNetPnlAnn,
         feeDragPct,
         maxConsecWins: maxW,
         maxConsecLosses: maxL,
@@ -1131,6 +1234,7 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
         bestTradePct,
         worstTradePct,
         mddPct,
+        mddAbsBts,
         mddHadStablePeak: hadStablePeak,
         isOngoingRecovery,
         currentDrawdownDays,
@@ -1152,11 +1256,11 @@ function computeMetrics(pair: PairAnalysis): TradingMetrics {
     };
 }
 
-function printMetrics(pairs: PairAnalysis[]) {
+function printMetrics(pairs: PairAnalysis[], window?: WindowRange) {
     for (const pair of pairs) {
         if (pair.realizedPnls.length === 0) continue;
 
-        const m = computeMetrics(pair);
+        const m = computeMetrics(pair, window);
         const pairLabel = `${fmtAsset(pair.baseAsset)}/${fmtAsset(pair.quoteAsset)}`;
 
         console.log('');
@@ -1185,13 +1289,24 @@ function printMetrics(pairs: PairAnalysis[]) {
         console.log(`  P25 / P75:            ${fmtPct(m.p25PnlPct)} / ${fmtPct(m.p75PnlPct)}`);
         console.log(`  Best / Worst Trade:   ${fmtPct(m.bestTradePct)} / ${fmtPct(m.worstTradePct)}`);
         console.log('');
-        // Risk-adjusted (dimensionful — based on absolute daily PnL, not % returns)
-        console.log(`  Sharpe (ann):         ${m.dailyPnlRatio.toFixed(2)}`);
-        console.log(`  Sortino (ann):        ${m.dailyDownsideRatio.toFixed(2)}`);
+        // Risk-adjusted — annualised from the analysis window, zero-filled bins
+        const ratioStr = (v: number) => Number.isFinite(v) ? v.toFixed(2) : (v === Infinity ? '∞' : 'n/a');
+        const seStr = Number.isFinite(m.sharpeAnnSE) ? ` ± ${m.sharpeAnnSE.toFixed(2)}` : '';
+        const confidence = m.periodSpanDays < 30 ? 'low confidence' : 'ok';
+        console.log(`  Sharpe (ann):         ${ratioStr(m.sharpeAnn)}${seStr}   [${m.periodLabel} bins, n=${m.periodCount}, ${confidence}]`);
+        const sortinoNote = m.sortinoAnn === Infinity ? '   (no losing periods)' : '';
+        console.log(`  Sortino (ann):        ${ratioStr(m.sortinoAnn)}${sortinoNote}`);
+        if (m.periodLabel === '1h') {
+            console.log(`    ⚠ window < 3 days: hourly bins over an unrepresentative sample — treat the annualised ratios as indicative only and never rank them against 1d-binned runs`);
+        }
+        const spanStr = m.scoredSpanDays < m.periodSpanDays - 1e-9
+            ? `${m.scoredSpanDays.toFixed(1)}d scored of ${m.periodSpanDays.toFixed(1)}d window`
+            : `${m.periodSpanDays.toFixed(1)}d`;
+        console.log(`  Projected net PnL:    ${fmt(m.projectedNetPnlAnn, 2)} ${qSymbol}/yr   (${fmt(m.projectedNetPnlPerDay, 2)}/day over ${spanStr})`);
         console.log('');
         // Tail risk
         if (m.mddHadStablePeak) {
-            console.log(`  Max Drawdown:         ${fmtPct(m.mddPct)}`);
+            console.log(`  Max Drawdown:         ${fmt(m.mddAbsBts, 4)} ${qSymbol} (${fmtPct(m.mddPct)} of peak cumulative profit)`);
         } else {
             console.log(`  Min Equity:            ${fmt(m.mddPct, 4)} ${fmtAsset(pair.quoteAsset)}`);
         }
@@ -1451,7 +1566,7 @@ async function run() {
         printPnlDetail(analyses);
     }
 
-    printMetrics(analyses);
+    printMetrics(analyses, { startMs: Date.parse(gte), endMs: Date.parse(lte) });
 
     if (opts.csv) {
         exportCsv(analyses, opts.csv);
