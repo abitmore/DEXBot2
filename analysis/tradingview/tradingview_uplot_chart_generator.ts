@@ -583,7 +583,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
                         </span>
                     </div>
                     <div class="indicator">
-                        <label><input type="checkbox" id="ama-init-offset-toggle"> Init Offset</label>
+                        <label title="Init Offset"><input type="checkbox" id="ama-init-offset-toggle"> Offset</label>
                         <input type="range" id="ama-init-offset" min="-50" max="50" value="0" step="1" style="width:90px;vertical-align:middle" disabled>
                         <span id="ama-init-offset-val" style="font-size:11px;color:#8b949e;width:32px;display:inline-block;text-align:right">0%</span>
                     </div>
