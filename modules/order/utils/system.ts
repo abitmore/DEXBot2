@@ -416,7 +416,7 @@ export const derivePoolPrice = async (BitShares: any, symA: string, symB: string
  * asset with the deepest markets, so almost every listed asset has a price
  * path against it even when no direct market exists for an exotic pair.
  */
-export const DEFAULT_PRICE_BRIDGES = ['BTS'];
+const DEFAULT_PRICE_BRIDGES = ['BTS'];
 
 function isPositiveRate(value: any): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0;
@@ -492,7 +492,7 @@ export async function derivePriceWithBridges(BitShares: any, symA: string, symB:
  * @param {string} shareAssetRef - Share asset symbol or reference
  * @returns {Promise<Object|null>} Object with {shareAsset, pool} or null if not found
  */
-export async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAssetRef: string): Promise<any> {
+async function resolveLiquidityPoolByShareAsset(BitShares: any, shareAssetRef: string): Promise<any> {
     if (!BitShares?.db || typeof BitShares.db.get_liquidity_pools_by_share_asset !== 'function') {
         return null;
     }

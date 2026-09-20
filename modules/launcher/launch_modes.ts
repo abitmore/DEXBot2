@@ -129,5 +129,5 @@ function parsePm2Args(argv = process.argv) {
     };
 }
 
-export { findFirstPositionalArg, parsePm2Args, parseUnlockArgs }
+export { parsePm2Args, parseUnlockArgs }
 

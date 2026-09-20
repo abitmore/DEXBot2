@@ -647,5 +647,5 @@ async function exportBotTrades(botKey: any, botConfig: any, outputDir: any = './
     }
 }
 
-export { exportBotTrades, parseLogFile, parseFillLine, parseFeeLine, deriveTradeFromFillBlock, resolveExportAssetContext }
+export { exportBotTrades, parseLogFile, parseFillLine, parseFeeLine, deriveTradeFromFillBlock }
 

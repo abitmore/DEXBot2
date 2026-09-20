@@ -153,8 +153,6 @@ function readAdapterRequirement(botsFile?: string): {
 }
 
 export {
-    ADAPTER_OWNER_ENV,
-    WRAPPER_ADAPTER_OWNER,
     isWrapperAdapterOwner,
     buildAdapterFingerprint,
     readAdapterRequirement,

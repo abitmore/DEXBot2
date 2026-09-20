@@ -1566,5 +1566,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseCronToDelta, deltaToCron }
+export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments }
 

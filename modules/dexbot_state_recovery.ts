@@ -739,5 +739,5 @@ async function targetedOrderRepair(bot: any, orderIds: any) {
     }
 }
 
-export { persistAndRecoverIfNeeded, getRecentFillKeysSnapshot, triggerStateRecoverySync, abortFlowIfIllegalState, handleBatchHardAbort, applyRecoverableGridUpdates, recoverExplicitStaleOrders, recoverBatchSizeDrift, extractSizeDriftOrderIds, recoverFromPersistedGrid, rejectCorruptedGridSnapshot, targetedOrderRepair, _schedulePostRecoveryRebalance as schedulePostRecoveryRebalance }
+export { persistAndRecoverIfNeeded, getRecentFillKeysSnapshot, triggerStateRecoverySync, abortFlowIfIllegalState, handleBatchHardAbort, applyRecoverableGridUpdates, recoverExplicitStaleOrders, recoverBatchSizeDrift, recoverFromPersistedGrid, rejectCorruptedGridSnapshot, targetedOrderRepair, _schedulePostRecoveryRebalance as schedulePostRecoveryRebalance }
 

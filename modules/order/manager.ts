@@ -479,7 +479,6 @@ class OrderManager {
     _divergenceLock: any;
     _gridLock: any;
     _fundLock: any;
-    _recentlyRotatedOrderIds: Set<any>;
     _gridSidesUpdated: Set<any>;
     _pauseFundRecalc: number;
     _pauseFundRecalcWatchdog: ReturnType<typeof setTimeout> | null;
@@ -516,10 +515,6 @@ class OrderManager {
     _lastBoundaryHoldResyncAt: number;
     _gapEvacStreaks: Map<string, number>;
     _gapEvacCancelQueued: Set<string>;
-    // anchor fields removed
-    // Note: dedupe lives inside the anchor object (`_seenKeys`), not here.
-    // Kept for backwards compat if external code checks existence; not used.
-
     _metrics: any;
     private _currentWorkingGridStack: any[];
     _cowEngine: any;
@@ -604,7 +599,6 @@ class OrderManager {
         });
         this._fundLock = new AsyncLock({ timeout: 30000 });
 
-        this._recentlyRotatedOrderIds = new Set();
         this._gridSidesUpdated = new Set();
         this._pauseFundRecalc = 0;
         this._pauseFundRecalcWatchdog = null;
