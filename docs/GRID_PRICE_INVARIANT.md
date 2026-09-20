@@ -37,75 +37,23 @@ range" (passes every range guard) and "not a valid slot" (violates the
 invariant), with no check in between.** Range guards cannot see it; only a
 grid-membership check can.
 
-## The failure mechanism
+## Why this guard exists
 
-The engine had two contradictory sources of truth for "what price is this slot":
+`isChainPriceOutOfGrid` answers "is the price inside the configured range?", not
+"is it *this slot's* level?" — so a non-grid price can sit inside the range and
+pass every range guard (see the band explanation above). Historically the engine
+held two sources of truth for a slot's price: the genesis ladder and the mutable
+`slot.price` field written from chain data. The mutable field repeatedly won —
+orphan adoption stored the chain price, the COW `CREATE` path re-broadcast
+`liveSlot.price` in place of the planned price, and the fill-guard pivot was
+seeded from unanchored fill prices — after which the off-grid price re-entered
+the engine as "evidence" and ratcheted.
 
-| Concept | Source | Used by |
-|---|---|---|
-| Genesis table | `priceForSlot(idx, genesis)` | grid build, load validation |
-| Live slot price | `slot.price`, mutated from chain | COW broadcast, fill guard pivot |
-
-Every observed violation was the second winning over the first. Five distinct
-mechanisms fed it:
-
-- **S1 — chain price overwrote the slot's identity price.** Orphan adoption set
-  `price: chainOrder.price`, so a slot's id and its price could disagree.
-- **S2 — pre-broadcast substitution re-broadcast the corrupted price.** The
-  planned (genesis-derived) price was replaced with `liveSlot.price` — i.e. with
-  whatever S1 wrote — and logged at `debug`, so it was invisible.
-- **S3 — guards tested range membership, never grid membership.** See the table
-  above.
-- **S4 — the fill-guard pivot was untrusted.** `_lastFilledPrice` was written
-  from fill prices at four sites, none validated against the grid. A guard that
-  keeps the grid consistent was anchored to the same fill chain that S1/S2 could
-  corrupt. Nothing protected the pivot itself.
-- **S5 — bypasses skipped even that guard.** Spread-correction origins bypass it
-  by design; the guard was stated to run on the "final post-freshness price",
-  i.e. the price S2 had already replaced.
-
-The unifying hazard: a price that is off-grid becomes *grid evidence*, and is
-then re-emitted as if it were real market structure.
-
-## The writer chain (historical)
-
-Both links are now closed. The trace is kept because the *shape* is what the
-check guards against recurring.
-
-1. **Adoption overwrote the grid level** — `modules/order/sync_engine.ts`, the
-   legacy no-genesis fallback (`sync-pass2-adopt-orphan` branch):
-   ```ts
-   const adoptedOrder = {
-       ...adoptedSlot, orderId: chainOrderId, type: chainOrder.type,
-       state: adoptedState, size: chainOrder.size,
-       price: chainOrder.price,   // <-- genesis price discarded
-       ...
-   };
-   ```
-   It also matched by price *tolerance* rather than
-   `slotIndexForPrice` + `isSlotInRail`, so it could land an order in a slot
-   whose genesis price was far away — then cement that distance.
-
-2. **Pre-broadcast substitution propagated it** — `modules/dexbot_cow_runtime.ts`,
-   the CREATE branch's `liveSlot`/`priceDrift` block:
-   ```ts
-   const effectiveOrder = (priceDrift > 0)
-       ? { ...order, price: livePrice, ... }   // planned price discarded
-       : order;
-   ```
-   The name "freshness" implied the live price was *more* correct. That is only
-   safe if `slot.price` is invariantly a genesis level — the exact thing nothing
-   enforced.
-
-Net: a chain order at a non-grid price was adopted into a slot, became that
-slot's price, and was re-broadcast as a fresh CREATE at the same non-grid price.
-A buy above the book fills immediately; the fill price then fed downstream
-consumers (role rotation, boundary heuristics, the fill-guard pivot), which
-inherited it as evidence and ratcheted further.
-
-The observed signature: escalating BUYs at `0.363 → 0.565 → 0.614 → 0.739 →
-0.793` against a ~0.31 market — each a `BUY > pivot` violation — then matched
-lots sold back at ~0.306 for roughly -61%, plus a 107-violation burst.
+The guard closes that class by construction: a legitimate order equals its
+genesis level, so only a genuinely non-grid price can be rejected. The full
+incident trace — the individual writers, the observed ratchet, and the commit
+provenance — is preserved in
+[ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md) (Appendix A).
 
 ## Enforcement: the six emission sites
 
@@ -528,7 +476,7 @@ Implication: restoring `checkPlacementPriceSanity` alone would **not** fix that.
 Any re-land must fix the out-of-bounds-skip deadlock *and* clamp the rotation
 independently of the anchor. See `git show d808c052` for the removed
 implementation; the removal provenance (symbol → built → removed) is recorded in
-`docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md`.
+`docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md`.
 
 ## Caveats
 

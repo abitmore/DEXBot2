@@ -13,7 +13,7 @@ Reconciliation aligns the bot's model with on-chain reality. It runs at startup 
 
 ### Why Not Cancel Everything
 
-- No atomic cancel+create on BitShares — `cancel_order` cancels the full order; there is no partial size reduction
+- No atomic cancel+create on BitShares — `limit_order_cancel` cancels the full order; there is no partial size reduction
 - A full teardown leaves the bot unable to trade during the rebuild window
 
 ---
@@ -132,8 +132,8 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 ### Timeouts and Read Coverage
 
 - **No per-attempt race** around the reconcile itself — the 1.4.8 change removed it to avoid orphaning mid-batch broadcasts (see the [`recalculateGrid`](../modules/order/grid.ts) call site in `modules/order/grid.ts`).
-- The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2` at `grid.ts:1184`), applied via `Promise.race` at `grid.ts:1279`.
-- Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:610`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
+- The whole resync is bounded by a **10-minute total timeout** (`PIPELINE_TIMING.TIMEOUT_MS * 2` at `grid.ts:1511`), applied via `Promise.race` at `grid.ts:1617`.
+- Every internal chain read goes through `readOpenOrdersGuarded` (`chain_orders.ts:608`) with the 30s / 3-retry / node-failover standard, and empty/truncated reads are treated as **ambiguous** — never as authoritative absence.
 
 ---
 
@@ -141,7 +141,7 @@ If Phase 2 partially succeeds (some cancels, some creates fail), there is no rol
 
 ### Fresh Grid Guard (`matchedOnGrid > 0`)
 
-**`grid_reconcile_internal.ts:1600`**
+**`grid_reconcile_internal.ts:1738`**
 
 When a brand-new grid is generated, every slot is VIRTUAL — `matchedOnGrid = 0`. Without a guard, every on-chain order appears "unmatched" and would be cancelled as excess:
 
@@ -155,27 +155,27 @@ When `matchedOnGrid === 0` AND scaling up (`neededSlots > 0`), excess cancellati
 
 ### Grid-Edge Lock
 
-**`grid_reconcile_internal.ts:244`** — `_isGridEdgeFullyActive` detects when the grid boundary is fully active (all slots on-chain) before cancelling excess orders.
+**`grid_reconcile_internal.ts:355`** — `_isGridEdgeFullyActive` detects when the grid boundary is fully active (all slots on-chain) before cancelling excess orders.
 
-When all outermost orders of a side are ACTIVE with `orderId`, all balance is committed to the edges. Cancel the **largest** order among the update candidates (`_cancelLargestOrder`, line 314) to free maximum funds with minimum operations, since the DEX does not expose partial-reduce in one operation. The cancelled slot gets a replacement create.
+When all outermost orders of a side are ACTIVE with `orderId`, all balance is committed to the edges. Cancel the **largest** order among the update candidates (`_cancelLargestOrder`, line 425) to free maximum funds with minimum operations, since the DEX does not expose partial-reduce in one operation. The cancelled slot gets a replacement create.
 
-Detection (`_isGridEdgeFullyActive`, line 244): sort orders by price (BUY descending, SELL ascending), and check the outermost ones are all `isOrderPlaced()`.
+Detection (`_isGridEdgeFullyActive`, line 355): sort orders by price (BUY descending, SELL ascending), and check the outermost ones are all `isOrderPlaced()`.
 
-### Duplicate Tolerance (5× Multiplier)
+### Duplicate Cancellation
 
-**`grid_reconcile.ts:246-311`**
+**`grid_reconcile.ts:278`**
 
-`SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER = 5`. An unmatched chain order within 5× price tolerance of an active same-type grid slot is a suspected duplicate → queued for Phase 2 cancellation (not cancelled under lock). The base tolerance comes from `calculatePriceTolerance`, which estimates the maximum acceptable price deviation for the order's size and the grid's price step.
+An unmatched chain order whose price equals an active same-type grid slot's price — exact slot-price equality via `priceSlotEqual` at the asset precision — is a **suspected duplicate** → queued for Phase 2 cancellation (not cancelled under lock). Non-equal neighbours are only logged with nearest-same-side diagnostics, never cancelled here. The earlier fuzzy `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` (5× `calculatePriceTolerance`) was removed.
 
 ### Batch Update Failure Recovery
 
-**`grid_reconcile.ts:393-465`**
+**`grid_reconcile.ts:436`**
 
 Up to 3 batch attempts. Each failure triggers a recovery sync + plan refresh. If all plans are empty → resolved early. After 3× → sequential fallback with per-plan recovery (each individual failure triggers a recovery sync + queue refresh).
 
 ### Phantom Orders via Reconcile
 
-**`grid_reconcile.ts:211-244`** — Reconcile's role in the defense-in-depth: during Phase 1, any ACTIVE/PARTIAL order whose `orderId` is not found on-chain is reset to VIRTUAL with `skipAccounting`. The freshly-assigned deferral protects in-flight broadcasts, and the ghost heuristic lets known fills pass. See [`developer_guide.md`](developer_guide.md#phantom-orders-prevention-defense-in-depth) for the full 3-layer defense.
+**`grid_reconcile.ts:227-253`** — Reconcile's role in the defense-in-depth: during Phase 1, any ACTIVE/PARTIAL order whose `orderId` is not found on-chain is reset to VIRTUAL with `skipAccounting`. The freshly-assigned deferral protects in-flight broadcasts, and the ghost heuristic lets known fills pass. See [`developer_guide.md`](developer_guide.md#phantom-orders-prevention-defense-in-depth) for the full 3-layer defense.
 
 ### Shelf Orders (Fork-Kept Manual Orders)
 
@@ -191,11 +191,11 @@ Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen mast
 
 ### Truncated-Read Ambiguity (since 1.4.8)
 
-Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:610`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":
+Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:608`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":
 
-- `_recoverSyncFromChain` (`grid_reconcile_internal.ts:592`) — plus its three recovery sites in `_createOrderFromGrid` / `_cancelChainOrder` — defers on empty/truncated reads (`deferEmpty: true`). A pass-1 phantom cleanup would otherwise virtualize live slots from a partial window.
-- `_adoptPossiblyLandedCreate` (`grid_reconcile_internal.ts:932`) defers to an uncertain outcome on truncated reads, and the startup group batch uncertain verification follows the same rule.
-- Phase 3 final refresh (`grid_reconcile.ts:512`) skips adoption/surplus-cancel on a truncated read, keeping the pre-phase-2 counts for the summary log.
+- `_recoverSyncFromChain` (`grid_reconcile_internal.ts:726`) — plus its three recovery sites in `_createOrderFromGrid` / `_cancelChainOrder` — defers on empty/truncated reads (`deferEmpty: true`). A pass-1 phantom cleanup would otherwise virtualize live slots from a partial window.
+- `_adoptPossiblyLandedCreate` (`grid_reconcile_internal.ts:1112`) defers to an uncertain outcome on truncated reads, and the startup group batch uncertain verification follows the same rule.
+- Phase 3 final refresh (`grid_reconcile.ts:533`) skips adoption/surplus-cancel on a truncated read, keeping the pre-phase-2 counts for the summary log.
 - Adoption paths (`_adoptPossiblyLandedCreate`, grouping path, reconcile adoption loop) apply the create-fee deduction via `_applySync` for accounting parity.
 
 The underlying rule is `INV-BROADCAST-004`: a capped `get_full_accounts` window omits the freshest orders (fresh creates sort last), so absence can never be authoritative on a truncated read.
@@ -204,7 +204,7 @@ The underlying rule is `INV-BROADCAST-004`: a capped `get_full_accounts` window 
 
 ## Lock Hierarchy
 
-**`manager.ts:474-489`** — canonical reference in [`developer_guide.md`](developer_guide.md#lock-ordering-for-deadlock-prevention).
+**`manager.ts:593-597`** — canonical reference in [`developer_guide.md`](developer_guide.md#lock-ordering-for-deadlock-prevention).
 
 ```
 Level 0: _fillProcessingLock    Level 1: _divergenceLock
@@ -230,11 +230,10 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 
 | Constant | Value | File | Role |
 |----------|-------|------|------|
-| `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` | `5` | `grid_reconcile.ts:20` | Amplifies base tolerance for duplicate detection |
-| `maxBatchAttempts` | `3` | `grid_reconcile.ts:415` | Update-batch retry limit |
-| `PRICE_TOLERANCE_MAX_PERCENT` | `0.01` (1%) | `constants.ts:452` | Cap on price tolerance |
-| `PRICE_TOLERANCE_MIN_ABSOLUTE` | `0.0001` | `constants.ts:456` | Floor for price tolerance |
-| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts:800` | Base pipeline timing; resync uses 2× (10 min) |
+| `maxBatchAttempts` | `3` | `grid_reconcile.ts:436` | Update-batch retry limit |
+| `PRICE_TOLERANCE_MAX_PERCENT` | `0.01` (1%) | `constants.ts:566` | Cap on price tolerance |
+| `PRICE_TOLERANCE_MIN_ABSOLUTE` | `0.0001` | `constants.ts:570` | Floor for price tolerance |
+| `PIPELINE_TIMING.TIMEOUT_MS` | `300000` (5min) | `constants.ts:973` | Base pipeline timing; resync uses 2× (10 min) |
 
 ---
 
@@ -260,10 +259,10 @@ Commit `e64db685` replaced 6 single-value boolean state fields with refcounts/st
 
 | File | Role |
 |------|------|
-| `modules/order/grid_reconcile.ts` | Public API + 3-phase orchestrator (642 lines) |
-| `modules/order/grid_reconcile_internal.ts` | Internal helpers — `_reconcileStartupSide`, grid detection, recovery, uncertainty (1675 lines) |
+| `modules/order/grid_reconcile.ts` | Public API + 3-phase orchestrator (670 lines) |
+| `modules/order/grid_reconcile_internal.ts` | Internal helpers — `_reconcileStartupSide`, grid detection, recovery, uncertainty (2132 lines) |
 | `modules/order/manager.ts` | Lock hierarchy definition, `_applyOrderUpdate`, phantom guard, `reconcileGrid` entry, COW integration |
-| `modules/order/async_lock.ts` | AsyncLock engine with ALS re-entrancy (424 lines) |
+| `modules/order/async_lock.ts` | AsyncLock engine with ALS re-entrancy (435 lines) |
 | `modules/order/sync_engine.ts` | Blockchain sync pipeline |
 | `modules/order/grid.ts` | Grid creation, `recalculateGrid` (full resync) calls reconcile |
 | `modules/chain_orders.ts` | `readOpenOrdersGuarded` / guarded read infrastructure |

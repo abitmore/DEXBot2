@@ -1043,28 +1043,17 @@ graph LR
 
 The system has been optimized to use a "memory-driven" model for order updates, eliminating redundant blockchain API calls during normal operation.
 
-### Key Changes
+### How it works
 
-**1. Raw Order Cache (`rawOnChain`)**
-- Grid slots now store exact blockchain order representations (integers/satoshis) in a `rawOnChain` cache
-- **Birth**: Cache populated immediately after successful order placement using broadcasted arguments
-- **Partial Fills**: Cache updated in-place via integer subtraction (subtracting filled satoshis from `for_sale`)
-- **Updates/Rotations**: Cache refreshed with adjusted integers returned by build process
-
-**2. Eliminated Redundant API Calls**
-- Removed all `readOpenOrders()` calls from `_buildSizeUpdateOps()` and `_buildRotationOps()`
-- Removed `computeVirtualOpenOrders()` logic that was redundantly fetching entire account state
-- The bot now trusts its internal state, backed by real-time fill listener, to build transactions
-
-**3. Refactored `buildUpdateOrderOp()`**
-- Updated to support optional `cachedOrder` parameter
-- Allows callers to bypass blockchain queries if they have raw state in memory
-- Returns `finalInts` along with operation data for local tracking
-
-**4. Self-Healing Resilience**
-- Maintains "State Recovery Sync" fallback
-- If a memory-driven transaction fails, bot catches error and performs a full refresh
-- Ensures internal ledger stays synchronized with BitShares blockchain
+- **Raw order cache (`rawOnChain`):** each grid slot stores the exact blockchain order integers
+  (satoshis) — seeded from broadcast arguments on placement, updated in place on partial fills,
+  and refreshed on updates/rotations.
+- **Chain-free planning:** size updates and rotations build their operations from the cache;
+  only placements and recovery syncs query the blockchain.
+- **`buildUpdateOrderOp(cachedOrder?)`:** accepts an optional cached order and returns
+  `finalInts` alongside the operation for local tracking.
+- **Self-healing:** a failed memory-driven transaction triggers a full state-recovery sync so the
+  internal ledger stays consistent with the chain.
 
 ### Benefits
 - **Faster reaction time**: No waiting for blockchain queries during order updates

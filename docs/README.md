@@ -116,40 +116,6 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Lifecycle B (Maintenance / AMA-Driven)**: Periodic path from `_performPeriodicGridChecks` → `executeMaintenanceLogic`.
 - **Cross-Cutting Invariants**: COW boundary, fund SSOT, replay-safe fills, lock ordering.
 
-### 📖 [Developer Guide](developer_guide.md)
-*Your daily companion for coding.*
-- **Quick Start**: How to get the development environment running.
-- **Module Deep-Dive**: In-depth analysis of the internal logic of each primary module.
-- **Copy-on-Write Pattern**: How to work safely within the COW rebalance pipeline; `WorkingGrid` usage and master-grid commit rules (see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md))
-- **Startup Sequence & Lock Ordering**: Consolidated startup with deadlock prevention
-- **Zero-Amount Order Prevention**: Validation gates for healthy order sizes
-- **Configurable startPrice & gridPrice**: Fixed numeric, pool, book-derived, or AMA keyword pricing modes
-- **Pool ID Caching**: Optimization for price derivation
-- **Order State Helper Functions**: Centralized predicate functions for state checking
-- **Signal Concepts**: Dynamic weights, regime detection, derivative signals, and market adapter integration
-- **Debt Policy**: Native MPA and credit offer configuration and runtime rules
-- **Common Tasks**: Practical "how-to" guides for adding features or fixing bugs.
-- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety", "WorkingGrid", "COW Commit", "Dynamic Weight", "Regime Detection").
-
-### 🔄 [Workflow](WORKFLOW.md)
-*How we build and release.*
-- **Branching Strategy**: Explanation of the `test` → `dev` → `main` lifecycle.
-- **CI/CD Patterns**: Standards for merging and ensuring code quality across branches.
-
-### 🧮 [DEXBot vs DEXBot2 Comparison](DEXBOT_COMPARISON.md)
-*Architectural, functional, and operational comparison with the original Python DEXBot.*
-- **Scope**: Full side-by-side of technology stack, architecture, trading strategies, order management, configuration, blockchain integration, fund accounting, and concurrency safety
-- **Audience**: Developers and operators evaluating or migrating between the two projects
-
-### 🧭 [Evolution Report](EVOLUTION.md)
-*Project timeline and major architecture phases.*
-- **Coverage**: Historical milestones from bootstrap through the current stable release; per-release detail lives in [CHANGELOG.md](../CHANGELOG.md)
-- **Focus**: Architecture evolution, release history, and test growth
-
-### 🗒️ [Changelog](../CHANGELOG.md)
-*Release notes and documentation history.*
-- **Scope**: Versioned notes per release
-
 ### 🧩 [Copy-on-Write Master Plan](COPY_ON_WRITE_MASTER_PLAN.md)
 *COW design, phases, and state machine details.*
 - **Architecture**: Master-grid projection model and rebalance flow
@@ -170,12 +136,6 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Out-of-bounds policy**: Hold and surface; refill in-grid slots at their genesis price
 - **Status**: What is landed, what remains open, and why the removed 5% sanity gate must not be naively re-landed
 
-### 🧪 [Test Suite](../tests/README.md)
-*Test organization, categories, and key architectural patterns tested.*
-- **Test Layout**: Directory structure, helpers, and quick-start commands
-- **Categories**: Core infrastructure, order management, COW rebalancing, fees/accounting, integration, edge cases, and more
-- **Architectural Patterns**: COW rebalancing, RMS divergence, and fund invariants with doc cross-references
-
 ### 💰 [Fund Movement & Accounting](FUND_MOVEMENT_AND_ACCOUNTING.md)
 *The most critical part of the bot: safe capital management.*
 - **Single Source of Truth**: How the bot avoids double-spending and out-of-sync balances.
@@ -187,6 +147,52 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **BUY Side Sizing & Fee Accounting**: Correct fee application by order side
 - **Mixed Order Fund Validation**: Separate validation for BUY vs SELL order fund checks
 - **Fee Management**: Detailed logic for BTS fee reservations and market fee deductions.
+
+### 📖 [Developer Guide](developer_guide.md)
+*Your daily companion for coding.*
+- **Quick Start**: How to get the development environment running.
+- **Module Deep-Dive**: In-depth analysis of the internal logic of each primary module.
+- **Copy-on-Write Pattern**: How to work safely within the COW rebalance pipeline; `WorkingGrid` usage and master-grid commit rules (see [COPY_ON_WRITE_MASTER_PLAN.md](COPY_ON_WRITE_MASTER_PLAN.md))
+- **Startup Sequence & Lock Ordering**: Consolidated startup with deadlock prevention
+- **Zero-Amount Order Prevention**: Validation gates for healthy order sizes
+- **Configurable startPrice & gridPrice**: Fixed numeric, pool, book-derived, or AMA keyword pricing modes
+- **Pool ID Caching**: Optimization for price derivation
+- **Order State Helper Functions**: Centralized predicate functions for state checking
+- **Signal Concepts**: Dynamic weights, regime detection, derivative signals, and market adapter integration
+- **Debt Policy**: Native MPA and credit offer configuration and runtime rules
+- **Common Tasks**: Practical "how-to" guides for adding features or fixing bugs.
+- **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety", "WorkingGrid", "COW Commit", "Dynamic Weight", "Regime Detection").
+
+### 🔄 [Workflow](WORKFLOW.md)
+*How we build and release.*
+- **Branching Strategy**: Explanation of the `test` → `dev` → `main` lifecycle.
+- **CI/CD Patterns**: Standards for merging and ensuring code quality across branches.
+
+### 🧪 [Test Suite](../tests/README.md)
+*Test organization, categories, and key architectural patterns tested.*
+- **Test Layout**: Directory structure, helpers, and quick-start commands
+- **Categories**: Core infrastructure, order management, COW rebalancing, fees/accounting, integration, edge cases, and more
+- **Architectural Patterns**: COW rebalancing, RMS divergence, and fund invariants with doc cross-references
+
+### 🧭 [Evolution Report](EVOLUTION.md)
+*Project timeline and major architecture phases.*
+- **Coverage**: Historical milestones from bootstrap through the current stable release; per-release detail lives in [CHANGELOG.md](../CHANGELOG.md)
+- **Focus**: Architecture evolution, release history, and test growth
+
+### ⏪ [Order Engine Retrospective](ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md)
+*Why the post-1.0.0 order engine kept misbehaving — synthesis plus the incident/fix ledger.*
+- **Part I — Synthesis**: root cause (uncertain broadcast), recurring bug families, meta-patterns, what actually fixed it, lessons
+- **Part II — Incident & Fix Ledger**: preserved gap-band / ladder-recenter / orphan-fill / price-first plans with `LANDED`/`REVERTED`/`SUPERSEDED` status and commit hashes
+- **Regression gate**: `npm run analysis:grid-check` (see [analysis/README.md](../analysis/README.md))
+
+### 🗒️ [Changelog](../CHANGELOG.md)
+*Release notes and documentation history.*
+- **Scope**: Versioned notes per release
+
+### 🧮 [DEXBot vs DEXBot2 Comparison](DEXBOT_COMPARISON.md)
+*Architectural, functional, and operational comparison with the original Python DEXBot.*
+- **Scope**: Full side-by-side of technology stack, architecture, trading strategies, order management, configuration, blockchain integration, fund accounting, and concurrency safety
+- **Audience**: Developers and operators evaluating or migrating between the two projects
 
 ---
 

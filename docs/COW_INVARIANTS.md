@@ -79,11 +79,11 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-PROJ-002` Preserve on-chain PARTIAL size in projection
   - If identity is retained (`keepOrderId=true`) and current state is `PARTIAL`, projected size must preserve current on-chain remaining size.
   - It must not be overwritten by ideal geometric `targetSize`.
-  - Exception: a `PARTIAL` with a rotation/size-update action targeting its `orderId` does use `targetSize` (the explicit-UPDATE path at `modules/order/utils/validate.ts:959`).
+  - Exception: a `PARTIAL` with a rotation/size-update action targeting its `orderId` does use `targetSize` (the explicit-UPDATE path at `modules/order/utils/validate.ts:1129`).
   - Preserve-path size must be normalized to finite, non-negative value.
 
 - `INV-PROJ-003` ACTIVE on-chain projection preserves current size (same as PARTIAL)
-  - If identity is retained and state is `ACTIVE`, projection preserves current on-chain size via the same `shouldPreserveSize` path as `PARTIAL` (`validate.ts:958-972`).
+  - If identity is retained and state is `ACTIVE`, projection preserves current on-chain size via the same `shouldPreserveSize` path as `PARTIAL` (`validate.ts:1129`).
   - An explicit UPDATE action targeting the `orderId` is required to apply `targetSize`.
 
 - `INV-ID-001` Order identity retention rule
@@ -102,7 +102,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-ACC-003` Cross-bot fund registry invariant (INVARIANT 3)
   - Shared-account per-bot commitment must not exceed the bot's proportional share of chain balance.
   - Checked with widened tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
-  - Registry failure logs an error (`accounting.ts:554-563`, with a "CRITICAL FIX: Log as ERROR instead of WARN" comment), not a silent skip.
+  - Registry failure logs an error (`order/accounting.ts:574-590`, with a "CRITICAL FIX: Log as ERROR instead of WARN" comment), not a silent skip.
 
 ---
 
@@ -208,18 +208,17 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Dust health thresholding applies consistently to both CREATE and rotation destination holes.
 
 - `INV-RECON-003` Reconcile cancels duplicate chain orders unconditionally
-  - When an unmatched order is within `looseTolerance` of an active grid order, it must be cancelled on chain via `_cancelChainOrder` with `releaseUntrackedFunds: true`.
+  - An unmatched chain order whose price equals an active same-type grid slot's price (exact slot-price equality via `priceSlotEqual` at the asset precision) is a suspected duplicate and must be cancelled on chain via `_cancelChainOrder` with `releaseUntrackedFunds: true`.
   - Cancelled IDs are filtered out of `unmatchedParsed` to prevent reprocessing.
   - No size guard — any duplicate at the same price is a violation.
-  - `SUSPECTED_DUPLICATE_TOLERANCE_FLOOR` (absolute price floor) is removed — only `tolerance * SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` is used.
-  - `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` is a file-local constant (`modules/order/grid_reconcile.ts`, value `5`), not a centralized `constants.ts` entry.
+  - The earlier fuzzy `SUSPECTED_DUPLICATE_TOLERANCE_MULTIPLIER` (5× `calculatePriceTolerance`) and `SUSPECTED_DUPLICATE_TOLERANCE_FLOOR` are removed; only exact price-level equality triggers a reconcile cancel.
 
 - `INV-RECON-004` Rebalance must not convert on-chain slots to SPREAD via CREATE
   - `performSafeRebalance` must not emit `CREATE` actions that convert existing on-chain slots into SPREAD orders.
   - On-chain mid-slot must keep its BUY/SELL type before commit.
 
 - `INV-RECON-005` Extreme placement ordering
-  - BUY placements must use nearest available free slots first (descending price, so the nearest-to-center slots fill first — `validate.ts:465-468`).
+  - BUY placements must use nearest available free slots first (descending price, so the nearest-to-center slots fill first — `order/utils/order.ts` `buildOutsideInPairGroups`).
   - SELL placements must use nearest available free slots first (ascending price).
 
 ---
@@ -228,7 +227,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 - `INV-BATCH-001` Illegal state batch abort
   - `executeBatch` throws `ILLEGAL_SPREAD_STATE` on an illegal grid layout (emitted at `modules/order/utils/validate.ts`, propagated via `modules/order/manager.ts` `_throwOnIllegalState`).
-  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_state_recovery.ts:133`) is a test-only dead branch — production never emits that code; only the test stub at `tests/test_patch17_invariants.ts:396` uses it.
+  - The `_handleBatchHardAbort` catch for `ILLEGAL_ORDER_STATE` (`dexbot_class.ts:455`) is a test-only dead branch — production never emits that code; only a test stub uses it.
   - In production, recovery + cooldown are armed on the next maintenance tick via `_abortFlowIfIllegalState` (the `INV-MAINT-002` path), returning `abortedForIllegalState: true` to the caller. The caller does not need to return immediately; the maintenance tick handles recovery.
   - Hard abort triggers one immediate recovery sync (`_triggerStateRecoverySync`) plus arms one maintenance cooldown cycle (`_maintenanceCooldownCycles = Math.max(current, 1)`).
 
@@ -247,7 +246,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
     - NOT virtualize the slot.
     - Preserve `orderId` until sync reconciles it.
     - NOT mark the order as stale-cleaned.
-  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_state_recovery.ts:263`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
+  - Fast path: if the batch result indicates `ORDER_SIZE_DRIFT_TARGETED` (`dexbot_state_recovery.ts:269`), a targeted repair applies the correction directly and skips `_triggerStateRecoverySync`.
 
 ---
 
@@ -271,7 +270,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 - `INV-REG-001` Cross-bot allocation ≤ proportional share
   - Per-bot committed amounts (sum of on-chain orders) must not exceed `totalChainBalance × allocatedPercent`.
   - Violation triggers an error-level log entry (not silent), with tolerance `max(PERCENT_TOLERANCE * 3, 0.15)`.
-  - Registry registration is pre-flight + atomic; only shared-account bots register (`dexbot.ts:535` filters `accountGroups[a].length > 1`), and registration completes before any shared-account bot starts.
+  - Registry registration is pre-flight + atomic; only shared-account bots register (`dexbot.ts:611` filters `accountGroups[a].length > 1`), and registration completes before any shared-account bot starts.
   - Release happens in `DEXBot.shutdown`.
 
 - `INV-REG-002` Async-locked registry writes

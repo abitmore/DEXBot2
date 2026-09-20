@@ -225,7 +225,7 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 
 ### Grid Correction Check (`grid_correction_check.ts`)
 
-Validates grid discipline from the same Kibana fill pipeline as `trade_profitability.ts`: two consecutive same-direction fills on a pair must be monotonic — sell prices rising, buy prices falling (equal is OK). An inversion means the bot placed an order below its own previous sell (or above its own previous buy), e.g. an orphaned order filling outside grid accounting. Used as the external regression gate for the orphan-fix plans in `docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md`.
+Validates grid discipline from the same Kibana fill pipeline as `trade_profitability.ts`: two consecutive same-direction fills on a pair must be monotonic — sell prices rising, buy prices falling (equal is OK). An inversion means the bot placed an order below its own previous sell (or above its own previous buy), e.g. an orphaned order filling outside grid accounting. Used as the external regression gate for the orphan-fix plans in `docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md`.
 
 **Pipeline:** Kibana `fill_order` query (paginated `search_after`) → on-chain asset precision resolution → buy/sell classification → chronological sort → per-order/price-epoch aggregation (partial fills at one price collapsed to weighted-average; repriced order lifetimes kept separate) → consecutive same-direction pair comparison → violation report with daily histogram.
 
@@ -525,5 +525,5 @@ npm run ama:chart:lp-local -- --data market_adapter/data/lp/<pair>/lp_pool_<id>_
 ## Related Docs
 
 - [Market Adapter](../market_adapter/README.md) — live AMA pricing, grid triggers, dynamic weights, and recalc triggers
-- [Consolidated Orphan-Fix Summary](../docs/CONSOLIDATED_ORPHAN_FIX_SUMMARY.md) — orphan/gap-band root-cause plans; `grid_correction_check` is their regression gate
+- [Order Engine Retrospective](../docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md) — orphan/gap-band root-cause plans; `grid_correction_check` is their regression gate
 - [DEXBot2 Tuning Cheat Sheet](../claw/docs/DEXBOT2_TUNING_CHEAT_SHEET.md) — grid tuning reference for live bots

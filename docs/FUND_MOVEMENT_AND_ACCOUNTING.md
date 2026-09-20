@@ -67,7 +67,7 @@ Mixed BUY/SELL batches are validated per asset using a signed-delta **peak** run
 
 #### Implementation Location
 
-File: `modules/dexbot_cow_runtime.ts` — `validateOperationFunds()` (line 1488), called from the COW batch broadcast path at line 2908. `modules/dexbot_class.ts` exposes a thin wrapper `_validateOperationFunds()` (line 1122).
+File: `modules/dexbot_cow_runtime.ts` — `validateOperationFunds()` (line 1655), called from the COW batch broadcast path at line 4457.
 
 ```javascript
 // Per-asset peak requirement vs. quantized chain-free snapshot.
@@ -299,7 +299,7 @@ When a fill occurs, the boundary shifts to "follow" the price.
 
 ### 3.2 Global Side Capping
 
-Budgets are dynamic. The bot calculates `TotalSideBudget` from `funds.allocated.{buy,sell}` (the `botFunds`-capped capital per side — see §1.3). This ensures the bot never attempts to deploy more than its configured share of account capital, even when the account holds additional free balance for other bots or manual trading.
+Budgets are dynamic. The bot calculates the per-side budget via `getSideBudget` from `funds.allocated.{buy,sell}` (the `botFunds`-capped capital per side — see §1.3). This ensures the bot never attempts to deploy more than its configured share of account capital, even when the account holds additional free balance for other bots or manual trading.
 
 **Safety Check:**
 If the calculated ideal grid requires more capital than available in the allocation, the *increase* is capped.
@@ -751,7 +751,7 @@ Quantization has a single source of truth: `quantizeFloat()` in `modules/order/u
 
 #### 5.5.4 Relationship to Fund Validation
 
-The corrected fund validation in `_validateOperationFunds()` uses quantized values:
+The corrected fund validation in `validateOperationFunds()` uses quantized values:
 
 ```javascript
 // Check: Does required amount fit in available balance?

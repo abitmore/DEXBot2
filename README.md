@@ -275,7 +275,7 @@ dexbot clear               # Clear log files
 dexbot default             # Reset settings to defaults
 ```
 
-## 🎯 PM2 Process Management
+## ⚙️ PM2 Process Management
 
 PM2 is optional — `dexbot start` is the native solution.
 
@@ -317,12 +317,12 @@ Logs are written to `logs/` in the profiles directory in all modes: the monolith
 - **[Docs Index](docs/README.md)** - Main documentation hub
 - **[Architecture](docs/architecture.md)** - System design, fill processing pipeline, and testing strategy
 - **[Lifecycle](docs/LIFECYCLE.md)** - End-to-end walkthrough: startup, fill-driven, and AMA-driven flows with diagrams
-- **[Evolution Report](docs/EVOLUTION.md)** - Project timeline, architecture phases, and release history
+- **[Copy-on-Write Plan](docs/COPY_ON_WRITE_MASTER_PLAN.md)** - Copy-on-Write grid architecture
+- **[Fund Movement & Accounting](docs/FUND_MOVEMENT_AND_ACCOUNTING.md)** - Fund accounting, grid topology, and rotation mechanics
+- **[Claw API Boundary](claw/docs/AI_BOT_LIBRARY_API.md)** - Responsibility split between the AI layer and the DEXBot2 execution layer
 - **[Developer Guide](docs/developer_guide.md)** - Development guide, environment variables, examples, and glossary
 - **[Workflow](docs/WORKFLOW.md)** - Project workflow and contribution guide
-- **[Fund Movement & Accounting](docs/FUND_MOVEMENT_AND_ACCOUNTING.md)** - Fund accounting, grid topology, and rotation mechanics
-- **[Copy-on-Write Plan](docs/COPY_ON_WRITE_MASTER_PLAN.md)** - Copy-on-Write grid architecture
-- **[Claw API Boundary](claw/docs/AI_BOT_LIBRARY_API.md)** - Responsibility split between the AI layer and the DEXBot2 execution layer
+- **[Evolution Report](docs/EVOLUTION.md)** - Project timeline, architecture phases, and release history
 
 ## 🤝 Contributing
 
