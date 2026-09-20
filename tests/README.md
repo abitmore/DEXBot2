@@ -120,6 +120,15 @@ Shared utility functions, precision handling, chain helpers.
 
 **Reference:** [docs/FUND_MOVEMENT_AND_ACCOUNTING.md](../docs/FUND_MOVEMENT_AND_ACCOUNTING.md)
 
+### Grid-Price Invariant & Hold Guards
+- Every emitted order's price must equal its slot's genesis level (`priceForSlot(idx, genesis)`); off-grid emissions are blocked, not counted
+- The guard itself plus the live batch wiring, escalation thresholds, and per-order stranded-hold clocks are each pinned and mutation-tested
+- Adoption keeps the slot's own level; `loadGrid` repairs a pre-existing off-grid slot price
+
+**Reference:** [docs/GRID_PRICE_INVARIANT.md](../docs/GRID_PRICE_INVARIANT.md)
+
+**Examples:** `test_grid_price_invariant_guard.ts`, `test_grid_price_invariant_wiring.ts`, `test_grid_price_slot_invariant.ts`, `test_final_pivot_gate.ts`, `test_hold_and_center_guards.ts`, `test_sync_out_of_grid_defer.ts`
+
 ---
 
 ## Documentation References

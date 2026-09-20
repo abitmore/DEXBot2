@@ -346,9 +346,14 @@ Slot-90 loop is *proximate* form; rotation suppression is mechanism, cascade is 
 from `manager.orders` and would otherwise re-plan-and-reject it forever; and a deferred hold unchanged for
 `DEFERRED_HOLD_ESCALATE_MS` (24h) escalates to the same resync (`deferred-hold-stale`), giving
 "held indefinitely" the exit the per-cycle hold policy lacks. Both reuse the existing debounced,
-batch-in-flight-aware resync path. The hold age is measured from the signature-stable clock
-(`_lastHeldChainOrderSignatureSince`), **not** `_lastUnmatchedChainOrdersAt` — the latter refreshes on every
-observing sync and would make an age gate unfirable.
+batch-in-flight-aware resync path. The hold age is measured **per stranded
+order** (`_strandedHoldSince`, a bot-scoped map keyed `id@price/size:reason`),
+not from the whole-held-set signature clock (`_lastHeldChainOrderSignatureSince`
+drives LOGGING only — a whole-set age clock would be reset by unrelated churn,
+because one hold flapping in and out restarts it, starving a genuinely stranded
+order of escalation forever — HOLD-010) and **not** from
+`_lastUnmatchedChainOrdersAt` — the latter refreshes on every observing sync
+and would make an age gate unfirable (HOLD-007).
 
 Still open: drift logging/alert >active window, re-stamp BUY above anchor metric, refused-commit and orphan-fill counters. Deferred-hold observability is no longer open — the `[HOLD]` summary now names side/price/size/reason/off-grid distance and slow-re-warns on an unchanged hold (`modules/dexbot_maintenance_runtime.ts`, `docs/GRID_PRICE_INVARIANT.md`).
 
@@ -541,3 +546,11 @@ if it were real market structure.
 **Observed signature:** escalating BUYs at `0.363 → 0.565 → 0.614 → 0.739 → 0.793`
 against a ~0.31 market — each a `BUY > pivot` violation — then matched lots sold back
 at ~0.306 for roughly -61%, plus a 107-violation burst.
+
+**Provenance caveat (recorded here, not in the contract doc).** Which writer
+caused the 2026-08-30 event is **not confirmed**: the mechanism is proven real
+at HEAD, but mapping it to that event is inference from fill
+prices/timestamps plus the removed `d808c052`/`e2898e51` code. That window's
+own logs are gone (retention starts 2026-09-11), so the attribution cannot
+retroactively be tightened — treat the writer chain above as the class
+mechanism, not as a per-event timeline.

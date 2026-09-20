@@ -132,9 +132,9 @@ This directory contains the comprehensive technical documentation for the DEXBot
 *Why a slot's emitted price must equal its genesis level — and how that failed.*
 - **The invariant**: `order.price === priceForSlot(idx, genesis)`, and why range guards cannot substitute for it
 - **Failure mechanism**: Chain price overwriting slot identity, pre-broadcast substitution, untrusted fill-guard pivot
-- **Enforcement**: The six emission sites, the blocking rejection of off-grid emissions, and the fail-open policy on unjudgeable inputs
+- **Enforcement**: The six emission sites, the blocking rejection of off-grid emissions, the final pre-broadcast pivot gate, and the fail-open policy on unjudgeable inputs
 - **Out-of-bounds policy**: Hold and surface; refill in-grid slots at their genesis price
-- **Status**: What is landed, what remains open, and why the removed 5% sanity gate must not be naively re-landed
+- **Status**: Landed enforcement map, key constants, and why the removed 5% sanity gate must not be naively re-landed
 
 ### 💰 [Fund Movement & Accounting](FUND_MOVEMENT_AND_ACCOUNTING.md)
 *The most critical part of the bot: safe capital management.*

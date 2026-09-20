@@ -189,6 +189,10 @@ Live on-chain orders with non-slot-N ids below the rail (e.g. `deep-*` manuals k
 
 Reconcile Phase 1 runs under `_gridLock` with no side effects on the frozen master Map. The working grid is not involved — reconcile is a startup operation that runs before the COW pipeline is active. See [`COPY_ON_WRITE_MASTER_PLAN.md`](COPY_ON_WRITE_MASTER_PLAN.md#safety-guardrails) and [`COW_INVARIANTS.md`](COW_INVARIANTS.md#reconcile-grid_reconcilemd) for COW rules.
 
+### Slot-Price Invariant at the Reconcile Emission Sites
+
+Three of the six guarded emission sites are reconcile sites (`RECONCILE-CREATE`, `RECONCILE-UPDATE`, `STARTUP-CREATE` in `grid_reconcile_internal.ts`): every op reconcile emits is checked against the slot's genesis level and an off-grid emission is skipped, not broadcast — see [`GRID_PRICE_INVARIANT.md`](GRID_PRICE_INVARIANT.md). The coupling is bidirectional: the invariant guard's persistent-rejection escalation and the deferred-hold escalation both exit through the same structural resync (debounced reload → full reset) described here, and a full reset's update-first reconcile emits the rail's genesis level, so the guard does not block its own resolution.
+
 ### Truncated-Read Ambiguity (since 1.4.8)
 
 Every chain read feeding an absence/surplus decision goes through `readOpenOrdersGuarded` (`chain_orders.ts:608`) and treats an empty or truncated snapshot as **unreadable** — never as "nothing landed" or "nothing to cancel":

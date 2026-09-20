@@ -179,6 +179,7 @@ enforced*, not compiler-enforced — learn them or you will introduce fund bugs.
 | **Fund SSOT** | `Accounting` owns every fund number. Nothing else computes available funds. | `docs/architecture.md` §"Fund Flow Architecture" |
 | **Replay-safe fills** | A fill is credited exactly once via processed-fill keys; retries are idempotent. | `modules/dexbot_fill_runtime.ts` |
 | **Single broadcast per cycle** | One `updateOrdersOnChainBatch` per rebalance — never scatter writes. | `docs/architecture.md` §"Fill Processing Pipeline" |
+| **Slot price = genesis level** | Every emitted order's price must equal `priceForSlot(idx, genesis)` for its slot — range guards cannot substitute for grid membership; off-grid emissions are blocked. | `docs/GRID_PRICE_INVARIANT.md` |
 | **Browser/Node split** | Heavy runtime is Node-only; never import it from a browser bundle. | `AGENTS.md` "Browser-Safe Surface", `package.json` "browser" field |
 | **Lock ordering** | Fill drain and maintenance must not run a rebalance concurrently. | `docs/developer_guide.md` §"Startup Sequence & Lock Ordering" |
 

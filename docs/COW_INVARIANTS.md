@@ -195,6 +195,13 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
   - Top-of-window partials remain always eligible.
   - Two PARTIALs sharing a price with no active sibling do not qualify (left to rebalancer).
 
+- `INV-GRID-004` Slot price equals its genesis level ([GRID_PRICE_INVARIANT.md](GRID_PRICE_INVARIANT.md))
+  - `order.price` for a slot-`idx` order must equal `priceForSlot(idx, genesis)`; the genesis ladder is the only authoritative price for a slot.
+  - Enforced at all six emission sites (CREATE / UPDATE / CREATE-FALLBACK, RECONCILE-CREATE / RECONCILE-UPDATE, STARTUP-CREATE): an off-grid emission is blocked, never broadcast.
+  - Range guards (`isChainPriceOutOfGrid`) are bounds checks, not membership checks — they cannot substitute for this invariant.
+  - Adoption keeps the slot's own level (a fill/chain price is metadata, not the slot's price); `loadGrid` repairs a pre-existing off-grid slot price at load.
+  - Tests: GPI-001..015 (`tests/test_grid_price_invariant_guard.ts`), GPI-WIRE-001..009 (`tests/test_grid_price_invariant_wiring.ts`), LEGACY-ADOPT/MATERIALIZE/ADOPT-NAME (`tests/test_sync_out_of_grid_defer.ts`).
+
 ---
 
 ## Reconcile ([GRID_RECONCILE.md](GRID_RECONCILE.md))
