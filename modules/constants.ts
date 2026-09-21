@@ -1577,8 +1577,8 @@ let COW_PERFORMANCE = {
     // gap-slot count (DEXBot._getGapSlotBatchSize, surfaced via
     // _getMaxOpsPerBroadcast for backward compatibility). One fill batch can
     // expand into many more order operations (e.g. 4 fills -> 12 creates +
-    // 4 updates = 16 ops), so batches larger than the gap-slot count are
-    // split into sequential broadcasts of at most gapSlots ops each,
+    // 4 updates = 16 ops), so batches larger than gapSlots + 1 are
+    // split into sequential broadcasts of at most gapSlots + 1 ops each,
     // bounding per-transaction stress on the chain.
 
     // MAX_CANCELS_PER_BROADCAST: Maximum number of limit_order_cancel ops in a

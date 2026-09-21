@@ -377,13 +377,13 @@ The fill pipeline handles incoming filled orders efficiently through fixed-cap b
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
 │             processFilledOrders() - Entry Point             │
-│    Use gap-slot batch size for deterministic batching   │
-│      Rules: <=gapSlots unified, >gapSlots chunked      │
+│    Use gap-slot batch size (gapSlots+1) for deterministic batching   │
+│      Rules: <=gapSlots+1 unified, >gapSlots+1 chunked      │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│            Pop Batch (up to gapSlots)                     │
-│        Takes N fills from queue head (N = 1..gapSlots)     │
+│            Pop Batch (up to gapSlots+1)                     │
+│        Takes N fills from queue head (N = 1..gapSlots+1)     │
 │   Example: pops [fill1, fill2, fill3] for batch processing  │
 └─────────────────────┬───────────────────────────────────────┘
                       ↓
@@ -418,9 +418,9 @@ The fill pipeline handles incoming filled orders efficiently through fixed-cap b
 
 ### Key Properties
 
-- **Gap-Slot Batch Sizing**: Batch size is deterministic, derived from the grid gap-slot count (`DEXBot._getGapSlotBatchSize`)
-  - 1..gapSlots awaiting: single unified batch (one rebalance/broadcast cycle)
-  - more than gapSlots awaiting: repeated chunks of gapSlots (last chunk may be smaller)
+- **Gap-Slot Batch Sizing**: Batch size is deterministic, derived from the grid gap-slot count + 1 (`DEXBot._getGapSlotBatchSize`)
+  - 1..gapSlots+1 awaiting: single unified batch (one rebalance/broadcast cycle)
+  - more than gapSlots+1 awaiting: repeated chunks of gapSlots+1 (last chunk may be smaller)
 
 - **Single Rebalance Cycle**: All fills in batch processed in ONE rebalance
   - No "split across cycles" delays

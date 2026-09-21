@@ -105,7 +105,7 @@ sequenceDiagram
 ```
 
 Why it matters:
-- **Gap-slot batching** (batch size = grid gap-slot count, `DEXBot._getGapSlotBatchSize`) keeps bursts
+- **Gap-slot batching** (batch size = grid gap-slot count + 1, `DEXBot._getGapSlotBatchSize`) keeps bursts
   deterministic — see `docs/architecture.md` §"Fill Processing Pipeline".
 - **Single rebalance cycle**: all fills in a batch share one broadcast, so proceeds
   are immediately available for replacement sizing (no split-across-cycles delay).

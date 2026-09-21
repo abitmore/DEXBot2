@@ -114,9 +114,9 @@ See [developer_guide.md#order-state-helper-functions](developer_guide.md#order-s
 
 **Mechanism**: Fill events arrive via `modules/dexbot_fill_runtime.ts` (the fill-runtime module), which pushes them into `bot._incomingFillQueue` (declared in `modules/dexbot_class.ts`). The drain loop in `dexbot_fill_runtime.ts` then chunks the queue into capped batches and calls `modules/order/manager.ts::processFilledOrders` (line 1438) once per chunk to run the full rebalance pipeline.
 
-**Batch Sizing Algorithm**: Batch size is derived from the grid gap-slot count (`DEXBot._getGapSlotBatchSize`): a queue depth at or below gapSlots is processed as one unified batch; deeper queues are chunked into repeated batches of gapSlots (the last chunk may be smaller). The same gap-slot size caps order operations per broadcast transaction (oversized op batches are split into sequential broadcasts).
+**Batch Sizing Algorithm**: Batch size is derived from the grid gap-slot count + 1 (`DEXBot._getGapSlotBatchSize`): a queue depth at or below gapSlots+1 is processed as one unified batch; deeper queues are chunked into repeated batches of gapSlots+1 (the last chunk may be smaller). The same gapSlots+1 size caps order operations per broadcast transaction (oversized op batches are split into sequential broadcasts).
 
-**Configuration**: no fixed constant — both `FILL_PROCESSING.MAX_FILL_BATCH_SIZE` and `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` were removed; batch sizing follows the grid gap-slot count.
+**Configuration**: no fixed constant — both `FILL_PROCESSING.MAX_FILL_BATCH_SIZE` and `COW_PERFORMANCE.MAX_OPS_PER_BROADCAST` were removed; batch sizing follows the grid gap-slot count + 1.
 
 #### Fill Batch Processing Timeline
 

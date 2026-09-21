@@ -1421,11 +1421,12 @@ function formatPartialBroadcastSummary(err: any) {
 
 /**
  * Execute a batch with retry-on-uncertain semantics, enforcing a gap-slot
- * per-broadcast operation cap (_getGapSlotBatchSize). When the batch carries
- * more operations than the cap, it is split into sequential broadcast chunks
- * of at most `maxOps` operations each, so a single on-chain transaction never
- * holds more than gapSlots order operations (the original "N fills
- * per broadcast" intent, applied at the op level rather than the fill level).
+ * per-broadcast operation cap (_getGapSlotBatchSize = gapSlots + 1). When the
+ * batch carries more operations than the cap, it is split into sequential
+ * broadcast chunks of at most `maxOps` operations each, so a single on-chain
+ * transaction never holds more than gapSlots + 1 order operations (the
+ * original "N fills per broadcast" intent, applied at the op level rather
+ * than the fill level).
  *
  * Failure isolation — no swallowed orders: if one chunk's broadcast is
  * uncertain (BroadcastUncertainError), the remaining chunks are STILL
