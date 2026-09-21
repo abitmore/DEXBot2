@@ -2273,6 +2273,10 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
         // This prevents concurrent fill processing from modifying funds while we're making decisions
         let correction: any = null;
         let shouldApplyCorrection = false;
+        // Set when determineOrderSideByFunds finds no side to fund: the caller
+        // refreshes account totals + open orders so the next cycle re-checks
+        // against fresh balances instead of recycling resting orders.
+        let fundsExhausted = false;
 
         if (!manager._gridLock) {
             manager.logger?.log?.('Spread check skipped: no grid lock available', 'warn');
@@ -2382,7 +2386,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
             // point are covered by the TOCTOU re-plan before broadcast.
             try { await manager.recalculateFunds(); } catch { /* best-effort */ }
             const decision = determineOrderSideByFunds(manager, lastPrice);
-            if (!decision.side) return false;
+            if (!decision.side) { fundsExhausted = true; return false; }
 
             // Perform spread correction by placing orders on the chosen side.
             correction = await prepareSpreadCorrectionOrders(manager, decision.side, manager.outOfSpread);
@@ -2457,7 +2461,10 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                         `[SPREAD] Fund state changed; no side has sufficient funds for re-plan. Skipping cycle.`,
                         'warn'
                     );
-                    return { ordersPlaced: 0, partialsMoved: 0 };
+                    // Same no-free-funds condition as the initial decision:
+                    // signal the caller to refresh account totals/open orders.
+                    fundsExhausted = true;
+                    return { ordersPlaced: 0, partialsMoved: 0, fundsExhausted };
                 }
                 const rePlanCorrection = await prepareSpreadCorrectionOrders(manager, rePlanDecision.side, manager.outOfSpread);
                 if (rePlanCorrection && ((rePlanCorrection.ordersToPlace?.length || 0) + (rePlanCorrection.ordersToUpdate?.length || 0) > 0)) {
@@ -2492,7 +2499,7 @@ export async function checkSpreadCondition(manager: any, _BitShares: any, update
                 return { ordersPlaced: 0, partialsMoved: 0 };
             }
         }
-        return { ordersPlaced: 0, partialsMoved: 0 };
+        return { ordersPlaced: 0, partialsMoved: 0, fundsExhausted };
     }
 
     /**
@@ -2796,54 +2803,22 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
         }
 
         if (!side) {
-            const committedBuy = Math.max(0, Number(manager.funds?.committed?.chain?.buy || 0));
-            const committedSell = Math.max(0, Number(manager.funds?.committed?.chain?.sell || 0));
-            const marketPrice = Number(currentMarketPrice);
-            const hasValidPrice = Number.isFinite(marketPrice) && marketPrice > 0;
-
-            if (committedBuy > buyMinUnit || committedSell > sellMinUnit) {
-                if (hasValidPrice) {
-                    const buyComparable = committedBuy;
-                    const sellComparable = committedSell * marketPrice;
-                    side = buyComparable >= sellComparable ? ORDER_TYPES.BUY : ORDER_TYPES.SELL;
-                } else if (committedBuy > buyMinUnit && committedSell <= sellMinUnit) {
-                    side = ORDER_TYPES.BUY;
-                } else if (committedSell > sellMinUnit && committedBuy <= buyMinUnit) {
-                    side = ORDER_TYPES.SELL;
-                } else {
-                    // Both sides hold committed inventory but market valuation is
-                    // unavailable — leave side null (skip) rather than default to
-                    // BUY. A deterministic cross-asset guess is exactly the
-                    // wrong-side risk above; the next cycle with a real price
-                    // decides. Carry the reason so the bottom skip log does not
-                    // misreport this branch as "no committed inventory".
-                    skipReason =
-                        `market price unavailable (${String(currentMarketPrice)}) with committed inventory on both sides ` +
-                        `(committed buy=${Format.formatAmount8(committedBuy)}, committed sell=${Format.formatAmount8(committedSell)})`;
-                }
-
-                if (side) {
-                    manager.logger?.log?.(
-                        `Spread correction using redistribution fallback on ${side} ` +
-                        `(free buy=${Format.formatAmount8(buyAvailable)}, free sell=${Format.formatAmount8(sellAvailable)}, ` +
-                        `price=${hasValidPrice ? Format.formatAmount8(marketPrice) : 'unavailable'})`,
-                        'info'
-                    );
-                }
-            }
-        }
-
-        if (!side) {
+            // PURE FUND-DRIVEN: a zero/insufficient free balance skips the
+            // correction outright. Committed inventory resting in orders is
+            // never recycled to fund it — shrinking a resting order was the
+            // source of stale-size inventory moves. The caller refreshes
+            // account totals + open orders instead, because the balances may
+            // simply be a stale snapshot (the grid does not lose funds).
             manager.logger?.log?.(
                 skipReason
                     ? `Spread correction skipped: ${skipReason}`
-                    : `Spread correction skipped: insufficient free funds and no committed inventory to redistribute ` +
+                    : `Spread correction skipped: insufficient free funds ` +
                       `(buy=${Format.formatAmount8(buyAvailable)}, sell=${Format.formatAmount8(sellAvailable)})`,
                 'warn'
             );
         }
 
-        return { side, reason: side ? `Choosing ${side}` : (skipReason || 'Insufficient funds or committed inventory') };
+        return { side, reason: side ? `Choosing ${side}` : (skipReason || 'Insufficient free funds') };
     }
 
     /**
@@ -3213,8 +3188,16 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             Number(manager.funds?.available?.[sideName] || 0),
             Number(sideName === 'buy' ? manager.accountTotals?.buyFree : manager.accountTotals?.sellFree) || 0
         ));
+        // PURE FUND-DRIVEN: corrections are funded exclusively by free
+        // available/chainFree. No resting order is ever shrunk to manufacture
+        // budget (the previous self-funded/redistribution paths moved
+        // inventory within a rail and were gamed by stale-size snapshots).
+        // When free funds cannot cover every target, the loop below places /
+        // tops-up what they allow and stops; the caller refreshes account
+        // totals + open orders to find out whether the shortfall was a stale
+        // accounting read (the grid does not lose funds, it holds them in
+        // resting orders).
 
-        const minAbsoluteSize = getMinOrderSize(railType, manager.assets);
         const prioritizedTargets: any[] = [];
 
         if (edgePartial && edgePartial.id) {
@@ -3248,46 +3231,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             return { ordersToPlace: [], ordersToUpdate: [], origin: 'spread-correction' };
         }
 
-        const totalNeeded = prioritizedTargets.reduce((sum: any, t: any) => sum + Math.max(0, Number(t.needed || 0)), 0);
-        let recoveredBudget = 0;
-        const redistributionUpdates: any[] = [];
-
-        if (totalNeeded > availableFund + precisionEpsilon) {
-            let shortfall = totalNeeded - availableFund;
-
-            const donors = sideSlots
-                .filter((o: any) => hasOnChainId(o) && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.PARTIAL))
-                .filter((o: any) => !edgePartial || o.id !== edgePartial.id)
-                .sort((a: any, b: any) => railType === ORDER_TYPES.BUY ? a.price - b.price : b.price - a.price);
-
-            for (const donor of donors) {
-                if (shortfall <= precisionEpsilon) break;
-
-                const donorCurrent = Number(donor.size || 0);
-                const donorIdeal = Number(idealById.get(donor.id) || 0);
-                const donorFloor = Math.max(minAbsoluteSize, donorIdeal);
-                const donorReducible = Math.max(0, donorCurrent - donorFloor);
-                if (donorReducible <= precisionEpsilon) continue;
-
-                const reduction = Math.min(donorReducible, shortfall);
-                const donorNext = donorCurrent - reduction;
-                if (donorNext <= precisionEpsilon) continue;
-                if (!isOrderHealthy(donorNext, railType, manager.assets, donorIdeal || donorNext)) continue;
-
-                redistributionUpdates.push({ partialOrder: { ...donor }, newSize: donorNext });
-                recoveredBudget += reduction;
-                shortfall -= reduction;
-            }
-
-            if (recoveredBudget > precisionEpsilon) {
-                manager.logger?.log?.(
-                    `[SPREAD-CORRECTION] Recovered ${Format.formatSizeByOrderType(recoveredBudget, railType, manager.assets)} on ${sideName} via redistribution`,
-                    'info'
-                );
-            }
-        }
-
-        let remainingBudget = availableFund + recoveredBudget;
+        let remainingBudget = availableFund;
 
         for (const target of prioritizedTargets) {
             if (remainingBudget <= precisionEpsilon) break;
@@ -3370,17 +3314,7 @@ export function determineOrderSideByFunds(manager: any, currentMarketPrice: any)
             }
         }
 
-        const combinedUpdates = [...redistributionUpdates];
-        for (const plannedUpdate of ordersToUpdate) {
-            const id = plannedUpdate?.partialOrder?.id || (plannedUpdate as any)?.id;
-            if (!id) continue;
-            const existingIdx = combinedUpdates.findIndex((u: any) => (u?.partialOrder?.id || u?.id) === id);
-            if (existingIdx >= 0) {
-                combinedUpdates[existingIdx] = plannedUpdate;
-            } else {
-                combinedUpdates.push(plannedUpdate);
-            }
-        }
+        const combinedUpdates = [...ordersToUpdate];
 
         if (spreadCandidates.length < missingSlots) {
             manager.logger?.log?.(

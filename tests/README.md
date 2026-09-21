@@ -88,7 +88,7 @@ Interactive tools and performance benchmarks (not part of CI).
 
 ### Edge Cases & Regression
 Tests targeting specific bugs, race conditions, and failure modes.
-*Examples:* `test_critical_bug_fixes.ts`, `test_race_condition_fixes_batch1.ts`, `test_patch17_invariants.ts`, `test_shutdown_reentrancy.ts`, `test_multifill_opposite_partial.ts`
+*Examples:* `test_critical_bug_fixes.ts`, `test_race_condition_fixes_batch1.ts`, `test_patch17_invariants.ts`, `test_shutdown_reentrancy.ts`, `test_multifill_opposite_partial.ts`, `test_correction_queue_staleness.ts`, `test_spread_pure_fund_driven.ts`, `test_sync_lock_id_verification.ts`
 
 ### Utilities & Helpers
 Shared utility functions, precision handling, chain helpers.

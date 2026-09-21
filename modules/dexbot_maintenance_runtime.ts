@@ -678,6 +678,14 @@ function getTargetedSyncReason(bot: any) {
         return { reason: `fund drift: ${drift.reason}`, targetBuy, targetSell, liveBuy, liveSell, drift };
     }
 
+    // Pure fund-driven spread correction found no free funds on either side.
+    // The balances may simply be a stale snapshot (fills not yet booked), so
+    // the only fallback is to refresh account totals + open orders and let the
+    // next correction cycle re-check. Never recycle resting inventory.
+    if (bot._spreadFundsExhausted === true) {
+        return { reason: 'spread correction had no free funds', targetBuy, targetSell, liveBuy, liveSell, drift };
+    }
+
     if (shortfalls.length > 0) {
         return { reason: `active order shortfall: ${shortfalls.join(', ')}`, targetBuy, targetSell, liveBuy, liveSell, drift };
     }
@@ -2547,6 +2555,10 @@ async function executeMaintenanceLogic(bot: any, context: any) {
             } else {
                 const spreadResult = await bot.manager.checkSpreadCondition(BitShares, bot.updateOrdersOnChainPlan.bind(bot));
                 if (await bot._abortFlowIfIllegalState(`${context} spread check`)) return;
+                // Mirror the check result so the next tick's targeted-sync gate
+                // (getTargetedSyncReason) refreshes funds/open orders when the
+                // correction could not find any free funds.
+                bot._spreadFundsExhausted = spreadResult?.fundsExhausted === true;
                 const spreadPlaced = Number(spreadResult?.ordersPlaced) || 0;
                 if (spreadPlaced > 0) {
                     bot._log(`✓ Spread correction during ${context}: ${spreadResult.ordersPlaced} order(s) placed`);
