@@ -2020,6 +2020,13 @@ export async function updateGridFromBlockchainSnapshot(manager: any, orderType: 
      * Each side's RMS divergence is compared against its own threshold.
      * Only sides exceeding the threshold are marked for update.
      *
+     * SCOPE: ACTIVE + VIRTUAL orders per side. VIRTUAL slots carry the planned
+     * reservation for unplaced rail slots (see funds.virtual); a persisted-vs-ideal
+     * drift there inflates the reservation and thereby pins Available
+     * (Available = ChainFree - Virtual - fees), so it is structural, not transient.
+     * PARTIAL orders are excluded (expected to deviate mid-fill); SPREAD placeholders
+     * are excluded (size-0, no committed structure).
+     *
      * PURPOSE: Detect if the calculated in-memory grid has diverged significantly from the
      * persisted grid state. High divergence indicates that order fills/rotations have caused
      * size distributions to deviate, potentially requiring grid size recalculation.
@@ -2064,12 +2071,15 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
             persistedSnap = snapshotResult.persisted;
         }
 
-        // Filter to ACTIVE orders only (excludes PARTIAL/VIRTUAL/SPREAD)
-        // Partial orders are excluded from divergence calculation as they are expected to deviate;
-        // they are instead handled by the available-funds ratio check or follow-up correction.
+        // Filter to ACTIVE + VIRTUAL orders (excludes PARTIAL/SPREAD).
+        // VIRTUAL slots hold the planned reservation (funds.virtual) for unplaced
+        // rail slots, so a persisted-vs-ideal drift there is structural: it moves
+        // Available = ChainFree - Virtual - fees. Partial orders are excluded from
+        // divergence calculation as they are expected to deviate; they are instead
+        // handled by the available-funds ratio check or follow-up correction.
         // Must be sorted ASC for calculateRotationOrderSizes to match geometric weight distribution
         const filterForRms = (orders: any, type: any): any[] => {
-            const result = Array.isArray(orders) ? orders.filter((o: any) => o && o.type === type && o.state === ORDER_STATES.ACTIVE) : [];
+            const result = Array.isArray(orders) ? orders.filter((o: any) => o && o.type === type && (o.state === ORDER_STATES.ACTIVE || o.state === ORDER_STATES.VIRTUAL)) : [];
             return result
                 .sort((a: any, b: any) => (a.price ?? 0) - (b.price ?? 0));
         };
@@ -2084,8 +2094,8 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
         // so both buy and sell metrics share a single fund snapshot. This avoids the previous
         // double-recalculateFunds between the two sides and keeps the metric consistent even if
         // a fill event arrives between per-side calculations.
-        const computeSideIdeals = (activeOrders: any, type: any, ctx: any): any => {
-            if (!manager || !ctx || ctx.budget <= 0 || activeOrders.length === 0) return activeOrders;
+        const computeSideIdeals = (comparedOrders: any, type: any, ctx: any): any => {
+            if (!manager || !ctx || ctx.budget <= 0 || comparedOrders.length === 0) return comparedOrders;
 
             // Identify ALL slots currently assigned to this side from the calculated
             // grid snapshot (not a fresh read from manager.orders).  Using the snapshot
@@ -2098,7 +2108,7 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
                 .filter((o: any) => o.type === type)
                 .sort((a: any, b: any) => (a.price ?? 0) - (b.price ?? 0));
 
-            if (sideSlots.length === 0) return activeOrders;
+            if (sideSlots.length === 0) return comparedOrders;
 
             // Calculate geometric ideals for the ENTIRE side (all slots)
             try {
@@ -2116,10 +2126,10 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
                 const idealMap = new Map();
                 sideSlots.forEach((slot: any, i: any) => idealMap.set(slot.id, allIdealSizes[i]));
 
-                // Return the activeOrders subset with their true geometric ideal sizes
-                return activeOrders.map((o: any) => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
+                // Return the compared subset with their true geometric ideal sizes
+                return comparedOrders.map((o: any) => ({ ...o, size: idealMap.get(o.id) ?? 0 }));
             } catch (e: any) {
-                return activeOrders;
+                return comparedOrders;
             }
         };
 

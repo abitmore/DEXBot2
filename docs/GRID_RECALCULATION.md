@@ -25,7 +25,7 @@ rebuild around that snapshot.
 | **Initial AMA Snapshot** | Market adapter | Bot has no accepted AMA `gridCenterPrice` yet | Write `dynamicgrid.json`, then write a trigger file | Full grid resync around the first accepted AMA center |
 | **AMA Center Move** | Market adapter | Current AMA center moves past the configured delta threshold | Write `dynamicgrid.json`, then write a trigger file | Full grid resync around the new accepted AMA center |
 | **AMA Slope Range Move** | Market adapter | Range-scaling bot's accepted AMA-slope baseline moves past threshold | Write range-scaling fields to `dynamicgrid.json`, then write a trigger file | Full grid resync with updated asymmetric range/offset data |
-| **RMS Structural Divergence** | Bot runtime maintenance | Current grid shape diverges from persisted/on-chain grid by RMS threshold | Refresh `gridCenterPrice` from latest `amaCenterPrice`, then run full grid resync | Full grid resync from latest market-adapter snapshot |
+| **RMS Structural Divergence** | Bot runtime maintenance | Current grid shape diverges from persisted grid (ACTIVE + VIRTUAL) by RMS threshold | Refresh `gridCenterPrice` from latest `amaCenterPrice`, then run full grid resync | Full grid resync from latest market-adapter snapshot |
 | **Available-Funds Resize** | Bot runtime maintenance | Filled-order proceeds exceed `GRID_REGENERATION_PERCENTAGE` (grow), or grid-tracked size exceeds allocation by that threshold after fund removal (shrink) | Recalculate affected side/order sizes through maintenance logic | Order-size/grid maintenance update, not an AMA recenter trigger |
 
 Each source is evaluated independently. Market-adapter full-resync requests are
@@ -313,17 +313,25 @@ so the adapter converts them when loading overrides. New settings should use
 
 ### What It Does
 Compares the **calculated grid** currently held by the bot with the
-**persisted/on-chain grid state**. When structural divergence exceeds the
-threshold, the bot performs a full grid resync.
+**persisted grid state** (ACTIVE on-chain orders plus VIRTUAL planned
+reservations). When structural divergence exceeds the threshold, the bot
+performs a full grid resync.
+
+**Scope (per side):** the metric covers **ACTIVE + VIRTUAL** orders. PARTIAL
+orders are excluded (expected to deviate mid-fill) and SPREAD placeholders are
+excluded (size-0). VIRTUAL slots carry the planned reservation for unplaced
+rail slots (`funds.virtual`), so a persisted-vs-ideal drift there moves
+`Available = ChainFree − Virtual − fees` and is treated as structural.
 
 **Why it matters:** Order fills, rotations, and fee deductions can make the
-active grid shape drift away from the stored/on-chain picture. RMS divergence
+grid shape drift away from the stored picture. RMS divergence
 detects that structural drift. Once it crosses the threshold, DEXBot rebuilds
 from the latest market-adapter snapshot instead of trying to keep patching the
 old shape.
 
 The RMS calculation compares the runtime grid (calculated from the bot's
-config and live dynamic weights) against the persisted/on-chain grid state.
+config and live dynamic weights) against the persisted grid state
+(ACTIVE + VIRTUAL).
 Crossing the threshold only changes the follow-up action: the bot refreshes
 `gridCenterPrice` from the latest `amaCenterPrice` in `dynamicgrid.json`,
 then runs the full resync path.
@@ -376,7 +384,7 @@ and dedupes while one resync is already pending or running.
 ### How It Works
 
 1. **Grid Engine** (`modules/order/grid.ts`) calculates the ideal grid state
-2. Compares with the actual blockchain grid state after fills/rotations
+2. Compares with the persisted grid state — ACTIVE on-chain orders plus VIRTUAL planned reservations — after fills/rotations
 3. Computes RMS divergence metric:
    ```
    RMS = √(mean of ((calculated - persisted) / persisted)²)

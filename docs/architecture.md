@@ -916,7 +916,7 @@ graph TB
     START[Grid Update Triggered] --> CALC[Calculate Ideal Grid<br/>Based on current funds]
     CALC --> RELOAD[Force Reload Persisted Grid<br/>Ensure fresh blockchain state]
     RELOAD --> COMPARE[Compare to Persisted Grid]
-    COMPARE --> RMS[Calculate RMS Divergence<br/>For PARTIAL orders only]
+    COMPARE --> RMS[Calculate RMS Divergence<br/>ACTIVE + VIRTUAL orders per side]
 
     RMS --> CHECK{RMS > Threshold?}
     CHECK -->|Yes| UPDATE[Update Grid Sizes<br/>Trigger rebalance]
