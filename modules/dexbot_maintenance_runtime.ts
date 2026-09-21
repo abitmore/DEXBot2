@@ -3227,7 +3227,7 @@ function getPipelineSignals(bot: any) {
     bot.manager?._cleanExpiredLocks?.();
     return {
         incomingFillQueueLength: bot._incomingFillQueue.length,
-        shadowLocks: bot.manager?.shadowOrderIds?.size || 0,
+        shadowLocks: bot.manager?.getActiveShadowLockCount?.() || 0,
         batchInFlight: bot._batchInFlight > 0,
         recoveryInFlight: bot._recoverySyncInFlight > 0,
         broadcasting: bot.manager?.isBroadcastingActive?.() || false
@@ -3264,7 +3264,7 @@ function getMetrics(bot: any) {
         queueDepth: bot._incomingFillQueue.length,
         fillProcessingLockActive: bot.manager?._fillProcessingLock?.isLocked() || false,
         divergenceLockActive: bot.manager?._divergenceLock?.isLocked() || false,
-        shadowLocksActive: bot.manager?.shadowOrderIds?.size || 0,
+        shadowLocksActive: bot.manager?.getActiveShadowLockCount?.() || 0,
         recoveryExhaustedAt: bot.manager?._recoveryExhaustedAt || null,
         recentFillsTracked: bot._recentlyProcessedFills.size,
         unmatchedChainOrders: unmatched.length,

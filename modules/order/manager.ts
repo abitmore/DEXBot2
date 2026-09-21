@@ -1376,6 +1376,22 @@ class OrderManager {
         return true;
     }
 
+    /**
+     * Number of distinct live orders currently shadow-locked.
+     *
+     * shadowOrderIds is keyed by BOTH slot id and chain order id (aliases of
+     * the same order), so `shadowOrderIds.size` roughly double-counts. Count
+     * the slot-id keys that still map to a live grid order instead.
+     * @returns {number}
+     */
+    getActiveShadowLockCount(): number {
+        let count = 0;
+        for (const id of this.shadowOrderIds.keys()) {
+            if (this.orders.has(id)) count++;
+        }
+        return count;
+    }
+
     _cleanExpiredLocks() {
         const now = Date.now();
         for (const [id, expiresAt] of this.shadowOrderIds) {
