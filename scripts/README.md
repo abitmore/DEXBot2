@@ -385,8 +385,10 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 
 ## 📈 CHART GENERATION
 
+`dexbot tv` and `dexbot dw` share ONE fetch pipeline ([`chart_command.ts`](chart_command.ts)): identical target resolution, source routing, cached candle chunks, and temp-file handoff — only the renderer registration (`RENDERERS` table) differs.
+
 ### TradingView (`dexbot tv`)
-**File:** `tv.ts`
+**File:** `tv.ts` (thin entry; shared pipeline: `chart_command.ts`)
 **Purpose:** One-step TradingView-style 1h chart for a bot (with AMA + order overlay), pool, or pair. Fetches candles in monthly Kibana chunks (pool-first with order-book fallback; `--feed` for MPA price-feed history), then renders via `analysis/tradingview/`. Bot charts pick up the order overlay from `profiles/orders/<botKey>.json` automatically.
 **Output:** `analysis/charts/tv_<bot|pool_<id>|<a>_<b>>_1h_<N>m.html` (`_feed` suffix for feed charts)
 ```bash
@@ -398,6 +400,21 @@ dexbot tv TOKENA/TOKENB --month 1 --chart analysis/charts/custom.html
 # MPA price-feed history instead of market candles (opt-in)
 dexbot tv BTS/HONEST.USD --feed --month 1
 ```
+
+### Dynamic Weight (`dexbot dw`) — advanced
+**File:** `dw.ts` (thin entry; shared pipeline: `chart_command.ts`)
+**Purpose:** Identical one-step pipeline to `dexbot tv` (same targets, `--month`, `--feed/--pool/--book`, same cached monthly candle chunks) — the only difference is the renderer: it writes the dynamic-weight research chart via `analysis/analyze_dynamic_weight.ts` (AMA slope + Kalman blend, Hurst/PE regime gate) instead of a TradingView chart. For weight-tuning research, not general charting.
+**Output:** `analysis/charts/dw_<bot|pool_<id>|<a>_<b>>_1h_<N>m.html` (`_feed` suffix for feed charts)
+```bash
+# Bot chart (default: 3 months)
+dexbot dw <bot>
+# Pool or pair, custom window
+dexbot dw 133 --month 6
+dexbot dw TOKENA/TOKENB --month 1 --chart analysis/charts/custom.html
+# MPA price-feed history instead of market candles (opt-in)
+dexbot dw BTS/HONEST.USD --feed --month 1
+```
+Research knobs (`--alpha`, `--gain`, `--dw`, `--lb`, `--clip`) stay on the analyzer itself — call `node dist/analysis/analyze_dynamic_weight.js` directly for parameter sweeps (see `analysis/README.md`).
 
 ### LP Chart
 **File:** `generate_lp_chart.ts`

@@ -63,6 +63,11 @@ On top of this blend, **Hurst Exponent** and **Permutation Entropy** act as a re
 ## Quick Start
 
 ```bash
+# One-step (recommended): same fetch pipeline as `dexbot tv` — bot, pool, or pair
+dexbot dw <bot-key>
+dexbot dw 133 --month 6
+dexbot dw TOKENA/TOKENB --month 1
+
 # From JSON candle file
 node dist/analysis/analyze_dynamic_weight.js \
   --file market_adapter/data/lp/<pair>/lp_pool_<id>_<interval>.json
@@ -76,6 +81,8 @@ node dist/analysis/analyze_dynamic_weight.js \
 ```
 
 Output: `analysis/charts/dynamic_weight_chart.html` (open in browser)
+
+`dexbot dw` writes an auto-named chart instead: `analysis/charts/dw_<bot|pool_<id>|<a>_<b>>_1h_<N>m.html`.
 
 **Note**: Hurst requires 256 bars and PE requires 58 bars before their regime signals become active. The first portion of the chart will show the full weight without regime gating.
 

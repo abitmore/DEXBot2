@@ -179,7 +179,7 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'dw', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
 const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
@@ -287,7 +287,7 @@ if (cliArgs.some(arg => CLI_HELP_FLAGS.includes(arg))) {
     // so the script prints its usage. Only scripts with offline help handling
     // belong here — forwarding to a script without it could misinterpret the
     // flag as input (e.g. a bot-name filter triggering live work).
-    const HELP_OWNING_COMMANDS = new Set(['credit', 'tv']);
+    const HELP_OWNING_COMMANDS = new Set(['credit', 'tv', 'dw']);
     const requestedCommand = COMMAND_ALIASES[cliArgs[0]] ?? cliArgs[0];
     if (!HELP_OWNING_COMMANDS.has(requestedCommand)) {
         printCLIUsage();
@@ -901,7 +901,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
-  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, tv, clear, status, whitelist, unlock, help
+  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, tv, dw, clear, status, whitelist, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -1071,11 +1071,12 @@ async function handleCLICommands() {
             process.exit(result.status ?? 0);
             return true;
         }
-        case 'tv': {
+        case 'tv':
+        case 'dw': {
             const { spawnSync } = require('child_process') as any as any;
             const scriptArgs = buildRuntimeScriptArgs({
                 codeRoot: __dirname,
-                scriptSegments: ['scripts', 'tv'],
+                scriptSegments: ['scripts', command],
                 scriptArgs: cliArgs.slice(1),
             });
             const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
@@ -1083,7 +1084,7 @@ async function handleCLICommands() {
                 stdio: 'inherit',
             });
             if (result.error) {
-                console.error(`tv: ${result.error.message}`);
+                console.error(`${command}: ${result.error.message}`);
                 process.exit(1);
             }
             process.exit(result.status ?? 0);

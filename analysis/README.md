@@ -25,7 +25,7 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>` |
 | [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>` |
 | [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `dexbot tv <bot-key>` |
-| [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>` |
+| [`analyze_dynamic_weight.ts`](#dynamic-weight-research-analyze_dynamic_weightts) | "Are buy/sell weights tuned for this regime?" | `dexbot dw <bot-key>` |
 | [`analyze_volatility.ts`](#volatility-analyze_volatilityts) | "Both weights clipped too hard / not enough?" | `node dist/analysis/analyze_volatility.js --bot-key <bot-key>` |
 | [`analyze_regime.ts`](#supporting-sub-signals) | "Is the trend/chaos gate too aggressive?" | `node dist/analysis/analyze_regime.js --bot-key <bot-key>` |
 | [`analyze_kalman.ts`](#supporting-sub-signals) | "Is Kalman's contribution to the blend right?" | `node dist/analysis/analyze_kalman.js --bot-key <bot-key>` |
@@ -337,6 +337,13 @@ Two weight-tuning paths feed into the market adapter:
 Interactive 4-panel chart for the asymmetric path: AMA slope plus Kalman confirmation, gated by Hurst Exponent and Permutation Entropy. Use this when tuning buy/sell weight bias, AMA slope offset behavior, and regime damping.
 
 ```bash
+# Recommended one-step (advanced): bot, pool, or pair — fetches candles and renders,
+# same pipeline as `dexbot tv`, default 3 months
+dexbot dw <bot-key>
+dexbot dw 133 --month 6
+dexbot dw TOKENA/TOKENB --month 1
+
+# Direct analyzer (own candle files, research knobs --alpha/--gain/--dw/--lb/--clip)
 node dist/analysis/analyze_dynamic_weight.js --bot-key <bot-key>
 
 # From LP candle file with custom parameters
