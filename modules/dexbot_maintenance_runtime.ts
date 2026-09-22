@@ -2483,7 +2483,12 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                     bot._log(`Grid update triggered by funds during ${context} (buy: ${divergence.buy.ratio}${buyDir}, sell: ${divergence.sell.ratio}${sellDir})`);
                 }
                 if (hasRmsDivergence) {
-                    bot._log(`Grid update triggered by structural divergence during ${context}: buy=${Format.formatPrice6(divergence.buy.metric)}, sell=${Format.formatPrice6(divergence.sell.metric)}`);
+                    const rmsThresholdPct = (divergence as any)?.thresholdPct ?? grid.resolveRmsThresholdPct(bot.manager);
+                    const rmsTriggeredSides = [
+                        divergence.buy.rms ? 'buy' : null,
+                        divergence.sell.rms ? 'sell' : null,
+                    ].filter(Boolean).join('+') || 'none';
+                    bot._log(`[RMS] Grid update triggered by structural divergence during ${context}: buy=${Format.formatPercent(Number(divergence.buy.metric) * 100, 2)}% sell=${Format.formatPercent(Number(divergence.sell.metric) * 100, 2)}% (threshold=${rmsThresholdPct}%) sides=${rmsTriggeredSides} → TRIGGER-RESYNC (rms_structural_grid_resync)`);
                     let ok;
                     if (typeof bot._performGridResync === 'function') {
                         ok = await bot._performGridResync(buildGridResyncOptions('rms_structural_grid_resync'));
@@ -2491,7 +2496,7 @@ async function executeMaintenanceLogic(bot: any, context: any) {
                         ok = await performGridResync(bot, buildGridResyncOptions('rms_structural_grid_resync'));
                     }
                     if (!ok) {
-                        bot._warn(`RMS structural divergence full grid resync failed during ${context}; retaining existing grid state.`);
+                        bot._warn(`[RMS] Structural divergence full grid resync failed during ${context}; retaining existing grid state.`);
                     }
                     return;
                 }

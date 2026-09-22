@@ -97,7 +97,6 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 import { ORDER_TYPES, ORDER_STATES, COW_ACTIONS, DEFAULT_CONFIG, GRID_LIMITS, TIMING, PIPELINE_TIMING, MARKET_ADAPTER, INCREMENT_BOUNDS } from '../constants.js';
-const { GRID_COMPARISON } = GRID_LIMITS;
 import * as Format from './format.js';
 import {
     resolveMaxAsymmetryFactor,
@@ -109,6 +108,19 @@ import {
 const GRID_CONSTANTS = {
     RMS_PERCENTAGE_SCALE: 100,  // Convert RMS percentage threshold from percent to decimal
 };
+
+/**
+ * Central resolution for the RMS structural-divergence threshold (percent).
+ * Single source of truth: per-bot override wins, global GRID_COMPARISON default
+ * is the fallback. Used by compareGrids() and re-exported for the maintenance
+ * runtime so the reset log always shows the level that actually fired.
+ * @param {any} manager - OrderManager instance (may be null)
+ * @returns {number} Threshold in percent (0 = disabled)
+ */
+export function resolveRmsThresholdPct(manager: any): number {
+    return manager?.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE
+        ?? GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE;
+}
 
 function _snapshotFundState(manager: any): any {
     return {
@@ -2155,8 +2167,9 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
         // Check if metrics exceed threshold and flag sides for regeneration
         // Set RMS_PERCENTAGE to 0 to disable RMS divergence checks
         let buyUpdated = false, sellUpdated = false;
-        if (manager && (manager.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE ?? GRID_COMPARISON.RMS_PERCENTAGE) > 0) {
-            const limit = (manager.config?.gridLimits?.GRID_COMPARISON?.RMS_PERCENTAGE ?? GRID_COMPARISON.RMS_PERCENTAGE) / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;
+        const rmsThresholdPct = resolveRmsThresholdPct(manager);
+        if (manager && rmsThresholdPct > 0) {
+            const limit = rmsThresholdPct / GRID_CONSTANTS.RMS_PERCENTAGE_SCALE;
 
             if (buyMetric > limit) {
                 // RC-3: Use Set for automatic duplicate prevention
@@ -2170,12 +2183,19 @@ export async function compareGrids(calculatedGrid: any, persistedGrid: any, mana
                 manager._gridSidesUpdated.add(ORDER_TYPES.SELL);
                 sellUpdated = true;
             }
+            manager.logger?.log?.(
+                `[RMS] BUY check: metric=${Format.formatPercent(buyMetric * 100, 2)}% (threshold=${rmsThresholdPct}%) → ${buyUpdated ? 'TRIGGER-RESYNC' : 'no trigger'} | SELL check: metric=${Format.formatPercent(sellMetric * 100, 2)}% (threshold=${rmsThresholdPct}%) → ${sellUpdated ? 'TRIGGER-RESYNC' : 'no trigger'}`,
+                'debug'
+            );
+        } else if (manager) {
+            manager.logger?.log?.(`[RMS] checks disabled (threshold=${rmsThresholdPct}%) — buy=${Format.formatPercent(buyMetric * 100, 2)}%, sell=${Format.formatPercent(sellMetric * 100, 2)}%`, 'debug');
         }
 
         return {
             buy: { metric: buyMetric, updated: buyUpdated },
             sell: { metric: sellMetric, updated: sellUpdated },
-            totalMetric: (buyMetric + sellMetric) / 2
+            totalMetric: (buyMetric + sellMetric) / 2,
+            thresholdPct: rmsThresholdPct
         };
     }
 
@@ -2214,7 +2234,8 @@ export async function monitorDivergence(manager: any, calculatedGrid: any, persi
             needsUpdate: buyUpdated || sellUpdated,
             buy: { updated: buyUpdated, ratio: ratioResult.buyUpdated, rms: rmsResult.buy.updated, metric: rmsResult.buy.metric, shrink: ratioResult.buyShrink === true },
             sell: { updated: sellUpdated, ratio: ratioResult.sellUpdated, rms: rmsResult.sell.updated, metric: rmsResult.sell.metric, shrink: ratioResult.sellShrink === true },
-            orderType: getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated)
+            orderType: getOrderTypeFromUpdatedFlags(buyUpdated, sellUpdated),
+            thresholdPct: rmsResult.thresholdPct
         };
     }
 

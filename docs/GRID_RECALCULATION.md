@@ -344,7 +344,7 @@ code paths and log differently:
 
 | Path | Fires from | Trigger | Log signature |
 |------|-----------|---------|---------------|
-| **Periodic divergence** | `dexbot_maintenance_runtime.ts` periodic sync loop | `Grid.monitorDivergence()` reports `buy.rms` or `sell.rms` above threshold | `Grid update triggered by structural divergence during periodic: buy=..., sell=...` |
+| **Periodic divergence** | `dexbot_maintenance_runtime.ts` periodic sync loop | `Grid.monitorDivergence()` reports `buy.rms` or `sell.rms` above threshold | `[RMS] Grid update triggered by structural divergence during periodic: buy=...% sell=...% (threshold=...%) sides=... → TRIGGER-RESYNC (rms_structural_grid_resync)` |
 | **Structural recovery (COW guard)** | `dexbot_class.ts` `_wireStructuralGridResyncRequest()` | Order manager detects unmatched chain orders during copy-on-write placement | `[RECOVERY] Running structural full grid resync for <reason> (N unmatched chain order(s))` |
 
 The structural-recovery path is debounced through `_structuralGridResyncTimer`
@@ -566,9 +566,14 @@ market_adapter_ama_slope_delta_threshold
 
 **RMS Divergence Trigger:**
 ```
-Grid update triggered by structural divergence during periodic: buy=..., sell=...
+[RMS] Grid update triggered by structural divergence during periodic: buy=16.20% sell=2.10% (threshold=14.3%) sides=buy → TRIGGER-RESYNC (rms_structural_grid_resync)
 Grid regeneration triggered. Performing full grid resync...
 Recorded grid reset metadata for dynamic grid state.
+```
+
+At `debug` level each tick also emits the per-side check detail (mirroring the `[DIVERGENCE]` ratio-check line):
+```
+[RMS] BUY check: metric=...% (threshold=14.3%) → TRIGGER-RESYNC/no trigger | SELL check: metric=...% (threshold=14.3%) → TRIGGER-RESYNC/no trigger
 ```
 
 **Available-Funds Resize Trigger:**

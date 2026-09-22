@@ -26,7 +26,8 @@ const NAMES = {
     grid: [
         'calculateCurrentSpread', 'calculateGapSlots', 'checkGridHealth',
         'checkSpreadCondition', 'initializeGrid', 'recalculateGrid',
-        'monitorDivergence', 'updateGridFromBlockchainSnapshot',
+        'monitorDivergence', 'resolveRmsThresholdPct',
+        'updateGridFromBlockchainSnapshot',
         'isGridBloated', 'isGridBloatGraceActive', 'clearGridBloatFlag',
     ],
     system: [
@@ -40,7 +41,7 @@ const NAMES = {
         'applyGridDivergenceCorrections', 'initializeFeeCache',
         'restoreGapEvacStreaks', 'applyPersistedPendingCrawls',
     ],
-    format: ['formatCurrency', 'formatMetric2', 'isValidNumber', 'toFiniteNumber', 'formatPrice6'],
+    format: ['formatCurrency', 'formatMetric2', 'isValidNumber', 'toFiniteNumber', 'formatPrice6', 'formatPercent'],
     orderUtils: [
         'applyChainSizeToGridOrder', 'assignGridRoles', 'buildCreateOrderArgs',
         'buildCrossingCheckCandidates', 'buildDelta', 'buildFillKey', 'buildIndexes',
@@ -694,9 +695,11 @@ function installDivergenceMocks(opts) {
     });
     defineEsmMockAbs(require.resolve('../modules/order/grid'), NAMES.grid, {
         monitorDivergence: async () => opts.divergence,
+        resolveRmsThresholdPct: () => 14.3,
     });
     defineEsmMockAbs(require.resolve('../modules/order/format'), NAMES.format, {
         formatPrice6: (value) => Number(value).toFixed(6),
+        formatPercent: (value, decimals = 2) => Number(value).toFixed(decimals),
     });
     defineEsmMockAbs(require.resolve('../modules/order/utils/order'), NAMES.orderUtils, {
         virtualizeOrder: (order) => order,
@@ -798,8 +801,12 @@ async function testRmsDivergenceRunsFullGridResync() {
     assert.strictEqual(correctionCalled, false, 'RMS divergence should not use correction-only path');
     assert.strictEqual(spreadChecked, false, 'maintenance should stop after full RMS resync');
     assert.ok(
-        logs.some((msg) => msg.includes('Grid update triggered by structural divergence during unit-test-rms')),
-        'RMS divergence should be logged'
+        logs.some((msg) => msg.includes('[RMS] Grid update triggered by structural divergence during unit-test-rms')),
+        'RMS divergence should be logged with [RMS] tag'
+    );
+    assert.ok(
+        logs.some((msg) => msg.includes('threshold=') && msg.includes('TRIGGER-RESYNC')),
+        'RMS divergence log should show threshold and trigger decision'
     );
 }
 
