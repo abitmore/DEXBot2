@@ -694,7 +694,7 @@ Uptrend:   maxPrice = center × (M × (1 + asymmetry))
 Neutral:   symmetric bounds (asymmetry = 0)
 ```
 
-`ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR` defaults to `0.35`; `0` disables the
+`ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR` defaults to `0.333`; `0` disables the
 tilt. `ASYMMETRIC_BOUNDS_MIN_SCALE_SLOTS` defaults to `10` and sets the minimum
 number of price levels the *tightened* side of a range-scaled grid must keep
 between the grid center and its bound (measured in `incrementPercent` steps);
@@ -710,7 +710,7 @@ Both are configurable per bot or per market via
 {
   "globals": {
     "asymmetricBounds": {
-      "maxAsymmetryFactor": 0.35,
+      "maxAsymmetryFactor": 0.333,
       "minScaleSlots": 10
     }
   },

@@ -1469,7 +1469,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
             const maxSlopeOffset = Number(slopeCfg.maxSlopeOffset) > 0 ? Number(slopeCfg.maxSlopeOffset) : 0.5;
             const maxAsym = gridCfg && Number(gridCfg.maxAsymmetryFactor) > 0
                 ? Number(gridCfg.maxAsymmetryFactor)
-                : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.35);
+                : (Number(slopeCfg.maxAsymmetryFactor) > 0 ? Number(slopeCfg.maxAsymmetryFactor) : 0.333);
             const inc = gridCfg && Number(gridCfg.incrementPercent) > 0 ? Number(gridCfg.incrementPercent) : null;
             const minSlots = Math.floor(Number(gridCfg && gridCfg.minScaleSlots) > 0 ? Number(gridCfg.minScaleSlots) : (Number(slopeCfg.minScaleSlots) || 0));
             // User x-range span (slider 1.2x–2.0x, default 1.55x): the only
