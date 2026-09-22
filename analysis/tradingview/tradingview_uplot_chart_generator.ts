@@ -3066,7 +3066,7 @@ function generateHTML(data: any, title: any = 'TradingView Style Research') {
         }
         makeStepper('sma-period', 1, 1, 0);
         makeStepper('vwap-bars', 1, 24, 0);
-        makeStepper('ama-er', 1, 1, 0);
+        makeStepper('ama-er', 10, 1, 0);
         makeStepper('ama-fast', 0.1, 0.1, 1);
         makeStepper('ama-slow', 1, 0.1, 1);
         document.getElementById('ama-init-offset').addEventListener('input', () => {
