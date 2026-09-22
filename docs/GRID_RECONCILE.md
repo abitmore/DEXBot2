@@ -38,7 +38,7 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
 │  • Sanitize phantom orders (ACTIVE/PARTIAL with  │
 │    orderId absent on-chain → VIRTUAL, skip);     │
 │    defer freshly-assigned orderIds, ghost pass   │
-│  • Detect suspected duplicates (within 5× tol) → │
+│  • Detect suspected duplicates (exact price) →   │
 │    queue for Phase 2 cancel                      │
 │  • Match unmatched chain orders to virtual slots │
 │    → plan updates                                │
@@ -85,7 +85,7 @@ Phase 2 and 3 both respect the `dryRun` flag: when true, no on-chain mutations a
    - **Ghost heuristic** (line 229): an order with `size <= 0` && `PARTIAL` (a known filled ghost) still passes through so known fills get cleaned up.
    - Virtualization always uses `{ skipAccounting: true }` so startup cleanup never inflates `ChainFree`.
 
-2. **Duplicate detection** (lines 258-331): For each unmatched chain order, find the nearest active same-side grid order. If `priceDiff ≤ tolerance × 5`, flag it as a suspected duplicate and queue for a Phase 2 cancel (never cancelled under lock). Tolerance is computed from price impact via `calculatePriceTolerance`: capped at `PRICE_TOLERANCE_MAX_PERCENT` (1%) with a `PRICE_TOLERANCE_MIN_ABSOLUTE` (0.0001) floor. Duplicate IDs are removed from the unmatched set so they aren't also paired for updates/creates.
+2. **Duplicate detection** (lines 258-331): For each unmatched chain order, find the nearest active same-side grid order. If its price equals that grid order's slot price exactly (`priceSlotEqual` at the asset precision), flag it as a suspected duplicate and queue for a Phase 2 cancel (never cancelled under lock). Non-equal neighbours are only logged with nearest-same-side diagnostics and continue into per-side reconciliation. Duplicate IDs are removed from the unmatched set so they aren't also paired for updates/creates.
 
 3. **Per-side reconciliation** via `_reconcileStartupSide(planOnly=true)` (lines 343-372):
    - Count `matchedOnGrid` (active grid orders with `orderId`)

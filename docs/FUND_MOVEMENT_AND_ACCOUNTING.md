@@ -478,15 +478,15 @@ When a grid is regenerated or resized, existing partial orders (partially filled
 A partial order is classified as **Dust** if:
 $$Size_{current} < Size_{ideal} \times 0.05$$
 
-Dust orders are too small to be efficient on-chain and are marked for consolidation into the grid rebuild cycle.
+Dust orders are too small to be efficient on-chain and are **cancelled immediately on detection** — no delay, no timer (`cancelDustOrders()`, `[DUST]` tag). Detection runs on every fill/sync tick plus a 5-minute health check (`DUST_HEALTH_CHECK_INTERVAL_MS`) as a crash/restart safety net; the cancel flows through the synthetic-fill pipeline so funds return to `ChainFree`.
 
 ### 4.2 Consolidation Strategy
 
 When the strategy engine encounters partial orders during rebalancing:
 
 **Direct Approach** (Simplified):
-1. **Identify unhealthy partials**: Detect any partial orders below the 5% dust threshold on each side
-2. **Mark for consolidation**: Flag partials as needing attention in the next rebalance cycle
+1. **Cancel dust first**: partials below the 5% dust threshold are cancelled on detection (see §4.1) and never reach the rebuild
+2. **Consolidate the remainder**: surviving partials are absorbed when the grid is rebuilt in the next rebalance cycle
 3. **Fund-driven grid rebuild**: Rather than complex slot-by-slot merge/split logic, the entire grid is regenerated based on current total funds (including proceeds from fills)
 4. **Natural redistribution**: The rebuilt grid automatically sizes all orders (including those replacing consolidation candidates) using the Ideal Grid sizing formula
 5. **Spread maintenance**: The target spread gap remains constant at `targetSpreadPercent`—no dynamically inflated corrections

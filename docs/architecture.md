@@ -59,7 +59,7 @@ graph TB
         TARGET[Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial-fill consolidation, rotation]
         WORKGRID[WorkingGrid - COW copy<br/>all mutations here only<br/>commit to Master on confirmation]
         FILLQUEUE[Fill Queue<br/>AsyncLock + dedup 5-60 min]
-        BATCHER[Fixed-Cap Batcher<br/>queue within cap: unified batch<br/>queue above cap: chunk at cap size<br/>default cap: 4]
+        BATCHER[Fixed-Cap Batcher<br/>queue within cap: unified batch<br/>queue above cap: chunk at cap size<br/>cap = gapSlots + 1]
     end
 
     subgraph "OUTPUTS"
@@ -107,7 +107,7 @@ graph TB
 | **Immutability** | Master Grid is frozen; all changes go through a disposable WorkingGrid (Copy-on-Write) |
 | **Single Source of Truth** | Accounting engine owns all fund data; everything reads from it |
 | **Event-driven + Polling** | Fill Events (real-time) and Open-Order polling feed the same queue |
-| **Fixed-Cap Batching** | Deterministic batching with hard cap per broadcast (default 4 fills) |
+| **Fixed-Cap Batching** | Deterministic batching with hard cap per broadcast (cap = gapSlots + 1 fills) |
 | **Persistence** | Grid snapshot written after every confirmed blockchain commit |
 
 ---
