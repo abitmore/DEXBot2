@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.4 stable release.
+DEXBot2 is a sophisticated decentralized exchange trading bot for the BitShares blockchain. This report documents the complete evolution of the project from its inception in December 2025 through the current 1.6.5 stable release.
 
 ### Key Milestones
 - **Project Inception**: December 2, 2025
-- **Growth Phase**: 2,254 commits over ~9 active months
+- **Growth Phase**: 2,263 commits over ~9 active months
 - **Code Maturity**: Evolution from basic utilities to a ~100,000+ LoC intelligent TypeScript system
 - **Stability**: Progression from manual testing to a suite of 309 automated test files
-- **Releases**: 108 release entries (v0.1.0 to v1.6.4)
+- **Releases**: 109 release entries (v0.1.0 to v1.6.5)
 
 > **Post-1.0.0 "why":** the thematic story behind the hardening releases — root cause, recurring
 > bug families, and lessons — lives in
@@ -162,11 +162,12 @@ Compact, era-level view. Per-release detail lives in [CHANGELOG.md](../CHANGELOG
 | v1.5.3 → v1.6.0 | 37 | Node-failure ledger, grid regeneration, reserve ladder, live-config pickup, owed-crawl persistence, fill-anchored boundary recovery, TradingView overlay |
 | v1.6.0 → v1.6.3 | 12 | Never-run-stale hardening, whitelist range-scaling opt-in, grid-price invariant, shard candle cache, correction-queue staleness, final pre-broadcast pivot gate |
 | v1.6.3 → v1.6.4 | 18 | Fund-driven spread correction, gapSlots+1 batch cap, VIRTUAL RMS divergence, sync-lock log fix, invariant-doc contract, analysis shared modules, window-aware profitability annualisation, portable chart exports, range-threshold restore, dead-code purge, doc consolidation |
+| v1.6.4 → v1.6.5 | 15 | Editor-managed whitelist flags + legacy generator removal, centralized bot defaults/settings docs, log-symmetric range-scaling tilt, AMA gridPrice default + unset → startPrice normalization, Pool default/warn-color cues, Grid Health AMA-slope Δ knob, dynamic-weight chart CLI, update dist-freshness self-heal, launcher worker rename, RMS log tagging |
 
 ---
 
 **Report Originally Generated**: February 19, 2026
 **Last Updated**: September 23, 2026
-**Total Commits**: 2,254
+**Total Commits**: 2,263
 **Date Range**: December 2, 2025 – September 23, 2026
 **Repository**: DEXBot2 (BitShares DEX Trading Bot)
