@@ -83,8 +83,9 @@ function testDraftSnapshot() {
     for (const key of COUNT_OBJECT_KEYS) expected[key] = { ...DEFAULT_CONFIG[key] };
     expected.reserveOrders = { ...DEFAULT_CONFIG.reserveOrders };
     for (const key of SCALAR_SEED_KEYS) expected[key] = DEFAULT_CONFIG[key];
-    // Phase 2 fix: gridPrice is seeded from DEFAULT_CONFIG.gridPrice (falling
-    // back to null), no longer the historical hardcoded null literal.
+    // Phase 2 fix: gridPrice is seeded from DEFAULT_CONFIG.gridPrice (the
+    // repo default is "ama3"; a null default still falls back to null),
+    // no longer the historical hardcoded null literal.
     expected.gridPrice = DEFAULT_CONFIG.gridPrice ?? null;
 
     assert.deepStrictEqual(draft, expected, 'draft({}) must seed exactly the current 12 keys with DEFAULT_CONFIG values');
@@ -178,7 +179,7 @@ function testDraftGridPriceFollowsDefaultConfig() {
     } finally {
         DEFAULT_CONFIG.gridPrice = original;
     }
-    assert.strictEqual(normalizeBotDraft({}).gridPrice, null, 'DEFAULT_CONFIG.gridPrice restored → null again');
+    assert.strictEqual(normalizeBotDraft({}).gridPrice, DEFAULT_CONFIG.gridPrice, 'DEFAULT_CONFIG.gridPrice restored → seeded unchanged (ama3 by default)');
 }
 
 function testDraftStartPriceFalsyFallsBackToPool() {

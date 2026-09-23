@@ -76,8 +76,9 @@ function seedReserveOrders(value: any, def: any): any {
  *    never deep-filled;
  *  * `reserveOrders`: number migration / invalid → default (see seedReserveOrders);
  *  * `startPrice`: undefined → `default || 'pool'` (falsy defaults fall back);
- *  * `gridPrice`: undefined → `default ?? null` (Phase 2: was a hardcoded null
- *    that ignored DEFAULT_CONFIG.gridPrice overrides);
+ *  * `gridPrice`: undefined → `DEFAULT_CONFIG.gridPrice` ("ama3" today),
+ *    falling back to null only when the default itself is null (Phase 2:
+ *    was a hardcoded null that ignored DEFAULT_CONFIG.gridPrice overrides);
  *  * other scalars: filled only when `=== undefined` — explicit nulls survive.
  */
 export function seedBotDraft(base?: Record<string, any> | null, options: SeedOptions = {}): Record<string, any> {

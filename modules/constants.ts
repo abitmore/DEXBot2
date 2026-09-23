@@ -171,7 +171,7 @@ let DEFAULT_CONFIG = {
     startPrice: "pool",          // Market price source: "pool" (liquidity pool), "book" (order book), or numeric value
     minPrice: "2x",               // Lower price bound: "Nx" = N times below startPrice, or numeric value
     maxPrice: "2x",               // Upper price bound: "Nx" = N times above startPrice, or numeric value
-    gridPrice: null,              // Optional reference price for x-factor bounds calculation.
+    gridPrice: "ama3",            // Reference price for x-factor bounds calculation (default: AMA3 preset).
                                   // "pool"    = use the live pool price for the pair
                                   // "book"    = use the live order book price for the pair
                                   // "ama"/"ama1".."ama4" = use the effective center snapshot from profiles/orders/<botKey>.dynamicgrid.json

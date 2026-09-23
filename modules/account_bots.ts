@@ -49,12 +49,12 @@
  *       "active": true,
  *       "dryRun": false,
  *       "startPrice": "pool",      // Price for order alignment: "pool", "book", or numeric
- *       "gridPrice": null,         // Reference price for x-factor bounds (3 options):
- *                                  //   "pool" / "book" = live pair price reference
+ *       "gridPrice": "ama3",       // Reference price for x-factor bounds (default "ama3"):
  *                                  //   "ama"/"ama1".."ama4" = market adapter writes a center snapshot to
  *                                  //              profiles/orders/<botKey>.dynamicgrid.json; grid reads the effective center on reset
- *                                  //   <number> = fixed numeric reference
- *                                  //   null     = use startPrice
+ *                                  //   "pool" / "book" = live pair price reference (legacy, editor no longer offers it)
+ *                                  //   <number> = fixed numeric reference (legacy)
+ *                                  //   null     = use startPrice (legacy)
  *       "minPrice": "2x",
  *       "maxPrice": "2x",
  *       "incrementPercent": 0.5,
@@ -552,6 +552,14 @@ function isDynamicPriceSource(value: any): boolean {
 }
 
 /**
+ * AMA grid-price values: the four explicit presets ama1..ama4 plus bare
+ * "ama" (the pair's default preset). Bare "ama" is a valid green value but is
+ * deliberately not listed in the prompt label. These are the ONLY values that
+ * color green — pool/book/numeric/none stay accepted, just displayed red.
+ */
+const AMA_GRID_PRICE_PATTERN = /^ama(?:[1-4])?$/;
+
+/**
  * Colors a start-price value for display: green when it is a dynamic source
  * ("pool"/"book"), red when it is a fixed numeric price (no live rescaling).
  * Used for live input feedback: turns green the moment a source keyword is typed.
@@ -565,23 +573,20 @@ function colorStartPriceValue(value: any): string {
 }
 
 /**
- * Colors a grid-price value for display: green for dynamic sources
- * ("pool"/"book"/AMA keywords), red for fixed numeric references. A null
- * gridPrice delegates to startPrice, so the "startPrice" label inherits the
- * start-price coloring.
+ * Colors a grid-price value for display: GREEN only for AMA values
+ * ("ama"/"ama1".."ama4"), RED for everything else — pool/book references,
+ * numeric values and a null gridPrice (which delegates to startPrice and is
+ * therefore labeled "startPrice", always in red: the delegation itself is the
+ * thing the editor wants replaced by an AMA preset).
  * @param {*} value - The grid price value to color.
- * @param {*} [startPrice] - The bot's current startPrice for null resolution.
  * @returns {string} ANSI-colored value string.
  */
-function colorGridPriceValue(value: any, startPrice?: any): string {
+function colorGridPriceValue(value: any): string {
     if (value === null || value === undefined) {
-        const label = isDynamicPriceSource(startPrice)
-            ? `${COLORS.green}startPrice${COLORS.reset}`
-            : `${COLORS.red}startPrice${COLORS.reset}`;
-        return label;
+        return `${COLORS.red}startPrice${COLORS.reset}`;
     }
     const text = String(value);
-    if (isDynamicPriceSource(text)) return `${COLORS.green}${text}${COLORS.reset}`;
+    if (AMA_GRID_PRICE_PATTERN.test(text.trim().toLowerCase())) return `${COLORS.green}${text}${COLORS.reset}`;
     return `${COLORS.red}${text}${COLORS.reset}`;
 }
 
@@ -982,18 +987,21 @@ async function askPoolRef(promptText: string, currentValue?: string | null | und
 }
 
 /**
- * Prompts the user for the grid price mode (pool, book, ama, numeric, or startprice).
+ * Prompts the user for the grid price mode.
+ * The label lists ama1..ama4; bare "ama" is accepted as well (green) but not
+ * listed. The live colorizer echoes AMA input green and every other value
+ * (pool/book/number/none) red — red only flags "not an AMA value", it does not
+ * reject: pool, book, numeric references, none/null (delegate to startPrice)
+ * and bare "ama" all stay accepted, exactly as before. Only input that is not
+ * a value at all is rejected, with a red error line.
  * @param {string} promptText - The prompt text to display.
- * @param {string} [defaultValue] - The default value to use if input is empty.
- * @param {*} [startPrice] - The bot's current startPrice, used to color the
- *                           "startPrice" default label when gridPrice is null.
- * @returns {Promise<string>} The grid price mode or '\x1b' if ESC.
+ * @param {string} [defaultValue] - The current value, offered as the Enter default.
+ * @returns {Promise<any>} The normalized grid-price value, the unchanged
+ *                         current value on Enter, or '\x1b' if ESC.
  */
-async function askGridPriceMode(promptText: string, defaultValue?: any, startPrice?: any): Promise<any> {
+async function askGridPriceMode(promptText: string, defaultValue?: any): Promise<any> {
     while (true) {
-        const coloredDefault = defaultValue === null || defaultValue === undefined
-            ? colorGridPriceValue(null, startPrice)
-            : colorGridPriceValue(defaultValue);
+        const coloredDefault = colorGridPriceValue(defaultValue ?? null);
         const raw = (await readInput(`${promptText} [${coloredDefault}]: `, {
             colorize: (input: string) => colorGridPriceValue(input)
         })).trim();
@@ -1004,12 +1012,12 @@ async function askGridPriceMode(promptText: string, defaultValue?: any, startPri
         if (lower === 'none' || lower === 'null' || lower === 'start' || lower === 'startprice') return null;
         if (lower === 'pool') return lower;
         if (lower === 'book') return 'book';
-        if (/^ama(?:[1-4])?$/.test(lower)) return lower;
+        if (AMA_GRID_PRICE_PATTERN.test(lower)) return lower;
 
         const num = Number(raw);
         if (Number.isFinite(num) && num > 0) return num;
 
-        console.log('Please enter: pool, book, ama, ama1..ama4, a positive number, or none/startprice.');
+        console.log(`${COLORS.red}Please enter: ama1, ama2, ama3 or ama4 — also allowed: pool, book, ama, a positive number, or none.${COLORS.reset}`);
     }
 }
 
@@ -1165,15 +1173,17 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
              console.log(`\n${COLORS.bold}--- Bot Editor: ` + (data.name || 'New Bot') + ` ---${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} | ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} | ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
-             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
+             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice)}`);
              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}) | ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
              console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              {
                  const flags = adapterFlags();
-                 const fmt = (v: boolean) => v ? `${COLORS.green}true${COLORS.reset}` : `${COLORS.gray}false${COLORS.reset}`;
                  const inert = !isAmaGridPriceDraft() && (flags.ama || flags.dynamicWeight || flags.asymmetricBounds);
                  const hint = inert ? ` ${COLORS.red}(needs gridPrice=ama)${COLORS.reset}` : '';
-                 console.log(`${COLORS.yellowBold}6) Adapter:${COLORS.reset}    ${COLORS.orange}Price:${COLORS.reset} ${fmt(flags.ama)}, ${COLORS.orange}Weight:${COLORS.reset} ${fmt(flags.dynamicWeight)}, ${COLORS.orange}Range:${COLORS.reset} ${fmt(flags.asymmetricBounds)}${hint}`);
+                 // Adapter flags read as a health state, not a neutral toggle:
+                 // green = on, red = off (colorBooleanFlag's greenWhenTrue form,
+                 // same helper section 2 uses for Active).
+                 console.log(`${COLORS.yellowBold}6) Adapter:${COLORS.reset}    ${COLORS.orange}Price:${COLORS.reset} ${colorBooleanFlag(flags.ama, true)}, ${COLORS.orange}Weight:${COLORS.reset} ${colorBooleanFlag(flags.dynamicWeight, true)}, ${COLORS.orange}Range:${COLORS.reset} ${colorBooleanFlag(flags.asymmetricBounds, true)}${hint}`);
              }
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
@@ -1246,7 +1256,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 if (startP === '\x1b') break;
                 const poolR = await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef);
                 if (poolR === '\x1b') break;
-                const gp = await askGridPriceMode('gridPrice (pool/book/ama/number/none)', data.gridPrice, data.startPrice);
+                const gp = await askGridPriceMode('gridPrice (ama1/ama2/ama3/ama4)', data.gridPrice);
                 if (gp === '\x1b') break;
                 data.minPrice = minP;
                 data.maxPrice = maxP;
