@@ -21,6 +21,35 @@ interface WhitelistFlags {
     asymmetricBounds: boolean;
 }
 
+// --- Canonical flag shapes -------------------------------------------------
+// Single source of truth for market-adapter whitelist flag defaults. Every
+// consumer (read fallbacks, legacy upgrades, the whitelist generator, profile
+// validation) derives its shape from these constants so a future flag addition
+// cannot drift between files. Frozen; call sites spread them into fresh
+// objects, so a frozen constant is never handed out directly.
+
+/** No whitelist file / missing entry / malformed entry: every flag off. */
+const DEFAULT_WHITELIST_FLAGS: WhitelistFlags = Object.freeze({
+    ama: false,
+    dynamicWeight: false,
+    asymmetricBounds: false,
+});
+
+/** AMA enabled only — legacy `whitelist: [botKey]` array entries, and the
+ *  generator's base shape for a fresh AMA-bot entry (CLI flags override). */
+const AMA_ONLY_WHITELIST_FLAGS: WhitelistFlags = Object.freeze({
+    ama: true,
+    dynamicWeight: false,
+    asymmetricBounds: false,
+});
+
+/** Legacy per-entry `true` shorthand: every flag on. */
+const ALL_ENABLED_WHITELIST_FLAGS: WhitelistFlags = Object.freeze({
+    ama: true,
+    dynamicWeight: true,
+    asymmetricBounds: true,
+});
+
 let _whitelistCache: Map<string, WhitelistFlags> | false | null = null;
 
 function resetMarketAdapterWhitelistCache(): void {
@@ -29,16 +58,16 @@ function resetMarketAdapterWhitelistCache(): void {
 
 function normalizeEntry(entry: any): WhitelistFlags {
     if (entry === true) {
-        return { ama: true, dynamicWeight: true, asymmetricBounds: true };
+        return { ...ALL_ENABLED_WHITELIST_FLAGS };
     }
     if (!entry || typeof entry !== 'object') {
-        return { ama: false, dynamicWeight: false, asymmetricBounds: false };
+        return { ...DEFAULT_WHITELIST_FLAGS };
     }
-    return {
-        ama: entry.ama === true,
-        dynamicWeight: entry.dynamicWeight === true,
-        asymmetricBounds: entry.asymmetricBounds === true,
-    };
+    const flags: any = { ...DEFAULT_WHITELIST_FLAGS };
+    for (const key of Object.keys(DEFAULT_WHITELIST_FLAGS)) {
+        flags[key] = entry[key] === true;
+    }
+    return flags as WhitelistFlags;
 }
 
 function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
@@ -55,7 +84,7 @@ function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
 
         if (Array.isArray(raw)) {
             for (const botKey of raw) {
-                map.set(String(botKey), { ama: true, dynamicWeight: false, asymmetricBounds: false });
+                map.set(String(botKey), { ...AMA_ONLY_WHITELIST_FLAGS });
             }
         } else if (raw && typeof raw === 'object') {
             for (const [botKey, entry] of Object.entries(raw)) {
@@ -75,9 +104,9 @@ function loadMarketAdapterWhitelist(): Map<string, WhitelistFlags> | false {
 function getWhitelistFlags(botKey: string): WhitelistFlags {
     const whitelist = loadMarketAdapterWhitelist();
     if (whitelist === false || !botKey) {
-        return { ama: false, dynamicWeight: false, asymmetricBounds: false };
+        return { ...DEFAULT_WHITELIST_FLAGS };
     }
-    return whitelist.get(String(botKey)) || { ama: false, dynamicWeight: false, asymmetricBounds: false };
+    return whitelist.get(String(botKey)) || { ...DEFAULT_WHITELIST_FLAGS };
 }
 
 function isBotWhitelisted(botKey: string): boolean {
@@ -115,7 +144,7 @@ function readWhitelistDocument(): { doc: any; entries: Record<string, any> } | n
     const entries: Record<string, any> = {};
     if (Array.isArray(raw)) {
         for (const botKey of raw) {
-            if (botKey) entries[String(botKey)] = { ama: true, dynamicWeight: false, asymmetricBounds: false };
+            if (botKey) entries[String(botKey)] = { ...AMA_ONLY_WHITELIST_FLAGS };
         }
     } else if (raw && typeof raw === 'object') {
         for (const [botKey, entry] of Object.entries(raw)) {
@@ -195,5 +224,5 @@ function renameWhitelistEntry(oldKey: string, newKey: string): boolean {
     return true;
 }
 
-export { whitelistFile, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, setWhitelistFlags, renameWhitelistEntry }
+export { whitelistFile, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, setWhitelistFlags, renameWhitelistEntry, DEFAULT_WHITELIST_FLAGS, AMA_ONLY_WHITELIST_FLAGS, ALL_ENABLED_WHITELIST_FLAGS }
 

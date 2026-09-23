@@ -134,7 +134,7 @@
 
 import { BUILD_DIR } from './utils/build_dir.js';
 import { readGeneralSettings } from './general_settings.js';
-import { mergeSettings } from './settings_merge.js';
+import { mergeSettings, buildNodesView } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
 const ORDER_TYPES = Object.freeze({
     SELL: 'sell',
@@ -1899,6 +1899,38 @@ let NATIVE_CLIENT = {
 };
 
 // --- LOCAL SETTINGS OVERRIDES ---
+/**
+ * Canonical default general.settings.json document — the single source for
+ * first-run creation (dexbot.ts), the editor settings fallback
+ * (account_bots.loadGeneralSettings), and the local-overrides merge below.
+ * Key order matches the editor-saved file (NODE_MANAGEMENT in place, NODES
+ * derived last) so all three producers emit byte-compatible documents.
+ * Sections are cloned — callers may mutate the result freely.
+ */
+function buildDefaultGeneralSettings(): Record<string, any> {
+    return {
+        LOG_LEVEL,
+        GRID_LIMITS: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
+        TIMING: { ...TIMING },
+        UPDATER: { ...UPDATER },
+        MARKET_ADAPTER: { ...MARKET_ADAPTER },
+        NODE_MANAGEMENT: { ...NODE_MANAGEMENT },
+        DEFAULT_CONFIG: { ...DEFAULT_CONFIG },
+        FILL_PROCESSING: { ...FILL_PROCESSING },
+        PIPELINE_TIMING: { ...PIPELINE_TIMING },
+        CREDENTIAL_PROMPTS: { ...CREDENTIAL_PROMPTS },
+        MAINTENANCE: { ...MAINTENANCE },
+        COW_PERFORMANCE: { ...COW_PERFORMANCE },
+        INCREMENT_BOUNDS: { ...INCREMENT_BOUNDS },
+        FEE_PARAMETERS: { ...FEE_PARAMETERS },
+        API_LIMITS: { ...API_LIMITS },
+        LOGGING_CONFIG: { ...LOGGING_CONFIG },
+        NATIVE_CLIENT: { ...NATIVE_CLIENT },
+        LAUNCHER: { ...LAUNCHER },
+        NODES: buildNodesView(NODE_MANAGEMENT),
+    };
+}
+
 // Load user-defined settings from profiles/general.settings.json if it exists.
 // This allows preserving settings during updates without git stashing.
 // Lazy require breaks the circular dependency: constants → general_settings → constants
@@ -1910,26 +1942,7 @@ const settings = readGeneralSettings({
 });
 
 if (settings) {
-    const merged = mergeSettings(settings, {
-        LOG_LEVEL,
-        TIMING,
-        GRID_LIMITS,
-        FILL_PROCESSING,
-        PIPELINE_TIMING,
-        DEFAULT_CONFIG,
-        UPDATER,
-        CREDENTIAL_PROMPTS,
-        MAINTENANCE,
-        COW_PERFORMANCE,
-        INCREMENT_BOUNDS,
-        FEE_PARAMETERS,
-        API_LIMITS,
-        LOGGING_CONFIG,
-        NATIVE_CLIENT,
-        LAUNCHER,
-        NODE_MANAGEMENT,
-        MARKET_ADAPTER,
-    });
+    const merged = mergeSettings(settings, buildDefaultGeneralSettings());
     LOG_LEVEL = merged.LOG_LEVEL;
     TIMING = merged.TIMING;
     GRID_LIMITS = merged.GRID_LIMITS;
@@ -1995,5 +2008,5 @@ Object.freeze(MARKET_ADAPTER.AMAS);
 Object.freeze(MARKET_ADAPTER);
 Object.freeze(CREDENTIAL_PROMPTS);
 
-export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, RANGE_QUALITY, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS }
+export { ORDER_TYPES, ORDER_STATES, REBALANCE_STATES, COW_ACTIONS, DEFAULT_CONFIG, TIMING, RANGE_QUALITY, GRID_LIMITS, LOG_LEVEL, LOGGING_CONFIG, INCREMENT_BOUNDS, FEE_PARAMETERS, CR_ZONES, DEFAULT_TARGET_CR, API_LIMITS, FILL_PROCESSING, MAINTENANCE, NODE_MANAGEMENT, PIPELINE_TIMING, UPDATER, LAUNCHER, COW_PERFORMANCE, NATIVE_CLIENT, MARKET_ADAPTER, BUILD_DIR, BTS_PRECISION, DAEMON_ERRORS, DAEMON_CODES, CREDENTIAL_PROMPTS, buildDefaultGeneralSettings }
 

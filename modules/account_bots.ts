@@ -89,7 +89,8 @@ import { path } from './path_api.js';
 import { getStorage } from './storage/index.js';
 import { ensureProfilesDirectory, readInput, sleep } from './order/utils/system.js';
 import { setGlobalConsoleLevel, getGlobalConsoleLevel } from './order/logger.js';
-import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, RANGE_QUALITY, LOG_LEVEL, UPDATER, MARKET_ADAPTER, NODE_MANAGEMENT, FILL_PROCESSING, PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE, COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS, API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER } from './constants.js';
+import { GRID_LIMITS, RANGE_QUALITY, MARKET_ADAPTER, NODE_MANAGEMENT, INCREMENT_BOUNDS, buildDefaultGeneralSettings } from './constants.js';
+import { seedBotDraft } from './bot_defaults.js';
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
@@ -161,26 +162,9 @@ function saveBotsConfig(config: any, filePath: string): void {
  * @returns {Object} The loaded settings or default settings if the file doesn't exist.
  */
 function loadGeneralSettings() {
-    const defaults = {
-        LOG_LEVEL: LOG_LEVEL,
-        GRID_LIMITS: { ...GRID_LIMITS, GRID_COMPARISON: { ...GRID_LIMITS.GRID_COMPARISON } },
-        TIMING: { ...TIMING },
-        UPDATER: { ...UPDATER },
-        MARKET_ADAPTER: { ...MARKET_ADAPTER },
-        NODE_MANAGEMENT: { ...NODE_MANAGEMENT },
-        DEFAULT_CONFIG: { ...DEFAULT_CONFIG },
-        FILL_PROCESSING: { ...FILL_PROCESSING },
-        PIPELINE_TIMING: { ...PIPELINE_TIMING },
-        CREDENTIAL_PROMPTS: { ...CREDENTIAL_PROMPTS },
-        MAINTENANCE: { ...MAINTENANCE },
-        COW_PERFORMANCE: { ...COW_PERFORMANCE },
-        INCREMENT_BOUNDS: { ...INCREMENT_BOUNDS },
-        FEE_PARAMETERS: { ...FEE_PARAMETERS },
-        API_LIMITS: { ...API_LIMITS },
-        LOGGING_CONFIG: { ...LOGGING_CONFIG },
-        NATIVE_CLIENT: { ...NATIVE_CLIENT },
-        LAUNCHER: { ...LAUNCHER },
-    };
+    // Single canonical defaults document (modules/constants.ts) — same source
+    // the first-run generator and the local-overrides merge use.
+    const defaults = buildDefaultGeneralSettings();
 
     const settings = readGeneralSettings({
         fallback: null,
@@ -1035,26 +1019,11 @@ async function askGridPriceMode(promptText: string, defaultValue?: any, startPri
  * @param {Object} [base={}] - The initial bot data to edit.
  * @returns {Object} A normalized bot draft.
  */
-function normalizeBotDraft(base = {}) {
-    const data = JSON.parse(JSON.stringify(base));
-
-    if (!data.weightDistribution) data.weightDistribution = { ...DEFAULT_CONFIG.weightDistribution };
-    if (!data.botFunds) data.botFunds = { ...DEFAULT_CONFIG.botFunds };
-    if (!data.activeOrders) data.activeOrders = { ...DEFAULT_CONFIG.activeOrders };
-    if (typeof data.reserveOrders === 'number') data.reserveOrders = { buy: Math.max(0, Math.floor(data.reserveOrders)), sell: 0 };
-    if (data.reserveOrders === undefined || data.reserveOrders === null || typeof data.reserveOrders !== 'object' || Array.isArray(data.reserveOrders)) data.reserveOrders = { ...DEFAULT_CONFIG.reserveOrders };
-
-    if (data.active === undefined) data.active = DEFAULT_CONFIG.active;
-    if (data.dryRun === undefined) data.dryRun = DEFAULT_CONFIG.dryRun;
-    if (data.minPrice === undefined) data.minPrice = DEFAULT_CONFIG.minPrice;
-    if (data.maxPrice === undefined) data.maxPrice = DEFAULT_CONFIG.maxPrice;
-    if (data.incrementPercent === undefined) data.incrementPercent = DEFAULT_CONFIG.incrementPercent;
-    if (data.targetSpreadPercent === undefined) data.targetSpreadPercent = DEFAULT_CONFIG.targetSpreadPercent;
-    if (data.startPrice === undefined) data.startPrice = data.startPrice || DEFAULT_CONFIG.startPrice || 'pool';
-    if (data.gridPrice === undefined) data.gridPrice = null;
-    delete data.gridPriceOffsetPct;
-    delete data.gridPriceOffsetClampToBounds;
-    return data;
+function normalizeBotDraft(base = {}): any {
+    // Seeding rules live in modules/bot_defaults.ts (single defaults source).
+    // Return type stays `any`: the editor prompt-flow treats drafts as dynamic
+    // bags and its inference depends on it.
+    return seedBotDraft(base);
 }
 
 /**
@@ -1672,5 +1641,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput }
+export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput, loadGeneralSettings, saveGeneralSettings }
 

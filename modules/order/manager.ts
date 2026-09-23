@@ -33,7 +33,6 @@ import {
     ORDER_TYPES,
     ORDER_STATES,
     REBALANCE_STATES,
-    DEFAULT_CONFIG,
     TIMING,
     LOG_LEVEL,
     PIPELINE_TIMING,
@@ -41,6 +40,7 @@ import {
     COW_ACTIONS,
     GRID_LIMITS
 } from '../constants.js';
+import { seedBotRuntimeConfig } from '../bot_defaults.js';
 import {
     getMinOrderSize,
     computeChainFundTotals,
@@ -525,7 +525,7 @@ class OrderManager {
      * @param {Object} [config] - Configuration overrides
      */
     constructor(config: Record<string, any> = {}) {
-        this.config = { ...DEFAULT_CONFIG, ...config };
+        this.config = seedBotRuntimeConfig(config);
         this.marketName = this.config.market || (this.config.assetA && this.config.assetB ? `${this.config.assetA}/${this.config.assetB}` : null);
         const logFile = config.logFile || undefined;
         const loggingConfig = this.config.logging;

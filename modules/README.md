@@ -8,7 +8,7 @@ Everything below covers bot lifecycle, order management, blockchain connectivity
 
 If you're new to the codebase, read these files in order (~20 minutes):
 
-1. **`constants.ts`** — all tuning parameters and defaults live here; gives you a map of the system's knobs
+1. **`constants.ts`** — all tuning parameters and defaults live here; gives you a map of the system's knobs, and `buildDefaultGeneralSettings()` builds the canonical default `general.settings.json` document (first-run, editor fallback, local-overrides merge all share it)
 2. **`dexbot_class.ts`** — the top-level orchestrator; shows how bot startup, fill processing, and maintenance connect
 3. **`order/manager.ts`** — the central controller for the grid; read the constructor and `_applySafeRebalanceCOW()`
 4. **`order/grid.ts`** — how the geometric grid is generated and sized
@@ -36,6 +36,7 @@ modules/
 ├── credential_policy.ts           signing policy validation
 ├── credential_session_cache.ts    encrypted session cache
 ├── constants.ts                   central config and tuning params
+├── bot_defaults.ts                bot defaults seeder (draft/entry/runtime-config modes)
 ├── config.ts                      load-time process.env snapshot
 ├── env.ts                         isBrowser/hasProcess detection
 ├── runtime.ts                     process abstraction singleton

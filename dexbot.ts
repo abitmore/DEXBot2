@@ -1382,55 +1382,16 @@ async function bootstrap() {
         console.log('='.repeat(50));
         console.log();
 
-        // Generate default general.settings.json for new installations
+        // Generate default general.settings.json for new installations.
+        // Single canonical defaults document (modules/constants.ts) — the same
+        // builder the editor fallback and the local-overrides merge use. This
+        // also drops the dead ANCHOR:{} key and adds NODE_MANAGEMENT, keeping
+        // first-run files byte-compatible with editor-saved ones.
         const SETTINGS_FILE = path.join(PROFILES_DIR, 'general.settings.json');
-        const {
-            LOG_LEVEL, GRID_LIMITS, TIMING, UPDATER, NODE_MANAGEMENT,
-            MARKET_ADAPTER, DEFAULT_CONFIG, FILL_PROCESSING,
-            PIPELINE_TIMING, CREDENTIAL_PROMPTS, MAINTENANCE,
-            COW_PERFORMANCE, INCREMENT_BOUNDS, FEE_PARAMETERS,
-            API_LIMITS, LOGGING_CONFIG, NATIVE_CLIENT, LAUNCHER, ANCHOR,
-        } = require('./modules/constants');
+        const { buildDefaultGeneralSettings } = require('./modules/constants');
 const { writeJSON } = storage;
 
-        // Create NODES config from NODE_MANAGEMENT constants
-        const nodesConfig = {
-            enabled: NODE_MANAGEMENT.DEFAULT_ENABLED,
-            list: NODE_MANAGEMENT.DEFAULT_NODES,
-            healthCheck: {
-                enabled: true,
-                intervalMs: NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS,
-                timeoutMs: NODE_MANAGEMENT.HEALTH_CHECK_TIMEOUT_MS,
-                maxPingMs: NODE_MANAGEMENT.MAX_PING_MS,
-                blacklistThreshold: NODE_MANAGEMENT.BLACKLIST_THRESHOLD
-            },
-            selection: {
-                strategy: NODE_MANAGEMENT.SELECTION_STRATEGY,
-                preferredNode: null
-            }
-        };
-
-        const defaultSettings = {
-            LOG_LEVEL,
-            NODES: nodesConfig,
-            GRID_LIMITS: { ...GRID_LIMITS },
-            TIMING: { ...TIMING },
-            UPDATER: { ...UPDATER },
-            MARKET_ADAPTER: { ...MARKET_ADAPTER },
-            DEFAULT_CONFIG: { ...DEFAULT_CONFIG },
-            FILL_PROCESSING: { ...FILL_PROCESSING },
-            PIPELINE_TIMING: { ...PIPELINE_TIMING },
-            CREDENTIAL_PROMPTS: { ...CREDENTIAL_PROMPTS },
-            MAINTENANCE: { ...MAINTENANCE },
-            COW_PERFORMANCE: { ...COW_PERFORMANCE },
-            INCREMENT_BOUNDS: { ...INCREMENT_BOUNDS },
-            FEE_PARAMETERS: { ...FEE_PARAMETERS },
-            API_LIMITS: { ...API_LIMITS },
-            LOGGING_CONFIG: { ...LOGGING_CONFIG },
-            NATIVE_CLIENT: { ...NATIVE_CLIENT },
-            LAUNCHER: { ...LAUNCHER },
-            ANCHOR: { ...ANCHOR },
-        };
+        const defaultSettings = buildDefaultGeneralSettings();
         writeJSON(SETTINGS_FILE, defaultSettings);
         console.log(startupSuccess('✓ Created default general.settings.json'));
         console.log();

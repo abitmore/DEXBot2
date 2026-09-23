@@ -1559,6 +1559,7 @@ console.log('Locked?', manager.isOrderLocked(order.id));
 - `modules/node_manager.ts` - Multi-node health checking and failover
 - `modules/fund_registry.ts` - Shared-account fund registry with cross-bot invariants
 - `modules/settings_merge.ts` - Consolidated settings merge (single source of truth)
+- `modules/bot_defaults.ts` - Central bot-defaults seeder (draft/entry/runtime-config modes); single source for how `DEFAULT_CONFIG` is applied
 - `modules/chain_orders.ts` - Blockchain order operations
 - `modules/account_orders.ts` - Account order queries
 

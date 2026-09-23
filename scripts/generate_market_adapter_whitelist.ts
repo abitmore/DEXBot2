@@ -1,6 +1,7 @@
 
 import fs from 'node:fs';
 import { loadSettingsFile, resolveRawBotEntries, normalizeBotEntries } from '../modules/bot_settings.js';
+import { AMA_ONLY_WHITELIST_FLAGS } from '../modules/market_adapter_whitelist.js';
 import { PATHS } from '../modules/paths.js';
 import { getStorage } from '../modules/storage/index.js';
 const { readJSON } = getStorage();
@@ -92,7 +93,7 @@ function loadExistingWhitelist() {
 
     if (Array.isArray(raw)) {
         for (const botKey of raw) {
-            if (botKey) entries[String(botKey)] = { ama: true, dynamicWeight: false, asymmetricBounds: false };
+            if (botKey) entries[String(botKey)] = { ...AMA_ONLY_WHITELIST_FLAGS };
         }
     } else if (raw && typeof raw === 'object') {
         for (const [botKey, entry] of Object.entries(raw)) {
@@ -134,7 +135,7 @@ function buildWhitelist(bots: any, existingWhitelist: any = {}, options: ReturnT
         if (isFilteredOut) continue;
         if (!entries.has(key)) {
             entries.set(key, {
-                ama: true,
+                ...AMA_ONLY_WHITELIST_FLAGS,
                 dynamicWeight: options.dynamicWeight,
                 asymmetricBounds: options.asymmetricBounds,
             });
@@ -143,7 +144,7 @@ function buildWhitelist(bots: any, existingWhitelist: any = {}, options: ReturnT
             const existing = entries.get(key) ?? {};
             entries.set(key, {
                 ...existing,
-                ama: true,
+                ...AMA_ONLY_WHITELIST_FLAGS,
                 dynamicWeight: options.dynamicWeight,
                 asymmetricBounds: options.asymmetricBounds,
             });
