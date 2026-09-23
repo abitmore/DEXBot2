@@ -1285,7 +1285,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
              console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}      ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}  ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'}, ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} | ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}     ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${formatPoolRefLabel(data)} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice)}`);
-             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}      ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}) | ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
+             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}      ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}) | ${COLORS.orange}Increment:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
              console.log(`${COLORS.yellowBold}5) Inventory:${COLORS.reset} ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}MarketOrder:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}EdgeOrder:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              {
                  const flags = adapterFlags();
@@ -1522,13 +1522,13 @@ async function promptGeneralSettings() {
 
      while (!finished) {
           console.log(`${COLORS.bold}--- General Settings (Global) ---${COLORS.reset}`);
-          console.log(`${COLORS.yellowBold}1) Grid Drift:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
+          console.log(`${COLORS.yellowBold}1) Grid Drift:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}% | ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
           const hcIntervalMin = ((settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000).toFixed(0);
-          console.log(`${COLORS.yellowBold}2) Order Maint.:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}% + ${COLORS.orange}HealthChk:${COLORS.reset} ${hcIntervalMin}min`);
+          console.log(`${COLORS.yellowBold}2) Order Maint.:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}% | ${COLORS.orange}Health Check:${COLORS.reset} ${hcIntervalMin}min`);
           const nodeCount = (settings.NODES.list || []).length;
           const prefNodeDisplay = settings.NODES.selection?.preferredNode || 'none';
-          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset}  ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}PrefNode:${COLORS.reset} ${prefNodeDisplay}`);
-          console.log(`${COLORS.yellowBold}4) Log lvl:${COLORS.reset}      ${COLORS.orange}${settings.LOG_LEVEL}${COLORS.reset} (debug, info, warn, error)`);
+          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset}  ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}Preferred Node:${COLORS.reset} ${prefNodeDisplay}`);
+          console.log(`${COLORS.yellowBold}4) Log Level:${COLORS.reset}    ${COLORS.orange}${settings.LOG_LEVEL}${COLORS.reset} (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`;
           const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");
           console.log(`${COLORS.yellowBold}5) Updater:${COLORS.reset}      [${updaterStatus}] ${COLORS.orange}Branch:${COLORS.reset} ${settings.UPDATER.BRANCH}, ${COLORS.orange}Interval:${COLORS.reset} ${currentSched.days}d, ${COLORS.orange}Time:${COLORS.reset} ${currentSched.time}`);

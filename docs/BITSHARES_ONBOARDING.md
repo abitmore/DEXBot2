@@ -287,9 +287,6 @@ The only things worth tuning later:
   `{ "sell": 1.0, "buy": 1.0 }` for your first bot.
 - `minPrice` / `maxPrice` — grid bounds. Once AMA is active, tighten them
   around the market's maximum expected volatility instead of a wide range.
-- `gridPrice` — set it to `"ama"` so the market adapter centers the grid on the
-  AMA signal (`"ama"` uses the pair's default preset; `"ama1"`–`"ama4"` pin a
-  specific one, fastest to slowest).
 
 See the "Recommended Bot Setup" section of the
 [README](../README.md#recommended-bot-setup).
@@ -310,9 +307,15 @@ saves, so you always know whether anything else is needed.
 
 ### Activate the market adapter
 
-For AMA pricing, enable the adapter flag once per bot: run `dexbot bot`,
-choose `2) Modify bot`, pick the bot, then `6) Adapter` and set **Price**
-to yes (`y` / `yes` / `true` all count; Enter keeps the current value).
+New bots anchor on `gridPrice: "ama3"`, but AMA pricing only goes live once
+the per-bot adapter `Price` flag is on: run `dexbot bot`, choose
+`2) Modify bot`, pick the bot, then `6) Adapter` and set **Price** to yes
+(`y` / `yes` / `true` all count; Enter keeps the current value). Without it
+the adapter still computes state but live output stays in dry-run.
+
+To change how closely the grid center tracks the market, set `gridPrice` in
+`3) Price`: `"ama1"` reacts fastest, `"ama4"` is the slowest and steadiest
+(higher numbers smooth more), and `"ama"` uses the pair's default preset.
 
 The three flags are stored per bot in `profiles/market_adapter_whitelist.json`:
 
