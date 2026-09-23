@@ -12,7 +12,7 @@ const TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-adapter-flags-'))
 const WHITELIST_FILE = path.join(TEMP_DIR, 'market_adapter_whitelist.json');
 process.env.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE = WHITELIST_FILE;
 
-const { parseBooleanInput, colorGridPriceValue, formatPoolRefLabel } = require('../modules/account_bots');
+const { parseBooleanInput, colorGridPriceValue, formatPoolRefLabel, isPoolStartPrice, isPoolRefClearInput } = require('../modules/account_bots');
 const { CLI_COLORS } = require('../modules/cli_colors');
 const {
     setWhitelistFlags,
@@ -182,6 +182,24 @@ function testFormatPoolRefLabel() {
     assert.strictEqual(formatPoolRefLabel({ startPrice: 'pool', poolRef: '1.19.48' }), '1.19.48', 'a pinned pool id wins over the default label');
 }
 
+function testIsPoolStartPrice() {
+    assert.strictEqual(isPoolStartPrice('pool'), true, 'pool selects the default pool');
+    assert.strictEqual(isPoolStartPrice('POOL'), true, 'pool detection is case-insensitive');
+    assert.strictEqual(isPoolStartPrice('  pool  '), true, 'pool detection trims whitespace');
+    assert.strictEqual(isPoolStartPrice('book'), false, 'book is not a pool source');
+    assert.strictEqual(isPoolStartPrice(1.5), false, 'a numeric startPrice is not a pool source');
+    assert.strictEqual(isPoolStartPrice(undefined), false, 'unset startPrice is not a pool source');
+}
+
+function testIsPoolRefClearInput() {
+    for (const raw of ['none', 'clear', 'off', 'no', 'default', 'pool', 'auto', 'DEFAULT', ' Default ']) {
+        assert.strictEqual(isPoolRefClearInput(raw), true, `'${raw}' should clear the poolRef pin`);
+    }
+    for (const raw of ['48', '1.19.48', '1.19.', 'garbage', '', undefined]) {
+        assert.strictEqual(isPoolRefClearInput(raw), false, `'${raw}' must not be treated as a clear alias`);
+    }
+}
+
 function main() {
     console.log('Running account bot adapter flag tests');
     testParseBooleanInputAcceptsYesSpellings();
@@ -189,6 +207,8 @@ function main() {
     testParseBooleanInputKeepsDefaultAndRejectsGarbage();
     testGridPriceUnsetRendersRedStartPrice();
     testFormatPoolRefLabel();
+    testIsPoolStartPrice();
+    testIsPoolRefClearInput();
     testSetWhitelistFlagsRoundTrip();
     testLegacyArrayFormUpgrade();
     testMalformedFileIsNeverOverwritten();

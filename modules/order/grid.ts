@@ -184,7 +184,7 @@ import {
 } from './utils/order.js';
 import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
-import { derivePriceWithPoolRef } from './utils/withPoolRef.js';
+import { derivePriceWithPoolRef, resolveStartPriceMode } from './utils/withPoolRef.js';
 import { getWhitelistFlags } from '../market_adapter_whitelist.js';
 
 import type { Order } from '../types.js';
@@ -1100,9 +1100,14 @@ export async function initializeGrid(manager: any): Promise<void> {
         if (typeof mpRaw !== 'number' || isNaN(mpRaw)) {
             try {
                 const { BitShares } = require('../bitshares_client');
-                const derived = await derivePriceWithPoolRef(BitShares, manager.config.assetA, manager.config.assetB, manager.config.priceMode || 'auto', manager.config.poolRef);
+                // startPrice is the master price source: pass its own mode so a
+                // pinned poolRef only refines pool discovery. Without this,
+                // the old `priceMode || 'auto'` read (priceMode is never set in
+                // the runtime path) let a poolRef override startPrice:"book".
+                const startPriceMode = resolveStartPriceMode(mpRaw, manager.config.priceMode || 'auto');
+                const derived = await derivePriceWithPoolRef(BitShares, manager.config.assetA, manager.config.assetB, startPriceMode, manager.config.poolRef);
                 if (derived) {
-                    manager.logger?.log?.(`[DIAGNOSTIC] initializeGrid: Derived new startPrice=${derived.toFixed(8)} (mode=${manager.config.priceMode || 'auto'})`, 'info');
+                    manager.logger?.log?.(`[DIAGNOSTIC] initializeGrid: Derived new startPrice=${derived.toFixed(8)} (mode=${startPriceMode})`, 'info');
                     manager.config.startPrice = Number(derived);
                 } else {
                     throw new Error(`Price derivation returned no result for ${manager.config.assetA}/${manager.config.assetB}`);

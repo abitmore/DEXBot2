@@ -209,7 +209,7 @@ Configuration options from `dexbot bot`, stored in `bots.json` in the profiles d
 | **`dryRun`** | boolean | Simulate orders without broadcasting |
 | **`preferredAccount`** | string | BitShares account name for trading |
 | **`startPrice`** | num \| str | Initial price and adapter source. Default `"pool"` uses the liquidity-pool price; `"book"` uses the live order book mid price (best bid/ask); a number uses a fixed anchor. |
-| **`poolRef`** | string \| null | Optional pinned pool ID for `startPrice: "pool"`. Overrides pool discovery with a direct fetch (e.g. `"1.19.48"` or `"48"`). Useful when the trading pair has no native pool. Default `null`. |
+| **`poolRef`** | string \| null | Optional pinned pool ID for `startPrice: "pool"`. Overrides pool discovery with a direct fetch (e.g. `"1.19.48"` or `"48"`). Useful when the trading pair has no native pool. Ignored when `startPrice` is `"book"` (order book) or a number — `startPrice` is the master source. Default `null`; in the editor, `none`/`clear` (or the aliases `default`/`pool`/`auto`) clears the pin. |
 | **`minPrice`** | num \| str | Lower bound. Default `"2x"` means `gridPrice / 2` when AMA is active, otherwise `startPrice / 2`. |
 | **`maxPrice`** | num \| str | Upper bound. Default `"2x"` means `gridPrice * 2` when AMA is active, otherwise `startPrice * 2`. |
 | **`gridPrice`** | num \| str \| null | Grid reference. Use `"ama"` for the recommended AMA center (`"ama"` picks the pair's default preset; `"ama1"`–`"ama4"` pin fastest to slowest); `null` falls back to `startPrice`; numeric values use that fixed value. |

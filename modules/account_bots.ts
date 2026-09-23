@@ -602,16 +602,27 @@ function colorGridPriceValue(value: any): string {
 }
 
 /**
- * True when startPrice === "pool" and no poolRef is pinned, so the runtime
- * auto-selects the pair's default pool for order alignment. Deliberately NOT
- * keyed on gridPrice === "pool": anchoring the grid reference on the live
- * market price is discouraged and stays red in the GridPrice field, so the
- * Pool label must not read as a green healthy default for that case.
+ * True when a startPrice value selects the pair's automatically-resolved pool
+ * (the "default" pool source, as opposed to a hand-pinned poolRef).
+ * @param {*} value - A startPrice value (or any value to test).
+ * @returns {boolean}
+ */
+function isPoolStartPrice(value: any): boolean {
+    return String(value ?? '').trim().toLowerCase() === 'pool';
+}
+
+/**
+ * True when the draft's startPrice resolves to the pair's default pool and no
+ * poolRef is pinned, so the runtime auto-selects it for order alignment.
+ * Deliberately NOT keyed on gridPrice === "pool": anchoring the grid reference
+ * on the live market price is discouraged and stays red in the GridPrice
+ * field, so the Pool label must not read as a green healthy default for that
+ * case.
  * @param {*} data - The bot draft.
  * @returns {boolean}
  */
 function startPriceUsesDefaultPool(data: any): boolean {
-    return String(data?.startPrice ?? '').trim().toLowerCase() === 'pool';
+    return isPoolStartPrice(data?.startPrice);
 }
 
 /**
@@ -1000,22 +1011,46 @@ async function askStartPrice(promptText: string, defaultValue?: any): Promise<an
 }
 
 /**
+ * Spellings that clear a `poolRef` pin, leaving the runtime to auto-select
+ * the pair's default pool when the price mode asks for one. `default`/`pool`/
+ * `auto` are accepted as aliases because the 3) Price summary labels the
+ * unpinned pool state `default`, so typing what the summary shows must not be
+ * rejected.
+ */
+const POOL_REF_CLEAR_INPUTS = new Set(['none', 'clear', 'off', 'no', 'default', 'pool', 'auto']);
+
+/**
+ * True when raw poolRef input is a clear/auto alias rather than a pool ID.
+ * @param {*} value - Raw or normalized user input.
+ * @returns {boolean}
+ */
+function isPoolRefClearInput(value: any): boolean {
+    return POOL_REF_CLEAR_INPUTS.has(String(value ?? '').trim().toLowerCase());
+}
+
+/**
  * Prompts the user for an optional pool ID to pin price derivation.
- * Enter a pool ID (e.g. 48 or 1.19.48) to set/change the pin, or enter
- * "none" / "clear" to remove it. Blank input keeps the current value.
+ * Enter a pool ID (e.g. 48 or 1.19.48) to set/change the pin, or one of the
+ * clear aliases ("none", "clear", or "default"/"pool"/"auto") to remove it.
+ * Blank input keeps the current value. When no pin is set, the bracketed
+ * default shows what the runtime will actually use: `default` when startPrice
+ * is "pool" (the pair's auto-selected pool), otherwise `none` (inert) — this
+ * mirrors the 3) Price summary label instead of always reading `none`.
  * @param {string} promptText - The prompt text to display.
  * @param {string|null|undefined} [currentValue] - The current poolRef value.
+ * @param {boolean} [usesDefaultPool=false] - True when startPrice is "pool",
+ *        so an unpinned value renders as `default` rather than `none`.
  * @returns {Promise<string|null|symbol>} Pool ID, null (cleared), or '\x1b' on ESC.
  */
-async function askPoolRef(promptText: string, currentValue?: string | null | undefined): Promise<any> {
+async function askPoolRef(promptText: string, currentValue?: string | null | undefined, usesDefaultPool: boolean = false): Promise<any> {
     while (true) {
-        const suffix = currentValue ? ` [${currentValue}]` : ' [none]';
-        const raw = (await readInput(`${promptText}${suffix} (none to clear): `)).trim();
+        const fallbackLabel = usesDefaultPool ? 'default' : 'none';
+        const suffix = currentValue ? ` [${currentValue}]` : ` [${fallbackLabel}]`;
+        const raw = (await readInput(`${promptText}${suffix}: `)).trim();
         if (raw === '\x1b') return '\x1b';
         if (!raw) return currentValue || null;
 
-        const lower = raw.toLowerCase();
-        if (lower === 'none' || lower === 'clear' || lower === 'off' || lower === 'no') {
+        if (isPoolRefClearInput(raw)) {
             return null;
         }
 
@@ -1306,7 +1341,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 if (maxP === '\x1b') break;
                 const startP = await askStartPrice('startPrice (pool, book or A/B)', data.startPrice);
                 if (startP === '\x1b') break;
-                const poolR = await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef);
+                const poolR = await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef, isPoolStartPrice(startP));
                 if (poolR === '\x1b') break;
                 const gp = await askGridPriceMode('gridPrice (ama1/ama2/ama3/ama4)', data.gridPrice);
                 if (gp === '\x1b') break;
@@ -1714,5 +1749,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput, colorGridPriceValue, formatPoolRefLabel, loadGeneralSettings, saveGeneralSettings }
+export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput, colorGridPriceValue, formatPoolRefLabel, isPoolStartPrice, isPoolRefClearInput, loadGeneralSettings, saveGeneralSettings }
 

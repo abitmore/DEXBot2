@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 2026-09-23
+
+- **Fix(bot-editor)**: accept the pool label's own vocabulary in the `poolRef` prompt — the `3) Price` summary reads green `Pool: default` when the runtime auto-selects the pair's pool, but the pin prompt showed `[none]` and rejected `default`/`pool`/`auto` as invalid, so a user typing what the summary displayed hit an error. `askPoolRef` now treats `default`/`pool`/`auto` as clear aliases (same as `none`/`clear`/`off`/`no`), and when `startPrice` is `pool` the unpinned prompt renders `[default]` instead of `[none]`, matching the summary, and the now-redundant `(none to clear)` hint is dropped from the prompt. New `isPoolStartPrice`/`isPoolRefClearInput` helpers. Display/parsing only — a pin is still either a concrete `1.19.x` ID or absent, and `withPoolRef` is unchanged. Tests: `tests/test_account_bots_adapter.ts` (`modules/account_bots.ts`).
+
+- **Fix(grid)**: make `startPrice` the master price source over a pinned `poolRef` — `initializeGrid` passed `manager.config.priceMode || 'auto'`, and `priceMode` is never populated in the bot runtime path, so `startPrice: "book"` was derived as `"auto"` and a pinned `poolRef` won over the order book. New `resolveStartPriceMode()` (`modules/order/utils/withPoolRef.ts`) derives the mode from `startPrice` itself, so `"book"` ignores the pin while `"pool"`/`"auto"` still consult it. Behavioral impact: a bot with `startPrice: "book"` + a pinned pool prices from the order book as documented (previously the pool); numeric startPrice is unchanged. Tests: `tests/test_pool_ref_price.ts` (book mode never fetches the pinned pool; mode resolution) (`modules/order/grid.ts`, `modules/order/utils/withPoolRef.ts`).
+
 ## [1.6.5] - 2026-09-23 - Editor-Managed Whitelist Flags, GridPrice Normalization, Pool/Health Cues, Log-Symmetric Range Tilt, Centralized Bot Defaults, Dynamic-Weight CLI, Update Self-Heal
 
 ### 2026-09-23
