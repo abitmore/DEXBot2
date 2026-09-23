@@ -49,6 +49,33 @@ export const DRAFT_SEED_ORDER = [
 /** Fields with no meaning since the grid-price offset was removed; stripped from drafts. */
 export const LEGACY_DRAFT_KEYS = ['gridPriceOffsetPct', 'gridPriceOffsetClampToBounds'];
 
+/**
+ * Spellings that mean "no explicit grid price" — delegate to startPrice.
+ * `none`/`null`/`start`/`startprice` are the editor's documented aliases;
+ * `n`/`no`/`false`/`0`/`f` are the boolean-style deactivating answers accepted
+ * elsewhere in the editor, `s` is shorthand for `startPrice`, and the boolean
+ * `false` covers a hand-edited `gridPrice: false`.
+ */
+export const GRID_PRICE_UNSET_INPUTS = new Set(['none', 'null', 'start', 'startprice', 's', 'n', 'no', 'false', '0', 'f']);
+
+/**
+ * True when a grid-price value carries no reference and must degrade to the
+ * startPrice fallback. Keeps `null`/`undefined`/`false`, empty/whitespace
+ * strings, and the aliases above equivalent so the editor display, the prompt
+ * parser, and the draft seeder all agree (the runtime already falls back on
+ * anything non-numeric/non-AMA).
+ * @param {*} value - Candidate grid-price value.
+ * @returns {boolean}
+ */
+export function isUnsetGridPrice(value: any): boolean {
+    if (value === null || value === undefined || value === false) return true;
+    if (typeof value === 'string') {
+        const text = value.trim().toLowerCase();
+        return text === '' || GRID_PRICE_UNSET_INPUTS.has(text);
+    }
+    return false;
+}
+
 function clone<T>(value: T): T {
     if (value === null || typeof value !== 'object') return value;
     return JSON.parse(JSON.stringify(value));
@@ -91,7 +118,11 @@ export function seedBotDraft(base?: Record<string, any> | null, options: SeedOpt
         } else if (key === 'startPrice') {
             if (data.startPrice === undefined) data.startPrice = def || 'pool';
         } else if (key === 'gridPrice') {
-            if (data.gridPrice === undefined) data.gridPrice = def ?? null;
+            // Unset spellings (false, "no", "none", ...) normalize to null so a
+            // hand-edited gridPrice can never linger as a value the runtime only
+            // silently degrades to startPrice.
+            const gp = data.gridPrice === undefined ? def : data.gridPrice;
+            data.gridPrice = isUnsetGridPrice(gp) ? null : gp;
         } else if (def !== null && typeof def === 'object') {
             if (!data[key]) data[key] = clone(def);
         } else if (data[key] === undefined) {

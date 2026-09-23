@@ -54,7 +54,8 @@
  *                                  //              profiles/orders/<botKey>.dynamicgrid.json; grid reads the effective center on reset
  *                                  //   "pool" / "book" = live pair price reference (legacy, editor no longer offers it)
  *                                  //   <number> = fixed numeric reference (legacy)
- *                                  //   null     = use startPrice (legacy)
+ *                                  //   null     = use startPrice (legacy); also accepted: false, empty/blank,
+ *                                  //              and the "none"/"null"/"start"/"startprice"/"s"/"n"/"no"/"f"/"0" spellings
  *       "minPrice": "2x",
  *       "maxPrice": "2x",
  *       "incrementPercent": 0.5,
@@ -90,7 +91,7 @@ import { getStorage } from './storage/index.js';
 import { ensureProfilesDirectory, readInput, sleep } from './order/utils/system.js';
 import { setGlobalConsoleLevel, getGlobalConsoleLevel } from './order/logger.js';
 import { GRID_LIMITS, RANGE_QUALITY, MARKET_ADAPTER, NODE_MANAGEMENT, INCREMENT_BOUNDS, buildDefaultGeneralSettings } from './constants.js';
-import { seedBotDraft } from './bot_defaults.js';
+import { seedBotDraft, isUnsetGridPrice } from './bot_defaults.js';
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
@@ -181,6 +182,15 @@ function loadGeneralSettings() {
         ? configuredDeltaPercent
         : MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT;
     merged.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT = effectiveDeltaPercent;
+
+    // MARKET_ADAPTER validation for AMA_SLOPE_DELTA_THRESHOLD_PERCENT (the
+    // slope trigger factor: (value/100) x maxSlopePct). Same >0 guard so a
+    // hand-edited 0/negative/NaN can never disable the slope reset silently.
+    const configuredSlopeDeltaPercent = Number(merged.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT);
+    const effectiveSlopeDeltaPercent = Number.isFinite(configuredSlopeDeltaPercent) && configuredSlopeDeltaPercent > 0
+        ? configuredSlopeDeltaPercent
+        : MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT;
+    merged.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT = effectiveSlopeDeltaPercent;
 
     return merged;
 }
@@ -575,19 +585,49 @@ function colorStartPriceValue(value: any): string {
 /**
  * Colors a grid-price value for display: GREEN only for AMA values
  * ("ama"/"ama1".."ama4"), RED for everything else — pool/book references,
- * numeric values and a null gridPrice (which delegates to startPrice and is
+ * numeric values and any unset grid price (null, false, blank/whitespace, and
+ * the "none"/"s"/"no"/"f"/"start" aliases) which delegates to startPrice and is
  * therefore labeled "startPrice", always in red: the delegation itself is the
- * thing the editor wants replaced by an AMA preset).
+ * thing the editor wants replaced by an AMA preset.
  * @param {*} value - The grid price value to color.
  * @returns {string} ANSI-colored value string.
  */
 function colorGridPriceValue(value: any): string {
-    if (value === null || value === undefined) {
+    if (isUnsetGridPrice(value)) {
         return `${COLORS.red}startPrice${COLORS.reset}`;
     }
     const text = String(value);
     if (AMA_GRID_PRICE_PATTERN.test(text.trim().toLowerCase())) return `${COLORS.green}${text}${COLORS.reset}`;
     return `${COLORS.red}${text}${COLORS.reset}`;
+}
+
+/**
+ * True when startPrice === "pool" and no poolRef is pinned, so the runtime
+ * auto-selects the pair's default pool for order alignment. Deliberately NOT
+ * keyed on gridPrice === "pool": anchoring the grid reference on the live
+ * market price is discouraged and stays red in the GridPrice field, so the
+ * Pool label must not read as a green healthy default for that case.
+ * @param {*} data - The bot draft.
+ * @returns {boolean}
+ */
+function startPriceUsesDefaultPool(data: any): boolean {
+    return String(data?.startPrice ?? '').trim().toLowerCase() === 'pool';
+}
+
+/**
+ * Colors the pool label for the editor summary. An unset poolRef does NOT
+ * mean "no pool": when startPrice is "pool" the runtime auto-selects the
+ * pair's default pool, so it reads green `default`. Otherwise the pin is
+ * inert, shown as grey `none` so it does not compete with live values (a
+ * gridPrice of "pool"/"book" is discouraged and stays red in its own field).
+ * Display only — the stored poolRef is never changed here.
+ * @param {*} data - The bot draft.
+ * @returns {string} ANSI-colored pinned pool ID, `default` (green), or `none` (grey).
+ */
+function formatPoolRefLabel(data: any): string {
+    if (data?.poolRef) return String(data.poolRef);
+    if (startPriceUsesDefaultPool(data)) return `${COLORS.green}default${COLORS.reset}`;
+    return `${COLORS.gray}none${COLORS.reset}`;
 }
 
 /**
@@ -597,13 +637,15 @@ function colorGridPriceValue(value: any): string {
  * @param {boolean} greenWhenTrue - True when `true` is the healthy state
  *                                   (e.g. Active), false when `false` is
  *                                   healthy (e.g. DryRun off).
+ * @param {string} [offColor] - Color for the unhealthy value (default red);
+ *                              pass a warn color for flags that are optional.
  * @returns {string} ANSI-colored "true"/"false" string.
  */
-function colorBooleanFlag(value: any, greenWhenTrue: boolean): string {
+function colorBooleanFlag(value: any, greenWhenTrue: boolean, offColor: string = COLORS.red): string {
     const isTrue = !!value;
     const healthy = greenWhenTrue ? isTrue : !isTrue;
     const text = String(isTrue);
-    return healthy ? `${COLORS.green}${text}${COLORS.reset}` : `${COLORS.red}${text}${COLORS.reset}`;
+    return healthy ? `${COLORS.green}${text}${COLORS.reset}` : `${offColor}${text}${COLORS.reset}`;
 }
 
 /**
@@ -1002,14 +1044,22 @@ async function askPoolRef(promptText: string, currentValue?: string | null | und
 async function askGridPriceMode(promptText: string, defaultValue?: any): Promise<any> {
     while (true) {
         const coloredDefault = colorGridPriceValue(defaultValue ?? null);
-        const raw = (await readInput(`${promptText} [${coloredDefault}]: `, {
-            colorize: (input: string) => colorGridPriceValue(input)
-        })).trim();
+        const raw = await readInput(`${promptText} [${coloredDefault}]: `, {
+            colorize: (input: string) => colorGridPriceValue(input),
+            // Keep whitespace so a deactivating space can be told apart from a
+            // bare Enter that means "keep current".
+            trimInput: false
+        });
         if (raw === '\x1b') return '\x1b';
-        if (!raw) return defaultValue === undefined ? null : defaultValue;
+        // A bare Enter keeps the current value (an already-unset value is
+        // normalized to null so it is stored as delegation). Whitespace-only
+        // input is NOT a bare Enter: the live echo already previews it as red
+        // startPrice, so it must overwrite with null — otherwise the preview
+        // would promise startPrice while the old value silently survived.
+        if (raw === '') return isUnsetGridPrice(defaultValue) ? null : (defaultValue === undefined ? null : defaultValue);
 
-        const lower = raw.toLowerCase();
-        if (lower === 'none' || lower === 'null' || lower === 'start' || lower === 'startprice') return null;
+        const lower = raw.trim().toLowerCase();
+        if (isUnsetGridPrice(lower)) return null;
         if (lower === 'pool') return lower;
         if (lower === 'book') return 'book';
         if (AMA_GRID_PRICE_PATTERN.test(lower)) return lower;
@@ -1017,7 +1067,7 @@ async function askGridPriceMode(promptText: string, defaultValue?: any): Promise
         const num = Number(raw);
         if (Number.isFinite(num) && num > 0) return num;
 
-        console.log(`${COLORS.red}Please enter: ama1, ama2, ama3 or ama4 — also allowed: pool, book, ama, a positive number, or none.${COLORS.reset}`);
+        console.log(`${COLORS.red}Please enter: ama1, ama2, ama3 or ama4 — also allowed: pool, book, ama, a positive number, or none (s/start, n/no/false/0/f).${COLORS.reset}`);
     }
 }
 
@@ -1173,7 +1223,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
              console.log(`\n${COLORS.bold}--- Bot Editor: ` + (data.name || 'New Bot') + ` ---${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
              console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} | ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} | ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
-             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice)}`);
+             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${formatPoolRefLabel(data)} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice)}`);
              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}) | ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
              console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              {
@@ -1181,9 +1231,11 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                  const inert = !isAmaGridPriceDraft() && (flags.ama || flags.dynamicWeight || flags.asymmetricBounds);
                  const hint = inert ? ` ${COLORS.red}(needs gridPrice=ama)${COLORS.reset}` : '';
                  // Adapter flags read as a health state, not a neutral toggle:
-                 // green = on, red = off (colorBooleanFlag's greenWhenTrue form,
-                 // same helper section 2 uses for Active).
-                 console.log(`${COLORS.yellowBold}6) Adapter:${COLORS.reset}    ${COLORS.orange}Price:${COLORS.reset} ${colorBooleanFlag(flags.ama, true)}, ${COLORS.orange}Weight:${COLORS.reset} ${colorBooleanFlag(flags.dynamicWeight, true)}, ${COLORS.orange}Range:${COLORS.reset} ${colorBooleanFlag(flags.asymmetricBounds, true)}${hint}`);
+                 // green = on (colorBooleanFlag's greenWhenTrue form, same
+                 // helper section 2 uses for Active). Price is the gate for the
+                 // other two, so off stays red; Weight/Range are optional
+                 // riders, so off is a bright-yellow warning rather than an error.
+                 console.log(`${COLORS.yellowBold}6) Adapter:${COLORS.reset}    ${COLORS.orange}Price:${COLORS.reset} ${colorBooleanFlag(flags.ama, true)}, ${COLORS.orange}Weight:${COLORS.reset} ${colorBooleanFlag(flags.dynamicWeight, true, COLORS.yellowBold)}, ${COLORS.orange}Range:${COLORS.reset} ${colorBooleanFlag(flags.asymmetricBounds, true, COLORS.yellowBold)}${hint}`);
              }
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
@@ -1403,7 +1455,7 @@ async function promptGeneralSettings() {
 
      while (!finished) {
           console.log(`${COLORS.bold}--- General Settings (Global) ---${COLORS.reset}`);
-          console.log(`${COLORS.yellowBold}1) Grid Health:${COLORS.reset}   ${COLORS.orange}Ratio:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Delta:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%`);
+          console.log(`${COLORS.yellowBold}1) Grid Health:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
           console.log(`${COLORS.yellowBold}2) Order Recovery:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
           const nodeCount = (settings.NODES.list || []).length;
           const hcIntervalMin = ((settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000).toFixed(0);
@@ -1428,15 +1480,18 @@ async function promptGeneralSettings() {
 
         switch (choice) {
             case '1':
-                const gRegen = await askNumberWithBounds('Grid Ratio Regeneration %', settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE, 0.1, 50);
+                const gRegen = await askNumberWithBounds('Grid Funds Regeneration %', settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE, 0.1, 50);
                 if (gRegen === '\x1b') break;
                 const rms = await askNumberWithBounds('RMS Divergence Threshold %', settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE, 1, 100);
                 if (rms === '\x1b') break;
-                const amaDelta = await askNumberWithBounds('AMA Delta Threshold %', settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT, 0.1, 50.0);
+                const amaDelta = await askNumberWithBounds('AMA Δ', settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT, 0.1, 50.0);
                 if (amaDelta === '\x1b') break;
+                const amaSlopeDelta = await askNumberWithBounds('AMA-Slope Δ', settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT, 0.1, 100.0);
+                if (amaSlopeDelta === '\x1b') break;
                 settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE = gRegen;
                 settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE = rms;
                 settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT = amaDelta;
+                settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT = amaSlopeDelta;
                 break;
             case '2':
                 const dust = await askNumberWithBounds('Partial Dust Threshold %', settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE, 0.1, 50);
@@ -1659,5 +1714,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput, loadGeneralSettings, saveGeneralSettings }
+export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput, colorGridPriceValue, formatPoolRefLabel, loadGeneralSettings, saveGeneralSettings }
 

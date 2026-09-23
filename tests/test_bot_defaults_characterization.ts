@@ -178,6 +178,27 @@ function testDraftGridPriceFollowsDefaultConfig() {
     assert.strictEqual(normalizeBotDraft({}).gridPrice, DEFAULT_CONFIG.gridPrice, 'DEFAULT_CONFIG.gridPrice restored → seeded unchanged (ama3 by default)');
 }
 
+function testDraftGridPriceUnsetNormalization() {
+    console.log(' - draft: unset gridPrice spellings (false, n/no, empty) normalize to null...');
+
+    for (const value of [false, '', '   ', 'none', 'null', 'start', 'startprice', 's', 'n', 'no', 'false', 'f', '0', 'N', 'No', 'FALSE', 'F', 'S']) {
+        assert.strictEqual(
+            normalizeBotDraft({ gridPrice: value }).gridPrice,
+            null,
+            `gridPrice:${JSON.stringify(value)} must normalize to null`
+        );
+    }
+
+    // A real reference is preserved untouched.
+    for (const value of ['ama3', 'pool', 'book', 2.5]) {
+        assert.strictEqual(
+            normalizeBotDraft({ gridPrice: value }).gridPrice,
+            value,
+            `gridPrice:${JSON.stringify(value)} must survive normalization`
+        );
+    }
+}
+
 function testDraftStartPriceFalsyFallsBackToPool() {
     console.log(' - draft: falsy DEFAULT_CONFIG.startPrice falls back to pool...');
     const original = DEFAULT_CONFIG.startPrice;
@@ -296,6 +317,7 @@ function main() {
     testDraftPreservesNullsAndPartials();
     testDraftReserveOrdersMigrations();
     testDraftGridPriceFollowsDefaultConfig();
+    testDraftGridPriceUnsetNormalization();
     testDraftStartPriceFalsyFallsBackToPool();
     testEntryNormalization();
     testManagerConfigShape();

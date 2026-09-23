@@ -1375,9 +1375,12 @@ export function sleep(ms: number): Promise<void> {
  * @param {boolean} [options.hideEchoBack=false] - Hide input echo (for passwords)
  * @param {string} [options.mask=''] - Character to display instead of input
  * @param {Function} [options.colorize] - Live colorizer applied to the typed input on redraw
- * @returns {Promise<string>} Trimmed user input
+ * @param {boolean} [options.trimInput=true] - Trim surrounding whitespace before
+ *        resolving; pass false when the caller must tell a bare Enter from a
+ *        whitespace-only entry (the live echo already distinguishes them)
+ * @returns {Promise<string>} User input (trimmed unless trimInput=false)
  */
-export function readInput(prompt: string, options: { hideEchoBack?: boolean; mask?: string; validate?: (input: string) => boolean; colorize?: (input: string) => string } = {}): Promise<string> {
+export function readInput(prompt: string, options: { hideEchoBack?: boolean; mask?: string; validate?: (input: string) => boolean; colorize?: (input: string) => string; trimInput?: boolean } = {}): Promise<string> {
     return new Promise((resolve: any) => {
         const stdin = runtime.stdin!; const stdout = runtime.stdout;
         const ESC_SEQUENCE_TIMEOUT_MS = 150;
@@ -1439,7 +1442,7 @@ export function readInput(prompt: string, options: { hideEchoBack?: boolean; mas
         }
 
         function handleChar(ch: any) {
-            if (ch === '\r' || ch === '\n' || ch === '\u0004') { cleanup(); stdout.write('\n'); return resolve(input.trim()); }
+            if (ch === '\r' || ch === '\n' || ch === '\u0004') { cleanup(); stdout.write('\n'); return resolve(options.trimInput === false ? input : input.trim()); }
             if (ch === '\u0003') { cleanup(); stdout.write('\r\x1b[K\n'); runtime.exit(0); }
 
             // Backspace

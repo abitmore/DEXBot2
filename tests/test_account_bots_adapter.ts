@@ -12,7 +12,8 @@ const TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dexbot-adapter-flags-'))
 const WHITELIST_FILE = path.join(TEMP_DIR, 'market_adapter_whitelist.json');
 process.env.DEXBOT_TEST_MARKET_ADAPTER_WHITELIST_FILE = WHITELIST_FILE;
 
-const { parseBooleanInput } = require('../modules/account_bots');
+const { parseBooleanInput, colorGridPriceValue, formatPoolRefLabel } = require('../modules/account_bots');
+const { CLI_COLORS } = require('../modules/cli_colors');
 const {
     setWhitelistFlags,
     renameWhitelistEntry,
@@ -153,11 +154,41 @@ function testRemoveWhitelistEntry() {
     assert.strictEqual(fs.readFileSync(WHITELIST_FILE, 'utf8'), before, 'malformed file left untouched');
 }
 
+function testGridPriceUnsetRendersRedStartPrice() {
+    const redStart = `${CLI_COLORS.boldRed}startPrice${CLI_COLORS.reset}`;
+    for (const value of [null, undefined, false, '', '   ', 'none', 'null', 'start', 's', 'n', 'no', 'f', '0', 'N', 'No', 'FALSE', 'F', 'S']) {
+        assert.strictEqual(
+            colorGridPriceValue(value),
+            redStart,
+            `gridPrice ${JSON.stringify(value)} must render as red startPrice`
+        );
+    }
+    assert.strictEqual(colorGridPriceValue('ama3'), `${CLI_COLORS.buy}ama3${CLI_COLORS.reset}`, 'AMA renders green');
+    assert.strictEqual(colorGridPriceValue('pool'), `${CLI_COLORS.boldRed}pool${CLI_COLORS.reset}`, 'pool renders red (discouraged market-price anchoring)');
+    assert.strictEqual(colorGridPriceValue('book'), `${CLI_COLORS.boldRed}book${CLI_COLORS.reset}`, 'book renders red (discouraged market-price anchoring)');
+    assert.strictEqual(colorGridPriceValue(2.5), `${CLI_COLORS.boldRed}2.5${CLI_COLORS.reset}`, 'numeric renders red');
+}
+
+function testFormatPoolRefLabel() {
+    const greenDefault = `${CLI_COLORS.buy}default${CLI_COLORS.reset}`;
+    const greyNone = `${CLI_COLORS.silver}none${CLI_COLORS.reset}`;
+
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 'pool' }), greenDefault, 'auto pool (startPrice=pool) renders green default');
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 'POOL' }), greenDefault, 'pool detection is case-insensitive');
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 'ama3', gridPrice: 'pool' }), greyNone, 'gridPrice=pool alone does NOT get a green default pool label (discouraged anchoring)');
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 'ama3', gridPrice: 'book' }), greyNone, 'gridPrice=book is not a pool source');
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 1.5, gridPrice: 'ama3' }), greyNone, 'no pool source renders grey none');
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 'book' }), greyNone, 'book is not a pool source');
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 'pool', poolRef: '1.19.48' }), '1.19.48', 'a pinned pool id wins over the default label');
+}
+
 function main() {
     console.log('Running account bot adapter flag tests');
     testParseBooleanInputAcceptsYesSpellings();
     testParseBooleanInputAcceptsNoSpellings();
     testParseBooleanInputKeepsDefaultAndRejectsGarbage();
+    testGridPriceUnsetRendersRedStartPrice();
+    testFormatPoolRefLabel();
     testSetWhitelistFlagsRoundTrip();
     testLegacyArrayFormUpgrade();
     testMalformedFileIsNeverOverwritten();

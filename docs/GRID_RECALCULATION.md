@@ -273,6 +273,14 @@ The snapshot fields involved are:
 - `amaSlopeDeltaPercent`: distance from the accepted baseline
 - `amaSlopeThresholdPercent`: threshold required to trigger the reset
 
+**Trigger threshold.** By default the reset fires when the slope delta crosses
+`AMA_SLOPE_DELTA_THRESHOLD_PERCENT`, a percentage of the AMA max slope
+(`(value/100) × maxSlopePct`) — default `8%`, stored under `MARKET_ADAPTER` in
+`profiles/general.settings.json` and editable via `dexbot bot` → `1) Grid
+Health` (`AMA-Slope Δ`). An explicit `amaSlopeDeltaThresholdPercent` in
+`profiles/market_adapter_settings.json` bypasses the factor and is used
+directly as an average percent-per-bar threshold.
+
 AMA slope values are stored and compared as average percent per bar. Older
 settings that used cumulative percent over the full lookback can either be
 divided by `amaSlope.lookbackBars`, or marked with

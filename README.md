@@ -228,7 +228,7 @@ Global settings via `dexbot bot`, stored in `general.settings.json` in the profi
 
 <details><summary><mark>Global settings reference (click to expand)</mark></summary>
 
-- **Grid Health**: Grid Ratio Regeneration % (default `3%`), RMS Divergence Threshold % (default `14.3%`), AMA Delta Threshold % (default `1%`)
+- **Grid Health**: Grid Funds Regeneration % (default `3%`), RMS Divergence Threshold % (default `14.3%`), AMA Δ Threshold % (default `1%`, AMA center move that triggers a grid reset), AMA-Slope Δ Threshold % (default `8%`, slope-delta trigger as a percentage of max AMA slope)
 - **Order Recovery**: Partial Dust Threshold % (default `5%`), Dust Cancel Delay (default `30s`, `-1` = off, `0` = instant)
 - **Node Configuration**: Node List (10 default public BitShares nodes), Health Check Interval (default `240 min`), Preferred Node (default `none`)
 - **Log Level**: `debug`, `info`, `warn`, `error`, `critical`. Fine-grained category control via `LOGGING_CONFIG` (see [Logging](docs/LOGGING.md))
