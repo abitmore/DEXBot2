@@ -21,13 +21,13 @@ The live signal layer for AMA-priced bots. It reads candles, computes the AMA ce
 
 | If you want to… | Read this | Key command |
 |-----------------|-----------|-------------|
-| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `dexbot bot` → `6) Adapter` |
+| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `dexbot bot` → `2) Modify bot` → `6) Adapter` |
 | Change how often the grid rebuilds | [Trigger Threshold](#trigger-threshold) | edit `AMA_DELTA_THRESHOLD_PERCENT` |
-| Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | `6) Adapter` → Weight |
-| Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | `6) Adapter` → Range |
+| Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | `dexbot bot` → `2) Modify bot` → `6) Adapter` → Weight |
+| Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | `dexbot bot` → `2) Modify bot` → `6) Adapter` → Range |
 | Override settings for one pair or bot | [Settings and Overrides](#settings-and-overrides) | edit `profiles/market_adapter_settings.json` |
 | Run the adapter standalone or test dry-run | [Live Writes and Dry-Run](#live-writes-and-dry-run) | `node dist/market_adapter/market_adapter.js --dryRun` |
-| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `6) Adapter` flags |
+| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `dexbot bot` → `2) Modify bot` → `6) Adapter` flags |
 | Understand the signal pipeline or module layout | [Technical Reference](#technical-reference) | — |
 
 ## Big Picture
@@ -309,7 +309,7 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 | Task | Command |
 |------|---------|
 | Enable/inspect Price, Weight, Range for a bot | `dexbot bot` → `2) Modify bot` → `6) Adapter` |
-| Remove a deleted bot's entry | Automatic — `dexbot bot` → `3) Delete` also drops its whitelist key |
+| Remove a deleted bot's entry | Automatic — `dexbot bot` → `3) Delete bot` also drops its whitelist key |
 | Probe public CEX availability | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --check-only` |
 | Seed synthetic cross candles | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --bot-key <bot-key>` |
 | Run one adapter cycle | `node dist/market_adapter/market_adapter.js --once` |
@@ -348,7 +348,7 @@ match the bot's eventual `botKey`.
 - Check `lastDeltaPercent` vs `thresholdPercent`.
 - Check `staleData` and `staleAgeHours`.
 - **Confirm the bot is whitelisted.** Non-whitelisted bots only log and do not write triggers.
-- Confirm the bot's whitelist entry has `"ama": true` (`dexbot bot` → `6) Adapter` shows it as **Price**).
+- Confirm the bot's whitelist entry has `"ama": true` (`dexbot bot` → `2) Modify bot` → `6) Adapter` shows it as **Price**).
 - Run `node dist/market_adapter/market_adapter.js --once --deltaPercent <lower-value>` for a one-cycle threshold test.
 
 ### Trigger fires too often
@@ -604,7 +604,7 @@ market_adapter/
 ### Whitelist Semantics
 
 `profiles/market_adapter_whitelist.json` controls live writes. It is edited
-per bot in the bot editor (`dexbot bot` → `6) Adapter`), which reads and
+per bot in the bot editor (`dexbot bot` → `2) Modify bot` → `6) Adapter`), which reads and
 writes this same file:
 
 ```json

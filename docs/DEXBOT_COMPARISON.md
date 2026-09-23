@@ -326,7 +326,7 @@ workers:
 ### DEXBot2
 
 - **Format:** JSON (`profiles/bots.json`, `profiles/general.settings.json`)
-- **No GUI wizard** — manual JSON editing plus scripts/runtime helpers
+- **No GUI wizard** — interactive `dexbot bot` menu editor for main settings; advanced keys edited directly in JSON
 - **~27 configuration objects** in `modules/constants.ts`, frozen via `Object.freeze` (loaded at startup)
 - Runtime parameters via environment variables (`RUN_LOOP_MS`, `BOT_NAME`, launcher/daemon settings, etc.)
 - `profiles/general.settings.json` for global timing/limits/node settings
@@ -357,7 +357,7 @@ workers:
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
 | **Format** | YAML | JSON |
-| **Interactive Setup** | Yes (whiptail + PyQt5 GUI) | No (manual edit) |
+| **Interactive Setup** | Yes (whiptail + PyQt5 GUI) | Yes (`dexbot bot` menu editor) |
 | **Key Encryption** | No (file-system only) | Yes (AES-256-GCM) |
 | **Multi-bot in one config** | Yes (YAML array) | Yes (JSON array) |
 | **Runtime overrides** | Env vars (limited) | Env vars (full) |
@@ -508,7 +508,7 @@ Where:
 | Feature | DEXBot | DEXBot2 |
 |---|---|---|
 | **Desktop GUI** | Yes (PyQt5) | No |
-| **Interactive Config Wizard** | Yes (GUI + whiptail) | No |
+| **Interactive Config Wizard** | Yes (GUI + whiptail) | No (menu-driven editor, not a guided wizard) |
 | **CLI** | Yes (Click) | Yes (custom) |
 | **Real-time Status** | GUI view | `unlock status` / `dexbot stat` + log tailing |
 | **Automation Surface** | Plugin/strategy hooks | Claw modules, scripts, and runtime helpers |
@@ -863,7 +863,7 @@ The 500× figure is not theoretical: it materializes in production when higher o
 - **Single core strategy** — no runtime-swappable plugin system, but the boundary-crawl grid is deeply engineered with AMA/Kalman/ATR/regime adaptive signals, making it far more capable and configurable than DEXBot's individual strategies
 - No GUI — requires CLI proficiency
 - No DEXBot-style external CEX price-feed strategy support
-- JSON config requires manual editing (no wizard)
+- Advanced bot keys (`debtPolicy`, `creditOnly`, `min_BTS_value`) require manual JSON editing; main settings are interactive via `dexbot bot`
 - Backtesting/research exists under `analysis/`, but it is not a polished end-user backtesting product
 - No community/plugin ecosystem
 - Heavy documentation suggests significant learning curve for contributors
