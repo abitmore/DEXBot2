@@ -64,7 +64,8 @@
  *       "botFunds": { "sell": "100%", "buy": "100%" },
  *       "activeOrders": { "sell": 20, "buy": 20 },
  *       "reserveOrders": { "buy": 0, "sell": 0 },  // Edge reserves: extra live orders (buy: floor, sell: ceiling)
- *       "debtPolicy": "ignore",       // Debt policy: "ignore", "warn", or "block"
+ *       "poolRef": null,              // Optional pinned pool ID for startPrice "pool"
+ *       "debtPolicy": { ... },        // MPA/credit lending policy — docs/MPA_CREDIT_USAGE.md
  *       "min_BTS_value": 0,           // Minimum BTS value threshold for operations
  *     }
  *   ]
@@ -636,6 +637,9 @@ function startPriceUsesDefaultPool(data: any): boolean {
  * @returns {string} ANSI-colored pinned pool ID, `default` (green), or `none` (grey).
  */
 function formatPoolRefLabel(data: any): string {
+    // A pin only applies to startPrice "pool"; show it as ignored otherwise
+    // so the summary never displays a value the editor no longer asks for.
+    if (data?.poolRef && !startPriceUsesDefaultPool(data)) return `${COLORS.gray}ignored${COLORS.reset}`;
     if (data?.poolRef) return String(data.poolRef);
     if (startPriceUsesDefaultPool(data)) return `${COLORS.green}default${COLORS.reset}`;
     return `${COLORS.gray}none${COLORS.reset}`;
@@ -1256,11 +1260,11 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
     while (!finished) {
         if (showMenu) {
              console.log(`\n${COLORS.bold}--- Bot Editor: ` + (data.name || 'New Bot') + ` ---${COLORS.reset}`);
-             console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}       ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
-             console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}   ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'} | ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} | ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
-             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${formatPoolRefLabel(data)} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice)}`);
-             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}) | ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
-             console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
+             console.log(`${COLORS.yellowBold}1) Pair:${COLORS.reset}      ${COLORS.cyan}${data.assetA || '?'} / ${data.assetB || '?'}${COLORS.reset}`);
+             console.log(`${COLORS.yellowBold}2) Identity:${COLORS.reset}  ${COLORS.orange}Name:${COLORS.reset} ${data.name || '?'}, ${COLORS.orange}Account:${COLORS.reset} ${data.preferredAccount || '?'} | ${COLORS.orange}Active:${COLORS.reset} ${colorBooleanFlag(data.active, true)}, ${COLORS.orange}DryRun:${COLORS.reset} ${colorBooleanFlag(data.dryRun, false)}`);
+             console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}     ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${formatPoolRefLabel(data)} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice)}`);
+             console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}      ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}) | ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
+             console.log(`${COLORS.yellowBold}5) Inventory:${COLORS.reset} ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}MarketOrder:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}EdgeOrder:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
              {
                  const flags = adapterFlags();
                  const inert = !isAmaGridPriceDraft() && (flags.ama || flags.dynamicWeight || flags.asymmetricBounds);
@@ -1270,7 +1274,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                  // helper section 2 uses for Active). Price is the gate for the
                  // other two, so off stays red; Weight/Range are optional
                  // riders, so off is a bright-yellow warning rather than an error.
-                 console.log(`${COLORS.yellowBold}6) Adapter:${COLORS.reset}    ${COLORS.orange}Price:${COLORS.reset} ${colorBooleanFlag(flags.ama, true)}, ${COLORS.orange}Weight:${COLORS.reset} ${colorBooleanFlag(flags.dynamicWeight, true, COLORS.yellowBold)}, ${COLORS.orange}Range:${COLORS.reset} ${colorBooleanFlag(flags.asymmetricBounds, true, COLORS.yellowBold)}${hint}`);
+                 console.log(`${COLORS.yellowBold}6) Adapter:${COLORS.reset}   ${COLORS.orange}Price:${COLORS.reset} ${colorBooleanFlag(flags.ama, true)}, ${COLORS.orange}Weight:${COLORS.reset} ${colorBooleanFlag(flags.dynamicWeight, true, COLORS.yellowBold)}, ${COLORS.orange}Range:${COLORS.reset} ${colorBooleanFlag(flags.asymmetricBounds, true, COLORS.yellowBold)}${hint}`);
              }
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
@@ -1301,7 +1305,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
             case '2':
                 const name = await askRequiredString('Bot name', data.name);
                 if (name === '\x1b') break;
-                let prefAcc = await askRequiredString('Preferred account', data.preferredAccount);
+                let prefAcc = await askRequiredString('Blockchain account', data.preferredAccount);
                 if (prefAcc === '\x1b') break;
                 // Verify the account exists on the blockchain and stamp its ID.
                 // Re-prompt while verification fails. A 'timeout' means the
@@ -1316,7 +1320,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                             ? `nodes unreachable (lookup timed out). Check your connection and try again, or press Esc to cancel.`
                             : `account '${draft.preferredAccount}' not found on the blockchain. Check the name and try again, or press Esc to cancel.`;
                         console.log(`${COLORS.red}Error: ${why}${COLORS.reset}`);
-                        const retry = await askRequiredString('Preferred account', String(draft.preferredAccount ?? ''));
+                        const retry = await askRequiredString('Blockchain account', String(draft.preferredAccount ?? ''));
                         if (retry === '\x1b') { prefAcc = retry; break; }
                         draft.preferredAccount = retry;
                     }
@@ -1339,9 +1343,15 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 if (minP === '\x1b') break;
                 const maxP = await askMaxPrice('maxPrice', data.maxPrice, minP);
                 if (maxP === '\x1b') break;
-                const startP = await askStartPrice('startPrice (pool, book or A/B)', data.startPrice);
+                const startP = await askStartPrice('startPrice (pool, book or price)', data.startPrice);
                 if (startP === '\x1b') break;
-                const poolR = await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef, isPoolStartPrice(startP));
+                // poolRef only feeds startPrice "pool" (README: ignored for
+                // book/fixed price), so don't ask when startPrice isn't pool —
+                // an existing pin is kept dormant, not cleared, so switching
+                // back to pool restores it.
+                const poolR = isPoolStartPrice(startP)
+                    ? await askPoolRef('poolRef (pinned pool ID for price source)', data.poolRef, true)
+                    : (data.poolRef || null);
                 if (poolR === '\x1b') break;
                 const gp = await askGridPriceMode('gridPrice (ama1/ama2/ama3/ama4)', data.gridPrice);
                 if (gp === '\x1b') break;
@@ -1381,9 +1391,9 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 if (oSell === '\x1b') break;
                 const oBuy = await askIntegerInRange('activeOrders buy count', data.activeOrders.buy, 1, 100);
                 if (oBuy === '\x1b') break;
-                const rBuy = await askIntegerInRange('reserveOrders buy floor count (0 disables)', data.reserveOrders?.buy ?? 0, 0, 20);
+                const rBuy = await askIntegerInRange('reserveOrders buy floor count (0 disables)', data.reserveOrders?.buy ?? 0, 0, 100);
                 if (rBuy === '\x1b') break;
-                const rSell = await askIntegerInRange('reserveOrders sell ceiling count (0 disables)', data.reserveOrders?.sell ?? 0, 0, 20);
+                const rSell = await askIntegerInRange('reserveOrders sell ceiling count (0 disables)', data.reserveOrders?.sell ?? 0, 0, 100);
                 if (rSell === '\x1b') break;
                 data.botFunds.sell = fSell;
                 data.botFunds.buy = fBuy;
@@ -1490,12 +1500,12 @@ async function promptGeneralSettings() {
 
      while (!finished) {
           console.log(`${COLORS.bold}--- General Settings (Global) ---${COLORS.reset}`);
-          console.log(`${COLORS.yellowBold}1) Grid Health:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
-          console.log(`${COLORS.yellowBold}2) Order Recovery:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}%`);
-          const nodeCount = (settings.NODES.list || []).length;
+          console.log(`${COLORS.yellowBold}1) Grid Drift:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
           const hcIntervalMin = ((settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000).toFixed(0);
+          console.log(`${COLORS.yellowBold}2) Order Maint.:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}% + ${COLORS.orange}HealthChk:${COLORS.reset} ${hcIntervalMin}min`);
+          const nodeCount = (settings.NODES.list || []).length;
           const prefNodeDisplay = settings.NODES.selection?.preferredNode || 'none';
-          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset} ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}HealthChk:${COLORS.reset} ${hcIntervalMin}min, ${COLORS.orange}PrefNode:${COLORS.reset} ${prefNodeDisplay}`);
+          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset}  ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}PrefNode:${COLORS.reset} ${prefNodeDisplay}`);
           console.log(`${COLORS.yellowBold}4) Log lvl:${COLORS.reset}      ${COLORS.orange}${settings.LOG_LEVEL}${COLORS.reset} (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`;
           const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");
@@ -1532,6 +1542,11 @@ async function promptGeneralSettings() {
                 const dust = await askNumberWithBounds('Partial Dust Threshold %', settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE, 0.1, 50);
                 if (dust === '\x1b') break;
                 settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE = dust;
+
+                const hcInterval = await askIntegerInRange('Health Check Interval (min)', (settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000, 1, 43200);
+                if (hcInterval === '\x1b') break;
+                if (!settings.NODES.healthCheck) settings.NODES.healthCheck = {};
+                settings.NODES.healthCheck.intervalMs = hcInterval * 60000;
                 break;
             case '3':
                 settings.NODES.enabled = true;
@@ -1581,11 +1596,6 @@ async function promptGeneralSettings() {
 
                     if (editorCancelled) break;
                 }
-
-                const hcInterval = await askIntegerInRange('Health Check Interval (min)', (settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000, 1, 43200);
-                if (hcInterval === '\x1b') break;
-                if (!settings.NODES.healthCheck) settings.NODES.healthCheck = {};
-                settings.NODES.healthCheck.intervalMs = hcInterval * 60000;
 
                 const prefNode = await askString('Preferred Node URL (leave empty for automatic selection)', settings.NODES.selection?.preferredNode || '');
                 if (prefNode === '\x1b') break;

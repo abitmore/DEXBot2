@@ -180,6 +180,7 @@ function testFormatPoolRefLabel() {
     assert.strictEqual(formatPoolRefLabel({ startPrice: 1.5, gridPrice: 'ama3' }), greyNone, 'no pool source renders grey none');
     assert.strictEqual(formatPoolRefLabel({ startPrice: 'book' }), greyNone, 'book is not a pool source');
     assert.strictEqual(formatPoolRefLabel({ startPrice: 'pool', poolRef: '1.19.48' }), '1.19.48', 'a pinned pool id wins over the default label');
+    assert.strictEqual(formatPoolRefLabel({ startPrice: 'book', poolRef: '1.19.48' }), `${CLI_COLORS.silver}ignored${CLI_COLORS.reset}`, 'a dormant pin renders grey ignored when startPrice is not pool');
 }
 
 function testIsPoolStartPrice() {
