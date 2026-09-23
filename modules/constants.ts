@@ -1265,9 +1265,10 @@ let MARKET_ADAPTER = {
     DYNAMIC_WEIGHT_VOLATILITY_SCALE_X_MAX: 100.0,
 
     // ASYMMETRIC_BOUNDS_MAX_ASYMMETRY_FACTOR: Maximum ratio tilt applied to min/max
-    // grid bounds when the AMA slope indicates a strong trend. At full slope strength:
-    //   Downtrend: minPrice divisor grows by 1+factor, maxPrice multiplier shrinks by 1-factor
-    //   Uptrend:   maxPrice multiplier grows by 1+factor, minPrice divisor shrinks by 1-factor
+    // grid bounds when the AMA slope indicates a strong trend. Reciprocal /
+    // log-symmetric tilt scales BOTH bounds by the same factor, so total log width
+    // (and slot count) is preserved and only the geometric center translates:
+    //   Downtrend: both bounds ÷ (1+factor)   Uptrend: both bounds × (1+factor)
     // This widens the bound in the trend direction and tightens the opposite side,
     // giving the grid more room when the AMA center trails price in a trend.
     // 0 disables asymmetry. Recommended range: 0.15–0.35.

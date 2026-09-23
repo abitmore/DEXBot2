@@ -667,8 +667,11 @@ AMA slope -> live market/start-price offset, capped at half spread
 
 During a grid rebuild, the bot loads the latest dynamic grid snapshot and uses
 the AMA slope diagnostics to tilt the configured `minPrice` and `maxPrice`
-around the AMA center. An uptrend widens the upper bound and tightens the lower
-bound; a downtrend widens the lower bound and tightens the upper bound.
+around the AMA center. A reciprocal (log-symmetric) tilt scales both bounds by
+the same factor: an uptrend shifts the whole band up by `1 + asymmetry`, a
+downtrend shifts it down by `1 / (1 + asymmetry)`. The trend side therefore
+extends while the opposite side tightens toward the center, while total log
+width (and slot count) is preserved.
 
 The same `asymmetricBounds` whitelist also enables `gridPriceOffsetPct`: a
 slope-ratio offset applied only to the live `startPrice` used for initial
@@ -686,10 +689,10 @@ slopeOffset = slope normalized to the configured dynamic-weight slope cap
 asymmetry = min(|slopeOffset| / maxSlopeOffset, 1) × maxAsymmetryFactor
 
 Downtrend: minPrice = center / (M × (1 + asymmetry))
-           maxPrice = center × (M × (1 - asymmetry))
+           maxPrice = (center × M) / (1 + asymmetry)
 
 Uptrend:   maxPrice = center × (M × (1 + asymmetry))
-           minPrice = center / (M × (1 - asymmetry))
+           minPrice = (center / M) × (1 + asymmetry)
 
 Neutral:   symmetric bounds (asymmetry = 0)
 ```
