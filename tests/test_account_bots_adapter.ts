@@ -16,6 +16,7 @@ const { parseBooleanInput } = require('../modules/account_bots');
 const {
     setWhitelistFlags,
     renameWhitelistEntry,
+    removeWhitelistEntry,
     getWhitelistFlags,
     resetMarketAdapterWhitelistCache,
 } = require('../modules/market_adapter_whitelist');
@@ -72,8 +73,8 @@ function testSetWhitelistFlagsRoundTrip() {
         'omitted flags keep their current value'
     );
 
-    // Explicit all-off keeps a protective entry so `dexbot white` (which only
-    // adds missing keys unless --bot targets one) cannot re-enable the bot.
+    // Explicit all-off keeps a protective entry so the bot stays explicitly
+    // disabled rather than falling back to absent/default flags.
     assert.strictEqual(setWhitelistFlags('bot-a', { ama: false, dynamicWeight: false, asymmetricBounds: false }), true);
     const doc = readDoc();
     assert.deepStrictEqual(doc.whitelist['bot-a'], { ama: false, dynamicWeight: false, asymmetricBounds: false });
@@ -94,7 +95,7 @@ function testLegacyArrayFormUpgrade() {
     assert.ok(!Array.isArray(doc.whitelist), 'legacy array form is upgraded to the object form');
     assert.deepStrictEqual(doc.whitelist['legacy-bot'], { ama: true, dynamicWeight: false, asymmetricBounds: false });
     assert.deepStrictEqual(doc.whitelist['bot-b'], { ama: false, dynamicWeight: false, asymmetricBounds: true });
-    assert.deepStrictEqual(Object.keys(doc.whitelist), ['bot-b', 'legacy-bot'], 'keys stay sorted like `dexbot white` writes them');
+    assert.deepStrictEqual(Object.keys(doc.whitelist), ['bot-b', 'legacy-bot'], 'keys stay sorted on write');
 }
 
 function testMalformedFileIsNeverOverwritten() {
@@ -126,6 +127,32 @@ function testRenameWhitelistEntry() {
     assert.deepStrictEqual(doc.whitelist.other, entry, 'source entry is left in place');
 }
 
+function testRemoveWhitelistEntry() {
+    writeDoc({
+        whitelist: {
+            'bot-a': { ama: true, dynamicWeight: true, asymmetricBounds: true },
+            'bot-b': { ama: true, dynamicWeight: false, asymmetricBounds: false },
+        },
+        meta: { keep: 1 },
+    });
+
+    assert.strictEqual(removeWhitelistEntry('bot-a'), true);
+    const doc = readDoc();
+    assert.strictEqual(doc.whitelist['bot-a'], undefined, 'deleted bot entry is wiped from the whitelist');
+    assert.deepStrictEqual(doc.whitelist['bot-b'], { ama: true, dynamicWeight: false, asymmetricBounds: false }, 'other entries survive the delete');
+    assert.strictEqual(doc.meta.keep, 1, 'unrelated top-level keys survive the removal');
+
+    // Missing key and empty key are no-ops, not errors.
+    assert.strictEqual(removeWhitelistEntry('ghost'), true, 'missing entry is a no-op');
+    assert.strictEqual(removeWhitelistEntry(''), true, 'empty key is a no-op');
+
+    // A malformed file must abort the write, exactly like set/rename.
+    writeDoc('{ not json');
+    const before = fs.readFileSync(WHITELIST_FILE, 'utf8');
+    assert.strictEqual(removeWhitelistEntry('bot-b'), false, 'malformed file must abort the removal');
+    assert.strictEqual(fs.readFileSync(WHITELIST_FILE, 'utf8'), before, 'malformed file left untouched');
+}
+
 function main() {
     console.log('Running account bot adapter flag tests');
     testParseBooleanInputAcceptsYesSpellings();
@@ -135,6 +162,7 @@ function main() {
     testLegacyArrayFormUpgrade();
     testMalformedFileIsNeverOverwritten();
     testRenameWhitelistEntry();
+    testRemoveWhitelistEntry();
     fs.rmSync(TEMP_DIR, { recursive: true, force: true });
     console.log('account bot adapter flag tests passed');
 }

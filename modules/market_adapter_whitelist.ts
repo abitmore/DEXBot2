@@ -156,8 +156,8 @@ function readWhitelistDocument(): { doc: any; entries: Record<string, any> } | n
 }
 
 /**
- * Writes the whitelist document back (sorted keys, same shape the `dexbot
- * white` script produces) and invalidates the in-process read cache.
+ * Writes the whitelist document back (sorted keys, same shape the market
+ * adapter reads) and invalidates the in-process read cache.
  * @param {any} doc - Top-level document to preserve (extra keys survive).
  * @param {Record<string, any>} entries - botKey-keyed whitelist entries.
  */
@@ -172,8 +172,7 @@ function writeWhitelistDocument(doc: any, entries: Record<string, any>): void {
 /**
  * Stores the market-adapter flags for a single bot key. This is the bot
  * editor's write-through path for section `6) Adapter` and writes the same
- * file/shape as `dexbot white --bot <key>` (which stays available for bulk
- * regeneration).
+ * file/shape the market adapter reads back.
  * @param {string} botKey - Whitelist key (sanitized bot name).
  * @param {Partial<WhitelistFlags>} flags - Flags to apply; omitted keys keep
  *   their current value.
@@ -214,7 +213,7 @@ function renameWhitelistEntry(oldKey: string, newKey: string): boolean {
     const loaded = readWhitelistDocument();
     if (!loaded) return false;
     if (to in loaded.entries) {
-        console.warn(`[WARN] Whitelist entry '${to}' already exists; keeping it and leaving '${from}' in place (clean up with 'dexbot white --prune').`);
+        console.warn(`[WARN] Whitelist entry '${to}' already exists; keeping it and leaving '${from}' in place.`);
         return false;
     }
     if (!(from in loaded.entries)) return true;
@@ -224,5 +223,24 @@ function renameWhitelistEntry(oldKey: string, newKey: string): boolean {
     return true;
 }
 
-export { whitelistFile, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, setWhitelistFlags, renameWhitelistEntry, DEFAULT_WHITELIST_FLAGS, AMA_ONLY_WHITELIST_FLAGS, ALL_ENABLED_WHITELIST_FLAGS }
+/**
+ * Removes the whitelist entry for a bot the editor just deleted. Mirrors the
+ * rename/set safeguards: an empty key or a missing entry is a no-op, and a
+ * malformed file aborts the write so it is never silently replaced.
+ * @param {string} botKey - Whitelist key (sanitized bot name).
+ * @returns {boolean} true when the entry is gone after the call (removed or
+ *   never existed); false when a malformed file blocked the write.
+ */
+function removeWhitelistEntry(botKey: string): boolean {
+    const key = String(botKey ?? '').trim();
+    if (!key) return true;
+    const loaded = readWhitelistDocument();
+    if (!loaded) return false;
+    if (!(key in loaded.entries)) return true;
+    delete loaded.entries[key];
+    writeWhitelistDocument(loaded.doc, loaded.entries);
+    return true;
+}
+
+export { whitelistFile, resetMarketAdapterWhitelistCache, getWhitelistFlags, isBotWhitelisted, isBotDynamicWeightWhitelisted, isBotAsymmetricBoundsWhitelisted, setWhitelistFlags, renameWhitelistEntry, removeWhitelistEntry, DEFAULT_WHITELIST_FLAGS, AMA_ONLY_WHITELIST_FLAGS, ALL_ENABLED_WHITELIST_FLAGS }
 

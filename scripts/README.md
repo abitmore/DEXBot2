@@ -93,30 +93,6 @@ bash scripts/reset-settings.sh
 node dist/scripts/validate_bots.js
 ```
 
-### Market Adapter Whitelist Generation
-**File:** `generate_market_adapter_whitelist.ts`
-**Purpose:** Generate `profiles/market_adapter_whitelist.json` from bots whose `gridPrice` uses AMA mode.
-**Note:** Per-bot Price/Weight/Range flags are normally edited in the bot editor (`dexbot bot` → `2) Modify bot` → `6) Adapter`); this script stays available for bulk regeneration and `--prune`.
-```bash
-# Add missing AMA bots from profiles/bots.json to profiles/market_adapter_whitelist.json.
-# Existing entries are preserved; new entries enable AMA only and leave dynamicWeight and range scaling disabled.
-dexbot white
-
-# Add missing AMA bots with dynamicWeight enabled for newly generated entries
-dexbot white --dynamic-weight
-
-# Add missing AMA bots with range scaling (asymmetricBounds) enabled for newly generated entries
-dexbot white --asymmetric-bounds
-
-# Overwrite existing entry for a specific bot (implies overwrite for that key only; other bots unchanged)
-dexbot white --dynamic-weight --bot <botKey>
-dexbot white --asymmetric-bounds --bot <botKey>
-
-# Remove whitelist entries for bots no longer in profiles/bots.json
-dexbot white --prune
-
-```
-
 ### Grid Divergence Audit
 **File:** `divergence-calc.ts`
 **Purpose:** Measure the "drift" between in-memory grid and disk state using RMS divergence metric.
@@ -364,7 +340,6 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 ### Analysis
 | Command | Purpose |
 |:---|:---|
-| `npm run market-adapter:whitelist` | Generate/update whitelist from AMA-configured bots |
 | `npm run market-adapter:fetch-cex-synthetic` | Fetch CEX synthetic data for market adapter |
 | `npm run analysis:derivatives` | Derivative analysis report |
 | `npm run analysis:tradingview` | TradingView-style chart export |

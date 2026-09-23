@@ -265,14 +265,6 @@ Set it per bot in the editor: `dexbot bot` → `2) Modify bot` → pick the bot 
 `profiles/market_adapter_whitelist.json` next to **Price** (AMA pricing) and
 **Weight** (dynamic weights); all three default to off until enabled.
 
-Bulk regeneration and pruning of the same file remain available through the
-legacy `dexbot white` script:
-
-```bash
-dexbot white --asymmetric-bounds [--bot <botKey>]
-dexbot white --prune
-```
-
 The snapshot fields involved are:
 
 - `amaSlope`: latest slope diagnostic
@@ -617,6 +609,6 @@ Removed trigger file.
 - `modules/dexbot_class.ts` — `_performGridResync()`, `requestGridReset()`, and COW-guard structural recovery wiring
 - `modules/order/grid.ts` — RMS divergence check and grid comparison
 - `modules/order/manager.ts` — Available-funds resize threshold logic
-- `modules/market_adapter_whitelist.ts` / `scripts/generate_market_adapter_whitelist.ts` — Whitelist storage/read helpers plus the bulk generator (the bot editor's `6) Adapter` reads and writes the same file; `dexbot white` stays for bulk generation and `--prune`)
+- `modules/market_adapter_whitelist.ts` — Whitelist storage/read helpers (the bot editor's `6) Adapter` reads and writes the same file)
 - `profiles/general.settings.json` — User-editable configuration
 - `profiles/bots.json` — Per-bot configuration including AMA

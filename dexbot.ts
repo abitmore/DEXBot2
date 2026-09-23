@@ -180,8 +180,8 @@ if (typeof credentialPolicy.checkPolicyFileSecurity === 'function') credentialPo
 const PROFILES_BOTS_FILE = PATHS.PROFILES.BOTS_JSON;
 const PROFILES_DIR = PATHS.PROFILES_DIR;
 
-const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'dw', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'whitelist', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
-const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', white: 'whitelist', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
+const CLI_COMMANDS = ['start', 'test', 'reset', 'default', 'disable', 'enable', 'drystart', 'key', 'bot', 'pm2', 'update', 'export', 'order', 'credit', 'tv', 'dw', 'clear', 'clear-orders', 'clear-market-adapter', 'clear-all', 'status', 'unlock', 'delete', 'stop', 'restart', 'reload', 'help'];
+const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', bots: 'bot', stat: 'status', stats: 'status', start: 'unlock', defaults: 'default', stp: 'stop', stopall: 'stop', restartall: 'restart', reloadall: 'reload' };
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
@@ -259,7 +259,6 @@ function printCLIUsage() {
     console.log('  reload            Reload the monolithic runtime (leaves credential daemon untouched).');
     console.log('  restart           Restart the monolithic runtime (re-unlocks credential daemon).');
     console.log('  delete            Stop/delete all runtime processes.');
-    console.log('  whitelist, white  Bulk-generate the market adapter whitelist (per-bot flags: edit in `dexbot bot` → 6) Adapter). Flags (--dynamic-weight, --asymmetric-bounds, --prune, --bot <key>) are forwarded. --bot implies overwrite for that key.');
     console.log('  clear             Remove all log files from <profiles>/logs/ (runs scripts/clear-logs.sh).');
     console.log('  clear-orders      Remove all persisted order files from <profiles>/orders/.');
     console.log('  clear-market-adapter  Remove market adapter data, state, and logs.');
@@ -902,7 +901,7 @@ async function exportBotTrades(botName: string | undefined) {
 
 /**
  * Parse and execute CLI commands.
-  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, tv, dw, clear, status, whitelist, unlock, help
+  * Supported commands: test, drystart, reset, default, disable, enable, key, bot, pm2, update, export, order, credit, tv, dw, clear, status, unlock, help
  * @returns {Promise<boolean>} True if a command was handled, false otherwise
  */
 async function handleCLICommands() {
@@ -1028,24 +1027,6 @@ async function handleCLICommands() {
             await exportBotTrades(target);
             process.exit(0);
             return true;
-        case 'whitelist': {
-            const { spawnSync } = require('child_process') as any as any;
-            const scriptArgs = buildRuntimeScriptArgs({
-                codeRoot: __dirname,
-                scriptSegments: ['scripts', 'generate_market_adapter_whitelist'],
-                scriptArgs: cliArgs.slice(1),
-            });
-            const result = spawnSync(Config.EXEC_PATH, scriptArgs, {
-                cwd: PATHS.PROJECT_ROOT,
-                stdio: 'inherit',
-            });
-            if (result.error) {
-                console.error(`whitelist: ${result.error.message}`);
-                process.exit(1);
-            }
-            process.exit(result.status ?? 0);
-            return true;
-        }
         case 'order': {
             const { spawnSync } = require('child_process') as any as any;
             const scriptArgs = buildRuntimeScriptArgs({

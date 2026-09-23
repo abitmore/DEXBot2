@@ -117,8 +117,6 @@ function testWhitelistLiteralsLiveOnlyInConstants() {
     // 3 constants × 3 flags = exactly 9 value literals.
     assert.strictEqual(countFlagLiterals(path.join(REPO_ROOT, 'modules', 'market_adapter_whitelist.ts')), 9,
         'market_adapter_whitelist.ts must contain exactly the 3 canonical flag constants (9 literals)');
-    assert.strictEqual(countFlagLiterals(path.join(REPO_ROOT, 'scripts', 'generate_market_adapter_whitelist.ts')), 0,
-        'whitelist generator must derive shapes from the constants, never inline literals');
     assert.strictEqual(countFlagLiterals(path.join(REPO_ROOT, 'modules', 'validate_profiles.ts')), 0,
         'validate_profiles must derive WHITELIST_KNOWN_FLAGS from the constants, never inline literals');
 }

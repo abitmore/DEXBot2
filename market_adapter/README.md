@@ -78,26 +78,9 @@ Open the bot editor — `dexbot bot` → `2) Modify bot` → pick the bot →
 The flags are stored per bot in `profiles/market_adapter_whitelist.json`;
 re-open the section any time to inspect or change them. Boolean prompts
 accept `y`/`yes`/`true` and `n`/`no`/`false`; Enter keeps the current value.
-Renaming a bot carries its flags to the new key, and all-off flags are saved
-as an explicit `false` entry so a later bulk regeneration cannot silently
-re-enable the bot.
-
-<details>
-<summary>Bulk generation and pruning with the legacy <code>dexbot white</code> script</summary>
-
-The script remains available for generating many entries at once. Without
-`--bot` it only adds missing bots (existing entries — including ones written
-by the editor — are preserved):
-
-```bash
-dexbot white                          # add missing AMA bots (Price only)
-dexbot white --dynamic-weight         # …with Weight enabled for new entries
-dexbot white --asymmetric-bounds      # …with Range enabled for new entries
-dexbot white --dynamic-weight --bot <botKey>   # overwrite one key
-dexbot white --prune                  # drop entries whose bot left bots.json
-```
-
-</details>
+Renaming a bot carries its flags to the new key, deleting a bot removes its
+entry, and all-off flags are saved as an explicit `false` entry so the flags
+never silently fall back to defaults.
 
 ### 3. Start DEXBot2
 
@@ -326,8 +309,7 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 | Task | Command |
 |------|---------|
 | Enable/inspect Price, Weight, Range for a bot | `dexbot bot` → `2) Modify bot` → `6) Adapter` |
-| Bulk-regenerate missing whitelist entries (legacy) | `dexbot white [--dynamic-weight] [--asymmetric-bounds] [--bot <botKey>]` |
-| Prune stale whitelist entries (bots removed from bots.json) | `dexbot white --prune` |
+| Remove a deleted bot's entry | Automatic — `dexbot bot` → `3) Delete` also drops its whitelist key |
 | Probe public CEX availability | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --check-only` |
 | Seed synthetic cross candles | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --bot-key <bot-key>` |
 | Run one adapter cycle | `node dist/market_adapter/market_adapter.js --once` |
@@ -623,8 +605,7 @@ market_adapter/
 
 `profiles/market_adapter_whitelist.json` controls live writes. It is edited
 per bot in the bot editor (`dexbot bot` → `6) Adapter`), which reads and
-writes this same file; the legacy `dexbot white` script remains for bulk
-generation and `--prune`:
+writes this same file:
 
 ```json
 {

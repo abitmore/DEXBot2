@@ -39,10 +39,6 @@ const {
     getWhitelistFlags,
     resetMarketAdapterWhitelistCache,
 } = require('../modules/market_adapter_whitelist');
-const {
-    loadExistingWhitelist,
-    buildWhitelist,
-} = require('../scripts/generate_market_adapter_whitelist');
 const { OrderManager } = require('../modules/order/manager');
 
 const ALL_FALSE = { ama: false, dynamicWeight: false, asymmetricBounds: false };
@@ -294,37 +290,6 @@ function testWhitelistFlagDefaults() {
     assert.deepStrictEqual(getWhitelistFlags('anything'), ALL_FALSE, 'malformed file → all flags false (fail closed)');
 }
 
-function testGeneratorEntryDefaults() {
-    console.log(' - whitelist generator: array upgrade + new-entry defaults...');
-
-    removeWhitelist();
-    assert.deepStrictEqual(loadExistingWhitelist(), {}, 'no file → no existing entries');
-
-    writeWhitelist({ whitelist: ['legacy-c'] });
-    assert.deepStrictEqual(
-        loadExistingWhitelist(),
-        { 'legacy-c': AMA_ONLY },
-        'CHARACTERIZATION (Phase 1 centralizes literal): array entries upgrade to ama-only'
-    );
-
-    const bots = [
-        { name: 'A', gridPrice: 'ama', botKey: 'ama-1' },
-        { name: 'B', gridPrice: 'AMA2', botKey: 'ama-2' },
-        { name: 'C', gridPrice: 'pool', botKey: 'pool-3' },
-    ];
-    const off = buildWhitelist(bots, {}, { dynamicWeight: false, asymmetricBounds: false, prune: false, botKeys: [] });
-    assert.deepStrictEqual(
-        off.whitelist['ama-1'],
-        AMA_ONLY,
-        'CHARACTERIZATION (Phase 1 centralizes literal): new AMA entry defaults to ama-only'
-    );
-    assert.deepStrictEqual(off.whitelist['ama-2'], AMA_ONLY, 'case-insensitive ama gate');
-    assert.strictEqual(off.whitelist['pool-3'], undefined, 'non-AMA bot creates no entry');
-
-    const on = buildWhitelist(bots, {}, { dynamicWeight: true, asymmetricBounds: true, prune: false, botKeys: [] });
-    assert.deepStrictEqual(on.whitelist['ama-1'], ALL_TRUE, 'CLI flags drive new-entry flags');
-}
-
 function main() {
     testDraftSnapshot();
     testDraftDoesNotMutateInputAndStripsLegacy();
@@ -335,7 +300,6 @@ function main() {
     testEntryNormalization();
     testManagerConfigShape();
     testWhitelistFlagDefaults();
-    testGeneratorEntryDefaults();
     fs.rmSync(TEMP_DIR, { recursive: true, force: true });
     console.log('bot defaults characterization tests passed');
 }

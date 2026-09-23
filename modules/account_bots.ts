@@ -95,7 +95,7 @@ import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
 import { assertNoDuplicateBotKeys, loadSettingsFile, normalizeBotEntry } from './bot_settings.js';
-import { getWhitelistFlags, setWhitelistFlags, renameWhitelistEntry, whitelistFile } from './market_adapter_whitelist.js';
+import { getWhitelistFlags, setWhitelistFlags, renameWhitelistEntry, removeWhitelistEntry, whitelistFile } from './market_adapter_whitelist.js';
 import { BOT_LIVE_CONFIG_KEYS } from './runtime_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
@@ -1154,7 +1154,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
 
     // Market-adapter flags (6) Adapter) live in
     // profiles/market_adapter_whitelist.json keyed by botKey — the same file
-    // `dexbot white` writes. Stage edits here and expose them through the
+    // the market adapter reads. Stage edits here and expose them through the
     // commit hook so Cancel (or a failed bots.json save) discards them
     // together with the rest of the draft.
     const baseEntry = base && typeof base === 'object' && Object.keys(base).length > 0 ? base : null;
@@ -1307,8 +1307,7 @@ async function promptBotData(base = {}, index = 0, baseIndex = index) {
                 break;
             case '6': {
                 // Per-bot market-adapter flags (Price = AMA pricing, Weight =
-                // dynamic weights, Range = asymmetric range scaling). Replaces
-                // having to run `dexbot white --bot <key>` for single bots.
+                // dynamic weights, Range = asymmetric range scaling).
                 const flags = adapterFlags();
                 if (!isAmaGridPriceDraft()) {
                     console.log(`${COLORS.gray}Note: these flags only take effect when gridPrice is ama/ama1..ama4 (set in 3) Price).${COLORS.reset}`);
@@ -1608,8 +1607,17 @@ async function main() {
                     const confirm = await askBoolean(`Delete '${placeholderName}'?`, false);
                     if (confirm === '\x1b') break;
                     if (confirm) {
+                        // Derive the whitelist key before splicing (createBotKey
+                        // uses the index only for unnamed fallback entries).
+                        const removedKey = String(normalizeBotEntry(config.bots[idx], idx).botKey || '');
                         const removed = config.bots.splice(idx, 1)[0];
                         saveBotsConfig(config, filePath);
+                        // Only after the bots.json save succeeded, drop the
+                        // matching whitelist entry so a deleted bot leaves no
+                        // stale flags behind (name reuse would inherit them).
+                        if (!removeWhitelistEntry(removedKey)) {
+                            console.log(`${COLORS.yellow}Warning: could not remove whitelist entry '${removedKey}' — check ${whitelistFile()}.${COLORS.reset}`);
+                        }
                         console.log(`Removed bot '${removed.name || placeholderName}' from ${path.basename(filePath)}.\n`);
                     } else {
                         console.log('\nDeletion cancelled.');

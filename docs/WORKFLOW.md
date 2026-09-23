@@ -258,7 +258,6 @@ the canonical name is preferred in scripts and docs.
 | `dexbot reload` | `reloadall` | Reload the monolithic runtime without touching the credential daemon (unlock mode) |
 | `dexbot restart` | `restartall` | Restart the monolithic runtime (unlock mode, re-unlocks credential daemon) |
 | `dexbot delete` | — | Shut down and clean up the monolithic runtime (unlock mode) |
-| `dexbot whitelist` | `white` | Generate market adapter whitelist from AMA bot configs |
 | `dexbot clear` | — | Remove all log files from the logs directory (`<profiles>/logs`) |
 
 ## NPM Scripts for Branch Synchronization

@@ -17,7 +17,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 📡 [Market Adapter](../market_adapter/README.md)
 *Live AMA pricing, dynamic weights, and recalc trigger orchestration.*
-- **Quick Start**: Enable AMA, generate the whitelist, and start DEXBot2
+- **Quick Start**: Enable AMA, set the per-bot adapter flags in `dexbot bot`, and start DEXBot2
 - **Settings**: Global, pair, and bot-specific adapter overrides
 - **Dynamic Weights**: How adapter signals write live weight snapshots
 - **Troubleshooting**: Common adapter startup and trigger issues

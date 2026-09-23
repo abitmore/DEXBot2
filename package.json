@@ -83,7 +83,6 @@
     "pdev": "bash scripts/pdev.sh",
     "ptest": "bash scripts/ptest.sh",
     "lp:chart": "npm run build && node dist/scripts/generate_lp_chart.js",
-    "market-adapter:whitelist": "npm run build && node dist/scripts/generate_market_adapter_whitelist.js",
     "market-adapter:fetch-cex-synthetic": "npm run build && node dist/market_adapter/inputs/fetch_cex_synthetic_data.js",
     "analysis:tradingview": "npm run build && node dist/analysis/tradingview/analyze_tradingview.js",
     "ama:chart:lp-local": "npm run build && node dist/analysis/ama_fitting/generate_unified_comparison_chart.js",
