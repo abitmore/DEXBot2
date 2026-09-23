@@ -218,12 +218,34 @@ function listBots(bots: any[]): void {
         console.log('  (no bot entries defined yet)');
         return;
     }
-    bots.forEach((bot: any, index: number) => {
-        const name = bot.name || `<unnamed-${index + 1}>`;
-        const inactiveSuffix = bot.active === false ? ' [inactive]' : '';
-        const dryRunSuffix = bot.dryRun ? ' (dryRun)' : '';
-        console.log(`  ${index + 1}: ${name}${inactiveSuffix}${dryRunSuffix} ${bot.assetA || '?'} / ${bot.assetB || '?'}`);
-    });
+    const rows = bots.map((bot: any, index: number) => ({
+        index: String(index + 1),
+        name: bot.name || `<unnamed-${index + 1}>`,
+        account: bot.preferredAccount || '?',
+        pair: `${bot.assetA || '?'}/${bot.assetB || '?'}`,
+        inactive: bot.active === false,
+        dryRun: !!bot.dryRun
+    }));
+    const indexWidth = Math.max(1, ...rows.map(r => r.index.length));
+    const nameWidth = Math.max('Name'.length, ...rows.map(r => r.name.length));
+    const accountWidth = Math.max('Account'.length, ...rows.map(r => r.account.length));
+    const pairWidth = Math.max('Pair'.length, ...rows.map(r => r.pair.length));
+    const header = [
+        '#'.padEnd(indexWidth),
+        'Name'.padEnd(nameWidth),
+        'Account'.padEnd(accountWidth),
+        'Pair'.padEnd(pairWidth)
+    ].join('  ');
+    console.log(`  ${COLORS.yellowBold}${header}${COLORS.reset}`);
+    for (const row of rows) {
+        const flags = `${row.inactive ? ` ${COLORS.red}[inactive]${COLORS.reset}` : ''}${row.dryRun ? ` ${COLORS.yellow}(dryRun)${COLORS.reset}` : ''}`;
+        console.log(
+            `  ${COLORS.gray}${row.index.padEnd(indexWidth)}${COLORS.reset}  ` +
+            `${COLORS.green}${row.name.padEnd(nameWidth)}${COLORS.reset}  ` +
+            `${COLORS.orange}${row.account.padEnd(accountWidth)}${COLORS.reset}  ` +
+            `${COLORS.cyan}${row.pair.padEnd(pairWidth)}${COLORS.reset}${flags}`
+        );
+    }
 }
 
 /**
