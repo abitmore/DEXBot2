@@ -1522,12 +1522,12 @@ async function promptGeneralSettings() {
 
      while (!finished) {
           console.log(`${COLORS.bold}--- General Settings (Global) ---${COLORS.reset}`);
-          console.log(`${COLORS.yellowBold}1) Grid Drift:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}%, ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
+          console.log(`${COLORS.yellowBold}1) Grid Drift:${COLORS.reset}   ${COLORS.orange}Funds:${COLORS.reset} ${settings.GRID_LIMITS.GRID_REGENERATION_PERCENTAGE}%, ${COLORS.orange}RMS:${COLORS.reset} ${settings.GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE}% | ${COLORS.orange}AMA Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT}%, ${COLORS.orange}AMA-Slope Δ:${COLORS.reset} ${settings.MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT}%`);
           const hcIntervalMin = ((settings.NODES.healthCheck?.intervalMs || NODE_MANAGEMENT.HEALTH_CHECK_INTERVAL_MS) / 60000).toFixed(0);
-          console.log(`${COLORS.yellowBold}2) Order Maint.:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}% + ${COLORS.orange}HealthChk:${COLORS.reset} ${hcIntervalMin}min`);
+          console.log(`${COLORS.yellowBold}2) Order Maint.:${COLORS.reset} ${COLORS.orange}Dust Threshold:${COLORS.reset} ${settings.GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE}% | ${COLORS.orange}Health Check:${COLORS.reset} ${hcIntervalMin}min`);
           const nodeCount = (settings.NODES.list || []).length;
           const prefNodeDisplay = settings.NODES.selection?.preferredNode || 'none';
-          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset}  ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}PrefNode:${COLORS.reset} ${prefNodeDisplay}`);
+          console.log(`${COLORS.yellowBold}3) Node Config:${COLORS.reset}  ${COLORS.orange}Nodes:${COLORS.reset} ${nodeCount}, ${COLORS.orange}Preferred Node:${COLORS.reset} ${prefNodeDisplay}`);
           console.log(`${COLORS.yellowBold}4) Log lvl:${COLORS.reset}      ${COLORS.orange}${settings.LOG_LEVEL}${COLORS.reset} (debug, info, warn, error)`);
           const updaterStatus = settings.UPDATER.ACTIVE ? `${COLORS.green}ON${COLORS.reset}` : `${COLORS.red}OFF${COLORS.reset}`;
           const currentSched = parseCronToDelta(settings.UPDATER.SCHEDULE || "0 0 * * *");

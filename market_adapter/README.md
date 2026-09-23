@@ -50,9 +50,10 @@ applies the symmetric penalty.
 
 ### 1. Enable AMA
 
-Set `gridPrice` to `ama`, `ama1`, `ama2`, `ama3`, or `ama4` in
-`profiles/bots.json` or through `dexbot bot`. Use `ama` for the pair's
-default preset.
+New bots default to `gridPrice: "ama3"`. Change it in `profiles/bots.json`
+or through `dexbot bot` to `ama`, `ama1`, `ama2`, `ama3`, or `ama4`. `ama1`
+reacts fastest, `ama4` is the slowest and steadiest (higher numbers smooth
+more), and `ama` uses the pair's default preset.
 
 `startPrice` selects the candle source:
 

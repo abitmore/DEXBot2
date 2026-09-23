@@ -169,26 +169,28 @@ Keep the default settings first, and tune these:
    (super-mountain); the default `{ "sell": 1.0, "buy": 1.0 }` suits most
    setups.
 
-4. **Set `gridPrice` to `"ama"`** — so the market adapter can center the grid
-   on AMA. Pick a specific preset if desired: `"ama1"` is the fastest,
-   `"ama4"` the slowest, and `"ama"` uses the pair's default preset.
+4. **Enable AMA** — new bots anchor on `gridPrice: "ama3"`, but the market
+   adapter only goes live once its per-bot `Price` flag is on. Open
+   `dexbot bot` → `2) Modify bot` → pick the bot → `6) Adapter` and set the
+   flags:
 
-5. **Set the adapter flags** — `dexbot bot` → `2) Modify bot` → pick the bot
-   → `6) Adapter`:
-
-   - `Price` — AMA pricing and live adapter writes (turn **on** for AMA bots;
-     without it the adapter only dry-runs)
+   - `Price` — **on for AMA bots**; without it the adapter only dry-runs
    - `Weight` — dynamic buy/sell weights (opt-in)
    - `Range` — AMA-slope range scaling (opt-in)
+
+   To change how closely the grid center tracks the market, set `gridPrice`
+   in `3) Price` to `"ama1"`–`"ama4"`: `"ama1"` reacts fastest, `"ama4"`
+   slowest and steadiest (higher numbers smooth more), or `"ama"` for the
+   pair's default preset.
 
    The flags are stored per bot in `market_adapter_whitelist.json` in the
    profiles directory and can be changed any time from the same editor
    section. Boolean prompts accept `y`/`yes`/`true` and `n`/`no`/`false`;
    Enter keeps the current value.
 
-6. **Start DEXBot2** with `dexbot start`.
+5. **Start DEXBot2** with `dexbot start`.
 
-7. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
+6. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
    AMA is active, tighten them around the maximum expected market volatility
    instead of using an unnecessarily wide range.
 
@@ -234,7 +236,7 @@ Grouped exactly as the bot editor shows them (`dexbot bot` → `2) Modify bot` �
 | :--- | :--- | :--- |
 | **`weightDistribution`** | object | `Weights` — advanced sizing control per side. Range `-1` to `2`: `-1` = super-valley, `0` = valley, `0.5` = neutral, `1` = mountain (default), `2` = super-mountain. Higher weight = more funds in orders near the market price; lower weight = more funds shifted toward the grid edge. Default `{ sell: 1, buy: 1 }`; leave unchanged for normal setup |
 | **`incrementPercent`** | number | `Incr` — geometric step between orders. Default `0.5` = 0.5% |
-| **`targetSpreadPercent`** | number | `Spread` — width of the empty spread zone between buy and sell orders. Default `2` = 2%. Profit per completed cycle ≈ `spread - increment - fees`. Must be at least 2.1 × `incrementPercent` |
+| **`targetSpreadPercent`** | number | `Spread` — width of the empty spread zone between buy and sell orders. Default `2` = 2%.<br>Profit per completed cycle ≈ `spread - increment - fees`. Must be at least 2.1 × `incrementPercent` |
 
 **`5) Inventory`**
 
@@ -256,50 +258,50 @@ These three booleans are stored per bot in `market_adapter_whitelist.json`, **no
 
 </details>
 
-### General Options (Global)
+### General Settings (Global)
 
-Global settings via `dexbot bot`, stored in `general.settings.json` in the profiles directory:
+General settings via `dexbot bot`, stored in `general.settings.json` in the profiles directory:
 
-<details><summary><mark>Global settings reference (click to expand)</mark></summary>
+<details><summary><mark>General settings reference (click to expand)</mark></summary>
 
 Grouped exactly as `dexbot bot` → `6) General settings` shows them:
 
 **`1) Grid Drift`**
 
-| Setting | Key | Default | Description |
-| :--- | :--- | :--- | :--- |
-| Grid Funds Regeneration % (`Funds`) | `GRID_LIMITS.GRID_REGENERATION_PERCENTAGE` | `3` | Recalculates grid size when spare funds reach this % of a side's allocation (or the tracked grid overshoots allocation by this %). Editor range 0.1–50 |
-| RMS Divergence Threshold % (`RMS`) | `GRID_LIMITS.GRID_COMPARISON.RMS_PERCENTAGE` | `14.3` | Triggers a grid reset when the calculated grid diverges from on-chain state. Editor range 1–100; `0` disables (JSON only) |
-| AMA Δ Threshold % (`AMA Δ`) | `MARKET_ADAPTER.AMA_DELTA_THRESHOLD_PERCENT` | `1` | % move in the AMA center price that triggers a grid reset. Editor range 0.1–50 |
-| AMA-Slope Δ Threshold % (`AMA-Slope Δ`) | `MARKET_ADAPTER.AMA_SLOPE_DELTA_THRESHOLD_PERCENT` | `8` | Slope-delta trigger as a percentage of max AMA slope. Editor range 0.1–100 |
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Grid Funds Regeneration % | `3` | `Funds` — recalculates grid size when spare funds reach this % of a side's allocation (or the tracked grid overshoots allocation by this %) |
+| RMS Divergence Threshold % | `14.3` | `RMS` — triggers a grid reset when the calculated grid diverges from on-chain state; `0` disables (JSON only) |
+| AMA Δ Threshold % | `1` | `AMA Δ` — % move in the AMA center price that triggers a grid reset |
+| AMA-Slope Δ Threshold % | `8` | `AMA-Slope Δ` — slope-delta trigger as a percentage of max AMA slope |
 
 **`2) Order Maint.`**
 
-| Setting | Key | Default | Description |
-| :--- | :--- | :--- | :--- |
-| Partial Dust Threshold % (`Dust Threshold`) | `GRID_LIMITS.PARTIAL_DUST_THRESHOLD_PERCENTAGE` | `5` | Orders below this % of their ideal size are treated as dust and rotated (cancelled and re-placed at proper size) to keep the grid symmetric. Editor range 0.1–50 |
-| Health Check Interval (`HealthChk`) | `NODES.healthCheck.intervalMs` | `240 min` | How often nodes are health-checked. Entered in minutes (1–43200), stored as milliseconds |
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Partial Dust Threshold % | `5` | `Dust Threshold` — orders below this % of their ideal size are treated as dust and rotated (cancelled and re-placed at proper size) to keep the grid symmetric |
+| Health Check Interval (min) | `240` | `HealthChk` — how often nodes are health-checked (stored as milliseconds) |
 
 **`3) Node Config`**
 
-| Setting | Key | Default | Description |
-| :--- | :--- | :--- | :--- |
-| Node List (`Nodes`) | `NODES.list` | 7 public BitShares nodes | Sub-editor: `A` add, `R` remove (at least one must remain), `D` done |
-| Preferred Node (`PrefNode`) | `NODES.selection.preferredNode` | `none` | Pin one node URL; empty = automatic latency-based selection with failover |
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Node List | 7 public BitShares nodes | `Nodes` — sub-editor: `A` add, `R` remove (at least one must remain), `D` done |
+| Preferred Node | `none` | `PrefNode` — pin one node URL; empty = automatic latency-based selection with failover |
 
 **`4) Log lvl`**
 
-| Setting | Key | Default | Description |
-| :--- | :--- | :--- | :--- |
-| Log Level | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. `critical` is only accepted by editing `general.settings.json` directly. Fine-grained category control via `LOGGING_CONFIG` (see [Logging](docs/LOGGING.md)) |
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Log Level | `info` | `debug`, `info`, `warn`, `error`. `critical` is only accepted by editing `general.settings.json` directly. Fine-grained category control via `LOGGING_CONFIG` (see [Logging](docs/LOGGING.md)) |
 
 **`5) Updater`**
 
-| Setting | Key | Default | Description |
-| :--- | :--- | :--- | :--- |
-| Active (`[ON/OFF]`) | `UPDATER.ACTIVE` | `OFF` | Enables the automated updater |
-| Branch | `UPDATER.BRANCH` | `auto` | `main`, `dev`, `test`, or `auto` (detected current branch) |
-| Schedule (`Interval`, `Time`) | `UPDATER.SCHEDULE` | `1 day` at `00:00` | Cron schedule, prompted as Interval (days 1–31) and Time (HH:mm, 24h) |
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| Active | `OFF` | Enables the automated updater (editor shows `[ON/OFF]`) |
+| Branch | `auto` | `main`, `dev`, `test`, or `auto` (detected current branch) |
+| Schedule | `1` at `00:00` | Cron schedule (`Interval` days, `Time` HH:mm, 24h) |
 
 </details>
 
