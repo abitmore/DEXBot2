@@ -21,13 +21,13 @@ The live signal layer for AMA-priced bots. It reads candles, computes the AMA ce
 
 | If you want to… | Read this | Key command |
 |-----------------|-----------|-------------|
-| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `dexbot white` |
+| Enable AMA pricing for a bot | [Quick Start](#quick-start) | `dexbot bot` → `6) Adapter` |
 | Change how often the grid rebuilds | [Trigger Threshold](#trigger-threshold) | edit `AMA_DELTA_THRESHOLD_PERCENT` |
-| Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | whitelist `dynamicWeight: true` |
-| Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | whitelist `asymmetricBounds: true` |
+| Tune buy/sell weight bias | [Asymmetric Weight Shift](#asymmetric-weight-shift) | `6) Adapter` → Weight |
+| Widen/tighten grid bounds by trend | [Grid Range Scaling](#grid-range-scaling) | `6) Adapter` → Range |
 | Override settings for one pair or bot | [Settings and Overrides](#settings-and-overrides) | edit `profiles/market_adapter_settings.json` |
 | Run the adapter standalone or test dry-run | [Live Writes and Dry-Run](#live-writes-and-dry-run) | `node dist/market_adapter/market_adapter.js --dryRun` |
-| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `dexbot white` |
+| Debug a bot not being processed | [Troubleshooting](#troubleshooting) | `6) Adapter` flags |
 | Understand the signal pipeline or module layout | [Technical Reference](#technical-reference) | — |
 
 ## Big Picture
@@ -64,47 +64,40 @@ default preset.
 
 When fetching candles (`pool` or `book`), the adapter requires a full historical window. The oldest `erPeriod` candles are used for an initial SMA (Simple Moving Average) warmup phase to seed the AMA and establish the first Efficiency Ratio (ER) calculation. See [AMA Warmup Window](#ama-warmup-window--why-candle-length-matters) for technical details.
 
-### 2. Whitelist Live Writes
+### 2. Enable Live Writes
 
-Generate the whitelist from AMA-enabled bots. Without a whitelist entry, the
-adapter still computes state, but live grid snapshots and recalc triggers stay
-in dry-run mode.
+Open the bot editor — `dexbot bot` → `2) Modify bot` → pick the bot →
+`6) Adapter` — and set the three per-bot flags:
 
-```bash
-dexbot white
-```
+| Flag | Whitelist key | Effect |
+|------|---------------|--------|
+| **Price** | `ama` | Allows live `dynamicgrid.json` and recalc-trigger writes. Without it the adapter still computes state, but live output stays in dry-run. |
+| **Weight** | `dynamicWeight` | Opt-in dynamic buy/sell weights. |
+| **Range** | `asymmetricBounds` | Opt-in AMA-slope range scaling. |
 
-This writes `profiles/market_adapter_whitelist.json`, where each bot's AMA,
-dynamic-weight, and range-scaling flags can be inspected or adjusted.
+The flags are stored per bot in `profiles/market_adapter_whitelist.json`;
+re-open the section any time to inspect or change them. Boolean prompts
+accept `y`/`yes`/`true` and `n`/`no`/`false`; Enter keeps the current value.
+Renaming a bot carries its flags to the new key, and all-off flags are saved
+as an explicit `false` entry so a later bulk regeneration cannot silently
+re-enable the bot.
 
-By default, newly generated entries whitelist AMA pricing only, keeping both
-dynamic weights and range scaling (asymmetric bounds) disabled. To opt newly
-generated entries into dynamic weights:
+<details>
+<summary>Bulk generation and pruning with the legacy <code>dexbot white</code> script</summary>
 
-```bash
-dexbot white --dynamic-weight
-```
-
-To opt newly generated entries into range scaling:
-
-```bash
-dexbot white --asymmetric-bounds
-```
-
-To overwrite an existing entry (existing entries are otherwise preserved):
+The script remains available for generating many entries at once. Without
+`--bot` it only adds missing bots (existing entries — including ones written
+by the editor — are preserved):
 
 ```bash
-dexbot white --dynamic-weight --bot <botKey>
-dexbot white --asymmetric-bounds --bot <botKey>
+dexbot white                          # add missing AMA bots (Price only)
+dexbot white --dynamic-weight         # …with Weight enabled for new entries
+dexbot white --asymmetric-bounds      # …with Range enabled for new entries
+dexbot white --dynamic-weight --bot <botKey>   # overwrite one key
+dexbot white --prune                  # drop entries whose bot left bots.json
 ```
 
-`--bot` implies overwrite for that key only; without it, `dexbot white` only adds missing bots.
-
-Remove stale whitelist entries (bots no longer in `bots.json`):
-
-```bash
-dexbot white --prune
-```
+</details>
 
 ### 3. Start DEXBot2
 
@@ -156,10 +149,8 @@ whitelist gate:
 
 This is separate from dynamic buy/sell weighting. Both grid-range effects are
 enabled only when `asymmetricBounds: true` is set in
-`profiles/market_adapter_whitelist.json`. Range scaling is opt-in: `dexbot white`
-generates AMA-only entries by default, so enable it with
-`dexbot white --asymmetric-bounds` (new bots) or
-`dexbot white --asymmetric-bounds --bot <botKey>` (existing entry).
+`profiles/market_adapter_whitelist.json`. Range scaling is opt-in: enable it
+per bot with `dexbot bot` → `2) Modify bot` → `6) Adapter` → **Range**.
 
 Technical formula and tuning details are in
 [Grid Range Scaling Model](#grid-range-scaling-model).
@@ -334,10 +325,8 @@ Dry-run log lines include `[DRY RUN]` or `[suppressed, dry-run]`.
 
 | Task | Command |
 |------|---------|
-| Generate whitelist | `dexbot white` |
-| Opt new whitelist entries into dynamic weights | `dexbot white --dynamic-weight` |
-| Opt new whitelist entries into range scaling | `dexbot white --asymmetric-bounds` |
-| Overwrite existing entry for a specific bot | `dexbot white --dynamic-weight --bot <botKey>` \| `dexbot white --asymmetric-bounds --bot <botKey>` |
+| Enable/inspect Price, Weight, Range for a bot | `dexbot bot` → `2) Modify bot` → `6) Adapter` |
+| Bulk-regenerate missing whitelist entries (legacy) | `dexbot white [--dynamic-weight] [--asymmetric-bounds] [--bot <botKey>]` |
 | Prune stale whitelist entries (bots removed from bots.json) | `dexbot white --prune` |
 | Probe public CEX availability | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --check-only` |
 | Seed synthetic cross candles | `node dist/market_adapter/inputs/fetch_cex_synthetic_data.js --exchange auto --bot-key <bot-key>` |
@@ -368,7 +357,7 @@ match the bot's eventual `botKey`.
 ### Bot is not processed
 
 - Confirm `gridPrice` is `ama`, `ama1`, `ama2`, `ama3`, or `ama4`.
-- Regenerate the whitelist with `dexbot white`.
+- Open `dexbot bot` → `2) Modify bot` → `6) Adapter` and confirm **Price** is `true`.
 - Confirm the expected `botKey` exists in `profiles/market_adapter_whitelist.json`.
 - If `startPrice` is numeric, the adapter will not fetch pool/book candles for that bot. Use `startPrice` only for a fixed anchor in that case; `gridPrice` remains a separate grid setting.
 
@@ -377,7 +366,7 @@ match the bot's eventual `botKey`.
 - Check `lastDeltaPercent` vs `thresholdPercent`.
 - Check `staleData` and `staleAgeHours`.
 - **Confirm the bot is whitelisted.** Non-whitelisted bots only log and do not write triggers.
-- Confirm the bot's whitelist entry has `"ama": true`.
+- Confirm the bot's whitelist entry has `"ama": true` (`dexbot bot` → `6) Adapter` shows it as **Price**).
 - Run `node dist/market_adapter/market_adapter.js --once --deltaPercent <lower-value>` for a one-cycle threshold test.
 
 ### Trigger fires too often
@@ -632,7 +621,10 @@ market_adapter/
 
 ### Whitelist Semantics
 
-`profiles/market_adapter_whitelist.json` controls live writes:
+`profiles/market_adapter_whitelist.json` controls live writes. It is edited
+per bot in the bot editor (`dexbot bot` → `6) Adapter`), which reads and
+writes this same file; the legacy `dexbot white` script remains for bulk
+generation and `--prune`:
 
 ```json
 {

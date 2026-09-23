@@ -96,6 +96,7 @@ node dist/scripts/validate_bots.js
 ### Market Adapter Whitelist Generation
 **File:** `generate_market_adapter_whitelist.ts`
 **Purpose:** Generate `profiles/market_adapter_whitelist.json` from bots whose `gridPrice` uses AMA mode.
+**Note:** Per-bot Price/Weight/Range flags are normally edited in the bot editor (`dexbot bot` → `2) Modify bot` → `6) Adapter`); this script stays available for bulk regeneration and `--prune`.
 ```bash
 # Add missing AMA bots from profiles/bots.json to profiles/market_adapter_whitelist.json.
 # Existing entries are preserved; new entries enable AMA only and leave dynamicWeight and range scaling disabled.

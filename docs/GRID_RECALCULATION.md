@@ -260,26 +260,17 @@ need a reset to move to the new asymmetric range and offset placement price.
 ### Configuration
 
 Range scaling is enabled by the whitelist's `asymmetricBounds: true` flag.
-Generate or update the AMA whitelist with:
+Set it per bot in the editor: `dexbot bot` → `2) Modify bot` → pick the bot →
+`6) Adapter` → **Range** = yes. The flag is stored in
+`profiles/market_adapter_whitelist.json` next to **Price** (AMA pricing) and
+**Weight** (dynamic weights); all three default to off until enabled.
+
+Bulk regeneration and pruning of the same file remain available through the
+legacy `dexbot white` script:
 
 ```bash
-dexbot white
-```
-
-This writes `profiles/market_adapter_whitelist.json`. The default generation
-enables AMA live writes for new AMA bots, while leaving dynamic weights and
-range scaling disabled.
-
-To opt new AMA entries into range scaling:
-
-```bash
-dexbot white --asymmetric-bounds
-```
-
-To overwrite one existing bot (otherwise preserved):
-
-```bash
-dexbot white --asymmetric-bounds --bot <botKey>
+dexbot white --asymmetric-bounds [--bot <botKey>]
+dexbot white --prune
 ```
 
 The snapshot fields involved are:
@@ -626,6 +617,6 @@ Removed trigger file.
 - `modules/dexbot_class.ts` — `_performGridResync()`, `requestGridReset()`, and COW-guard structural recovery wiring
 - `modules/order/grid.ts` — RMS divergence check and grid comparison
 - `modules/order/manager.ts` — Available-funds resize threshold logic
-- `modules/market_adapter_whitelist.ts` / `scripts/generate_market_adapter_whitelist.ts` — Whitelist generation backing `dexbot white`
+- `modules/market_adapter_whitelist.ts` / `scripts/generate_market_adapter_whitelist.ts` — Whitelist storage/read helpers plus the bulk generator (the bot editor's `6) Adapter` reads and writes the same file; `dexbot white` stays for bulk generation and `--prune`)
 - `profiles/general.settings.json` — User-editable configuration
 - `profiles/bots.json` — Per-bot configuration including AMA

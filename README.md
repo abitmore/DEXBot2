@@ -173,17 +173,18 @@ Keep the default settings first, and tune these:
    on AMA. Pick a specific preset if desired: `"ama1"` is the fastest,
    `"ama4"` the slowest, and `"ama"` uses the pair's default preset.
 
-5. **Generate the market-adapter whitelist:**
+5. **Set the adapter flags** — `dexbot bot` → `2) Modify bot` → pick the bot
+   → `6) Adapter`:
 
-   ```bash
-   dexbot white
-   ```
+   - `Price` — AMA pricing and live adapter writes (turn **on** for AMA bots;
+     without it the adapter only dry-runs)
+   - `Weight` — dynamic buy/sell weights (opt-in)
+   - `Range` — AMA-slope range scaling (opt-in)
 
-   This writes `market_adapter_whitelist.json` in the profiles directory. New AMA bots get AMA
-   live writes only; dynamic weights and range scaling are disabled by default. Use
-   `dexbot white --dynamic-weight` or `dexbot white --asymmetric-bounds` to opt
-   newly generated entries into those features; existing entries are preserved.
-   To overwrite an existing bot, include `--bot <botKey>` with the desired flags.
+   The flags are stored per bot in `market_adapter_whitelist.json` in the
+   profiles directory and can be changed any time from the same editor
+   section. Boolean prompts accept `y`/`yes`/`true` and `n`/`no`/`false`;
+   Enter keeps the current value.
 
 6. **Start DEXBot2** with `dexbot start`.
 
@@ -257,8 +258,7 @@ First-run details and common mistakes are covered in the [BitShares Onboarding T
 
 ```bash
 dexbot key                 # Master password/keyring
-dexbot bot                 # Interactive bot configurator
-dexbot white               # AMA whitelist; dynamic weights and range scaling off by default
+dexbot bot                 # Interactive bot configurator (adapter Price/Weight/Range flags: 6) Adapter)
 
 dexbot reset {all|<bot>}   # Regenerate grid
 dexbot disable {all|<bot>} # Disable bot in config

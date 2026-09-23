@@ -93,7 +93,8 @@ import { DEFAULT_CONFIG, GRID_LIMITS, TIMING, RANGE_QUALITY, LOG_LEVEL, UPDATER,
 import { PATHS } from './paths.js';
 import { SETTINGS_FILE, readGeneralSettings, writeGeneralSettings } from './general_settings.js';
 import { parseJsonWithComments } from './order/utils/system.js';
-import { assertNoDuplicateBotKeys, loadSettingsFile } from './bot_settings.js';
+import { assertNoDuplicateBotKeys, loadSettingsFile, normalizeBotEntry } from './bot_settings.js';
+import { getWhitelistFlags, setWhitelistFlags, renameWhitelistEntry, whitelistFile } from './market_adapter_whitelist.js';
 import { BOT_LIVE_CONFIG_KEYS } from './runtime_settings.js';
 import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
@@ -894,17 +895,41 @@ async function askNumberOrPercentage(promptText: string, defaultValue?: any): Pr
 }
 
 /**
+ * Parses a raw boolean answer.
+ * Accepted: y/yes/true/1/t → true, n/no/false/0/f → false (case-insensitive);
+ * empty input keeps the current/default value; anything else is rejected so
+ * the caller can re-prompt (the old `startsWith('y')` rule silently parsed
+ * "true" as false).
+ * @param {string} raw - Raw prompt input.
+ * @param {boolean} [defaultValue] - Value returned for empty input.
+ * @returns {{ ok: boolean, value?: boolean }} ok=false for unrecognized input.
+ */
+function parseBooleanInput(raw: any, defaultValue?: boolean): { ok: boolean; value?: boolean } {
+    const value = String(raw ?? '').trim().toLowerCase();
+    if (!value) return { ok: true, value: !!defaultValue };
+    if (value === 'y' || value === 'yes' || value === 'true' || value === '1' || value === 't') return { ok: true, value: true };
+    if (value === 'n' || value === 'no' || value === 'false' || value === '0' || value === 'f') return { ok: true, value: false };
+    return { ok: false };
+}
+
+/**
  * Prompts the user for a boolean value (Y/n).
+ * Enter keeps the current/default value; unrecognized input re-prompts with
+ * a hint instead of silently coercing. See parseBooleanInput for the exact
+ * accepted spellings.
  * @param {string} promptText - The prompt text to display.
  * @param {boolean} [defaultValue] - The default value to use if input is empty.
  * @returns {Promise<boolean|string>} The boolean value or '\x1b' if ESC.
  */
 async function askBoolean(promptText: string, defaultValue?: any): Promise<any> {
     const label = defaultValue ? 'Y/n' : 'y/N';
-    const raw = (await readInput(`${promptText} (${label}): `)).trim().toLowerCase();
-    if (raw === '\x1b') return '\x1b';
-    if (!raw) return !!defaultValue;
-    return raw.startsWith('y');
+    for (;;) {
+        const raw = (await readInput(`${promptText} (${label}): `)).trim().toLowerCase();
+        if (raw === '\x1b') return '\x1b';
+        const parsed = parseBooleanInput(raw, !!defaultValue);
+        if (parsed.ok) return parsed.value;
+        console.log('Please enter y/yes/true or n/no/false (Enter keeps the current value).');
+    }
 }
 
 /**
@@ -1136,10 +1161,31 @@ async function ensureBotAccountId(data: any, timeoutMs = 15000, quiet = false, f
 /**
  * Interactive menu to edit bot data.
  * @param {Object} [base={}] - The initial bot data to edit.
- * @returns {Promise<Object|null>} The edited bot data or null if cancelled.
+ * @param {number} [index=0] - Position the edited bot will occupy in the
+ *   bots array (used to derive the same botKey the runtime uses for unnamed
+ *   fallback entries).
+ * @param {number} [baseIndex=index] - Position the base entry currently
+ *   occupies (differs from `index` for copies, whose source sits elsewhere).
+ * @returns {Promise<{ data: any, commitAdapter: (() => void)|null }|null>}
+ *   The edited draft plus a commit hook for staged `6) Adapter` flags — the
+ *   caller MUST run `commitAdapter()` only after its bots.json save succeeded
+ *   (so a failed save never leaves the whitelist out of sync), or null when
+ *   cancelled.
  */
-async function promptBotData(base = {}) {
+async function promptBotData(base = {}, index = 0, baseIndex = index) {
     const data = normalizeBotDraft(base);
+
+    // Market-adapter flags (6) Adapter) live in
+    // profiles/market_adapter_whitelist.json keyed by botKey — the same file
+    // `dexbot white` writes. Stage edits here and expose them through the
+    // commit hook so Cancel (or a failed bots.json save) discards them
+    // together with the rest of the draft.
+    const baseEntry = base && typeof base === 'object' && Object.keys(base).length > 0 ? base : null;
+    const baseBotKey = baseEntry ? String(normalizeBotEntry(baseEntry, baseIndex).botKey || '') : '';
+    let adapterStaged: { ama: boolean; dynamicWeight: boolean; asymmetricBounds: boolean } | null = null;
+    const isAmaGridPriceDraft = () => /^ama(?:[1-4])?$/.test(String(data.gridPrice ?? '').trim().toLowerCase());
+    const adapterFlags = () => adapterStaged
+        || getWhitelistFlags(baseBotKey || String(normalizeBotEntry(data, index).botKey || ''));
 
     let finished = false;
     let cancelled = false;
@@ -1153,6 +1199,13 @@ async function promptBotData(base = {}) {
              console.log(`${COLORS.yellowBold}3) Price:${COLORS.reset}      ${COLORS.orange}Range:${COLORS.reset} [${colorPriceRangeValue(data.minPrice)} - ${colorPriceRangeValue(data.maxPrice)}] | ${COLORS.orange}Start:${COLORS.reset} ${colorStartPriceValue(data.startPrice)}, ${COLORS.orange}Pool:${COLORS.reset} ${data.poolRef || 'none'} | ${COLORS.orange}GridPrice:${COLORS.reset} ${colorGridPriceValue(data.gridPrice, data.startPrice)}`);
              console.log(`${COLORS.yellowBold}4) Grid:${COLORS.reset}       ${COLORS.orange}Weights:${COLORS.reset} (S:${data.weightDistribution.sell}, B:${data.weightDistribution.buy}) | ${COLORS.orange}Incr:${COLORS.reset} ${data.incrementPercent}%, ${COLORS.orange}Spread:${COLORS.reset} ${data.targetSpreadPercent}%`);
              console.log(`${COLORS.yellowBold}5) Funding:${COLORS.reset}    ${COLORS.orange}Sell:${COLORS.reset} ${colorPercentageInput(data.botFunds.sell)}, ${COLORS.orange}Buy:${COLORS.reset} ${colorPercentageInput(data.botFunds.buy)} | ${COLORS.orange}Orders:${COLORS.reset} (S:${data.activeOrders.sell}, B:${data.activeOrders.buy}) | ${COLORS.orange}Reserve:${COLORS.reset} (S:${data.reserveOrders?.sell ?? 0}, B:${data.reserveOrders?.buy ?? 0})`);
+             {
+                 const flags = adapterFlags();
+                 const fmt = (v: boolean) => v ? `${COLORS.green}true${COLORS.reset}` : `${COLORS.gray}false${COLORS.reset}`;
+                 const inert = !isAmaGridPriceDraft() && (flags.ama || flags.dynamicWeight || flags.asymmetricBounds);
+                 const hint = inert ? ` ${COLORS.red}(needs gridPrice=ama)${COLORS.reset}` : '';
+                 console.log(`${COLORS.yellowBold}6) Adapter:${COLORS.reset}    ${COLORS.orange}Price:${COLORS.reset} ${fmt(flags.ama)}, ${COLORS.orange}Weight:${COLORS.reset} ${fmt(flags.dynamicWeight)}, ${COLORS.orange}Range:${COLORS.reset} ${fmt(flags.asymmetricBounds)}${hint}`);
+             }
              console.log('--------------------------------------------------');
              console.log(`${COLORS.greenBold}S) Save & Exit${COLORS.reset}`);
              console.log(`${COLORS.white}C) Cancel (Discard changes)${COLORS.reset}`);
@@ -1160,7 +1213,7 @@ async function promptBotData(base = {}) {
         }
 
         const choice = (await readInput('Select section to edit or action: ', {
-            validate: (input: string) => ['1', '2', '3', '4', '5', 's', 'c'].includes(input.toLowerCase())
+            validate: (input: string) => ['1', '2', '3', '4', '5', '6', 's', 'c'].includes(input.toLowerCase())
         })).trim().toLowerCase();
 
         if (choice === '\x1b') {
@@ -1273,6 +1326,27 @@ async function promptBotData(base = {}) {
                 data.reserveOrders = { buy: rBuy, sell: rSell };
                 showMenu = true;
                 break;
+            case '6': {
+                // Per-bot market-adapter flags (Price = AMA pricing, Weight =
+                // dynamic weights, Range = asymmetric range scaling). Replaces
+                // having to run `dexbot white --bot <key>` for single bots.
+                const flags = adapterFlags();
+                if (!isAmaGridPriceDraft()) {
+                    console.log(`${COLORS.gray}Note: these flags only take effect when gridPrice is ama/ama1..ama4 (set in 3) Price).${COLORS.reset}`);
+                }
+                const price = await askBoolean('AMA pricing (Price)', flags.ama);
+                if (price === '\x1b') break;
+                const weight = await askBoolean('Dynamic weights (Weight)', flags.dynamicWeight);
+                if (weight === '\x1b') break;
+                const range = await askBoolean('Range scaling (Range)', flags.asymmetricBounds);
+                if (range === '\x1b') break;
+                adapterStaged = { ama: price, dynamicWeight: weight, asymmetricBounds: range };
+                if (!price && (weight || range)) {
+                    console.log(`${COLORS.yellow}Note: Weight/Range only take effect while Price (AMA) is enabled.${COLORS.reset}`);
+                }
+                showMenu = true;
+                break;
+            }
             case 's':
                 // Final basic validation before saving
                 if (!data.name || !data.assetA || !data.assetB || !data.preferredAccount) {
@@ -1306,11 +1380,39 @@ async function promptBotData(base = {}) {
 
     if (cancelled) return null;
 
+    // Staged 6) Adapter flags become a commit hook instead of an immediate
+    // write: the caller runs it only after its bots.json save succeeded, so
+    // the whitelist can never end up updated by a save that was rejected
+    // (duplicate bot keys, write error). Writes are skipped when the staged
+    // flags already match what is stored — an unchanged save never creates a
+    // placeholder entry.
+    const stagedFlags = adapterStaged;
+    const commitAdapter: (() => void) | null = stagedFlags ? () => {
+        const newKey = String(normalizeBotEntry(data, index).botKey || '');
+        const needRename = !!(baseBotKey && newKey && baseBotKey !== newKey);
+        const current = getWhitelistFlags(baseBotKey || newKey);
+        const unchanged = stagedFlags.ama === current.ama
+            && stagedFlags.dynamicWeight === current.dynamicWeight
+            && stagedFlags.asymmetricBounds === current.asymmetricBounds;
+        if (needRename && !renameWhitelistEntry(baseBotKey, newKey)) {
+            console.log(`${COLORS.yellow}Adapter flags not saved — see the warning above.${COLORS.reset}`);
+            return;
+        }
+        // Unchanged flags need no write — a successful rename above already
+        // migrated the entry under the new key.
+        if (unchanged) return;
+        if (!setWhitelistFlags(newKey, stagedFlags)) {
+            console.log(`${COLORS.yellow}Warning: adapter flags not saved — could not write ${whitelistFile()}.${COLORS.reset}`);
+        } else {
+            console.log(`${COLORS.green}Adapter flags saved for '${newKey}'. Price/Weight are picked up on the adapter's next cycle; Range scaling applies after 'dexbot reset ${data.name}'.${COLORS.reset}`);
+        }
+    } : null;
+
     // Return the final data structure, preserving ALL fields from the normalized
     // draft (deep-copy of base + defaults, minus stripped runtime-managed fields).
     // A fixed whitelist here would silently drop custom overrides (logging, timing,
     // feeParams, gridLimits, poolRef, etc.) when the caller replaces the bot entry.
-    return { ...data };
+    return { data: { ...data }, commitAdapter };
 }
 
 /**
@@ -1485,11 +1587,12 @@ async function main() {
             case '1': {
                 while (true) {
                     try {
-                        const entry = await promptBotData();
-                        if (!entry) break;
-                        config.bots.push(entry);
+                        const result = await promptBotData({}, config.bots.length);
+                        if (!result) break;
+                        config.bots.push(result.data);
                         saveBotsConfig(config, filePath);
-                        console.log(`\nAdded bot '${entry.name}' to ${path.basename(filePath)}.`);
+                        result.commitAdapter?.();
+                        console.log(`\nAdded bot '${result.data.name}' to ${path.basename(filePath)}.`);
                     } catch (err: any) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
                         break;
@@ -1502,10 +1605,12 @@ async function main() {
                     const idx = await selectBotIndex(config.bots, 'modify or leave (Enter/Esc)');
                     if (idx === null || idx === '\x1b') break;
                     try {
-                        const entry = await promptBotData(config.bots[idx]);
-                        if (entry) {
-                            config.bots[idx] = entry;
+                        const result = await promptBotData(config.bots[idx], idx);
+                        if (result) {
+                            config.bots[idx] = result.data;
                             saveBotsConfig(config, filePath);
+                            result.commitAdapter?.();
+                            const entry = result.data;
                             console.log(`saved settings '${entry.name}' in ${path.basename(filePath)}.\n`);
                             console.log(`Live pickup (~1min, no reload needed): ${(BOT_LIVE_CONFIG_KEYS as readonly string[]).join(' / ')}.`);
                             console.log(`Grid geometry needs 'dexbot reset ${entry.name}' (or 'dexbot reload' for everything at once); market/account changes need 'dexbot reload'.\n`);
@@ -1538,11 +1643,12 @@ async function main() {
                     const idx = await selectBotIndex(config.bots, 'copy or leave (Enter/Esc)');
                     if (idx === null || idx === '\x1b') break;
                     try {
-                        const entry = await promptBotData(config.bots[idx]);
-                        if (entry) {
-                            config.bots.splice(idx + 1, 0, entry);
+                        const result = await promptBotData(config.bots[idx], idx + 1, idx);
+                        if (result) {
+                            config.bots.splice(idx + 1, 0, result.data);
                             saveBotsConfig(config, filePath);
-                            console.log(`Copied bot '${entry.name}' into ${path.basename(filePath)}.\n`);
+                            result.commitAdapter?.();
+                            console.log(`Copied bot '${result.data.name}' into ${path.basename(filePath)}.\n`);
                         }
                     } catch (err: any) {
                         console.log(`\n❌ Invalid input: ${getErrorMessage(err)}\n`);
@@ -1566,5 +1672,5 @@ async function main() {
     console.log('Botmanager closed!');
 }
 
-export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments }
+export { main, normalizeBotDraft, ensureBotAccountId, parseJsonWithComments, parseBooleanInput }
 

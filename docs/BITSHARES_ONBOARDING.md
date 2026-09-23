@@ -261,6 +261,8 @@ Key answers for your first bot:
 - **startPrice** — leave the default (`"pool"` reads the liquidity-pool price,
   `"book"` reads the order-book mid price, or a number for a fixed anchor). If
   your pair has no native pool, set **poolRef** to a pool id such as `1.19.48`.
+- **Active / Dry run / adapter flags** — boolean prompts accept `y`, `yes`, or
+  `true` and `n`, `no`, or `false`; Enter keeps the shown default.
 
 Keep all other defaults — they are sensible. Prefer **relative values** where
 possible: dynamic price sources like `"pool"` / `"book"` for `startPrice`,
@@ -308,15 +310,16 @@ saves, so you always know whether anything else is needed.
 
 ### Activate the market adapter
 
-For AMA pricing, enable the market adapter once:
+For AMA pricing, enable the adapter flag once per bot: run `dexbot bot`,
+choose `2) Modify bot`, pick the bot, then `6) Adapter` and set **Price**
+to yes (`y` / `yes` / `true` all count; Enter keeps the current value).
 
-```bash
-dexbot white
-```
+The three flags are stored per bot in `profiles/market_adapter_whitelist.json`:
 
-Writes `profiles/market_adapter_whitelist.json` for your AMA bot so it writes
-live grid files and recalc triggers. New entries enable AMA pricing only;
-range scaling stays off unless you opt in with `dexbot white --asymmetric-bounds`.
+- **Price** — live grid files and recalc triggers (`ama: true`)
+- **Weight** — dynamic buy/sell weights (opt-in)
+- **Range** — range scaling (opt-in; stays off until enabled here)
+
 The adapter is started/stopped automatically when active AMA bots exist.
 
 ---
