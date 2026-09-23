@@ -238,7 +238,7 @@ the canonical name is preferred in scripts and docs.
 
 | Command (canonical) | Aliases | Purpose |
 |---------|---------|---------|
-| `dexbot test <bot>` | — | Test-run a single bot (one-shot, live trading) |
+| `dexbot test <bot>` | — | Run a single bot in live mode (one-shot; not a dry run) |
 | `dexbot drystart <bot>` | — | Same as `test` but forces dry-run execution |
 | `dexbot reset <bot>` | — | Trigger a grid reset (applies live or on next start) |
 | `dexbot default` | `defaults` | Reset settings to defaults (deletes generated settings files) |

@@ -25,6 +25,7 @@ import {
     isNodeProcessWithExactScript,
 } from './bot_supervisor.js';
 import { buildRuntimeScriptArgs, SCRIPTS_ROOT as CODE_ROOT } from './runtime_entry.js';
+import { LAUNCHER_WORKER_COMMAND } from './launch_modes.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { isSameBotName } from '../utils/sanitize_key.js';
 import { buildAdapterFingerprint } from './adapter_requirement.js';
@@ -251,7 +252,12 @@ function ensureLogDir() {
 }
 
 function buildDexbotStartArgs(botName: any, dryrun: any = false) {
-    const scriptArgs = [dryrun ? 'drystart' : 'test'];
+    // Launch the supervised worker as `worker` so the process table identifies
+    // it as the bot worker instead of the internal runner name. The worker is
+    // distinguished from the `unlock` supervisor by DEXBOT_LAUNCHER_WORKER
+    // (set at spawn); without it `worker` is not a public command.
+    const scriptArgs = [LAUNCHER_WORKER_COMMAND];
+    if (dryrun) scriptArgs.push('--dryrun');
     if (botName) scriptArgs.push(botName);
     return buildRuntimeScriptArgs({
         codeRoot: CODE_ROOT,

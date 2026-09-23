@@ -626,7 +626,7 @@ async function main({ argv = process.argv, startupGraceMs = DEFAULT_STARTUP_GRAC
                     // DEXBOT_ADAPTER_OWNER marks the wrapper watchdog as the
                     // sole market-adapter spawner so the bot child skips its
                     // own adapter sync/poll (both foreground and background).
-                    env: { ...process.env, DEXBOT_ADAPTER_OWNER: 'wrapper' },
+                    env: { ...process.env, DEXBOT_ADAPTER_OWNER: 'wrapper', DEXBOT_LAUNCHER_WORKER: '1' },
                     stdio: isMonolithicBgChild ? 'pipe' : 'inherit',
                 });
                 botProcessRef.current = botProcess;

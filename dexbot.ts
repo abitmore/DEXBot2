@@ -42,7 +42,7 @@ const __dirname = _esmDirname(__filename);
  * ===============================================================================
  *
  * TRADING OPERATIONS:
- *   dexbot test <bot>             - Test-run single bot (live trading)
+ *   dexbot test <bot>             - Run a single bot in live mode (one-shot; not a dry run)
  *   dexbot drystart <bot>         - Start bot in dry-run mode (no transactions)
  *
  * 🛠️ BOT MANAGEMENT:
@@ -155,6 +155,7 @@ const {
     saveSettingsFile,
 } = require('./modules/bot_settings');
 const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
+const { parseWorkerArgs, LAUNCHER_WORKER_COMMAND } = require('./modules/launcher/launch_modes');
 const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
@@ -184,7 +185,7 @@ const COMMAND_ALIASES: Record<string, string> = { orders: 'order', keys: 'key', 
 const CLI_HELP_FLAGS = ['-h', '--help'];
 const CLI_EXAMPLES_FLAG = '--cli-examples';
 const CLI_EXAMPLES = [
-    { title: 'Test-run a bot from the tracked config', command: 'dexbot test <bot>', notes: 'Targets the named entry in profiles/bots.json.' },
+    { title: 'Run a bot from the tracked config', command: 'dexbot test <bot>', notes: 'Runs live; targets the named entry in profiles/bots.json.' },
     { title: 'Dry-run a bot without broadcasting', command: 'dexbot drystart <bot>', notes: 'Forces the run into dry-run mode even if the stored config was live.' },
     { title: 'Disable a bot in config', command: 'dexbot disable <bot>', notes: 'Marks the bot inactive in config.' },
     { title: 'Enable a bot in config', command: 'dexbot enable <bot>', notes: 'Marks the bot active in config.' },
@@ -233,7 +234,7 @@ const cliArgs = process.argv.slice(2);
 function printCLIUsage() {
     console.log('Usage: dexbot [command] [bot]');
     console.log('Commands:');
-    console.log('  test <bot>        Test-run the named bot (one-shot, live trading).');
+    console.log('  test <bot>        Run the named bot in live mode (one-shot; not a dry run).');
     console.log('  start [bot]       Start the monolithic runtime. Counterpart to stop.');
     console.log('  drystart <bot>    Same as test but forces dry-run execution.');
     console.log('  reset all         Trigger grid resets for all active bots.');
@@ -906,6 +907,16 @@ async function exportBotTrades(botName: string | undefined) {
  */
 async function handleCLICommands() {
     if (!cliArgs.length) return false;
+
+    // The unlock supervisor spawns the bot worker as `dexbot worker` with
+    // DEXBOT_LAUNCHER_WORKER=1 so the process table identifies it as the bot
+    // worker. Intercept before command validation (`worker` is internal).
+    if (Config.DEXBOT_LAUNCHER_WORKER && cliArgs[0] === LAUNCHER_WORKER_COMMAND) {
+        const worker = parseWorkerArgs(cliArgs.slice(1));
+        await startBotByName(worker.botName, { dryRun: worker.dryrun });
+        return true;
+    }
+
     const [rawCommand, target] = cliArgs;
     const command = COMMAND_ALIASES[rawCommand] ?? rawCommand;
     if (!CLI_COMMANDS.includes(command)) {

@@ -912,7 +912,7 @@ async function syncMarketAdapterOnPeriodicConfigCheck(bot: any, context: any = '
     // re-drive the adapter N times (once per bot) and fight the wrapper over
     // the adapter child, so bots skip the adapter drive entirely and act as
     // pure adapter-output consumers. The live bot-config check above still
-    // ran. Wrapper-less modes (dexbot test one-shot, isolated supervisor,
+    // ran. Wrapper-less modes (the one-shot runner, isolated supervisor,
     // PM2) keep the in-bot fallback below.
     if (!isPm2Runtime() && isWrapperAdapterOwner()) {
         return { skipped: true, reason: 'wrapper-owned' };
@@ -2057,7 +2057,7 @@ function stopBlockchainFetchInterval(bot: any) {
  * syncMarketAdapterOnPeriodicConfigCheck, which always runs the live
  * bot-config check (allowlisted keys applied without restart, Issue #27
  * follow-up) and additionally drives the market adapter only in
- * wrapper-less modes (dexbot test one-shot, isolated supervisor, PM2).
+ * wrapper-less modes (the one-shot runner, isolated supervisor, PM2).
  * Decoupled from the heavy blockchain fetch interval (default 240min) so
  * config changes are visible within BOTS_CONFIG_POLL_INTERVAL_MS
  * (default 1min, shared with the wrapper watchdog interval).
