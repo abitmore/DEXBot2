@@ -12,63 +12,58 @@
  * - Detects and flags out-of-spread conditions
  *
  * ===============================================================================
- * TABLE OF CONTENTS - Grid Functions (27 exported functions)
+ * TABLE OF CONTENTS - Grid Functions (22 exported functions)
  * ===============================================================================
  *
- * CONFIGURATION & CALCULATION (1 method)
- *   1. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
+ * CONFIGURATION & CALCULATION (2 functions)
+ *   1. resolveRmsThresholdPct(manager) - Resolve the structural-divergence threshold
+ *   2. calculateGapSlots(incrementPercent, targetSpreadPercent) - Calculate spread gap size
  *
- * GRID SIZING & CONTEXT (1 method)
- *   3. _getSizingContext(manager, side) - Get budget and sizing parameters (internal)
- *      Determines budget from allocated funds, deducts BTS fees if needed
+ * GRID SIZING & CONTEXT (1 function)
+ *   3. _getSizingContext(manager, side, options) - Get budget and sizing parameters
+ *      Determines budget from allocated funds and optionally deducts BTS fees
  *
- * GRID CREATION (1 method)
+ * GRID CREATION (1 function)
  *   4. createOrderGrid(config) - Create geometric price grid
  *      Returns price levels from minPrice to maxPrice with increment spacing
  *
- * ORDER CACHE MANAGEMENT (1 method - internal)
- *   5. _clearOrderCachesLogic(manager) - Clear order caches (_ordersByType, _ordersByState)
+ * GRID LOADING & INITIALIZATION (2 functions - async)
+ *   5. loadGrid(manager, grid, boundaryIdx, genesisInput, options) - Load grid into manager orders
+ *   6. initializeGrid(manager) - Full grid initialization from config
  *
- * GRID LOADING & INITIALIZATION (2 methods - async)
- *   6. loadGrid(manager, grid, boundaryIdx) - Load grid into manager orders
- *   7. initializeGrid(manager) - Full grid initialization from config
+ * GRID RECALCULATION (1 function - async)
+ *   7. recalculateGrid(manager, opts) - Recalculate grid based on current state
  *
- * GRID RECALCULATION (1 method - async)
- *   8. recalculateGrid(manager, opts) - Recalculate grid based on current state
+ * GRID STATE CHECKING (1 function)
+ *   8. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
  *
- * GRID STATE CHECKING (1 method)
- *   9. checkAndUpdateGridIfNeeded(manager) - Check if grid needs update
+ * BLOCKCHAIN SYNCHRONIZATION (2 functions - async)
+ *   9. _recalculateGridOrderSizesFromBlockchain(manager, orderType, options) - Recalculate sizes from blockchain
+ *   10. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer, overrideBoundaryIdx) - Update grid from blockchain
  *
- * BLOCKCHAIN SYNCHRONIZATION (2 methods - async)
- *   10. _recalculateGridOrderSizesFromBlockchain(manager, orderType) - Recalculate sizes from blockchain
- *   11. updateGridFromBlockchainSnapshot(manager, orderType, fromBlockchainTimer) - Update grid from blockchain
- *
- * GRID COMPARISON (2 methods - async)
- *   12. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
+ * GRID COMPARISON (2 functions - async)
+ *   11. compareGrids(calculatedGrid, persistedGrid, manager) - Compare two grids
  *       Validates grid structure and reports divergence metrics
- *   13. monitorDivergence(manager, calculatedGrid, persistedGrid) - Unified divergence check
+ *   12. monitorDivergence(manager, calculatedGrid, persistedGrid) - Unified divergence check
  *       Runs ratio-based + RMS-based checks and returns combined result
  *
- * ON-CHAIN ORDER FETCHING (1 method - async)
- *   14. _getOnChainOrders(manager) - Collect on-chain buy/sell orders from manager
+ * SPREAD MANAGEMENT (2 functions)
+ *   13. calculateCurrentSpread(manager) - Calculate current bid-ask spread
+ *   14. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
  *
- * SPREAD MANAGEMENT (2 methods - async)
- *   15. calculateCurrentSpread(manager) - Calculate current bid-ask spread
- *   16. checkSpreadCondition(manager, BitShares, updateOrdersOnChainBatch) - Check and flag spread condition
+ * GRID HEALTH MONITORING (4 functions)
+ *   15. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health
+ *   16. checkWindowDust(manager) - Dust check scoped to the active buy/sell window
+ *   17. hasAnyDust(manager, partials, side) - Check for dust orders
+ *   18. getDustOrders(manager, partials, side) - Get dust order IDs
  *
- * GRID HEALTH MONITORING (6 methods)
- *   17. checkGridHealth(manager, updateOrdersOnChainBatch) - Monitor grid health (async)
- *   18. checkWindowDust(manager) - Dust check scoped to the active buy/sell window (async)
- *   19. _hasAnyDust(manager, partials, type) - Check for dust orders (internal)
- *   20. hasAnyDust(manager, partials, side) - Check for dust orders (public)
- *   21. getDustOrders(manager, partials, side) - Get all dust order IDs (public)
- *   22. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
+ * SIDE SELECTION (1 function)
+ *   19. determineOrderSideByFunds(manager, currentMarketPrice) - Determine priority side
  *
- * SPREAD CORRECTION (1 method)
- *   23. prepareSpreadCorrectionOrders(manager, preferredSide) - Prepare correction orders
- *
- * DUST DETECTION (1 method - internal)
- *   25. _getDustOrders(manager, partials, type) - Internal dust detection helper
+ * BLOAT STATUS (3 functions)
+ *   20. isGridBloated(manager, orders) - Check whether the grid is bloated
+ *   21. isGridBloatGraceActive(manager) - Check the bloat grace state
+ *   22. clearGridBloatFlag(manager) - Clear the bloat state
  *
  * ===============================================================================
  *

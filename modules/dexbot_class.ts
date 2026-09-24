@@ -1070,16 +1070,6 @@ class DEXBot {
     }
 
     /**
-     * Execute blockchain operations with appropriate strategy (single batch or pair mode).
-     * @param {Array<any>} operations - Array of operation objects
-     * @param {Array<Object>} opContexts - Array of operation context metadata (1:1 with operations)
-     * @returns {Promise<{result: Object, opContexts: Array}>} Execution result with contexts
-     */
-    async _executeOperationsWithStrategy(operations: any, opContexts: any) {
-        return cowRuntime.executeOperationsWithStrategy(this, operations, opContexts);
-    }
-
-    /**
      * Execute a batch of order operations if the rebalance result has executable actions.
      * @param {Object} rebalanceResult - COW rebalance result with actions
      * @param {string} [contextLabel='rebalance'] - Context label for logging

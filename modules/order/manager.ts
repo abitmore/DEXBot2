@@ -764,17 +764,6 @@ class OrderManager {
     }
 
     /**
-     * Whether the owning bot has begun shutting down. Mirrors the
-     * bot-level `_shuttingDown` flag (set via setShuttingDown() from
-     * DEXBot._shutdownImpl) so manager-level wait loops can bail out
-     * instead of proceeding with broadcasts after shutdown completed.
-     * @returns {boolean}
-     */
-    isShuttingDown() {
-        return this._shuttingDown === true;
-    }
-
-    /**
      * @param {boolean} value
      * @returns {void}
      */
