@@ -646,11 +646,13 @@ async function _createOrderFromGrid({ chainOrders, account, privateKey, manager,
  * @param {boolean} [params.releaseUntrackedFunds=false] - If true, release the cancelled order's
  *   committed funds via addToChainFree. Use only for unmatched chain orders that have no
  *   corresponding ACTIVE/PARTIAL grid slot (where synchronizeWithChain cannot release them).
- * @returns {Promise<void>}
+ * @param {Function} [params.shouldCancel] - Optional final pre-broadcast ownership/geometry guard.
+ * @returns {Promise<boolean>} true when a cancellation was actually submitted
  * @private
  */
-async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; }): Promise<void> {
-    if (dryRun) return;
+async function _cancelChainOrder({ chainOrders, account, privateKey, manager, chainOrderId, dryRun, chainOrderObj, releaseUntrackedFunds = false, shouldCancel = null }: { chainOrders: any; account: any; privateKey: any; manager: any; chainOrderId: any; dryRun: any; chainOrderObj: any; releaseUntrackedFunds?: boolean; shouldCancel?: (() => boolean) | null; }): Promise<boolean> {
+    if (dryRun) return false;
+    if (typeof shouldCancel === 'function' && !shouldCancel()) return false;
 
     // The snapshot this cancel is based on may be stale: another path (e.g. the
     // sync-layer cancel-only correction) may already have cancelled the order and
@@ -709,6 +711,7 @@ async function _cancelChainOrder({ chainOrders, account, privateKey, manager, ch
             });
         }
     }
+    return true;
 }
 
 /**
@@ -1845,6 +1848,9 @@ async function _reconcileStartupSide({
                     chainOrderId: cancelInfo.chainOrderObj.id,
                     chainOrderObj: cancelInfo.chainOrderObj,
                     releaseUntrackedFunds: true,
+                    orderType,
+                    boundaryIdx: manager?.boundaryIdx,
+                    gapSlots: manager?._gapSlots,
                 });
             }
         }
@@ -2054,6 +2060,9 @@ async function _reconcileStartupSide({
                         chainOrderId: x.chain.id,
                         chainOrderObj: x.chain,
                         releaseUntrackedFunds: true,
+                        orderType,
+                        boundaryIdx: manager?.boundaryIdx,
+                        gapSlots: manager?._gapSlots,
                     });
                     cancelCount--;
                 }
@@ -2077,6 +2086,11 @@ async function _reconcileStartupSide({
                 plannedCancels.push({
                     chainOrderId: o.orderId,
                     chainOrderObj: o,
+                    gridOrderId: o.id,
+                    gridOrder: { ...o },
+                    orderType,
+                    boundaryIdx: manager?.boundaryIdx,
+                    gapSlots: manager?._gapSlots,
                     // Matched-slot funds are tracked on the grid slot; only
                     // unmatched orphans release untracked funds (mirrors the
                     // execute branch, which passes no release flag here).

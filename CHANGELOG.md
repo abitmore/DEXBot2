@@ -2,7 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.6.6] - 2026-09-24 - Stale Cancellation Guard Hardening
+
+### 2026-09-24
+
+- **Fix(order-engine)**: close stale-cancellation replays across the correction queue, COW orphan maintenance, and startup reconciliation. Drain-time validation now rechecks live ownership and source-specific geometry for cancel-only, type-mismatch, and gap-evacuation decisions; COW auto-cancel skips adopted orders; startup Phase 2 validates each plan against its own unchanged chain order and live slot/geometry instead of requiring whole-book snapshot equality. Surplus settlement uses only the current live owner and skips stale snapshot fallback. Centralized live-owner lookup across the guards and added regression coverage for truncated/failed pre-cancel reads, per-plan snapshot independence, and stale settlement (`modules/order/utils/order.ts`, `modules/order/grid_reconcile.ts`, `modules/order/grid_reconcile_internal.ts`, `modules/dexbot_cow_runtime.ts`, `tests/test_correction_queue_staleness.ts`, `tests/test_grid_reconcile_regressions.ts`, `tests/test_uncertain_broadcast.ts`).
 
 ### 2026-09-23
 

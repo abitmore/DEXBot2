@@ -24,6 +24,7 @@ const {
     toRailHolePlaceholder,
     buildOutsideInPairGroups,
     isOrderPlaced,
+    findLiveOrderOwnerByChainId,
     chainOrderUnchangedFromCache,
     detectCrossedBookPlan,
     collectKnownOnChainOrderIds,
@@ -1178,6 +1179,18 @@ async function autoCancelOneUnmatchedOrphan(bot: any) {
     const orderId = target.id || target.orderId || target.chainOrderId;
     if (!orderId) {
         return { cancelled: false, reason: 'no-orderId' };
+    }
+    // _lastUnmatchedChainOrders is a cached snapshot. A sync/reconcile may
+    // have adopted this same chain id after the snapshot was recorded, so a
+    // direct cancel here would destroy a now-live grid order. The pending
+    // broadcast gate does not cover this case.
+    const liveOwner: any = findLiveOrderOwnerByChainId(bot.manager, orderId);
+    if (liveOwner) {
+        bot.manager._lastUnmatchedChainOrders = unmatched.filter((u: any) => {
+            const id = u?.id || u?.orderId || u?.chainOrderId;
+            return id !== orderId;
+        });
+        return { cancelled: false, reason: 'now-owned', slotId: liveOwner.id };
     }
     if (!chainOrders?.cancelOrder) {
         return { cancelled: false, reason: 'cancelOrder-unavailable' };

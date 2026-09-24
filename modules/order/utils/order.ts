@@ -235,9 +235,26 @@ function _stampCorrectionProvenance(entry: any, source: string): any {
 }
 
 /**
- * Drain-time staleness validation for a price-update correction entry
- * (Fix 1): verify the queued intent still matches the LIVE grid geometry
- * before broadcasting.
+ * Find the live grid slot that currently owns a chain order.
+ * When slotId is supplied, only that exact slot is considered; otherwise all
+ * live slots are searched. This keeps stale-decision guards consistent without
+ * changing which owner is considered valid.
+ */
+function findLiveOrderOwnerByChainId(manager: any, chainOrderId: any, slotId?: any): any | null {
+    if (!(manager?.orders instanceof Map) || !chainOrderId) return null;
+    if (slotId) {
+        const slot = manager.orders.get(slotId);
+        return slot?.orderId === chainOrderId && isOrderPlaced(slot) ? slot : null;
+    }
+    for (const order of manager.orders.values()) {
+        if (order?.orderId === chainOrderId && isOrderPlaced(order)) return order;
+    }
+    return null;
+}
+
+/**
+ * Drain-time staleness validation for a correction entry: verify the queued
+ * intent still matches the LIVE grid geometry before broadcasting.
  *
  * A correction entry snapshots {slot id, chainOrderId, expectedPrice} at
  * queue time. Any geometry-changing resync (trigger-file resync,
@@ -255,18 +272,60 @@ function _stampCorrectionProvenance(entry: any, source: string): any {
  *      uses) or calculatePriceTolerance on legacy grids (same predicate
  *      the detector uses there).
  *
- * Cancel-type entries (cancelOnly / isSurplus) are exempt — a cancel is
- * idempotent (gone orders resolve via the orderGone path) and never
- * re-prices onto a stale level.
+ * Cancel-only duplicate-orphan decisions need an ownership check. They are
+ * queued when a chain order has no matching grid slot, but startup reconcile
+ * can subsequently relocate that same chain id into an empty valid slot. A
+ * replayed cancel would then destroy the freshly updated in-place order.
+ *
+ * Type-mismatch and gap-evacuation surplus decisions have their own source-
+ * specific checks. A type mismatch is actionable only while the same live
+ * slot still owns the id and still has the mismatched type. A gap evacuation
+ * is actionable only while the same live slot remains in the current gap
+ * band. Both otherwise use the old cancellation branch, so allowing either
+ * decision to replay would recreate the same stale-replay regression.
  *
  * @param {Object} manager - OrderManager instance (live grid + assets)
  * @param {Object} entry - Queued correction entry
  * @returns {{valid: boolean, reason: string}} valid=false drops the entry
  */
 function _validatePriceCorrectionEntry(manager: any, entry: any): { valid: boolean; reason: string } {
-    if (!entry || entry.cancelOnly === true || entry.isSurplus === true) {
-        return { valid: true, reason: 'cancel-type' };
+    if (!entry) return { valid: false, reason: 'missing correction entry' };
+    if (entry.cancelOnly === true) {
+        const owningSlot = findLiveOrderOwnerByChainId(manager, entry.chainOrderId);
+        if (owningSlot) {
+            return {
+                valid: false,
+                reason: `chain order is now owned by ${owningSlot.id || 'a live grid slot'}; queued duplicate-orphan cancel is stale`,
+            };
+        }
+        return { valid: true, reason: 'cancel-only-untracked' };
     }
+    if (entry.typeMismatch === true) {
+        const targetType = entry.sideUpdated || entry.type;
+        const slotId = entry?.gridOrder?.id;
+        const slot = findLiveOrderOwnerByChainId(manager, entry.chainOrderId, slotId);
+        if (!slot) {
+            return { valid: false, reason: `type-mismatch target ${slotId || '?'} no longer owns ${entry.chainOrderId}` };
+        }
+        if (!targetType || slot.type === targetType) {
+            return { valid: false, reason: `type-mismatch for ${entry.chainOrderId} was repaired (${slot.type} now matches ${targetType || 'chain type'})` };
+        }
+        return { valid: true, reason: 'type-mismatch-still-live' };
+    }
+    if (entry.gapEvacuation === true) {
+        const slotId = entry?.gridOrder?.id;
+        const slot = findLiveOrderOwnerByChainId(manager, entry.chainOrderId, slotId);
+        if (!slot) {
+            return { valid: false, reason: `gap-evacuation target ${slotId || '?'} no longer owns ${entry.chainOrderId}` };
+        }
+        const idx = parseSlotIndex(slot.id);
+        const geometry = geometryTypeForSlotIndex(idx, manager?.boundaryIdx, manager?._gapSlots);
+        if (geometry !== ORDER_TYPES.SPREAD) {
+            return { valid: false, reason: `gap-evacuation target ${slotId} is no longer in the current gap band` };
+        }
+        return { valid: true, reason: 'gap-evacuation-still-live' };
+    }
+    if (entry.isSurplus === true) return { valid: true, reason: 'surplus-cancel' };
     const slotId = entry?.gridOrder?.id;
     const slot = (slotId && manager?.orders instanceof Map) ? manager.orders.get(slotId) : null;
     if (!slot) {
@@ -493,11 +552,19 @@ function buildFillKey(fillOrParts: any) {
     return `${orderId}:${blockNum}:${historyId}`;
 }
 
+function _currentCorrectionGridOrder(manager: any, correctionInfo: any): any | null {
+    const slotId = correctionInfo?.gridOrder?.id;
+    if (!slotId || !(manager?.orders instanceof Map)) return null;
+    const liveSlot = manager.orders.get(slotId);
+    return liveSlot?.orderId === correctionInfo?.chainOrderId ? liveSlot : null;
+}
+
 /**
  * Correct a single order's price on blockchain.
  * Cancels surplus orders; updates price for others.
  * Removes from correction queue after processing.
  * 
+ * Surplus settlement is skipped when the live slot no longer owns the chain order; the next sync's pass-1 phantom cleanup virtualizes that slot.
  * @param {Object} manager - OrderManager instance
  * @param {Object} correctionInfo - Correction details {gridOrder, chainOrderId, expectedPrice, size, type, isSurplus}
  * @param {string} accountName - Account name for blockchain transaction
@@ -544,8 +611,9 @@ async function correctOrderPriceOnChain(manager: any, correctionInfo: any, accou
             const sideLabel = type === ORDER_TYPES.SELL ? 'SELL' : 'BUY';
             manager.logger?.log?.(`[CORRECTION] Cancelling surplus/mismatched ${sideLabel} order ${chainOrderId} for slot ${gridOrder?.id || 'unknown'}`, 'info');
             await accountOrders.cancelOrder(accountName, privateKey, chainOrderId);
-            if (gridOrder && manager._applyOrderUpdate) {
-                const spreadOrder = convertToSpreadPlaceholder(gridOrder);
+            const settlementGridOrder = _currentCorrectionGridOrder(manager, correctionInfo);
+            if (settlementGridOrder && manager._applyOrderUpdate) {
+                const spreadOrder = convertToSpreadPlaceholder(settlementGridOrder);
                 await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', {
                     skipAccounting: false,
                     fee: 0
@@ -659,8 +727,11 @@ async function _resolveCancelledCorrection(manager: any, entry: any): Promise<vo
     if (entry.cancelOnly) {
         clearDuplicateOrphanDetection(chainOrderId);
     }
-    if (!entry.cancelOnly && entry.isSurplus && entry.gridOrder && manager._applyOrderUpdate) {
-        const spreadOrder = convertToSpreadPlaceholder(entry.gridOrder);
+    const settlementGridOrder = !entry.cancelOnly && entry.isSurplus
+        ? _currentCorrectionGridOrder(manager, entry)
+        : null;
+    if (settlementGridOrder && manager._applyOrderUpdate) {
+        const spreadOrder = convertToSpreadPlaceholder(settlementGridOrder);
         await manager._applyOrderUpdate(spreadOrder, 'surplus-type-mismatch-cancel', {
             skipAccounting: false,
             fee: 0
@@ -827,13 +898,12 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
             return true;
         });
 
-        // Fix 1 — drain-time staleness validation for price-update entries:
-        // a geometry-changing resync between queue and drain leaves entries
-        // whose slot was re-slotted or re-priced. Broadcasting them would
-        // revert the resync's placement (duplicate-price-level incident).
-        // Validate against the LIVE slot; drop stale entries (the next sync
-        // re-queues if the order is genuinely still off-target). Cancel-type
-        // entries are exempt (idempotent, never re-price).
+        // Drain-time staleness validation: a geometry-changing resync between
+        // queue and drain can re-slot/re-price UPDATEs or adopt a previously
+        // untracked chain order. Drop stale price updates before they revert
+        // the resync, and stale cancel-only decisions before they cancel a
+        // freshly relocated in-place order. The next sync re-queues if the
+        // order is genuinely still off-target.
         const liveEntries: any[] = [];
         for (const entry of ordersToCorrect) {
             const check = _validatePriceCorrectionEntry(manager, entry);
@@ -842,10 +912,18 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
                 continue;
             }
             _removeCorrectionEntry(manager, entry.chainOrderId, entry?.isSurplus);
+            if (entry?.cancelOnly === true) clearDuplicateOrphanDetection(entry.chainOrderId);
+            if (entry?.cancelOnly === true || entry?.isSurplus === true) {
+                _filterUnmatchedChainOrders(manager, entry.chainOrderId);
+            }
+            if (entry?.gapEvacuation === true && manager?._gapEvacCancelQueued instanceof Set && entry?.gridOrder?.id) {
+                manager._gapEvacCancelQueued.delete(entry.gridOrder.id);
+            }
             staleDropped++;
             results.push({ ...entry, result: { success: true, skipped: true, staleDropped: true, staleReason: check.reason } });
+            const correctionKind = (entry?.cancelOnly === true || entry?.isSurplus === true) ? 'cancel' : 'price';
             manager?.logger?.log?.(
-                `[CORRECTION] Dropping stale price correction for ${entry.chainOrderId} ` +
+                `[CORRECTION] Dropping stale ${correctionKind} correction for ${entry.chainOrderId} ` +
                 `(queued ${entry.queuedBy || 'unknown-source'}@${entry.queuedAt ? new Date(entry.queuedAt).toISOString() : 'unknown-time'}): ` +
                 `${check.reason}; re-queued by next sync if still off-target`,
                 'info'
@@ -3012,6 +3090,6 @@ function collectKnownOnChainOrderIds(mgr: any, placedResults: any, placedContext
     return { masterIds: [...masterIds], createIds: [...createIds], all: [...all] };
 }
 
-export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, _validatePriceCorrectionEntry, _stampCorrectionProvenance, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isStrandedHoldOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet, checkGridPriceInvariant, reportGridPriceInvariant }
+export { parseChainOrder, findMatchingGridOrderByOpenOrder, applyChainSizeToGridOrder, buildFillKey, correctOrderPriceOnChain, correctAllPriceMismatches, _validatePriceCorrectionEntry, _stampCorrectionProvenance, findLiveOrderOwnerByChainId, buildCreateOrderArgs, getOrderTypeFromUpdatedFlags, resolveConfiguredPriceBound, virtualizeOrder, convertToSpreadPlaceholder, toRailHolePlaceholder, geometryTypeForSlotIndex, detectGapEvacuationCandidates, updateGapEvacuationStreaks, resolveSpreadOrderSide, chainOrderMatchesSlot, chainOrderMatchesSlotWithTolerance, crossingCandidateChainId, isCrossingCheckCandidate, buildCrossingCheckCandidates, parseSlotIndex, filterOrdersByType, buildOutsideInPairGroups, extractBatchOperationResults, formatUnmatchedChainOrder, isNonBlockingUnmatchedOrder, isStrandedHoldOrder, isOrderOnChain, isOrderVirtual, hasOnChainId, isOrderPlaced, isPhantomOrder, isSlotAvailable, isEmptyGridSlot, isOrderHealthy, checkSizeThreshold, checkSizesBeforeMinimum, calculateIdealBoundary, assignGridRoles, resolveOnChainRetypeType, shouldFlagOutOfSpread, buildIndexes, validateIndexes, ordersEqual, buildDelta, deriveTargetBoundary, isShiftEligibleFill, resolveReserveCount, resolveReserveOrders, selectReserveEdgeSlots, getActiveOrdersTotal, getSideBudget, calculateBudgetedSizes, buildCreateOpFingerprint, isOrderGoneErrorMessage, recordDuplicateOrphanDetection, clearDuplicateOrphanDetection, duplicateOrphanLogInfo, chainOrderUnchangedFromCache, detectCrossedBookPlan, collectKnownOnChainOrderIds, reserveEdgeIdSet, liveWindowIdSet, checkGridPriceInvariant, reportGridPriceInvariant }
 export { resolveReserveEdgeAnchorPrice, resolveLiveReserveEdgeAnchorPrice, compareReserveEdge, collectRefillSlotIds };
 
