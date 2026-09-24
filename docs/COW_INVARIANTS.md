@@ -204,6 +204,7 @@ This document defines the non-negotiable behavioral invariants for the DEXBot2 s
 
 ---
 
+<a id="reconcile"></a>
 ## Reconcile ([GRID_RECONCILE.md](GRID_RECONCILE.md))
 
 - `INV-RECON-001` Rotation-only size updates in reconcile

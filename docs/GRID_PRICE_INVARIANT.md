@@ -1,7 +1,7 @@
 # The Grid-Price Invariant
 
 Status: **implemented; the emission check is BLOCKING**
-Last verified against `test` HEAD `87e11425` (2026-09-20).
+Last code-reviewed against the v1.6.6 release baseline `224f92ee` (2026-09-24).
 
 ## The invariant
 

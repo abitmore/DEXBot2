@@ -140,7 +140,7 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 
 - **Four specialized engines** (Accountant, StrategyEngine, Grid, SyncEngine) coordinate through OrderManager
 - **Copy-on-Write** grid: planning happens on isolated `WorkingGrid`; committed atomically or discarded on failure
-- **Targeted fill subscription** via `set_subscribe_callback` → `get_account_history_operations` filtered for `OP_FILL_ORDER` fill operations; push-triggered fixed-cap fill batching (max 4 fills per batch)
+- **Targeted fill subscription** via `set_subscribe_callback` → `get_account_history_operations` filtered for `OP_FILL_ORDER` fill operations; push-triggered gap-slot batching (a unified batch contains at most `gapSlots + 1` fills)
 - **Market Adapter**: AMA-based price tracking, dynamic buy/sell weighting, Kalman confirmation, ATR/regime dampening, asymmetric grid bounds, and configurable delta triggers
 - **`fund_registry.ts`**: shared-account fund registry — tracks per-account, per-bot fund and collateral allocations; pre-registered atomically at startup so all bots sharing an account see a consistent proportional split before any bot starts; cross-bot invariant enforcement
 - **Bot keys**: deterministic name-derived key (`sanitizeKey(name)`) with uniqueness enforced at all write paths — eliminates name-collision risk across restarts and config reorders
@@ -208,8 +208,8 @@ DEXBot brings a full Python desktop GUI and a strategy plugin model. DEXBot2 is 
 - **Fixed reference boundary** divides BUY zone (below) from SELL zone (above)
 - **Dynamic spread gap** around market price (configurable `targetSpreadPercent`)
 - On fill: grid **crawls** — boundary shifts, slots reassign roles, new orders placed
-- **Partial fill consolidation**: dust detection and cleanup
-- **Fixed-cap fill batching**: 1–4 fills per unified batch, >4 chunked at 4-fill boundaries
+- **Partial fill handling**: immediate on-chain dust cancellation plus fund-driven correction of surviving non-dust partials
+- **Gap-slot fill batching**: `1..gapSlots+1` fills per unified batch; deeper queues are chunked at `gapSlots+1`
 - **Replay-safe fill dedupe**: processed-fill persistence prevents duplicate accounting after restarts or resyncs
 - **Dynamic weighting**: AMA slope, Kalman confirmation, ATR volatility, and regime gates can bias buy/sell allocation without changing the core grid model
 - **Asymmetric range scaling**: trend diagnostics can tilt grid bounds during recalculation, giving the grid more room in the direction of movement

@@ -165,7 +165,7 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | Term | Meaning |
 |------|---------|
 | **Rotation** | Moving an order from one price level to another |
-| **Consolidation** | Absorbing dust partials into the next grid rebuild cycle. All slots are treated uniformly—no side-specific flags or bonuses. |
+| **Consolidation** | Absorbing surviving non-dust partials into ordinary fund-driven rebalancing. Detected dust is cancelled immediately and never waits for a rebuild. |
 | **Rebalancing** | Adjusting order sizes based on current funds |
 | **Global Side Capping** | Scaling order sizes when insufficient funds |
 | **Atomic Check-and-Deduct** | Verify funds + deduct in single operation |
@@ -277,7 +277,7 @@ const correctedPrice = quantizeFloat(derivedPrice, 8);
 const normalized = normalizeInt(currentSizeInt, assetPrecision);
 ```
 
-**See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization-patch-14) for complete quantization guide and edge case handling.**
+**See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization) for complete quantization guide and edge case handling.**
 
 ---
 
@@ -620,7 +620,7 @@ const minHealthySize = getMinOrderSize(ORDER_TYPES.BUY, assets, 1.0);
 if (isOrderHealthy(order, minHealthySize)) {
     // Order is valid for placement/rotation
 } else {
-    // Order is dust - consolidate or skip
+    // Order is dust - skip it here; cancelDustOrders() handles it on-chain
 }
 ```
 
@@ -737,7 +737,7 @@ _verifyFundInvariants(...)
 - Process filled orders
 - Identify shortages and surpluses
 - Execute order rotations
-- Handle partial order consolidation
+- Handle surviving non-dust partials during rebalance
 
 **Critical Methods**:
 ```javascript

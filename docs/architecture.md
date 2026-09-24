@@ -22,7 +22,7 @@ DEXBot2 is a grid trading bot for the BitShares blockchain. It maintains a geome
 DEXBot2 prioritizes **simplicity and operational efficiency** over complex partial-handling mechanics:
 
 1. **Constant Spread**: The spread zone width remains fixed at `targetSpreadPercent`, eliminating dynamic inflation triggers.
-2. **Direct Consolidation**: Dust partials are absorbed into the next grid rebuild cycle, not handled by complex merge/split logic.
+2. **Immediate Dust Cancellation**: Sub-threshold partials are cancelled on-chain as soon as detection runs; surviving non-dust partials are handled by ordinary fund-driven rebalancing without complex merge/split logic.
 3. **Minimal Blockchain Interaction**: Fund-driven rebalancing occurs once per fill batch, not per-partial. Grid generation uses only available funds—no forced allocations.
 4. **Closed-Loop Market Dynamics**: The boundary-crawl mechanism naturally handles price movement and fill flows without special-case logic.
 5. **Powerful Maintenance Tools**: Periodic grid regeneration, recovery retries, and fund invariant verification keep the system healthy over long operations.
@@ -56,7 +56,7 @@ graph TB
         MASTERGRID[Master Grid - immutable/frozen<br/>slot-id, price, size, state<br/>orderId, blockchain, grid, proceeds]
         TWOPASS[SyncEngine<br/>2-pass: grid-to-chain then chain-to-grid<br/>match orderId, detect partials, flag stale]
         FUNDS["Accounting - SSOT for funds<br/>available, virtual, committed<br/>btsFeesOwed<br/>Avail = max 0 ChainFree minus Virtual minus Fees"]
-        TARGET[Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial-fill consolidation, rotation]
+        TARGET[Strategy Engine<br/>calculateTargetGrid<br/>boundary-crawl pivot<br/>partial correction, rotation]
         WORKGRID[WorkingGrid - COW copy<br/>all mutations here only<br/>commit to Master on confirmation]
         FILLQUEUE[Fill Queue<br/>AsyncLock + dedup 5-60 min]
         BATCHER[Fixed-Cap Batcher<br/>queue within cap: unified batch<br/>queue above cap: chunk at cap size<br/>cap = gapSlots + 1]
@@ -443,7 +443,7 @@ The fill pipeline handles incoming filled orders efficiently through fixed-cap b
 
 Scenario source: 29-fill burst during the Feb 7 market crash, modeled at
 roughly 3 seconds per broadcast; see
-[`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#14-fill-batch-processing--cache-fund-timeline).
+[`FUND_MOVEMENT_AND_ACCOUNTING.md`](FUND_MOVEMENT_AND_ACCOUNTING.md#15-fill-batch-processing--timeline).
 
 | Metric | Legacy (1-at-a-time) | Fixed-Cap Batching | Improvement |
 |--------|---------------------|-------------------|-------------|
@@ -464,26 +464,31 @@ Instead of complex partial handling, spread corrections are **conservative and f
 - Target spread width stays **constant** at `targetSpreadPercent`
 - Corrections scale with **actual available funds**, not arbitrary slot budgets
 - No dynamic spread inflation based on partial consolidation flags
-- Edge-first surplus selection ensures stable rotation candidates
+- Safe window-contiguous candidate ordering (with an edge-first fallback) prevents cross-side placement
 
 ### Algorithm
 
-**Location**: `modules/order/strategy.ts::calculateTargetGrid()`
+**Location**: `modules/order/grid.ts::prepareSpreadCorrectionOrders()`, selected by
+`modules/order/grid.ts::determineOrderSideByFunds()`.
 
-The simplified approach prioritizes fund availability over aggressive corrections:
+The correction path is fund-only and never manufactures budget by shrinking a resting order:
 
 ```
-1. Detect that spread is wider than targetSpreadPercent
-2. Calculate how many edge slots are missing
-3. Attempt to place new edge orders with available funds
-4. If insufficient funds for all edges:
-   - Create what's affordable with available funds
-   - Log shortfall (smooth over next rebalance cycle)
-5. If a dust partial exists in the correction window:
-   - Mark for consolidation in next grid rebuild
-   - Don't create complex merge/split side effects
-6. Maintain constant target spread—no inflation based on partial flags
+1. Detect that the live window is wider than targetSpreadPercent.
+2. Select up to `outOfSpread` eligible holes in safe window/gap order.
+3. If the funded edge holds a non-dust PARTIAL, optionally top it up, but only
+   when `ideal - current` is positive and free funds can cover the increase.
+4. Create replacements from free available/chainFree funds; contiguous gap-slot
+   promotion may extend the window while preserving MIN_SPREAD_ORDERS and the
+   opposite placed rail.
+5. If free funds cannot cover every target, place/top up the affordable prefix,
+   stop without shrinking inventory, and log the fund-constrained remainder.
+6. If neither side has free funds, skip correction and let the maintenance
+   runtime refresh balances and open orders rather than recycle stale inventory.
 ```
+
+Detected dust partials never enter this path: `cancelDustOrders()` cancels them
+on-chain immediately, and the five-minute health check is only a restart safety net.
 
 ### Fund-Safe Constraints
 
@@ -491,19 +496,21 @@ Spread corrections respect these hard limits:
 
 ```javascript
 // In modules/constants.ts (GRID_LIMITS)
-MIN_SPREAD_ORDERS: 2,           // Always maintain minimum gap
+MIN_SPREAD_ORDERS: 2,           // Preserve the minimum empty gap reserve
 
-// Spread width itself stays user-configured (`targetSpreadPercent`) — fixed, no inflation.
-// Correction count has no separate slot cap; it is bounded by the funds check below.
+// `outOfSpread` supplies the requested slot count. Execution is bounded by
+// safe candidate selection, healthy minimum sizes, and actual free funds.
+const availableFund = Math.max(0, Math.min(
+    manager.funds.available[side],
+    manager.accountTotals[side === 'buy' ? 'buyFree' : 'sellFree']
+));
 
-// Each correction order must be healthy
-const minHealthySize = calculateMinOrderSize(side);
-const affordableOrderCount = Math.floor(availableFunds / minHealthySize);
-const correctionOrders = Math.min(missingSlots, affordableOrderCount);
+// Each target is created or topped up only while remainingBudget covers it.
+// No resting ACTIVE/PARTIAL order is shrunk to fund the correction.
 ```
 
 **Benefits**:
-- ✅ No "double-dust" fragmentation
+- ✅ No inventory recycling from stale-size snapshots
 - ✅ Constant, predictable spread width
 - ✅ Funds always respected (no forced allocation)
 - ✅ Natural smoothing over multiple rebalance cycles
@@ -591,12 +598,11 @@ if (mgr.outOfSpread) {
 ### After (Numeric Distance)
 
 ```javascript
-// New approach: distance in steps
-mgr.outOfSpread = 3;  // 3 steps beyond target spread
+// New approach: requested missing slots derived from the live geometry
+mgr.outOfSpread = 3;  // three slots beyond the target spread
 
-// Use distance in correction logic
-const spreadDistance = mgr.outOfSpread;
-const replacementSlots = Math.min(spreadDistance, MAX_CORRECTION_SLOTS);
+// The grid engine bounds actual work by eligible candidates, MIN_SPREAD_ORDERS,
+// healthy sizes, and available free funds. There is no MAX_CORRECTION_SLOTS cap.
 ```
 
 **Benefit**: Enables scaled corrections based on actual severity.
@@ -706,7 +712,7 @@ stateDiagram-v2
 
     note right of PARTIAL
         Partially filled on-chain
-        Waiting for consolidation
+        Dust is cancelled immediately; non-dust is corrected in rebalance
     end note
 ```
 
@@ -881,7 +887,7 @@ sequenceDiagram
     Strat-->>Mgr: target grid
     Mgr->>Mgr: Apply rotations via WorkingGrid
     Mgr->>Acct: Deduct BTS fees during recalculateFunds
-    Mgr->>Mgr: Consolidate dust partials
+    Mgr->>Mgr: Cancel detected dust partials immediately
 ```
 
 ### 2. Order Rotation (Crawl Mechanism)
@@ -1059,7 +1065,7 @@ The system has been optimized to use a "memory-driven" model for order updates, 
 - **Faster reaction time**: No waiting for blockchain queries during order updates
 - **Reduced API load**: Fewer fetches, less network congestion
 - **Mathematical precision**: Integer-based tracking prevents float precision errors
-  - *See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization-patch-14) for quantization utilities and best practices*
+  - *See [FUND_MOVEMENT_AND_ACCOUNTING.md § 5.5](FUND_MOVEMENT_AND_ACCOUNTING.md#55-precision--quantization) for quantization utilities and best practices*
 - **Fallback safety**: Automatic recovery if memory state becomes inconsistent
 
 ### Performance Impact
@@ -1323,8 +1329,7 @@ The strategy engine has been significantly strengthened with improvements to fun
 **2. Dust Partial Handling**
 - Improved dust detection algorithm prevents false positives
 - Detects dust as `< 5% of ideal order size`
-- Dust partials are absorbed into the next grid rebuild cycle (no merge/split mechanics)
-- **Auto-Cancellation**: `_cancelDustOrders()` cancels dust partials on-chain immediately on detection — no delay, no timer maps, no retry budgets. Cancel is attempted post-fill (inside fill lock) and every 5-min health check (safety net).
+- **Immediate Cancellation**: `_cancelDustOrders()` cancels dust partials on-chain when detection runs — no delay, timer map, or consolidation cycle. Detection runs after fills/sync, and a 5-minute health check is the restart safety net.
 
 **3. Strict Order Size Constraints**
 - Orders validated to not exceed available funds
