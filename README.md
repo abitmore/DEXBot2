@@ -346,7 +346,7 @@ dexbot clear               # Clear log files (also clear-orders, clear-market-ad
 dexbot default             # Reset settings to defaults
 ```
 
-## ⚙️ PM2 Process Management
+## 🎯 PM2 Process Management
 
 PM2 is optional — `dexbot start` is the native solution.
 

@@ -103,6 +103,7 @@ import { mergeSettings } from './settings_merge.js';
 import { getErrorMessage } from './utils/errors.js';
 import { roundToDecimals, parseRelativeMultiplier } from './order/utils/math.js';
 import { CLI_COLORS } from './cli_colors.js';
+import { displayWidth, padDisplay } from './utils/text_width.js';
 const storage = getStorage();
 const { writeJSON } = storage;
 
@@ -227,23 +228,23 @@ function listBots(bots: any[]): void {
         dryRun: !!bot.dryRun
     }));
     const indexWidth = Math.max(1, ...rows.map(r => r.index.length));
-    const nameWidth = Math.max('Name'.length, ...rows.map(r => r.name.length));
-    const accountWidth = Math.max('Account'.length, ...rows.map(r => r.account.length));
-    const pairWidth = Math.max('Pair'.length, ...rows.map(r => r.pair.length));
+    const nameWidth = Math.max('Name'.length, ...rows.map(r => displayWidth(r.name)));
+    const accountWidth = Math.max('Account'.length, ...rows.map(r => displayWidth(r.account)));
+    const pairWidth = Math.max('Pair'.length, ...rows.map(r => displayWidth(r.pair)));
     const header = [
         '#'.padEnd(indexWidth),
-        'Name'.padEnd(nameWidth),
-        'Account'.padEnd(accountWidth),
-        'Pair'.padEnd(pairWidth)
+        padDisplay('Name', nameWidth),
+        padDisplay('Account', accountWidth),
+        padDisplay('Pair', pairWidth)
     ].join('  ');
     console.log(`  ${COLORS.yellowBold}${header}${COLORS.reset}`);
     for (const row of rows) {
         const flags = `${row.inactive ? ` ${COLORS.red}[inactive]${COLORS.reset}` : ''}${row.dryRun ? ` ${COLORS.yellow}(dryRun)${COLORS.reset}` : ''}`;
         console.log(
             `  ${COLORS.gray}${row.index.padEnd(indexWidth)}${COLORS.reset}  ` +
-            `${COLORS.green}${row.name.padEnd(nameWidth)}${COLORS.reset}  ` +
-            `${COLORS.orange}${row.account.padEnd(accountWidth)}${COLORS.reset}  ` +
-            `${COLORS.cyan}${row.pair.padEnd(pairWidth)}${COLORS.reset}${flags}`
+            `${COLORS.green}${padDisplay(row.name, nameWidth)}${COLORS.reset}  ` +
+            `${COLORS.orange}${padDisplay(row.account, accountWidth)}${COLORS.reset}  ` +
+            `${COLORS.cyan}${padDisplay(row.pair, pairWidth)}${COLORS.reset}${flags}`
         );
     }
 }

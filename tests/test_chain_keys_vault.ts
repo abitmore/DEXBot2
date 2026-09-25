@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 // Env must be set before any require(): Config snapshots process.env at load
 // and chain_keys resolves PROFILES_KEYS_FILE from Config at module load.
 // Redirecting the keys file keeps every scenario off the developer's real
@@ -118,6 +119,29 @@ async function testKeySetupDetection() {
     assert.strictEqual(chainKeys.hasKeySetup(), true, 'a modern password-protected vault should count as configured');
 }
 
+function testOnboardingUrlResolution() {
+    const chainKeys = requireChainKeys();
+    const { UPDATER } = require('../modules/constants');
+    const localHref = 'file:///shipped/docs/BITSHARES_ONBOARDING.md';
+
+    assert.strictEqual(
+        chainKeys.resolveOnboardingUrl(true, localHref),
+        localHref,
+        'a shipped onboarding document should be linked locally'
+    );
+
+    const remote = chainKeys.resolveOnboardingUrl(false, localHref);
+    assert.notStrictEqual(remote, localHref, 'a missing local document should fall back to the hosted URL');
+    assert.ok(
+        remote.startsWith(UPDATER.REPOSITORY_URL.replace(/\.git$/, '')),
+        'the hosted fallback should be derived from the canonical repository URL in constants'
+    );
+    assert.ok(
+        remote.endsWith('/docs/BITSHARES_ONBOARDING.md'),
+        'the hosted fallback should point at the onboarding document'
+    );
+}
+
 async function testUnlockWithPasswordOnModernVault() {
     writeModernVault(keysFile(), 'modern-password', { alice: 'a'.repeat(64) });
     const chainKeys = requireChainKeys();
@@ -152,6 +176,18 @@ function installPromptMocks({ readInputResponses, readPasswordResponses }) {
     return prompts;
 }
 
+async function captureConsoleLogs(run) {
+    const logs = [];
+    const originalLog = console.log;
+    console.log = (...args) => logs.push(args.map(String).join(' '));
+    try {
+        await run();
+    } finally {
+        console.log = originalLog;
+    }
+    return logs.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ''));
+}
+
 async function testInteractiveSessionPersistsModernState() {
     const password = 'modern-password';
     const initialPrivateKey = 'b'.repeat(64);
@@ -163,7 +199,11 @@ async function testInteractiveSessionPersistsModernState() {
     const prompts = installPromptMocks({ readInputResponses, readPasswordResponses });
 
     const chainKeys = requireChainKeys();
-    await chainKeys.main();
+    const logs = await captureConsoleLogs(() => chainKeys.main());
+    assert.ok(
+        !logs.some((line) => line.includes('New to DEXBot2 and BitShares?')),
+        'the onboarding notice should not be shown when the vault already has an account'
+    );
 
     const persisted = requireStorage().readJSON(keysFile());
     assert.strictEqual(persisted.vaultVersion, 2, 'interactive session should keep modern vault metadata');
@@ -186,7 +226,7 @@ async function testExistingPasswordWithNoAccountOpensKeyManager() {
     });
 
     const chainKeys = requireChainKeys();
-    await chainKeys.main();
+    const logs = await captureConsoleLogs(() => chainKeys.main());
 
     assert.strictEqual(
         prompts.filter((prompt) => prompt === 'Enter master password: ').length,
@@ -196,6 +236,34 @@ async function testExistingPasswordWithNoAccountOpensKeyManager() {
     assert.ok(
         !prompts.includes('Confirm master password: '),
         'an existing master password should not be reset when starting key setup'
+    );
+    const { PATHS } = require('../modules/paths');
+    const expectedUrl = pathToFileURL(path.join(PATHS.PROJECT_ROOT, 'docs', 'BITSHARES_ONBOARDING.md')).href;
+    assert.ok(
+        logs.includes(`New to DEXBot2 and BitShares? Check out:\n${expectedUrl}`),
+        'an authenticated empty vault should show the local onboarding link'
+    );
+}
+
+async function testFirstPasswordWithNoAccountShowsOnboardingLink() {
+    const password = 'first-password';
+    installPromptMocks({
+        readInputResponses: ['7'],
+        readPasswordResponses: [password, password],
+    });
+
+    const chainKeys = requireChainKeys();
+    const logs = await captureConsoleLogs(() => chainKeys.main());
+    const { PATHS } = require('../modules/paths');
+    const expectedUrl = pathToFileURL(path.join(PATHS.PROJECT_ROOT, 'docs', 'BITSHARES_ONBOARDING.md')).href;
+
+    assert.ok(
+        logs.some((line) => line.includes('No master password set. Please set one:')),
+        'the initial password prompt should remain unchanged'
+    );
+    assert.ok(
+        logs.includes(`New to DEXBot2 and BitShares? Check out:\n${expectedUrl}`),
+        'first-time setup should show the bright-yellow onboarding link for the installed local document'
     );
 }
 
@@ -231,6 +299,7 @@ const STAGES = {
         testLegacyPayloadRejected();
         testLegacyVaultRejected();
         await testKeySetupDetection();
+        testOnboardingUrlResolution();
         await testUnlockWithPasswordOnModernVault();
     },
     interactive_session_persists_modern_state: async () => {
@@ -238,6 +307,9 @@ const STAGES = {
     },
     existing_password_without_account: async () => {
         await testExistingPasswordWithNoAccountOpensKeyManager();
+    },
+    first_password_without_account: async () => {
+        await testFirstPasswordWithNoAccountShowsOnboardingLink();
     },
     change_password_requires_current_password_prompt: async () => {
         await testChangePasswordRequiresCurrentPasswordPrompt();

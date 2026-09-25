@@ -93,13 +93,16 @@
 
 
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 
 import { path } from './path_api.js';
 import { readInput, readPassword, sleep } from './order/utils/system.js';
-import { TIMING, CREDENTIAL_PROMPTS } from './constants.js';
+import { TIMING, CREDENTIAL_PROMPTS, UPDATER } from './constants.js';
 import { PATHS } from './paths.js';
 import { CLI_COLORS } from './cli_colors.js';
+import { formatStartupNotice } from './cli_start_output.js';
+import { displayWidth, padDisplay } from './utils/text_width.js';
 
 import { getStorage } from './storage/index.js';
 import { sendSocketJsonRequest } from './socket_json_client.js';
@@ -178,6 +181,32 @@ const VAULT_DAEMON_SIGNING_TOKEN_KIND = 'dexbot-daemon-signing-token';
 const PROFILES_KEYS_FILE = Config.DEXBOT_KEYS_FILE
     ? path.resolve(Config.DEXBOT_KEYS_FILE)
     : PATHS.PROFILES.KEYS_JSON();
+const BITSHARES_ONBOARDING_FILE = path.join(PATHS.PROJECT_ROOT, 'docs', 'BITSHARES_ONBOARDING.md');
+const BITSHARES_ONBOARDING_DOC_PATH = 'docs/BITSHARES_ONBOARDING.md';
+// Derive the web link from the canonical repository metadata so a repo/branch
+// change only has to be made in modules/constants.ts.
+const BITSHARES_ONBOARDING_REMOTE_URL = `${UPDATER.REPOSITORY_URL.replace(/\.git$/, '')}/blob/${
+    UPDATER.BRANCH === 'auto' ? 'main' : UPDATER.BRANCH
+}/${BITSHARES_ONBOARDING_DOC_PATH}`;
+
+/**
+ * Pick the onboarding link to show: the copy shipped with this installation
+ * when present, otherwise the hosted document. Exported for testing.
+ */
+export function resolveOnboardingUrl(
+    localExists: boolean = storage.exists(BITSHARES_ONBOARDING_FILE),
+    localHref: string = pathToFileURL(BITSHARES_ONBOARDING_FILE).href,
+): string {
+    return localExists ? localHref : BITSHARES_ONBOARDING_REMOTE_URL;
+}
+
+function printEmptyVaultOnboardingNotice() {
+    const message = `New to DEXBot2 and BitShares? Check out:\n${resolveOnboardingUrl()}`;
+    console.log(formatStartupNotice(message, {
+        isTTY: hasProcess() && Boolean(process.stdout?.isTTY),
+        noColor: Boolean(Config.NO_COLOR),
+    }));
+}
 
 /**
  * Ensures that the profiles/keys directory exists.
@@ -709,13 +738,22 @@ async function resolvePrivateKey(accountName: any, vaultSecret: any, chainClient
  * @returns {Array<string>} Array of account names
  */
 function listKeyNames(accounts: any) {
-    if (!accounts || Object.keys(accounts).length === 0) {
+    const names = accounts ? Object.keys(accounts) : [];
+    if (names.length === 0) {
         console.log('  (no accounts stored yet)');
         return [];
     }
-    console.log('Stored keys:');
-    return Object.keys(accounts).map((name: any, index: any) => {
-        console.log(`  ${index + 1}. ${name}`);
+
+    const indexWidth = Math.max(1, ...names.map((_, index: number) => String(index + 1).length));
+    const accountWidth = Math.max('Account'.length, ...names.map((name: string) => displayWidth(name)));
+    const header = `#`.padEnd(indexWidth) + '  ' + padDisplay('Account', accountWidth);
+    console.log(`  ${CLI_COLORS.yellowBold}${header}${CLI_COLORS.reset}`);
+    return names.map((name: string, index: number) => {
+        const rowIndex = String(index + 1);
+        console.log(
+            `  ${CLI_COLORS.gray}${rowIndex.padEnd(indexWidth)}${CLI_COLORS.reset}  ` +
+            `${CLI_COLORS.greenBold}${padDisplay(name, accountWidth)}${CLI_COLORS.reset}`
+        );
         return name;
     });
 }
@@ -870,12 +908,14 @@ async function main(): Promise<boolean> {
         saveAccounts(accountsData);
         vaultReady = true;
         console.log('Master password set successfully.');
+        console.log('');
     } else {
         try {
             vaultSecret = await authenticate();
             accountsData = loadAccounts();
             vaultReady = true;
             console.log('Authenticated successfully.');
+            console.log('');
         } catch (err: any) {
             if (err instanceof MasterPasswordCancelledError) {
                 return false;
@@ -886,6 +926,10 @@ async function main(): Promise<boolean> {
             }
             throw err;
         }
+    }
+
+    if (Object.keys(accountsData.accounts || {}).length === 0) {
+        printEmptyVaultOnboardingNotice();
     }
 
      while (true) {
