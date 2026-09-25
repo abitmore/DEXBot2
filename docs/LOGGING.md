@@ -265,6 +265,10 @@ New/updated operator-visible messages added by the uncertain-broadcast and COW h
 | `⚠ FAILED attempt N/3` / `✗ BLACKLISTED after N failures` | Daemon node health ledger — per-node retry exhaustion then blacklist |
 | `[DUST] Chain refetch after verified cancel is TRUNCATED/EMPTY; applying local cancel sync` | Truncated-read fallback in the dust-cancel refetch path |
 | `authoritative absence verified` | Aligned retry log wording — re-broadcast only on provable absence |
+| `Fill channel DEGRADED for <account>: N consecutive history-scan failures … forcing reconnect` | Fill-history channel stayed dead while the socket looked open; the watchdog forced a reconnect (which re-establishes the session and fires the post-reconnect safety-net sync) |
+| `Fill channel recovered for <account>` | A previously degraded channel completed a successful history scan |
+| `processObjects (fill-poll): error … (+N suppressed)` | Throttled fill-channel error; `+N suppressed` counts repeats collapsed within the log interval |
+| `Forcing reconnect on <node> (<reason>)` | Transport-level forced reconnect (stale api_id escalation or fill-channel watchdog); the node is reported failed so the reconnect prefers another node |
 
 ---
 

@@ -40,6 +40,22 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
     let fillPollTimer: any = null;
     let fillPollInProgress = false;
 
+    // Fill-channel health. A history channel can be dead (stale api id, wedged
+    // session) while the socket still reads "connected", so the transport's
+    // close/keep-alive recovery never fires. These settings drive a per-account
+    // consecutive-failure watchdog that forces a reconnect when the channel
+    // stays dead, plus log throttling so a dead channel cannot flood the log.
+    const channelDegradedThreshold = Number.isFinite(SUBSCRIPTIONS.CHANNEL_DEGRADED_FAILURE_THRESHOLD)
+        ? Math.max(1, SUBSCRIPTIONS.CHANNEL_DEGRADED_FAILURE_THRESHOLD)
+        : 3;
+    const channelErrorLogIntervalMs = Number.isFinite(SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
+        ? Math.max(0, SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
+        : 60000;
+    const channelReconnectCooldownMs = Number.isFinite(SUBSCRIPTIONS.CHANNEL_RECONNECT_COOLDOWN_MS)
+        ? Math.max(0, SUBSCRIPTIONS.CHANNEL_RECONNECT_COOLDOWN_MS)
+        : 30000;
+    let lastChannelReconnectAt = 0;
+
     function parseObjectIdInstance(id: any): number {
         if (typeof id !== 'string') return Number.NaN;
         const match = id.match(/\.(\d+)$/);
@@ -91,8 +107,86 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
 
     function warnSubscription(sub: any, message: string, err: any = null): void {
         const account = sub?.accountName || sub?.accountId || 'unknown';
+        const now = Date.now();
+        // Throttle per-account warns: a dead channel otherwise logs one warn per
+        // poll (and per reconnect retry) forever. Suppressed repeats are counted
+        // and reported on the next emitted line.
+        const lastWarnAt = Number(sub?._lastWarnAt) || 0;
+        if (channelErrorLogIntervalMs > 0 && sub && now - lastWarnAt < channelErrorLogIntervalMs) {
+            sub._suppressedWarnCount = (Number(sub._suppressedWarnCount) || 0) + 1;
+            return;
+        }
+        const suppressed = Number(sub?._suppressedWarnCount) || 0;
+        if (sub) {
+            sub._lastWarnAt = now;
+            sub._suppressedWarnCount = 0;
+        }
         const detail = err?.message ? `: ${getErrorMessage(err)}` : '';
-        subscriptionsLogger.warn(`${message} for ${account}${detail} (node=${activeNodeUrl()})`);
+        const suppressedDetail = suppressed > 0 ? ` (+${suppressed} suppressed)` : '';
+        subscriptionsLogger.warn(`${message} for ${account}${detail}${suppressedDetail} (node=${activeNodeUrl()})`);
+    }
+
+    /**
+     * Mark a subscription's history channel healthy again. Resets the
+     * consecutive-failure run and logs a single recovery line when it was
+     * previously degraded.
+     */
+    function recordChannelSuccess(sub: any): void {
+        if (!sub) return;
+        if (sub._channelDegraded) {
+            subscriptionsLogger.info(
+                `Fill channel recovered for ${sub.accountName || sub.accountId || 'unknown'} (node=${activeNodeUrl()})`
+            );
+        }
+        sub._channelFailures = 0;
+        sub._channelDegraded = false;
+    }
+
+    /**
+     * Record a history-channel failure and escalate to a forced reconnect once
+     * the run crosses the degraded threshold. Callback/processing errors
+     * (flagged subscriptionErrorReported) are not channel failures and must not
+     * trip the watchdog — a deterministic downstream bug would otherwise
+     * reconnect-storm.
+     */
+    function recordChannelFailure(sub: any, err: any, context?: string): void {
+        if (!sub) return;
+        if (err?.subscriptionErrorReported) {
+            warnSubscription(sub, `processObjects${context ? ` (${context})` : ''}: callback error`, err);
+            return;
+        }
+        const failures = (Number(sub._channelFailures) || 0) + 1;
+        sub._channelFailures = failures;
+        warnSubscription(sub, `processObjects${context ? ` (${context})` : ''}: error`, err);
+        if (failures >= channelDegradedThreshold && !sub._channelDegraded) {
+            sub._channelDegraded = true;
+            const account = sub.accountName || sub.accountId || 'unknown';
+            subscriptionsLogger.warn(
+                `Fill channel DEGRADED for ${account}: ${failures} consecutive history-scan failures ` +
+                `(last: ${getErrorMessage(err)}) — forcing reconnect (node=${activeNodeUrl()})`
+            );
+            requestChannelReconnect(`fill channel degraded for ${account}: ${getErrorMessage(err)}`);
+        }
+    }
+
+    /**
+     * Force a reconnect to recover a dead-but-open fill channel, debounced so a
+     * multi-account setup fires at most one reconnect per cooldown window. The
+     * reconnect re-establishes the login session AND fires the registered
+     * post-reconnect safety-net sync (the fill backlog is then discovered even
+     * if the subscription feed stays quiet).
+     */
+    function requestChannelReconnect(reason: string): void {
+        const now = Date.now();
+        if (now - lastChannelReconnectAt < channelReconnectCooldownMs) return;
+        lastChannelReconnectAt = now;
+        try {
+            if (typeof chainClient.forceReconnect === 'function') {
+                chainClient.forceReconnect(reason);
+            }
+        } catch (_: any) {
+            // Best-effort recovery; the next poll retries the escalation.
+        }
     }
 
     function getAccountHistoryFetcher(): any {
@@ -627,6 +721,10 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             // on the newest op (history[last]), never a gap entry pushed onto the end.
             sortEntriesOldestFirst(history);
 
+            // The history RPC succeeded — the channel is alive regardless of what
+            // the entries contain or whether downstream callbacks succeed.
+            recordChannelSuccess(sub);
+
             if (history.length === 0) {
                 sub.lastNoticeAt = Date.now();
                 subscriptionsLogger.debug(`processObjects: no history entries for ${sub.accountName} (cursor=${sub.lastDeliveredHistoryId})`);
@@ -699,8 +797,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             }
         } catch (err: any) {
             sub.lastNoticeAt = Date.now();
-            const context = options?.context ? ` (${options.context})` : '';
-            subscriptionsLogger.warn(`processObjects${context}: error for ${sub.accountName}: ${getErrorMessage(err)} (node=${activeNodeUrl()})`);
+            recordChannelFailure(sub, err, options?.context);
             if (sub.onError && !err?.subscriptionErrorReported) {
                 try { sub.onError(err); } catch (_: any) {}
             }
@@ -720,7 +817,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         entry.reconnectRetryTimer = setTimeout(() => {
             entry.reconnectRetryTimer = null;
             resubscribeEntry(entry, 'retry').catch((retryErr: any) => {
-                subscriptionsLogger.warn(`Failed to resubscribe ${entry.accountName}: ${getErrorMessage(retryErr)}`);
+                warnSubscription(entry, 'Failed to resubscribe', retryErr);
                 scheduleReconnectRetry(entry, retryErr);
             });
         }, reconnectRetryDelayMs);
@@ -749,7 +846,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             try {
                 await chainClient.db.get_full_accounts([subEntry.accountName], true);
             } catch (err: any) {
-                subscriptionsLogger.warn(`Failed to re-subscribe account after set_subscribe_callback for ${subEntry.accountName}: ${getErrorMessage(err)}`);
+                warnSubscription(subEntry, 'Failed to re-subscribe account after set_subscribe_callback', err);
                 failures.push({ entry: subEntry, err });
             }
         }
@@ -769,7 +866,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     entry.statisticsId = accounts[0][1].account.statistics || null;
                 }
             } catch (err: any) {
-                subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${getErrorMessage(err)}`);
+                warnSubscription(entry, 'Failed to refresh account data', err);
             }
 
             const refreshFailures = await refreshSubscriptions();
@@ -865,6 +962,11 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 onError: null,
                 reconnectRetryTimer: null,
                 reconnecting: false,
+                // Fill-channel health (see recordChannelFailure/recordChannelSuccess).
+                _channelFailures: 0,
+                _channelDegraded: false,
+                _lastWarnAt: 0,
+                _suppressedWarnCount: 0,
             };
             subscriptions.set(accountName, entry);
 
@@ -1010,7 +1112,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                         entry.statisticsId = accounts[0][1].account.statistics || null;
                     }
                 }).catch((err: any) => {
-                    subscriptionsLogger.warn(`Failed to refresh account data for ${entry.accountName}: ${getErrorMessage(err)}`);
+                    warnSubscription(entry, 'Failed to refresh account data', err);
                 })
             );
         }
@@ -1041,7 +1143,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 processObjects(entry, [entry.accountId], { throwOnError: true })
                     .then(() => clearReconnectRetry(entry))
                     .catch((err: any) => {
-                        subscriptionsLogger.warn(`Failed to resubscribe ${entry.accountName}: ${getErrorMessage(err)}`);
+                        warnSubscription(entry, 'Failed to resubscribe', err);
                         scheduleReconnectRetry(entry, err);
                     })
             );

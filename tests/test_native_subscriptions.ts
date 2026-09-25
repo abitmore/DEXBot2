@@ -1031,6 +1031,79 @@ function makeAccountRecord(account) {
         console.log('   fill polling test passed');
     }
 
+    // ── Fill-channel watchdog regression test ────────────────────────
+    {
+        console.log('\n - Testing fill-channel watchdog forces reconnect after consecutive failures...');
+        const NATIVE_CLIENT = require('../modules/constants').NATIVE_CLIENT;
+        const threshold = Number(NATIVE_CLIENT.SUBSCRIPTIONS.CHANNEL_DEGRADED_FAILURE_THRESHOLD) || 3;
+
+        const originalSetInterval = global.setInterval;
+        const originalClearInterval = global.clearInterval;
+
+        let pollTimerHandle: any = null;
+        const forceReconnectCalls: string[] = [];
+
+        const staleError = () => new Error('Execution error: Assert Exception: _local_apis.size() > api_id: ');
+        const chainClient: any = {
+            transport: {
+                addMessageHandler() { return () => {}; },
+            },
+            // Watchdog escalation target.
+            forceReconnect: (reason: string) => { forceReconnectCalls.push(reason); },
+            db: {
+                get_full_accounts: async ([account]: any) => [makeAccountRecord(account)],
+                call: async () => null,
+            },
+            history: {
+                // Every history scan fails — the channel is dead while the
+                // socket is nominally open (the exact 2026-09-25 symptom).
+                getAccountHistoryOperations: async () => { throw staleError(); },
+                get_account_history: async () => { throw staleError(); },
+            },
+        };
+
+        try {
+            global.setInterval = ((fn: any, interval: number) => {
+                pollTimerHandle = { fn, interval };
+                return pollTimerHandle as any;
+            }) as any;
+            global.clearInterval = ((_handle: any) => {}) as any;
+
+            const manager = createSubscriptionManager(chainClient, { noticeCoalesceMs: 0 });
+            const unsub = await manager.subscribe('alice', () => {});
+            assert.ok(pollTimerHandle, 'fill poll timer should be created');
+
+            for (let i = 0; i < threshold; i++) {
+                await pollTimerHandle.fn();
+            }
+
+            assert.strictEqual(forceReconnectCalls.length, 1,
+                `expected exactly one forced reconnect after ${threshold} consecutive scan failures`);
+            assert.ok(/fill channel degraded/i.test(forceReconnectCalls[0]),
+                'reconnect reason should identify the degraded fill channel');
+
+            // Cooldown: further failures must not stack reconnects.
+            await pollTimerHandle.fn();
+            assert.strictEqual(forceReconnectCalls.length, 1,
+                'cooldown must suppress additional forced reconnects within the window');
+
+            // A successful scan clears the degraded state.
+            chainClient.history.get_account_history = async () => [];
+            chainClient.history.getAccountHistoryOperations = async () => [];
+            await pollTimerHandle.fn();
+            const aliceSub = manager.getSubscriptions().get('alice');
+            assert.strictEqual(aliceSub._channelFailures, 0, 'successful scan must reset the failure run');
+            assert.strictEqual(aliceSub._channelDegraded, false, 'successful scan must clear the degraded flag');
+
+            unsub();
+        } finally {
+            global.setInterval = originalSetInterval;
+            global.clearInterval = originalClearInterval;
+        }
+
+        console.log('   fill-channel watchdog test passed');
+    }
+
     console.log('\n=== All subscription tests passed ===');
 })().catch((err) => {
     console.error(err);

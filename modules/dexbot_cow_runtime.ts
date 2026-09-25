@@ -4496,6 +4496,13 @@ async function updateOrdersOnChainBatchCOWBody(
             }
             // Fall through: proceed with the current plan (bounded policy).
         }
+        // True when the plan was still valid against the master at this point.
+        // Only then can a later version change be attributed to the in-flight
+        // broadcast we are about to wait on (see the post-wait recheck). If the
+        // re-plan above already ran and fell through, re-raising the same
+        // staleness after the wait would double the structural-resync request
+        // for one event.
+        const preBroadcastWasFresh = preBroadcastGuard.canCommit;
 
         // Single-flight broadcast slot (authoritative, atomic check-and-set):
         // by this point this batch finished planning; any other batch that
@@ -4509,6 +4516,47 @@ async function updateOrdersOnChainBatchCOWBody(
         }
         bot._cowBroadcastInFlight = true;
         heldBroadcastSlot = true;
+
+        // Re-validate the plan AFTER winning the broadcast slot, but only when
+        // the plan was fresh before the wait. The version check above ran BEFORE
+        // the single-flight wait, so it cannot see a master-grid advance
+        // committed by the batch that just held the slot. Broadcasting such a
+        // plan places rails the winner already placed (the commit-time guard
+        // refuses the commit, but the duplicate orders are already on-chain and
+        // must be cancelled). The 2026-09-25 restart produced exactly this: two
+        // 4-op CREATEs of slots 203/204/205 landed ~2.4s apart, then three
+        // duplicate orders had to be cancelled. Re-plan from the fresh master
+        // instead. Release the slot first so the re-plan recursion (which uses
+        // skipBroadcastWait) does not wait on a flag this frame still holds.
+        if (preBroadcastWasFresh) {
+            const postWaitGuard = evaluateCommit(workingGrid, {
+                hasLock: false,
+                currentVersion: bot.manager._gridVersion
+            });
+            if (!postWaitGuard.canCommit) {
+                bot.manager.logger.log(
+                    `[COW] Plan went stale while waiting for an in-flight broadcast ` +
+                    `(${postWaitGuard.reason}); releasing the broadcast slot and re-planning from fresh master`,
+                    'warn'
+                );
+                bot._cowBroadcastInFlight = false;
+                heldBroadcastSlot = false;
+                const replan = await replanStaleBatch(bot, cowResult, replanDepth, postWaitGuard, seamPollIntervalMs);
+                if (replan.handled) {
+                    return replan.result;
+                }
+                // No fill context for a re-plan (or the re-plan limit was
+                // reached). The stale policy proceeds with the original plan, so
+                // re-claim the broadcast slot before shipping it.
+                if (await waitForCowBroadcastSingleFlight(bot, 'post-stale-replan')) {
+                    popPushedWorkingGrid(bot, cowResult);
+                    return { executed: false, aborted: true, reason: 'SHUTDOWN_IN_PROGRESS', hadRotation: false };
+                }
+                bot._cowBroadcastInFlight = true;
+                heldBroadcastSlot = true;
+            }
+        }
+
         await bot._ensureCredentialDaemonWritable('COW batch broadcast');
 
         bot.manager.logger.log(`[COW] Broadcasting batch with ${operations.length} operations...`, 'info');

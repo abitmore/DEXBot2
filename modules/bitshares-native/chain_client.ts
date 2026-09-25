@@ -5,7 +5,7 @@ import { GRAPHENE_CHAIN_ID, GRAPHENE_ADDRESS_PREFIX } from './serial/chain_const
 import { NATIVE_CLIENT } from '../constants.js';
 import { getErrorMessage } from '../utils/errors.js';
 
-const { CHAIN } = NATIVE_CLIENT;
+const { CHAIN, TRANSPORT } = NATIVE_CLIENT;
 
 
 class ChainConfigError extends Error {
@@ -100,6 +100,12 @@ function createChainClient(config: ChainClientConfig = {}) {
     }
     let _loginPromise: Promise<ChainConfig | undefined> | null = null;
     let _apiLimitGetAccountHistory: number | null = null;
+    // Escalation state for a login session that keeps rejecting cached api ids.
+    // A single stale error is handled in place (re-register + retry once); a
+    // sustained run means the session is wedged and only a fresh socket (on a
+    // different node) clears it.
+    let _staleApiErrorCount = 0;
+    let _staleApiWindowStartedAt = 0;
     if (Array.isArray(nodes) && nodes.length > 0) {
         transport._setNodes(nodes);
     }
@@ -114,6 +120,9 @@ function createChainClient(config: ChainClientConfig = {}) {
             // rejects them with "Assert Exception: _local_apis.size() > api_id".
             // Drop them so every accessor re-registers against this session.
             resetApiIds();
+            // A fresh login session is a clean slate for the stale-id escalation.
+            _staleApiErrorCount = 0;
+            _staleApiWindowStartedAt = 0;
 
             const result = await transport.call('call', [1, 'login', ['', '']]);
             if (!result) {
@@ -207,10 +216,39 @@ function createChainClient(config: ChainClientConfig = {}) {
             return await transport.call('call', [apiId, method, args]);
         } catch (err: any) {
             if (!isStaleApiIdError(err)) throw err;
+            noteStaleApiError(apiName);
             setApiId(null);
             const freshId = await registerApi(apiName);
             setApiId(freshId);
             return transport.call('call', [freshId, method, args]);
+        }
+    }
+
+    /**
+     * Record a stale-api error and escalate to a forced reconnect when the
+     * session keeps rejecting ids. Counting is windowed: a rare stale id (the
+     * normal reconnect-race case) never trips the escalation, while a session
+     * that fails every call trips it within a few RPCs. The forced reconnect
+     * marks the active node failed, so the transport prefers another node.
+     */
+    function noteStaleApiError(apiName: string): void {
+        const now = Date.now();
+        const windowMs = Number.isFinite(TRANSPORT.STALE_API_WINDOW_MS) ? TRANSPORT.STALE_API_WINDOW_MS : 60000;
+        const threshold = Number.isFinite(TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER)
+            ? TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER
+            : 3;
+        if (now - _staleApiWindowStartedAt > windowMs) {
+            _staleApiWindowStartedAt = now;
+            _staleApiErrorCount = 0;
+        }
+        _staleApiErrorCount++;
+        if (_staleApiErrorCount < threshold) return;
+        _staleApiErrorCount = 0;
+        _staleApiWindowStartedAt = now;
+        try {
+            transport.forceReconnect(`repeated stale api_id for ${apiName} (${threshold}x)`);
+        } catch (_: any) {
+            // forceReconnect never throws, but never let recovery mask the original error.
         }
     }
 
@@ -267,6 +305,15 @@ function createChainClient(config: ChainClientConfig = {}) {
         transport._setNodes(servers);
     }
 
+    /**
+     * Force a reconnect of the active connection, preferring a different node.
+     * Exposed so higher layers (subscriptions watchdog) can recover a session
+     * that is nominally connected but rejecting every namespaced call.
+     */
+    function forceReconnect(reason: string = 'forced'): void {
+        transport.forceReconnect(reason);
+    }
+
     function getNodes(): string[] { return transport._getNodes(); }
     function getStatus(): string { return transport.getStatus(); }
     function getConfig(): ChainConfig | null { return _chainConfig; }
@@ -317,6 +364,7 @@ function createChainClient(config: ChainClientConfig = {}) {
         transport,
         connect,
         disconnect,
+        forceReconnect,
         setNodes,
         getNodes,
         getStatus,
@@ -351,6 +399,9 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
     let _dbApiId: number | null = null;
     let _historyApiId: number | null = null;
     let _recoverPromise: Promise<void> | null = null;
+    // Windowed escalation for a read channel whose session keeps rejecting ids.
+    let _staleApiErrorCount = 0;
+    let _staleApiWindowStartedAt = 0;
 
     function resetApiIds(): void {
         _dbApiId = null;
@@ -444,11 +495,38 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
             return await transport.call('call', [apiId, method, args]);
         } catch (err: any) {
             if (!isStaleApiIdError(err)) throw err;
+            noteStaleApiError();
             setApiId(null);
             await recoverApis();
             const freshId = getApiId();
             if (freshId == null) throw err;
             return transport.call('call', [freshId, method, args]);
+        }
+    }
+
+    /**
+     * Windowed stale-id escalation for the read channel. Mirrors the main
+     * client: a rare reconnect-race stale id recovers in place, a sustained
+     * run forces a fresh connection on another node.
+     */
+    function noteStaleApiError(): void {
+        const now = Date.now();
+        const windowMs = Number.isFinite(TRANSPORT.STALE_API_WINDOW_MS) ? TRANSPORT.STALE_API_WINDOW_MS : 60000;
+        const threshold = Number.isFinite(TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER)
+            ? TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER
+            : 3;
+        if (now - _staleApiWindowStartedAt > windowMs) {
+            _staleApiWindowStartedAt = now;
+            _staleApiErrorCount = 0;
+        }
+        _staleApiErrorCount++;
+        if (_staleApiErrorCount < threshold) return;
+        _staleApiErrorCount = 0;
+        _staleApiWindowStartedAt = now;
+        try {
+            transport.forceReconnect(`repeated stale api_id on read channel (${threshold}x)`);
+        } catch (_: any) {
+            // forceReconnect never throws; keep the original error authoritative.
         }
     }
 
@@ -481,6 +559,7 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
     return {
         connect,
         disconnect,
+        forceReconnect: (reason: string = 'forced') => transport.forceReconnect(reason),
         db,
         history,
         setNodes,

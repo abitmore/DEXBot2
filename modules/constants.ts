@@ -1762,6 +1762,17 @@ let NATIVE_CLIENT = {
         // underlying connection failure; this window prevents redundant failover work.
         CLOSE_COALESCE_MS: 250,
 
+        // Escalation for a login session that keeps rejecting cached api ids
+        // (`_local_apis.size() > api_id`) even after the in-place recovery
+        // re-registers them. The retry-once path in callWithApiRecovery handles
+        // the normal reconnect case; a node/session that keeps replying stale is
+        // wedged, and only a fresh socket (preferably on another node) clears it.
+        // After STALE_API_FORCE_RECONNECT_AFTER stale errors within
+        // STALE_API_WINDOW_MS the client forces a reconnect that reports the
+        // active node as failed so the transport deprioritizes it.
+        STALE_API_FORCE_RECONNECT_AFTER: 3,
+        STALE_API_WINDOW_MS: 60000,
+
         // WebSocket close codes treated as benign — they do NOT count as a
         // node failure. 1000 = normal closure, 1001 = going away (server
         // shutdown/deploy). Any other code, or wasClean === false, is abnormal.
@@ -1852,6 +1863,25 @@ let NATIVE_CLIENT = {
         // if the server-side subscription silently stops delivering notices.
         // Default: 60 seconds.
         FILL_POLL_INTERVAL_MS: 60000,
+
+        // CHANNEL_DEGRADED_FAILURE_THRESHOLD: Consecutive processObjects
+        // failures for one account before the fill channel is considered
+        // degraded. The 2026-09-25 incident had every history call rejected
+        // for hours (stale api id) while the process stayed "connected", so
+        // the bot silently missed fills until a manual restart. Crossing this
+        // threshold forces a reconnect (which re-establishes the session and
+        // fires the post-reconnect safety-net sync).
+        CHANNEL_DEGRADED_FAILURE_THRESHOLD: 3,
+
+        // Minimum gap (ms) between fill-channel error logs for the same account.
+        // Without this, a dead channel logs one warn per poll per account and
+        // floods the error log (95k lines in ~3h during the incident).
+        CHANNEL_ERROR_LOG_INTERVAL_MS: 60000,
+
+        // Cooldown (ms) between forced reconnects triggered by channel
+        // degradation, so a multi-account setup cannot fire one reconnect per
+        // account in the same tick.
+        CHANNEL_RECONNECT_COOLDOWN_MS: 30000,
 
     },
 

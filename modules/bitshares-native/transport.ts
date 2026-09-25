@@ -570,6 +570,55 @@ function createTransport(config: TransportConfig = {}) {
         setStatus('closed');
     }
 
+    /**
+     * Force a reconnect on the active connection, preferring a different node.
+     *
+     * The normal close/keep-alive paths only observe a *socket* failure. A
+     * wedged login session (e.g. cached api ids rejected with
+     * `_local_apis.size() > api_id` after a server-side session swap) leaves
+     * the socket open while every namespaced RPC fails, so nothing ever tears
+     * it down. This reports the active node as failed (so shouldSkipNode /
+     * the failure ledger deprioritizes it) and closes the socket with
+     * autoreconnect armed, letting the reconnect land on a healthy node.
+     *
+     * No-op when there is no active socket.
+     * @param {string} reason - Human-readable trigger for logs/metrics
+     */
+    function forceReconnect(reason: string = 'forced'): void {
+        if (!ws || !nodeUrl) return;
+        const failedNode = nodeUrl;
+        const oldSocket = ws;
+        // A forced reconnect is a fresh connection attempt, not a continuation
+        // of the backoff from a prior failure. Mark it a reconnect (attempt > 0)
+        // so _onConnected fires the onReconnect callback (subscription
+        // re-establishment + post-reconnect safety-net sync).
+        reconnectAttempts = 1;
+        autoreconnect = true;
+        intentionalClose = false;
+        // Report once here; the teardown below detaches the old close handler so
+        // the node is never double-struck for this event.
+        notifyNodeFailure(failedNode, `forced reconnect: ${reason}`, 'forced-reconnect');
+        transportLogger.warn(`Forcing reconnect on ${failedNode} (${reason})`);
+
+        // Tear down synchronously instead of waiting for the close handshake:
+        // an unresponsive peer may never send its close frame, which is exactly
+        // the wedged-session case this recovery exists for. Detach onclose first
+        // so our own close() cannot schedule a second, duplicate reconnect.
+        oldSocket.onclose = null;
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+        cleanup();
+        try { oldSocket.close(); } catch (_: any) {}
+        ws = null;
+        setStatus('closed');
+
+        // Re-establish on the next preferred (non-failed) node. If this attempt
+        // fails, fall back to the normal backoff.
+        tryConnect().catch(() => scheduleReconnect());
+    }
+
     function call(method: string, params: any[], timeoutMs: number = rpcTimeoutMs): Promise<any> {
         if (!ws || ws.readyState !== 1) {
             return Promise.reject(new ConnectionError('WebSocket not open'));
@@ -628,6 +677,7 @@ function createTransport(config: TransportConfig = {}) {
     return {
         connect,
         disconnect,
+        forceReconnect,
         call,
         addMessageHandler,
         getStatus,

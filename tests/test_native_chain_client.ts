@@ -441,6 +441,51 @@ async function testStaleApiIdRecovery() {
     }
 }
 
+// ── Test: repeated stale api_id forces a hard reconnect ──────────────────
+
+async function testRepeatedStaleApiForcesReconnect() {
+    const { createChainClient } = require('../modules/bitshares-native/chain_client');
+    const { NATIVE_CLIENT } = require('../modules/constants');
+    const threshold = Number(NATIVE_CLIENT.TRANSPORT.STALE_API_FORCE_RECONNECT_AFTER) || 3;
+    const port = 20000 + Math.floor(Math.random() * 1000);
+    const wsServer = await createStrictWsServer(port);
+    const failures: any[] = [];
+
+    try {
+        const client = createChainClient({
+            nodes: [`ws://127.0.0.1:${port}/ws`],
+            autoreconnect: true,
+            onNodeFailure: (url, message, source) => failures.push({ url, message, source }),
+        });
+        await client.connect();
+        // Prime _dbApiId.
+        await client.db.get_assets(['1.3.0']);
+
+        // Each resetSession + call produces ONE stale-id error (the in-place
+        // recovery re-registers and retries). A sustained run must escalate to a
+        // forced reconnect that marks the node failed, instead of retrying the
+        // wedged session forever.
+        for (let i = 0; i < threshold; i++) {
+            (wsServer as any).resetSession();
+            try {
+                await client.db.get_assets(['1.3.0']);
+            } catch (_e) {
+                // The forced reconnect can close the socket mid-call; expected.
+            }
+        }
+
+        assert.ok(
+            failures.some((f: any) => f.source === 'forced-reconnect'),
+            `expected a forced-reconnect node failure after ${threshold} stale api_id errors`
+        );
+
+        client.disconnect();
+        console.log('  PASS: repeated stale api_id forces reconnect');
+    } finally {
+        (wsServer as any).close();
+    }
+}
+
 // ── Run all tests ────────────────────────────────────────────────────────
 
 (async () => {
@@ -453,6 +498,7 @@ async function testStaleApiIdRecovery() {
                 await testLazyApiRegistration();
                 await testReadOnlyClient();
                 await testStaleApiIdRecovery();
+                await testRepeatedStaleApiForcesReconnect();
                 testChainConfigValidation();
                 testSetNodes();
                 testBroadcastProxy();
