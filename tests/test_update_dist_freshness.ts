@@ -150,6 +150,26 @@ function testCollectCompiledSourcesShape() {
     }
 }
 
+function testTsconfigExcludedSourcesAreIgnored() {
+    const root = makeRoot();
+    try {
+        seedCompleteDist(root);
+        seedFreshPair(root, path.join('modules', 'ok.ts'));
+        // The updater must mirror the compiler's exclude: a source the root build
+        // skips (legacy tests compiled by tsconfig.tests.json) has no dist
+        // counterpart and must not mark the bundle stale.
+        writeFile(
+            path.join(root, 'tsconfig.json'),
+            JSON.stringify({ exclude: ['node_modules', 'dist', 'profiles', 'tests', 'analysis/legacy/tests'] })
+        );
+        writeFile(path.join(root, 'analysis', 'legacy', 'tests', 'not-built.ts'), 'export const n = 1;\n');
+        const status = inspectDistBundle(root, BUILD_DIR);
+        assert.strictEqual(status.needsRebuild, false, `tsconfig-excluded sources must be ignored, got: ${status.reason}`);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 function testFindMissingDistEntriesReportsRelativePaths() {
     const root = makeRoot();
     try {
@@ -173,6 +193,7 @@ function main() {
     testRootEntrypointIsCovered();
     testNestedNodeModulesAndDeclarationsAreIgnored();
     testCollectCompiledSourcesShape();
+    testTsconfigExcludedSourcesAreIgnored();
     testFindMissingDistEntriesReportsRelativePaths();
     console.log('update dist freshness tests passed');
 }

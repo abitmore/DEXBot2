@@ -26,6 +26,32 @@ export const REQUIRED_DIST_ENTRIES = [
 export const COMPILED_SOURCE_ROOTS = ['modules', 'market_adapter', 'scripts', 'analysis'];
 
 /**
+ * Relative directory prefixes the root `tsconfig.json` excludes from the
+ * production build. The freshness model must mirror the compiler: a source the
+ * build intentionally skips (e.g. tests compiled by `tsconfig.tests.json`) has
+ * no dist counterpart, and treating it as one makes the updater refuse a
+ * perfectly fresh bundle. Only plain directory paths are treated as prefixes;
+ * glob/negated patterns are ignored so this stays conservative and never
+ * over-excludes.
+ *
+ * @param root - Project root containing `tsconfig.json`.
+ */
+export function readBuildExcludePrefixes(root: string): string[] {
+    try {
+        const raw = fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8');
+        const parsed = JSON.parse(raw);
+        const exclude = Array.isArray(parsed?.exclude) ? parsed.exclude : [];
+        return exclude
+            .filter((entry: unknown): entry is string =>
+                typeof entry === 'string' && !entry.includes('*') && !entry.startsWith('!'))
+            .map((entry: string) => entry.replace(/\\/g, '/').replace(/\/+$/, ''))
+            .filter(Boolean);
+    } catch (_) {
+        return [];
+    }
+}
+
+/**
  * Collect every `.ts` file the root `tsconfig.json` compiles to `dist/<rel>.js`,
  * skipping declaration-only files and nested `node_modules`. The mapping is
  * 1:1 because the build runs a single root `tsc` with `rootDir: "."`.
@@ -35,7 +61,10 @@ export const COMPILED_SOURCE_ROOTS = ['modules', 'market_adapter', 'scripts', 'a
  */
 export function collectCompiledSources(root: string, buildDir: string): Array<{ src: string; dist: string }> {
     const out: Array<{ src: string; dist: string }> = [];
+    const excluded = readBuildExcludePrefixes(root);
+    const isExcluded = (rel: string) => excluded.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
     const add = (src: string, rel: string) => {
+        if (isExcluded(rel)) return;
         out.push({ src, dist: path.join(root, buildDir, rel.replace(/\.ts$/, '.js')) });
     };
     const walk = (dir: string, rel: string) => {
@@ -44,7 +73,7 @@ export function collectCompiledSources(root: string, buildDir: string): Array<{ 
         for (const entry of entries) {
             const childRel = rel ? `${rel}/${entry.name}` : entry.name;
             if (entry.isDirectory()) {
-                if (entry.name !== 'node_modules') walk(path.join(dir, entry.name), childRel);
+                if (entry.name !== 'node_modules' && !isExcluded(childRel)) walk(path.join(dir, entry.name), childRel);
             } else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
                 add(path.join(dir, entry.name), childRel);
             }

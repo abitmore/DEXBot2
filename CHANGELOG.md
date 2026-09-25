@@ -2,9 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.6.6] - 2026-09-24 - Stale Cancellation Guard Hardening
+## [1.6.6] - 2026-09-25 - Stale Cancellation Guard Hardening
 
 ### 2026-09-25
+
+- **Fix(update)**: make the dist freshness check honor the build's `tsconfig.json` exclude — the updater derived expected `dist/` outputs by walking every `.ts` under the compiled roots, so the archived `analysis/legacy/tests` (compiled only by `tsconfig.tests.json`) was read as a missing production output and the post-build check aborted with `Build left dist/ incomplete or stale (is missing dist/analysis/legacy/tests/test_derivative_chart.js)` after a successful build, blocking the restart. `collectCompiledSources` now reads the root `tsconfig.json` `exclude` directory prefixes and skips them, mirroring the compiler; regression in `tests/test_update_dist_freshness.ts` (`scripts/update_dist_freshness.ts`, `tests/test_update_dist_freshness.ts`).
 
 - **Refactor(analysis)**: archive the legacy SMA/MACD/RSI derivative analyzer — the classic-indicator tool (superseded by the live Kalman/Hurst/PE stack, with no production importer since `modules/` and `market_adapter/core/` hold none of its symbols) moves to `analysis/legacy/` with a local README. It loses its `analysis:derivatives` npm script, is scrubbed from the centralized docs (`analysis/README.md`, `analysis/trend_detection/README.md`, `scripts/README.md`, `docs/README.md`, `docs/architecture.md`, `docs/developer_guide.md`, `docs/DEXBOT_COMPARISON.md`), and is excluded from the published npm package (`!analysis/legacy` + `!dist/analysis/legacy`). Its four regression tests move under `analysis/legacy/tests/` out of the default `npm test` glob, with a new opt-in `npm run test:legacy`; the production build excludes that path while `tsconfig.tests.json` still typechecks it. Full suite 296/296 pass (`analysis/legacy/`, `package.json`, `tsconfig.json`, `tsconfig.tests.json`, docs).
 
