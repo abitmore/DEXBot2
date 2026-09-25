@@ -332,8 +332,7 @@ async function runAccountManager({ waitForConnection = false, exitAfter = false,
 
      let succeeded = false;
      try {
-         await chainKeys.main();
-         succeeded = true;
+         succeeded = await chainKeys.main();
      } finally {
          if (disconnectAfter) {
              try {
@@ -1387,12 +1386,19 @@ const { writeJSON } = storage;
         const setupKeys = setupKeysAnswer === 'y' || setupKeysAnswer === 'yes';
         if (setupKeys) {
             console.log();
-            await chainKeys.main();
-            console.log();
-            console.log(startupSuccess('Master password configured! Now you can:'));
-            console.log('  dexbot bot   - Create and manage bots');
-            console.log('  dexbot        - Run your configured bots');
-            console.log();
+            const keySetupCompleted = await chainKeys.main();
+            if (keySetupCompleted) {
+                console.log();
+                console.log(startupSuccess('Master password configured! Now you can:'));
+                console.log('  dexbot bot   - Create and manage bots');
+                console.log('  dexbot        - Run your configured bots');
+                console.log();
+            } else {
+                console.log();
+                console.log('Master password setup cancelled.');
+                console.log('Run `dexbot key` when you are ready to configure it.');
+                console.log();
+            }
         } else {
             console.log();
             console.log('You can set up your master password later by running:');

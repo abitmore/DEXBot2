@@ -28,10 +28,10 @@
  * AUTHENTICATION (3 functions)
  *   1. authenticate() - Authenticate and return a derived vault secret (async)
  *      Prompts user for password, verifies vault metadata
- *      Throws MasterPasswordError on failure
+ *      Throws MasterPasswordError on failure, MasterPasswordCancelledError on Escape
  *   2. unlockWithPassword(password, accountsData) - Derive the vault secret from a password
  *      Throws MasterPasswordError if the password is incorrect
- *   3. isMasterPasswordFailure(err) - Check if an error is a master-password failure
+ *   3. isMasterPasswordFailure(err) - Check if an error is a master-password failure or cancellation
  *
  * KEY MANAGEMENT (4 functions)
  *   4. getPrivateKey(accountName, vaultSecret) - Get private key for account
@@ -99,6 +99,7 @@ import { path } from './path_api.js';
 import { readInput, readPassword, sleep } from './order/utils/system.js';
 import { TIMING, CREDENTIAL_PROMPTS } from './constants.js';
 import { PATHS } from './paths.js';
+import { CLI_COLORS } from './cli_colors.js';
 
 import { getStorage } from './storage/index.js';
 import { sendSocketJsonRequest } from './socket_json_client.js';
@@ -552,12 +553,34 @@ class MasterPasswordError extends Error {
 }
 
 /**
- * Check if an error is a master password authentication failure.
+ * Thrown when the user cancels an interactive master-password prompt (Escape).
+ * Kept distinct from MasterPasswordError so cancellation is never reported as a
+ * wrong-password failure, while still aborting callers that cannot continue.
+ */
+class MasterPasswordCancelledError extends Error {
+    static code = 'MASTER_PASSWORD_CANCELLED';
+    code: string;
+    constructor(message = 'Master password entry cancelled.') {
+        super(message);
+        this.name = 'MasterPasswordCancelledError';
+        this.code = MasterPasswordCancelledError.code;
+    }
+}
+
+/**
+ * Check if an error should abort an authentication-dependent flow.
+ * Covers both wrong-password failures and user cancellation.
  * @param {Error} err - Error to check
- * @returns {boolean} True if the error indicates a master password failure
+ * @returns {boolean} True if the error indicates authentication could not complete
  */
 function isMasterPasswordFailure(err: any) {
-    return !!(err && (err instanceof MasterPasswordError || err.code === MasterPasswordError.code));
+    return !!(
+        err &&
+        (err instanceof MasterPasswordError ||
+            err instanceof MasterPasswordCancelledError ||
+            err.code === MasterPasswordError.code ||
+            err.code === MasterPasswordCancelledError.code)
+    );
 }
 
 const MASTER_PASSWORD_MAX_ATTEMPTS = CREDENTIAL_PROMPTS.MAX_MASTER_PASSWORD_ATTEMPTS;
@@ -578,14 +601,17 @@ async function _promptPassword() {
     return await readPassword('Enter master password: ');
 }
 
+type VaultSecret = { kind: string; version: any; vaultKeyHex: string };
+
 /**
  * Authenticate and return a derived vault secret.
  * Prompts user interactively with limited retry attempts.
- * @returns {Promise<Object>} The verified vault secret
+ * @returns {Promise<VaultSecret>} The verified vault secret
+ * @throws {MasterPasswordCancelledError} If the user cancels with Escape
  * @throws {Error} If no master password is set
  * @throws {MasterPasswordError} If max attempts exceeded
  */
-async function authenticate() {
+async function authenticate(): Promise<VaultSecret> {
     const accountsData = loadAccounts();
     if (!hasModernVault(accountsData)) {
         if (Object.keys(accountsData.accounts || {}).length > 0) {
@@ -604,6 +630,10 @@ async function authenticate() {
                 throw new MasterPasswordError(`Incorrect master password after ${MASTER_PASSWORD_MAX_ATTEMPTS} attempts.`);
             }
             const enteredPassword = await _promptPassword();
+            if (enteredPassword === '\x1b') {
+                masterPasswordAttempts = 0;
+                throw new MasterPasswordCancelledError();
+            }
             try {
                 const secret = unlockWithPassword(enteredPassword, accountsData);
                 masterPasswordAttempts = 0;
@@ -617,7 +647,7 @@ async function authenticate() {
             console.log('Master password not correct. Please try again.');
         }
     } catch (err: any) {
-        if (err instanceof MasterPasswordError) {
+        if (err instanceof MasterPasswordError || err instanceof MasterPasswordCancelledError) {
             masterPasswordAttempts = 0;
         }
         throw err;
@@ -694,7 +724,7 @@ function listKeyNames(accounts: any) {
  * Prompts the user to select an account name from the stored keys.
  * @param {Object} accounts - The accounts object.
  * @param {string} promptText - The prompt message to display.
- * @returns {Promise<string|null>} The selected account name, or null/ESC.
+ * @returns {Promise<string|null>} The selected account name, or null if cancelled/invalid.
  */
 async function selectKeyName(accounts: any, promptText: any) {
     const names = Object.keys(accounts);
@@ -704,7 +734,7 @@ async function selectKeyName(accounts: any, promptText: any) {
     }
     names.forEach((name: any, index: any) => console.log(`  ${index + 1}. ${name}`));
     const raw = (await readInput(`${promptText} [1-${names.length}]: `)).trim();
-    if (raw === '\x1b') return '\x1b';
+    if (raw === '\x1b') return null;
 
     const idx = Number(raw) - 1;
     if (Number.isNaN(idx) || idx < 0 || idx >= names.length) {
@@ -718,7 +748,8 @@ async function selectKeyName(accounts: any, promptText: any) {
  * Interactively changes the master password and re-encrypts all stored keys.
  * @param {Object} accountsData - The loaded accounts data object.
  * @param {Object|Buffer|null} currentSecret - The current derived secret.
- * @returns {Promise<Object|Buffer|null>} The new vault secret, or the old one if failed/cancelled.
+ * @returns {Promise<Object|Buffer|null>} The new vault secret, or the old one if unchanged/failed.
+ * @throws {MasterPasswordCancelledError} If the user cancels with Escape
  */
 async function changeMasterPassword(accountsData: any, currentSecret: any) {
     if (!hasModernVault(accountsData)) {
@@ -727,7 +758,7 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
     }
 
     const oldPassword = await readPassword('Enter current master password: ');
-    if (oldPassword === '\x1b') return currentSecret;
+    if (oldPassword === '\x1b') throw new MasterPasswordCancelledError();
 
     if (!verifyCurrentPassword(oldPassword, accountsData)) {
         console.log('Incorrect master password!');
@@ -737,10 +768,10 @@ async function changeMasterPassword(accountsData: any, currentSecret: any) {
     const oldSecret = deriveModernSecretFromPassword(oldPassword, accountsData);
 
     const newPassword = await readPassword('Enter new master password:     ');
-    if (newPassword === '\x1b') return currentSecret;
+    if (newPassword === '\x1b') throw new MasterPasswordCancelledError();
 
     const confirmPassword = await readPassword('Confirm new master password:   ');
-    if (confirmPassword === '\x1b') return currentSecret;
+    if (confirmPassword === '\x1b') throw new MasterPasswordCancelledError();
 
     if (newPassword !== confirmPassword) {
         console.log('Passwords do not match!');
@@ -815,34 +846,43 @@ function saveAccounts(data: any) {
  * Provides menu for: add/modify/remove keys, test decryption,
  * change master password.
  */
-async function main() {
+async function main(): Promise<boolean> {
+    const ESC = '\x1b';
     console.log('Chain Key Manager');
     console.log('========================');
 
     let accountsData = loadAccounts();
-    let vaultSecret: { kind: string; version: any; vaultKeyHex: string; } | null = null;
+    let vaultSecret: VaultSecret | null = null;
+    let vaultReady = false;
 
     // Check if master password is set
     if (!hasModernVault(accountsData)) {
-        console.log('No master password set. Please set one:');
+        console.log(`${CLI_COLORS.boldRed}No master password set. Please set one:${CLI_COLORS.reset}`);
         const password1 = await readPassword('Enter master password:   ');
+        if (password1 === ESC) return false;
         const password2 = await readPassword('Confirm master password: ');
+        if (password2 === ESC) return false;
         if (password1 !== password2) {
             console.log('Passwords do not match!');
-            return;
+            return false;
         }
         vaultSecret = setupModernVault(accountsData, password1);
         saveAccounts(accountsData);
+        vaultReady = true;
         console.log('Master password set successfully.');
     } else {
         try {
             vaultSecret = await authenticate();
             accountsData = loadAccounts();
+            vaultReady = true;
             console.log('Authenticated successfully.');
         } catch (err: any) {
+            if (err instanceof MasterPasswordCancelledError) {
+                return false;
+            }
             if (err instanceof MasterPasswordError) {
                 console.log(getErrorMessage(err));
-                return;
+                return false;
             }
             throw err;
         }
@@ -861,8 +901,7 @@ async function main() {
          const choiceRaw = await readInput('Choose an option: ');
          console.log('');
 
-         if (choiceRaw === '\x1b' || choiceRaw.trim() === '') {
-             console.log('Keymanager closed!');
+         if (choiceRaw === ESC || choiceRaw.trim() === '') {
              break;
          }
 
@@ -870,14 +909,14 @@ async function main() {
 
         if (choice === '1') {
             const accountNameRaw = await readInput('Enter account name: ');
-            if (accountNameRaw === '\x1b') continue;
+            if (accountNameRaw === ESC) continue;
             const accountName = accountNameRaw.trim();
             if (!accountName) {
                 continue;
             }
 
             const privateKeyRaw = await readPassword('Enter private key:  ');
-            if (privateKeyRaw === '\x1b') continue;
+            if (privateKeyRaw === ESC) continue;
 
             const privateKey = privateKeyRaw.replace(/\s+/g, '');
 
@@ -895,10 +934,10 @@ async function main() {
             console.log(`Account '${accountName}' added successfully.`);
         } else if (choice === '2') {
             const accountName = await selectKeyName(accountsData.accounts, 'Select key to modify');
-            if (accountName === '\x1b' || !accountName) continue;
+            if (!accountName) continue;
             
             const privateKeyRaw = await readPassword('Enter private key:   ');
-            if (privateKeyRaw === '\x1b') continue;
+            if (privateKeyRaw === ESC) continue;
             
             const privateKey = privateKeyRaw.replace(/\s+/g, '');
 
@@ -915,10 +954,11 @@ async function main() {
             console.log(`Account '${accountName}' updated successfully.`);
         } else if (choice === '3') {
             const accountName = await selectKeyName(accountsData.accounts, 'Select key to remove');
-            if (accountName === '\x1b' || !accountName) continue;
+            if (!accountName) continue;
             
-            const confirm = (await readInput(`Remove '${accountName}'? (y/n): `)).trim().toLowerCase();
-            if (confirm === '\x1b') continue;
+            const confirmRaw = await readInput(`Remove '${accountName}'? (y/n): `);
+            if (confirmRaw === ESC) continue;
+            const confirm = confirmRaw.trim().toLowerCase();
 
             if (confirm === 'y') {
                 delete accountsData.accounts[accountName];
@@ -931,7 +971,7 @@ async function main() {
             listKeyNames(accountsData.accounts);
         } else if (choice === '5') {
             const accountName = await selectKeyName(accountsData.accounts, 'Select key to test');
-            if (accountName === '\x1b' || !accountName) continue;
+            if (!accountName) continue;
             
             try {
                 const decryptedKey = decrypt(accountsData.accounts[accountName].encryptedKey, vaultSecret);
@@ -940,14 +980,24 @@ async function main() {
                 console.log('Decryption failed - wrong master password or corrupted data');
             }
         } else if (choice === '6') {
-            vaultSecret = await changeMasterPassword(accountsData, vaultSecret);
+            try {
+                vaultSecret = await changeMasterPassword(accountsData, vaultSecret);
+            } catch (err: any) {
+                if (err instanceof MasterPasswordCancelledError) {
+                    console.log('Cancelled.');
+                    continue;
+                }
+                throw err;
+            }
         } else if (choice === '7') {
-            console.log('Keymanager closed!');
             break;
         } else {
             console.log('Invalid choice.');
         }
     }
+
+    console.log('Keymanager closed!');
+    return vaultReady;
 }
 
 /**
