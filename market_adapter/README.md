@@ -587,6 +587,9 @@ market_adapter/
 |-- inputs/
 |   |-- kibana_source.ts           Elasticsearch LP data source
 |   |-- fetch_lp_data.ts           historical LP candle exporter
+|   |-- fetch_book_data.ts         order-book candle exporter
+|   |-- kibana_feed_source.ts      MPA feed candle source
+|   |-- window_cache.ts            shared month-shard candle cache
 |   `-- fetch_cex_synthetic_data.ts  public CEX synthetic-candle seed importer
 |-- utils/
 |   |-- chain.ts                   blockchain query helpers
@@ -829,9 +832,9 @@ suppress writes via `unresolved_candle_gaps` until repaired on a future cycle.
 The adapter prunes old candles to the required AMA window and acts only on
 closed 1h candles.
 
-#### Shared Chunk Cache and Fetch Robustness
+#### Shared Month-Shard Cache and Fetch Robustness
 
-Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): candles live in fixed calendar-month shards (`<base>.shard_YYYY-MM.json`, UTC) whose names never shift, so a run loads only the shards overlapping its requested range, queries only genuinely missing buckets plus a bounded 48h tail refresh, and rewrites only shards that gained buckets or query coverage — pure-reuse runs perform zero writes and zero deletes. Shard metas record the ranges actually queried (`meta.queriedRanges`, monotonically unioned). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted. Legacy run-relative `*.chunk_*` files are still read: overlapping ones are absorbed into the shards (buckets + coverage) and retired once every bucket provably lives in a shard, while disjoint ones are never loaded and never deleted — narrow runs cannot wipe older history by construction. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
+Pool, book, and feed candle fetches share one cache entry point (`runCachedWindows` in `market_adapter/inputs/window_cache.ts`): candles live in fixed calendar-month shards (`<base>.shard_YYYY-MM.json`, UTC) whose names never shift, so a run loads only the shards overlapping its requested range, queries only genuinely missing buckets plus a bounded 48h tail refresh, and rewrites only shards that gained buckets or query coverage — pure-reuse runs perform zero writes and zero deletes. Shard metas record the ranges actually queried (`meta.queriedRanges`, monotonically unioned). A missing range is pruned only when recorded query coverage genuinely covers it — the absence of local buckets alone never certifies history as empty. Partial windows merge into the run output but are never persisted. Stable month shards are the only supported cache format; obsolete run-relative cache files are ignored. Every range fetch runs through `fetchRangeWithRetry` (per-range attempts + linear backoff + abort-signal timeout; the LP path keeps a 4-attempt budget), one-shot Kibana queries retry transient errors (3 attempts), paged fetchers cap at `kibanaMaxPages` (500), and bidirectional fetches tolerate a one-direction failure.
 
 #### AMA Warmup Window — Why Candle Length Matters
 

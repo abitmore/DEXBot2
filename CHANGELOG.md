@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [1.6.6] - 2026-09-24 - Stale Cancellation Guard Hardening
 
+### 2026-09-25
+
+- **Refactor(cache)**: drop legacy run-relative candle-cache migration — stable calendar-month shards are now the only supported format: `*.chunk_*` files are ignored (never loaded, never deleted) instead of being absorbed into shards, and the `*.fetch_manifest.json` identity fallback is removed. The LP fetcher's progress output reads `Window N/M` (was `Chunk N/M`) and its match predicate is renamed `isLpShardMatch`. Refresh/retry/tail semantics are unchanged. Behavioral impact: installs holding only legacy chunks re-fetch once on next run, and the stale files remain inert on disk. Full suite 292/292 pass (`market_adapter/inputs/window_cache.ts`, `market_adapter/inputs/fetch_lp_data.ts`, `tests/test_window_cache.ts`, `market_adapter/README.md`).
+
 ### 2026-09-24
 
 - **Fix(order-engine)**: close stale-cancellation replays across the correction queue, COW orphan maintenance, and startup reconciliation. Drain-time validation now rechecks live ownership and source-specific geometry for cancel-only, type-mismatch, and gap-evacuation decisions; COW auto-cancel skips adopted orders; startup Phase 2 validates each plan against its own unchanged chain order and live slot/geometry instead of requiring whole-book snapshot equality. Surplus settlement uses only the current live owner and skips stale snapshot fallback. Centralized live-owner lookup across the guards and added regression coverage for truncated/failed pre-cancel reads, per-plan snapshot independence, and stale settlement (`modules/order/utils/order.ts`, `modules/order/grid_reconcile.ts`, `modules/order/grid_reconcile_internal.ts`, `modules/dexbot_cow_runtime.ts`, `tests/test_correction_queue_staleness.ts`, `tests/test_grid_reconcile_regressions.ts`, `tests/test_uncertain_broadcast.ts`).
