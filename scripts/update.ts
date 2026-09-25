@@ -34,10 +34,11 @@
  * Usage: node dist/scripts/update.js
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { sendControlCommand } from '../modules/launcher/supervisor_control.js';
 import { findMissingDistEntries, inspectDistBundle } from './update_dist_freshness.js';
 
@@ -460,23 +461,75 @@ function snapshotMonolithicState() {
 }
 
 /**
+ * Absolute file:// URL of the freshly built pm2.js. Prefers dist/ and falls
+ * back to the source-tree shim when no build output exists.
+ */
+function resolvePm2ModuleUrl(): string {
+    const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
+    const pm2Path = fs.existsSync(distPath)
+        ? distPath
+        : path.join(PATHS.PROJECT_ROOT, 'pm2.js');
+    return pathToFileURL(pm2Path).href;
+}
+
+/**
  * Regenerate the PM2 ecosystem config so profiles/ecosystem.config.cjs
  * reflects the current bots.json state (including dexbot-adapter and
- * dexbot-update service apps). Uses the freshly compiled dist/pm2.js.
+ * dexbot-update service apps).
+ *
+ * This MUST run in a fresh process. The updater loaded the pre-pull copies of
+ * modules/paths.js, config.js, constants.js, ... at startup, and Node's ESM
+ * registry is keyed by resolved URL for the process lifetime. Rewriting dist/
+ * via `npm run build` does not evict those cached modules, so importing the
+ * freshly built dist/pm2.js in-process resolves its static imports back to
+ * the stale cached copies. That surfaces as build-fresh-but-import-broken
+ * errors such as "does not provide an export named 'printRelocationNotices'".
+ * A child process starts with an empty registry and sees the new build.
  */
 async function regenerateEcosystemConfig() {
     log('Regenerating PM2 ecosystem config...');
     try {
-        // Try loading from compiled dist/ first, then fall back to source dir
-        const distPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-        const pm2Module = fs.existsSync(distPath)
-            ? await import(distPath)
-            : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-        pm2Module.generateEcosystemConfig({ clawOnly: false, exitOnError: false });
+        const moduleUrl = resolvePm2ModuleUrl();
+        const script = [
+            `import(${JSON.stringify(moduleUrl)})`,
+            '  .then((m) => m.generateEcosystemConfig({ clawOnly: false, exitOnError: false }))',
+            '  .catch((err) => { console.error(err && err.stack ? err.stack : String(err)); process.exit(1); });',
+        ].join('\n');
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+            stdio: 'inherit',
+            cwd: PATHS.PROJECT_ROOT,
+        });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+            throw new Error(`ecosystem generator exited with code ${result.status}`);
+        }
         log('Ecosystem config regenerated successfully.');
     } catch (err: any) {
         log(`Warning: Ecosystem config regeneration failed (${getErrorMessage(err)}). Continuing with existing config.`);
     }
+}
+
+/**
+ * Evaluate `needsMarketAdapter(runningActiveBots)` from the freshly built
+ * dist/pm2.js in a child process. Importing pm2.js in-process after the build
+ * is unsafe for the same ESM-cache reason documented on
+ * regenerateEcosystemConfig(): its link against the cached pre-pull
+ * modules/paths.js can fail even though dist/ is fresh.
+ */
+function pm2NeedsMarketAdapter(runningActiveBots: any[]): boolean {
+    const moduleUrl = resolvePm2ModuleUrl();
+    const script =
+        `import(${JSON.stringify(moduleUrl)})` +
+        `.then((m) => { process.stdout.write(m.needsMarketAdapter(${JSON.stringify(runningActiveBots)}) ? 'true' : 'false'); })` +
+        `.catch((err) => { console.error(err && err.stack ? err.stack : String(err)); process.exit(1); });`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        stdio: ['ignore', 'pipe', 'inherit'],
+        cwd: PATHS.PROJECT_ROOT,
+        encoding: 'utf8',
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`pm2 helper exited with code ${result.status}`);
+    return (result.stdout || '').trim() === 'true';
 }
 
 /**
@@ -542,11 +595,7 @@ async function restartActiveRuntimes({ monolithicWasRunning, hadMonolithicFiles 
                             const botsToRestart = activeInConfig.filter((name: string) => (runningProcesses as string[]).includes(name));
                             const activeBots = (config.bots || []).filter((b: any) => b.active !== false);
                             const runningActiveBots = activeBots.filter((b: any) => (runningProcesses as string[]).includes(b.name));
-                            const maPath = path.join(PATHS.PROJECT_ROOT, BUILD_DIR, 'pm2.js');
-                            const pm2Module = fs.existsSync(maPath)
-                                ? await import(maPath)
-                                : await import(path.join(PATHS.PROJECT_ROOT, 'pm2.js'));
-                            const marketAdapterRequired = pm2Module.needsMarketAdapter(runningActiveBots);
+                            const marketAdapterRequired = pm2NeedsMarketAdapter(runningActiveBots);
 
                             const serviceAppsToRestart: string[] = marketAdapterRequired ? ['dexbot-adapter'] : [];
                             const servicesToRestart: string[] = serviceAppsToRestart.filter((name: string) => (runningProcesses as string[]).includes(name));

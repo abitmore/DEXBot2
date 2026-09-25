@@ -105,7 +105,7 @@
     "test": "npm run build && npm run build:tests && npm run build --prefix claw && node dist/scripts/run-tests.js",
     "test:live": "RUN_LIVE_BITSHARES_TESTS=1 npm run build && npm run build:tests && npm run build --prefix claw && node dist/scripts/run-tests.js",
     "clean": "node scripts/clean-dist.js",
-    "build": "tsc && chmod +x dist/dexbot.js dist/bot.js dist/unlock.js dist/pm2.js dist/credential-daemon.js",
+    "build": "echo \"tsc is compiling ...\" && tsc && chmod +x dist/dexbot.js dist/bot.js dist/unlock.js dist/pm2.js dist/credential-daemon.js",
     "build:clean": "npm run clean && npm run build",
     "build:tests": "tsc -p tsconfig.tests.json && cp tests/package.json dist/tests/package.json && cp tests/helpers/esm_mock_hooks.mjs tests/helpers/esm_mock_loader.mjs dist/tests/helpers/ && mkdir -p dist/analysis/legacy/tests && cp analysis/legacy/tests/package.json dist/analysis/legacy/tests/package.json",
     "typecheck": "tsc --noEmit",
