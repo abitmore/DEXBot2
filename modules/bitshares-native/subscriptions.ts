@@ -699,7 +699,8 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
             }
         } catch (err: any) {
             sub.lastNoticeAt = Date.now();
-            subscriptionsLogger.warn(`processObjects: error for ${sub.accountName}: ${getErrorMessage(err)} (node=${activeNodeUrl()})`);
+            const context = options?.context ? ` (${options.context})` : '';
+            subscriptionsLogger.warn(`processObjects${context}: error for ${sub.accountName}: ${getErrorMessage(err)} (node=${activeNodeUrl()})`);
             if (sub.onError && !err?.subscriptionErrorReported) {
                 try { sub.onError(err); } catch (_: any) {}
             }
@@ -819,7 +820,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     // already handles the quiet-after-gap case in ~250ms, so this poll
                     // is only the safety-net fallback.
                     try {
-                        await processObjects(entry, [entry.accountId]);
+                        await processObjects(entry, [entry.accountId], { context: 'fill-poll' });
                     } catch (err: any) {
                         subscriptionsLogger.warn(`Fill poll failed for ${entry.accountName}: ${getErrorMessage(err)}`);
                     }

@@ -20,6 +20,20 @@ function toRpcMethodName(method: string): string {
     return String(method).replace(/([A-Z])/g, (_: string, ch: string) => `_${ch.toLowerCase()}`);
 }
 
+/**
+ * True when an RPC error means the api_id we sent is not registered on the
+ * current websocket login session. bitshares-core returns:
+ *   Execution error: Assert Exception: _local_apis.size() > api_id:
+ * A cached api id can outlive its session when a reconnect swaps the socket
+ * without a status 'closed' event, or when the node drops the login session
+ * server-side; the id then points past the new session's _local_apis map.
+ */
+function isStaleApiIdError(err: any): boolean {
+    const message = err && err.message ? String(err.message) : String(err ?? '');
+    if (!message) return false;
+    return message.includes('_local_apis') || (message.includes('api_id') && message.includes('Assert Exception'));
+}
+
 interface ChainClientConfig {
     nodes?: string[];
     onStatusChange?: ((status: string, nodeUrl: string | null) => void) | null;
@@ -53,9 +67,7 @@ function createChainClient(config: ChainClientConfig = {}) {
 
     const wrappedOnStatusChange = (status: string, nodeUrl: string | null) => {
         if (status === 'closed') {
-            _dbApiId = null;
-            _historyApiId = null;
-            _broadcastApiId = null;
+            resetApiIds();
             _chainConfig = null;
         }
         if (onStatusChange) onStatusChange(status, nodeUrl);
@@ -80,6 +92,12 @@ function createChainClient(config: ChainClientConfig = {}) {
     let _historyApiId: number | null = null;
     let _broadcastApiId: number | null = null;
     let _chainConfig: ChainConfig | null = null;
+
+    function resetApiIds(): void {
+        _dbApiId = null;
+        _historyApiId = null;
+        _broadcastApiId = null;
+    }
     let _loginPromise: Promise<ChainConfig | undefined> | null = null;
     let _apiLimitGetAccountHistory: number | null = null;
     if (Array.isArray(nodes) && nodes.length > 0) {
@@ -90,6 +108,13 @@ function createChainClient(config: ChainClientConfig = {}) {
         if (_loginPromise) return _loginPromise;
 
         _loginPromise = (async () => {
+            // validateNode() runs login() on every (re)connect. A new websocket
+            // session starts with an empty _local_apis map, so api ids cached
+            // from the previous session are no longer addressable — the node
+            // rejects them with "Assert Exception: _local_apis.size() > api_id".
+            // Drop them so every accessor re-registers against this session.
+            resetApiIds();
+
             const result = await transport.call('call', [1, 'login', ['', '']]);
             if (!result) {
                 throw new ConnectionError('Login error');
@@ -159,25 +184,64 @@ function createChainClient(config: ChainClientConfig = {}) {
         return apiId;
     }
 
-    async function dbCall(method: string, args?: any[]): Promise<any> {
-        if (_dbApiId == null) {
-            _dbApiId = await registerApi('database');
+    /**
+     * Invoke a login_api-registered RPC namespace, transparently recovering
+     * from a stale api id. If the node rejects the call because the id is not
+     * registered on the current session, drop the cached id, re-register the
+     * namespace on this session, and retry once. This is what keeps the fill
+     * history channel alive across a node failover without a process restart.
+     */
+    async function callWithApiRecovery(
+        apiName: string,
+        method: string,
+        args: any[],
+        getApiId: () => number | null,
+        setApiId: (id: number | null) => void,
+    ): Promise<any> {
+        let apiId = getApiId();
+        if (apiId == null) {
+            apiId = await registerApi(apiName);
+            setApiId(apiId);
         }
-        return transport.call('call', [_dbApiId, toRpcMethodName(method), args || []]);
+        try {
+            return await transport.call('call', [apiId, method, args]);
+        } catch (err: any) {
+            if (!isStaleApiIdError(err)) throw err;
+            setApiId(null);
+            const freshId = await registerApi(apiName);
+            setApiId(freshId);
+            return transport.call('call', [freshId, method, args]);
+        }
+    }
+
+    async function dbCall(method: string, args?: any[]): Promise<any> {
+        return callWithApiRecovery(
+            'database',
+            toRpcMethodName(method),
+            args || [],
+            () => _dbApiId,
+            (id) => { _dbApiId = id; },
+        );
     }
 
     async function historyCall(method: string, args?: any[]): Promise<any> {
-        if (_historyApiId == null) {
-            _historyApiId = await registerApi('history');
-        }
-        return transport.call('call', [_historyApiId, toRpcMethodName(method), args || []]);
+        return callWithApiRecovery(
+            'history',
+            toRpcMethodName(method),
+            args || [],
+            () => _historyApiId,
+            (id) => { _historyApiId = id; },
+        );
     }
 
     async function broadcastCall(method: string, args?: any[]): Promise<any> {
-        if (_broadcastApiId == null) {
-            _broadcastApiId = await registerApi('network_broadcast');
-        }
-        return transport.call('call', [_broadcastApiId, method, args || []]);
+        return callWithApiRecovery(
+            'network_broadcast',
+            method,
+            args || [],
+            () => _broadcastApiId,
+            (id) => { _broadcastApiId = id; },
+        );
     }
 
     async function broadcastTx(signedTx: any): Promise<any> {
@@ -194,9 +258,7 @@ function createChainClient(config: ChainClientConfig = {}) {
     }
 
     function disconnect(): void {
-        _dbApiId = null;
-        _historyApiId = null;
-        _broadcastApiId = null;
+        resetApiIds();
         _chainConfig = null;
         transport.disconnect();
     }
@@ -360,22 +422,52 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
         transport.disconnect();
     }
 
-    async function db(method: string, args?: any[]): Promise<any> {
-        if (_dbApiId == null) {
+    /**
+     * Invoke a read-only RPC namespace, recovering from a stale api id by
+     * re-registering on the current session and retrying once. Mirrors the
+     * main client's callWithApiRecovery so a missed 'closed' event cannot
+     * permanently wedge the read channel.
+     */
+    async function callWithRecovery(
+        method: string,
+        args: any[],
+        getApiId: () => number | null,
+        setApiId: (id: number | null) => void,
+    ): Promise<any> {
+        if (getApiId() == null) {
             await recoverApis();
             const err = await validateChain();
             if (err) throw err;
         }
-        return transport.call('call', [_dbApiId, toRpcMethodName(method), args || []]);
+        const apiId = getApiId();
+        try {
+            return await transport.call('call', [apiId, method, args]);
+        } catch (err: any) {
+            if (!isStaleApiIdError(err)) throw err;
+            setApiId(null);
+            await recoverApis();
+            const freshId = getApiId();
+            if (freshId == null) throw err;
+            return transport.call('call', [freshId, method, args]);
+        }
+    }
+
+    async function db(method: string, args?: any[]): Promise<any> {
+        return callWithRecovery(
+            toRpcMethodName(method),
+            args || [],
+            () => _dbApiId,
+            (id) => { _dbApiId = id; },
+        );
     }
 
     async function history(method: string, args?: any[]): Promise<any> {
-        if (_historyApiId == null) {
-            await recoverApis();
-            const err = await validateChain();
-            if (err) throw err;
-        }
-        return transport.call('call', [_historyApiId, toRpcMethodName(method), args || []]);
+        return callWithRecovery(
+            toRpcMethodName(method),
+            args || [],
+            () => _historyApiId,
+            (id) => { _historyApiId = id; },
+        );
     }
 
     function setNodes(servers: string[]): void {
