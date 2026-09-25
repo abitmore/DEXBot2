@@ -32,7 +32,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 
 ### 📈 [Analysis](../analysis/README.md)
 *Research runners, chart generators, and tuning helpers.*
-- **Trend Detection**: SMA, MACD, RSI, Hurst, Kalman, and regime analysis tools
+- **Trend Detection**: Hurst, Kalman, and regime analysis tools
 - **AMA Fitting**: Parameter fitting, comparison charts, and LP data workflows
 - **Bot Fitting**: Grid parameter sweep backtests for AMA winners
 - **TradingView Exports**: Chart export utilities for visual analysis
@@ -158,7 +158,7 @@ This directory contains the comprehensive technical documentation for the DEXBot
 - **Configurable startPrice & gridPrice**: Fixed numeric, pool, book-derived, or AMA keyword pricing modes
 - **Pool ID Caching**: Optimization for price derivation
 - **Order State Helper Functions**: Centralized predicate functions for state checking
-- **Signal Concepts**: Dynamic weights, regime detection, derivative signals, and market adapter integration
+- **Signal Concepts**: Dynamic weights, regime detection, and market adapter integration
 - **Debt Policy**: Native MPA and credit offer configuration and runtime rules
 - **Practical How-Tos**: Adding features step by step, common pitfalls to avoid, and useful debugging commands.
 - **Glossary**: Definitions of project-specific terminology (e.g., "Virtual Orders", "Rotation", "Pipeline Safety", "WorkingGrid", "COW Commit", "Dynamic Weight", "Regime Detection").

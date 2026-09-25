@@ -754,7 +754,7 @@ Where:
 - Single hardcoded core strategy (boundary-crawl grid)
 - Extending core trading behavior requires modifying runtime modules
 - Market adapter (`market_adapter/`) provides real-time signal-driven parameter tuning: AMA center, dynamic weights, Kalman confirmation, ATR/regime dampening, and asymmetric bounds
-- `analysis/` tools provide AMA fitting, dynamic-weight research, derivative/Kalman signal research, volatility/regime analysis, bot-parameter sweeps, bot-activity queries (`bot_usage/`), and FIFO-based trade PnL analysis (`trade_profitability.ts`)
+- `analysis/` tools provide AMA fitting, dynamic-weight research, Kalman signal research, volatility/regime analysis, bot-parameter sweeps, bot-activity queries (`bot_usage/`), and FIFO-based trade PnL analysis (`trade_profitability.ts`)
 - `claw/` exposes a separate automation and AI-consumption layer: profile reading, chain queries/actions, short MPA workflows, position health, runtime manifests, and skill/plugin artifacts
 
 ### Extensibility Comparison

@@ -129,8 +129,6 @@ A **phantom order** is an order in ACTIVE/PARTIAL state WITHOUT a valid `orderId
 | **Kalman Confirmation** | Kalman-filtered trend signal blended with AMA slope for smoother weight transitions |
 | **Symmetric Shift** | Volatility-driven downward weight penalty applied equally to both sides (ATR-based) |
 | **Asymmetric Offset** | Directional weight shift (buy-heavy or sell-heavy) driven by AMA/Kalman trend |
-| **Derivative Signal** | SMA/MACD/RSI-based entry bias and momentum gate for optional strategy filtering |
-| **Momentum Gate** | N-bar commitment tracking that confirms derivative signals before acting |
 | **GridPrice** | Price anchor for grid math; can be numeric, `"pool"`, `"book"`, or AMA keyword (`"ama"`, `"ama1"`–`"ama4"`) |
 
 ### Grid Concepts
@@ -1211,8 +1209,6 @@ Located in `tests/` (with `helpers/` subdirectory):
 - `test_bts_fee_logic.ts` - BTS fee deduction and settlement
 - `test_market_adapter_signal_gates.ts` - Market adapter signal validation
 - `test_dynamic_weight_override_wiring.ts` - Dynamic weight config wiring
-- `test_derivative_signal_trap_regression.ts` - Derivative signal trap tests
-- `test_derivative_momentum_gate.ts` - Momentum gate tests
 - `test_cr_planner.ts` - Collateral ratio planner tests
 - `test_dexbot_credit_wiring.ts` - Credit runtime integration tests
 - `test_credential_daemon.ts` / `test_credential_session_cache.ts` - Credential security tests

@@ -341,7 +341,6 @@ The following scripts allow you to call `dexbot` commands directly from the `scr
 | Command | Purpose |
 |:---|:---|
 | `npm run market-adapter:fetch-cex-synthetic` | Fetch CEX synthetic data for market adapter |
-| `npm run analysis:derivatives` | Derivative analysis report |
 | `npm run analysis:tradingview` | TradingView-style chart export |
 | `npm run analysis:trade-pnl` | Trade PnL analysis from fill data |
 | `npm run ama:chart:lp-local` | Generate local LP comparison chart |
@@ -408,14 +407,6 @@ npm run lp:chart -- --data <lp-export.json>
 ```bash
 # Generate the local LP comparison chart
 npm run ama:chart:lp-local -- --data <lp-export.json>
-```
-
-### Derivative Trend Analysis
-**File:** `analysis/analyze_derivatives.ts`
-**Purpose:** Generate the derivative analysis report.
-```bash
-# Generate the derivative analysis report
-npm run analysis:derivatives -- --source json --file <file.json>
 ```
 
 ---

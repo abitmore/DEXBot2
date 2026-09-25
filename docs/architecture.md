@@ -1161,8 +1161,6 @@ graph LR
     B -->|Real-world Scenarios| B3["Fills/FEE Tests"]
 
     C -->|Dynamic Weight| C1["dynamic_weight"]
-    C -->|Derivative Trap| C2["derivative_signal"]
-    C -->|Momentum Gate| C3["momentum_gate"]
 
     D -->|CR Planner| D1["cr_planner"]
     D -->|Credit Runtime| D2["credit_runtime"]
@@ -1195,13 +1193,12 @@ node dist/tests/test_dexbot_credit_wiring.js
 - ✅ Edge cases covered (zero funds, max orders, etc.)
 - ✅ Concurrent operations tested with locks
 - ✅ State transitions validated end-to-end
-- ✅ Signal pipelines tested (dynamic weight, derivative traps)
+- ✅ Signal pipelines tested (dynamic weight)
 - ✅ Credit/debt runtime tested (CR planner, MPA wiring)
 
 **Test Suite Evolution:**
 - 50+ test cases for signal intelligence and credit runtime
 - Dynamic weight override and market adapter signal gate tests
-- Derivative momentum gate and signal trap regression tests
 - Credit/debt tests with CR planner and MPA wiring validation
 
 ### Testing Best Practices

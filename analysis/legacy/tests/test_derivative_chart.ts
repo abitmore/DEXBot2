@@ -4,7 +4,7 @@ const assert = require('assert');
 
 const {
     generateHTML,
-} = require('../analysis/derivative_chart_generator');
+} = require('../derivative_chart_generator');
 
 function makeResult(i) {
     const price = 100 + i;
