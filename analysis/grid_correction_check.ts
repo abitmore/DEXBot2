@@ -2,9 +2,9 @@
 'use strict';
 
 /**
- * GRID CORRECTION CHECK
+ * LAST-FILL-GUARD CHECK
  *
- * Validates LAST-FILL-GUARD discipline (ceb53819): pivot ± halfIncrement
+ * Validates LAST-FILL-GUARD discipline: pivot ± halfIncrement
  *   Last fill @x with increment i (half=i/2) gates BOTH sides regardless of
  *   last side — BUY must be < x*(1-half/100), SELL > x*(1+half/100).
  *   e.g. x=1000, i=0.5% => BUY < 997.5 / SELL > 1002.5.
@@ -21,7 +21,7 @@
  * modules/constants.ts:DEFAULT_CONFIG.incrementPercent fallback (0.5).
  *
  * Fetches fill_order operations from Kibana (same pipeline as
- * trade_profitability.ts) and checks for price-order violations.
+ * trade_profitability.ts) and checks for last-fill guard violations.
  *
  * Usage:
  *   node dist/analysis/grid_correction_check.js --bot-key <bot-key> --hours 168
@@ -166,7 +166,6 @@ Time range (one of):
 
 Options:
   --account <id>         Override account ID (default: from bot preferredAccount)
-  --lookup               Legacy: account names always resolve via BitShares node
   --refresh-account      Force re-resolution of preferredAccount and update the
                          stored accountId when it changed (default: reuse the
                          stored accountId with no chain lookup)
@@ -176,7 +175,7 @@ Options:
   --include-cross-pair   Check consecutive fills across different pairs (default: same pair only)
   --json <file>          Export violations as JSON
   --csv <file>           Export violations as CSV
-  --verbose              Show all consecutive pairs, not just violations
+  --verbose              Print the fetched trade sequence before checking
   --list-bots            List available bot keys and exit
   --help, -h             Show this help
 
@@ -208,7 +207,6 @@ function parseArgs() {
         start: null,
         end: null,
         account: null,
-        lookup: false,
         refreshAccount: false,
         perFill: false,
         includeCrossPair: false,
@@ -225,7 +223,6 @@ function parseArgs() {
             case '--start': opts.start = args[++i]; break;
             case '--end': opts.end = args[++i]; break;
             case '--account': opts.account = args[++i]; break;
-            case '--lookup': opts.lookup = true; break;
             case '--refresh-account': opts.refreshAccount = true; break;
             case '--per-fill': opts.perFill = true; break;
             case '--include-cross-pair': opts.includeCrossPair = true; break;
@@ -472,10 +469,9 @@ function detectViolations(
     items: (TradeFill | AggregatedOrder)[],
     includeCrossPair: boolean,
     incrementPercent: number,
-): { violations: Violation[]; checkedPairs: number; sameDirectionPairs: number } {
+): { violations: Violation[]; checkedTransitions: number } {
     const violations: Violation[] = [];
-    let checkedPairs = 0;
-    let sameDirectionPairs = 0;
+    let checkedTransitions = 0;
 
     // Helper for a single chronological sequence (already filtered to one pair or global)
     function checkSequence(seq: (TradeFill | AggregatedOrder)[]) {
@@ -484,8 +480,7 @@ function detectViolations(
             const curr = seq[i] as any;
             // Skip same orderId (multi-fill split of one order) — aggregated mode already collapsed, but per-fill may split
             if (prev.orderId && prev.orderId === curr.orderId) continue;
-            checkedPairs++;
-            if (prev.direction === curr.direction) sameDirectionPairs++;
+            checkedTransitions++;
 
             const check = isLastFillGuardBlocked(curr.price, curr.direction, prev.price, prev.direction, incrementPercent);
             if (check.blocked) {
@@ -528,7 +523,7 @@ function detectViolations(
     }
     // Sort violations chronologically for reporting
     violations.sort((a, b) => new Date(a.curr.time).getTime() - new Date(b.curr.time).getTime());
-    return { violations, checkedPairs, sameDirectionPairs };
+    return { violations, checkedTransitions };
 }
 
 // ─── Reporting ────────────────────────────────────────────────────────────────
@@ -541,8 +536,7 @@ function printReport(
     trades: TradeFill[],
     orders: AggregatedOrder[] | null,
     violations: Violation[],
-    checkedPairs: number,
-    sameDirectionPairs: number,
+    checkedTransitions: number,
     skipped: number,
     rangeLabel: string,
     botKey: string,
@@ -565,7 +559,7 @@ function printReport(
 
     console.log('');
     console.log('═══════════════════════════════════════════════════════════════════');
-    console.log('  GRID CORRECTION CHECK — LAST-FILL-GUARD (pivot ± halfIncrement)');
+    console.log('  LAST-FILL-GUARD CHECK (pivot ± halfIncrement)');
     console.log('═══════════════════════════════════════════════════════════════════');
     console.log(`  Bot key:      ${botKey}${botMeta?.name ? `  (name: ${botMeta.name})` : ''}`);
     if (botMeta) console.log(`  Pair:         ${botMeta.assetA ?? '?'} / ${botMeta.assetB ?? '?'}`);
@@ -582,16 +576,16 @@ function printReport(
     if (orders) console.log(`  Orders (aggregated):  ${orders.length}  (from ${trades.length} fills)`);
     console.log(`  Pairs observed:       ${[...pairGroups.keys()].join(', ') || '-'}`);
     if (skipped > 0) console.log(`  Skipped (precision):  ${skipped}`);
-    console.log(`  Pairs checked:        ${checkedPairs} consecutive pairs (same-direction pairs: ${sameDirectionPairs})`);
-    console.log(`  Violations:           ${violations.length}${checkedPairs > 0 ? `  (${((violations.length / checkedPairs) * 100).toFixed(2)}%)` : ''}`);
+    console.log(`  Transitions checked:  ${checkedTransitions} consecutive fill/order transitions`);
+    console.log(`  Violations:           ${violations.length}${checkedTransitions > 0 ? `  (${((violations.length / checkedTransitions) * 100).toFixed(2)}%)` : ''}`);
     console.log('');
 
     if (violations.length === 0) {
-        console.log('  ✅  PASS — no grid inversions detected (all BUY < pivot-half, SELL > pivot+half).');
+        console.log('  ✅  PASS — no LAST-FILL-GUARD violations detected (all BUY < pivot-half, SELL > pivot+half).');
         console.log('');
-        if (checkedPairs === 0) {
-            console.log('  Note: no consecutive pairs in range to check.');
-            console.log('  (Need at least two fills/orders on the same pair.)');
+        if (checkedTransitions === 0) {
+            console.log('  Note: no consecutive transitions in range to check.');
+            console.log('  (Need at least two fills/orders to form a transition.)');
         }
         console.log('');
         return;
@@ -709,7 +703,7 @@ async function main() {
     const opts = parseArgs();
     const { gte, lte, label } = resolveTimeRange(opts);
 
-    console.log(`\nGrid correction check — bot-key: ${opts.botKey}`);
+    console.log(`\nLast-fill guard check — bot-key: ${opts.botKey}`);
     console.log(`Range: ${label}`);
 
     const resolvedAccount = await resolveBotAccount(opts.botKey, {
@@ -770,10 +764,10 @@ async function main() {
         items = orders;
     }
 
-    const { violations, checkedPairs, sameDirectionPairs } = detectViolations(items, opts.includeCrossPair, incrementPercent);
+    const { violations, checkedTransitions } = detectViolations(items, opts.includeCrossPair, incrementPercent);
 
     const ordersForReport = opts.perFill ? null : (items as AggregatedOrder[]);
-    printReport(trades, ordersForReport, violations, checkedPairs, sameDirectionPairs, skipped, label, opts.botKey, accountId, botMeta, opts.perFill, opts.includeCrossPair, incrementPercent, gte, lte);
+    printReport(trades, ordersForReport, violations, checkedTransitions, skipped, label, opts.botKey, accountId, botMeta, opts.perFill, opts.includeCrossPair, incrementPercent, gte, lte);
 
     if (opts.json) exportJson(opts.json, violations, trades, label, opts.botKey, accountId, incrementPercent);
     if (opts.csv) exportCsv(opts.csv, violations);
@@ -781,7 +775,7 @@ async function main() {
     process.exit(violations.length > 0 ? 2 : 0);
 }
 
-export { isLastFillGuardBlocked, classifyFills, aggregateByOrder, detectViolations, TradeFill, FillRecord, Violation, AggregatedOrder };
+export { isLastFillGuardBlocked, classifyFills, aggregateByOrder, detectViolations, TradeFill, Violation, AggregatedOrder };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main().catch(e => {

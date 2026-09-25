@@ -44,4 +44,4 @@ async function withReadOnlyClient<T>(fn: (client: any) => Promise<T>): Promise<T
     }
 }
 
-export { defaultNodePool, withReadOnlyClient };
+export { withReadOnlyClient };

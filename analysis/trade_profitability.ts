@@ -28,7 +28,7 @@ import {
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --asset 1.3.113
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --csv trades.csv
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --json results.json
- *   node dist/analysis/trade_profitability.js "account-name" --lookup
+ *   node dist/analysis/trade_profitability.js "account-name" --hours 168
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --trades
  *   node dist/analysis/trade_profitability.js 1.2.3 --hours 168 --match-mode fifo
  */
@@ -118,7 +118,6 @@ Options:
   --end <iso>            End time (ISO 8601)
   --hours <n>            Lookback hours from now (alternative to --start/--end)
   --asset <assetId>      Filter to one base asset (e.g. 1.3.113 for bitUSD)
-  --lookup               Legacy (no-op): account names always resolve automatically
   --refresh-account      Force re-resolution and update the stored accountId
   --csv <file>           Export trade list as CSV
   --json <file>          Export full analysis as JSON
@@ -131,7 +130,7 @@ Options:
 Examples:
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720
   node dist/analysis/trade_profitability.js 1.2.123456 --start 2025-01-01 --end 2025-06-01
-  node dist/analysis/trade_profitability.js "my-bot-account" --lookup --hours 168
+  node dist/analysis/trade_profitability.js "my-bot-account" --hours 168
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --asset 1.3.113 --csv trades.csv
   node dist/analysis/trade_profitability.js 1.2.123456 --hours 720 --match-mode sequential`);
 }
@@ -149,7 +148,6 @@ function parseArgs() {
         start: null,
         end: null,
         asset: null,
-        lookup: false,
         refreshAccount: false,
         csv: null,
         json: null,
@@ -165,7 +163,6 @@ function parseArgs() {
             case '--start':        opts.start    = args[++i]; break;
             case '--end':          opts.end      = args[++i]; break;
             case '--asset':        opts.asset    = args[++i]; break;
-            case '--lookup':       opts.lookup   = true; break;
             case '--refresh-account': opts.refreshAccount = true; break;
             case '--csv':          opts.csv      = args[++i]; break;
             case '--json':         opts.json     = args[++i]; break;

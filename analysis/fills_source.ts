@@ -219,16 +219,10 @@ async function fetchAllFills(config: any, accountId: string, gte: string, lte: s
 
 export {
     BTS_ID,
-    OP_FILL_ORDER,
-    ASSETS,
-    resolvedPrecisions,
     assetSymbol,
     assetPrec,
     toReal,
     resolveAssetPrecisions,
-    buildFillQuery,
     fetchAllFills,
-    AssetInfo,
-    AssetAmount,
     FillRecord,
 };

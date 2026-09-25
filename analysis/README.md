@@ -21,7 +21,7 @@ Tools that inspect DEXBot trading behavior and the market data it operates on. O
 | Tool | Ask this when… | One-line command |
 |------|----------------|------------------|
 | [`trade_profitability.ts`](#trade-profitability-analyzer-trade_profitabilityts) | "Is my bot making money?" — PnL, R-multiples, drawdown | `npm run analysis:trade-pnl -- <account-id>` |
-| [`grid_correction_check.ts`](#grid-correction-check-grid_correction_checkts) | "Is my grid placing orders monotonically?" — sell/buy price inversion detector | `npm run analysis:grid-check -- --bot-key <bot-key>` |
+| [`grid_correction_check.ts`](#last-fill-guard-check-grid_correction_checkts) | "Are fills respecting the pivot ± half-increment guard?" | `npm run analysis:grid-check -- --bot-key <bot-key>` |
 | [`analyze_risk_profile.ts`](#risk-profile-analyzer-analyze_risk_profilets) | "How wide should my Safe Range clamps be?" | `node dist/analysis/analyze_risk_profile.js --bot-key <bot-key>` |
 | [`analyze_trade_heatmap.ts`](#trade-heatmap-analyze_trade_heatmapts) | "Where did trade volume cluster vs the AMA?" | `node dist/analysis/analyze_trade_heatmap.js --bot-key <bot-key>` |
 | [`tradingview/analyze_tradingview.ts`](#tradingview-chart-tradingviewanalyze_tradingviewts) | "Just give me a candle chart" | `dexbot tv <bot-key>` |
@@ -164,7 +164,6 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 | `--end <iso>` | — | End time |
 | `--hours <n>` | `168` (7d) | Lookback hours (alternative to start/end) |
 | `--asset <id>` | all | Filter to one base asset ID |
-| `--lookup` | off | Legacy (no-op): account names always resolve automatically |
 | `--refresh-account` | off | Force re-resolution and update the stored `accountId` |
 | `--csv <file>` | — | Export chronologically sorted trade list |
 | `--json <file>` | — | Export full analysis with per-pair PnL data |
@@ -223,11 +222,11 @@ node dist/analysis/trade_profitability.js 1.2.123456 \
 
 </details>
 
-### Grid Correction Check (`grid_correction_check.ts`)
+### LAST-FILL-GUARD Check (`grid_correction_check.ts`)
 
-Validates grid discipline from the same Kibana fill pipeline as `trade_profitability.ts`: two consecutive same-direction fills on a pair must be monotonic — sell prices rising, buy prices falling (equal is OK). An inversion means the bot placed an order below its own previous sell (or above its own previous buy), e.g. an orphaned order filling outside grid accounting. Used as the external regression gate for the orphan-fix plans in `docs/ORDER_ENGINE_POST_1.0_RETROSPECTIVE.md`.
+Validates LAST-FILL-GUARD discipline from the same Kibana fill pipeline as `trade_profitability.ts`. For a previous fill at price `x` and grid increment `i`, the next order must satisfy `BUY < x × (1 − i/2/100)` and `SELL > x × (1 + i/2/100)`, regardless of the previous fill's side. A violation is a buy or sell fill inside the prohibited half-increment band around its pivot.
 
-**Pipeline:** Kibana `fill_order` query (paginated `search_after`) → on-chain asset precision resolution → buy/sell classification → chronological sort → per-order/price-epoch aggregation (partial fills at one price collapsed to weighted-average; repriced order lifetimes kept separate) → consecutive same-direction pair comparison → violation report with daily histogram.
+**Pipeline:** Kibana `fill_order` query (paginated `search_after`) → on-chain asset precision resolution → buy/sell classification → chronological sort → per-order/price-epoch aggregation (partial fills at one price collapsed to weighted-average; repriced order lifetimes kept separate) → consecutive pivot-band comparison → violation report with daily histogram.
 
 ```bash
 # Per-order aggregated check (default), last 7 days
@@ -239,8 +238,8 @@ npm run analysis:grid-check -- --bot-key <bot-key> --hours 720 --json out.json -
 # Raw fill granularity instead of per-order aggregation
 npm run analysis:grid-check -- --bot-key <bot-key> --per-fill --hours 168
 
-# Forgive small adverse moves within 0.1%
-npm run analysis:grid-check -- --bot-key <bot-key> --hours 168 --tolerance 0.1
+# Override the bot's configured grid increment
+npm run analysis:grid-check -- --bot-key <bot-key> --hours 168 --increment 0.5
 ```
 
 Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolve via `profiles/bots.json` (`--list-bots` to enumerate); the account defaults to the bot's stored `accountId` when present (no chain lookup — the ID is auto-saved next to `preferredAccount` after the first successful name resolution, re-verified with `--refresh-account`), otherwise `preferredAccount` is resolved on-chain, and can be overridden with `--account <1.2.x|name>`.
@@ -253,18 +252,18 @@ Exit code `0` = pass, `2` = violations found, `1` = fatal error. Bot keys resolv
 | `--hours <n>` | `168` | Lookback hours from now |
 | `--start <iso>` / `--end <iso>` | — | Absolute time window |
 | `--account <id>` | bot `preferredAccount` | Override account ID or name |
-| `--lookup` | off | Legacy (no-op): account names always resolve via BitShares node when no stored ID exists |
 | `--refresh-account` | off | Force re-resolution of `preferredAccount` and update the stored `accountId` when it changed |
+| `--increment <pct>` | bot config / `0.5` | Grid increment used to derive the half-increment guard band |
 | `--per-fill` | off | Check at fill granularity instead of per-order aggregated |
 | `--include-cross-pair` | off | Also check consecutive fills across different pairs |
-| `--tolerance <pct>` | `0` | Adverse price move (%) forgiven before flagging |
+| `--tolerance <pct>` | — | Deprecated compatibility alias for `--increment`; its value is doubled and a warning is emitted |
 | `--json <file>` / `--csv <file>` | — | Export violations |
-| `--verbose` | off | Print the full trade sequence |
+| `--verbose` | off | Print the fetched trade sequence before checking |
 | `--list-bots` | — | List available bot keys and exit |
 
 </details>
 
-**Notes:** strict sat-level comparison is the ground truth (`--tolerance` only forgives small inversions); partial fills at one price are collapsed to a weighted-average price in the default mode, but fills after a native order repricing are kept in separate price epochs so updated orders are not mixed together.
+**Notes:** this is an offline approximation of decision-time placement. Batch-placed orders can share an earlier pivot, and the tool does not model the runtime spread-correction bypass. In the default mode, partial fills at one price are collapsed to a weighted average while fills from separate native order repricing epochs remain independent.
 
 ## Charts & Visualization
 
@@ -521,7 +520,7 @@ npm run analysis:tradingview -- --source market_adapter --bot-key <bot-key>
 # Trade PnL
 npm run analysis:trade-pnl -- 1.2.123456 --hours 720
 
-# Grid correction check (monotonicity regression gate)
+# LAST-FILL-GUARD check
 npm run analysis:grid-check -- --bot-key <bot-key> --hours 168
 
 # File-based

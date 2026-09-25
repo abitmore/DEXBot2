@@ -158,14 +158,4 @@ async function resolveAccountRef(accountRef: string, options: ResolveOptions = {
     return { accountId: String(id), botKey: null, botMeta: null, source: 'resolved', reason: null };
 }
 
-export {
-    ACCOUNT_ID_RE,
-    lookupNameOnChain,
-    resolveBotAccount,
-    resolveAccountRef,
-    ResolveOptions,
-    ResolvedAccount,
-    ResolveSource,
-    ResolveFailure,
-    NameLookup,
-};
+export { resolveBotAccount, resolveAccountRef };
