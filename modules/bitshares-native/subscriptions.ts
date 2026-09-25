@@ -48,13 +48,27 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
     const channelDegradedThreshold = Number.isFinite(SUBSCRIPTIONS.CHANNEL_DEGRADED_FAILURE_THRESHOLD)
         ? Math.max(1, SUBSCRIPTIONS.CHANNEL_DEGRADED_FAILURE_THRESHOLD)
         : 3;
-    const channelErrorLogIntervalMs = Number.isFinite(SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
-        ? Math.max(0, SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
-        : 60000;
-    const channelReconnectCooldownMs = Number.isFinite(SUBSCRIPTIONS.CHANNEL_RECONNECT_COOLDOWN_MS)
-        ? Math.max(0, SUBSCRIPTIONS.CHANNEL_RECONNECT_COOLDOWN_MS)
-        : 30000;
-    let lastChannelReconnectAt = 0;
+    const channelErrorLogIntervalMs = Number.isFinite(overrides?.channelErrorLogIntervalMs)
+        ? Math.max(0, overrides.channelErrorLogIntervalMs)
+        : (Number.isFinite(SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
+            ? Math.max(0, SUBSCRIPTIONS.CHANNEL_ERROR_LOG_INTERVAL_MS)
+            : 60000);
+    // Test seams so offline tests never sleep on the retry-ladder delays.
+    const channelRetryLadderMs = (Array.isArray(overrides?.channelRetryLadderMs)
+        ? overrides.channelRetryLadderMs
+        : (Array.isArray(SUBSCRIPTIONS.CHANNEL_RETRY_LADDER_MS) ? SUBSCRIPTIONS.CHANNEL_RETRY_LADDER_MS : [5000, 10000, 15000]))
+        .map((d: any) => Math.max(0, Number(d) || 0))
+        .filter((d: number) => d > 0);
+    const channelRecoveryAlertAfter = Number.isFinite(SUBSCRIPTIONS.CHANNEL_RECOVERY_ALERT_AFTER)
+        ? Math.max(1, SUBSCRIPTIONS.CHANNEL_RECOVERY_ALERT_AFTER)
+        : 3;
+    const channelRetryMaxRefills = Number.isFinite(overrides?.channelRetryMaxRefills)
+        ? Math.max(0, overrides.channelRetryMaxRefills)
+        : (Number.isFinite(SUBSCRIPTIONS.CHANNEL_RETRY_MAX_REFILLS) ? Math.max(0, SUBSCRIPTIONS.CHANNEL_RETRY_MAX_REFILLS) : 3);
+    // NOTE: the forced-reconnect cooldown is NOT debounced here. It is enforced
+    // once per client in chain_client.forceReconnect so this watchdog and the
+    // stale api_id escalation share a single window (a wedged session trips both
+    // counters in the same tick and must not stack two reconnects).
 
     function parseObjectIdInstance(id: any): number {
         if (typeof id !== 'string') return Number.NaN;
@@ -105,22 +119,25 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         }
     }
 
-    function warnSubscription(sub: any, message: string, err: any = null): void {
+    function warnSubscription(sub: any, message: string, err: any = null, throttleKey: string = 'channel'): void {
         const account = sub?.accountName || sub?.accountId || 'unknown';
         const now = Date.now();
-        // Throttle per-account warns: a dead channel otherwise logs one warn per
-        // poll (and per reconnect retry) forever. Suppressed repeats are counted
-        // and reported on the next emitted line.
-        const lastWarnAt = Number(sub?._lastWarnAt) || 0;
-        if (channelErrorLogIntervalMs > 0 && sub && now - lastWarnAt < channelErrorLogIntervalMs) {
-            sub._suppressedWarnCount = (Number(sub._suppressedWarnCount) || 0) + 1;
+        // Throttle per-account AND per-category. A dead channel otherwise logs
+        // one warn per poll forever; a permanently failing callback must not be
+        // masked by (or mask) channel-error lines. Suppressed repeats are
+        // counted per category and reported on the next emitted line.
+        let state: { lastAt: number; suppressed: number } | null = null;
+        if (sub) {
+            if (!sub._warnThrottle || typeof sub._warnThrottle !== 'object') sub._warnThrottle = {};
+            state = sub._warnThrottle[throttleKey] || { lastAt: 0, suppressed: 0 };
+        }
+        if (channelErrorLogIntervalMs > 0 && sub && now - state!.lastAt < channelErrorLogIntervalMs) {
+            state!.suppressed += 1;
+            sub._warnThrottle[throttleKey] = state;
             return;
         }
-        const suppressed = Number(sub?._suppressedWarnCount) || 0;
-        if (sub) {
-            sub._lastWarnAt = now;
-            sub._suppressedWarnCount = 0;
-        }
+        const suppressed = state ? (Number(state.suppressed) || 0) : 0;
+        if (sub) sub._warnThrottle[throttleKey] = { lastAt: now, suppressed: 0 };
         const detail = err?.message ? `: ${getErrorMessage(err)}` : '';
         const suppressedDetail = suppressed > 0 ? ` (+${suppressed} suppressed)` : '';
         subscriptionsLogger.warn(`${message} for ${account}${detail}${suppressedDetail} (node=${activeNodeUrl()})`);
@@ -128,64 +145,235 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
 
     /**
      * Mark a subscription's history channel healthy again. Resets the
-     * consecutive-failure run and logs a single recovery line when it was
-     * previously degraded.
+     * consecutive-failure run and the recovery-cycle counter, and logs a single
+     * recovery line when it was previously degraded.
      */
     function recordChannelSuccess(sub: any): void {
         if (!sub) return;
-        if (sub._channelDegraded) {
+        const account = sub.accountName || sub.accountId || 'unknown';
+        if (sub._channelDegraded || sub._channelRecoveryCycles > 0) {
+            const cycles = Number(sub._channelRecoveryCycles) || 0;
+            const after = cycles > 0 ? ` after ${cycles} forced reconnect(s)` : '';
             subscriptionsLogger.info(
-                `Fill channel recovered for ${sub.accountName || sub.accountId || 'unknown'} (node=${activeNodeUrl()})`
+                `Fill channel recovered for ${account}${after} (node=${activeNodeUrl()})`
             );
         }
+        clearChannelRetry(sub);
         sub._channelFailures = 0;
         sub._channelDegraded = false;
+        sub._channelRecoveryCycles = 0;
+        sub._recoveryAlerted = false;
+        sub._channelRetryStep = 0;
+        sub._channelRetryRefills = 0;
     }
 
     /**
-     * Record a history-channel failure and escalate to a forced reconnect once
-     * the run crosses the degraded threshold. Callback/processing errors
-     * (flagged subscriptionErrorReported) are not channel failures and must not
-     * trip the watchdog — a deterministic downstream bug would otherwise
-     * reconnect-storm.
+     * Schedule the next rung of the escalating re-scan ladder that follows a
+     * channel failure, so a recovery attempt is verified in seconds instead of
+     * after the next 60s fill-poll tick.
+     *
+     * The ladder is bounded: once exhausted the regular poll cadence takes over
+     * again, so a permanently dead channel cannot become a tight scan loop. The
+     * step index resets whenever a reconnect is actually issued (a new recovery
+     * attempt deserves a fresh verification ladder) and on any successful scan.
+     */
+    function scheduleChannelRetry(sub: any, context?: string): void {
+        if (!sub || channelRetryLadderMs.length === 0) return;
+        if (sub._channelRetryTimer) return;
+        const step = Number(sub._channelRetryStep) || 0;
+        if (step >= channelRetryLadderMs.length) return;
+        sub._channelRetryStep = step + 1;
+        // Label the rung distinctly from the scan that scheduled it, and include
+        // the rung number, so a log reader can tell a fast retry from a 60s poll
+        // tick and see how far the ladder has climbed.
+        const retryContext = `retry${sub._channelRetryStep}-after-${context || 'scan'}`;
+        const timer = setTimeout(() => {
+            sub._channelRetryTimer = null;
+            // The entry may have been unsubscribed (or already recovered) while
+            // the retry was pending.
+            if (!sub.active || !subscriptions.has(sub.accountName)) return;
+            if (!sub.accountId) return;
+            // Never overlap another scan for the same sub. A regular poll, a
+            // notice/eager-gap scan, or a resubscribe may already be in flight;
+            // its result will schedule the next rung (success clears the ladder,
+            // failure re-enters recordChannelFailure), so dropping this rung is
+            // safe and mirrors the guards used by every other processObjects
+            // caller.
+            if (sub.reconnecting || sub._processingHistory || pendingScans.has(sub)) return;
+            sub._processingHistory = true;
+            processObjects(sub, [sub.accountId], { context: retryContext })
+                .catch((err: any) => {
+                    // processObjects handles its own errors; this only guards
+                    // against a throw from the retry plumbing itself.
+                    recordChannelFailure(sub, err, retryContext);
+                })
+                .finally(() => {
+                    sub._processingHistory = false;
+                });
+        }, channelRetryLadderMs[step]);
+        sub._channelRetryTimer = timer;
+        if (typeof timer?.unref === 'function') timer.unref();
+    }
+
+    function clearChannelRetry(sub: any): void {
+        if (sub?._channelRetryTimer) {
+            clearTimeout(sub._channelRetryTimer);
+            sub._channelRetryTimer = null;
+        }
+    }
+
+    /**
+     * Record a history-channel failure and keep escalating while the channel
+     * stays dead. Callback/processing errors (flagged subscriptionErrorReported)
+     * are not channel failures and must not trip the watchdog — a deterministic
+     * downstream bug would otherwise reconnect-storm.
+     *
+     * Reconnect requests are NOT latched on the degraded flag: if a forced
+     * reconnect fails to clear the channel (every node equally stale, or the
+     * same session bug on the new node), the account must keep asking. The rate
+     * is bounded centrally by the per-client cooldown in
+     * chain_client.forceReconnect, so re-arming here cannot storm. Only the
+     * DEGRADED log line and the operator alert are transition-gated.
      */
     function recordChannelFailure(sub: any, err: any, context?: string): void {
         if (!sub) return;
+        const label = `processObjects${context ? ` (${context})` : ''}`;
         if (err?.subscriptionErrorReported) {
-            warnSubscription(sub, `processObjects${context ? ` (${context})` : ''}: callback error`, err);
+            warnSubscription(sub, `${label}: callback error`, err, 'callback');
             return;
         }
         const failures = (Number(sub._channelFailures) || 0) + 1;
         sub._channelFailures = failures;
-        warnSubscription(sub, `processObjects${context ? ` (${context})` : ''}: error`, err);
-        if (failures >= channelDegradedThreshold && !sub._channelDegraded) {
-            sub._channelDegraded = true;
-            const account = sub.accountName || sub.accountId || 'unknown';
-            subscriptionsLogger.warn(
-                `Fill channel DEGRADED for ${account}: ${failures} consecutive history-scan failures ` +
-                `(last: ${getErrorMessage(err)}) — forcing reconnect (node=${activeNodeUrl()})`
-            );
-            requestChannelReconnect(`fill channel degraded for ${account}: ${getErrorMessage(err)}`);
+        warnSubscription(sub, `${label}: error`, err);
+
+        const account = sub.accountName || sub.accountId || 'unknown';
+        if (failures >= channelDegradedThreshold) {
+            if (!sub._channelDegraded) {
+                sub._channelDegraded = true;
+                subscriptionsLogger.warn(
+                    `Fill channel DEGRADED for ${account}: ${failures} consecutive history-scan failures ` +
+                    `(last: ${getErrorMessage(err)}) — forcing reconnect (node=${activeNodeUrl()})`
+                );
+            }
+            const outcome = requestChannelReconnect(`fill channel degraded for ${account}: ${getErrorMessage(err)}`);
+            // Count a recovery cycle for a genuinely new teardown AND for one
+            // coalesced onto another escalation source's recent reconnect. The
+            // stale api_id path runs inside the RPC catch, before this failure
+            // reaches us, so without counting `coalesced` it would reliably
+            // consume the shared cooldown and starve the operator alert / node
+            // strike in exactly the stale-id wedge this watchdog targets.
+            if (outcome === 'issued' || outcome === 'coalesced') {
+                sub._channelRecoveryCycles = (Number(sub._channelRecoveryCycles) || 0) + 1;
+                // Only a genuinely new teardown gets a fresh verification ladder;
+                // a coalesced reconnect is already being verified by its issuer's
+                // own post-reconnect catch-up scan. Bounded by
+                // channelRetryMaxRefills so a dead channel cannot chain the ladder.
+                if (outcome === 'issued') {
+                    const refills = Number(sub._channelRetryRefills) || 0;
+                    if (refills < channelRetryMaxRefills) {
+                        sub._channelRetryRefills = refills + 1;
+                        sub._channelRetryStep = 0;
+                    }
+                }
+                // Recovery is not working. This is where the node earns a strike:
+                // the transport's own forced-reconnect report is deliberately
+                // kept out of the persistent ledger (see reportNodeFailureToManager
+                // in bitshares_client.ts), so a session-level wedge that clears
+                // on the first or second cycle costs the node nothing, while a
+                // node that survives repeated failed recovery is recorded here.
+                if (sub._channelRecoveryCycles >= channelRecoveryAlertAfter) {
+                    reportChannelNodeFailure(account, err);
+                }
+                maybeAlertUnrecoverableChannel(sub, account, err);
+            }
+        }
+
+        // Schedule the fast re-scan LAST, so the escalation above can refill the
+        // ladder first. Scheduling before it would consume the last rung on the
+        // very failure that escalates, leaving the fresh attempt with no retry
+        // scheduled and idling until the next 60s poll.
+        scheduleChannelRetry(sub, context);
+    }
+
+    /**
+     * Record a REAL node failure once fill-channel recovery has demonstrably
+     * failed, so genuinely bad nodes still reach the blacklist threshold.
+     *
+     * Deliberately NOT done for every forced reconnect: the transport reports
+     * those as 'forced-reconnect' and bitshares_client.ts keeps that source out
+     * of the persistent strike ledger. A forced reconnect is an attempt; a node
+     * that is still serving a dead channel after several of them is evidence.
+     *
+     * Attribution: the strike lands on the node active at THIS failing scan, not
+     * necessarily the node that caused the original wedge — each forced
+     * reconnect rotates away from the failed node, so a per-cycle wedge spreads
+     * strikes across the nodes that keep serving it. A single bad node is
+     * rotated off and recovers before striking; a wedge shared by all nodes
+     * legitimately accumulates strikes against each of them.
+     */
+    function reportChannelNodeFailure(account: string, err: any): void {
+        const node = activeNodeUrl();
+        // 'unknown node' is the activeNodeUrl() fallback, not a reportable URL.
+        if (!node || node === 'unknown node') return;
+        try {
+            if (typeof chainClient.reportNodeFailure === 'function') {
+                chainClient.reportNodeFailure(
+                    node,
+                    `fill channel unrecoverable for ${account}: ${getErrorMessage(err)}`,
+                    'fill-channel-unrecoverable'
+                );
+            }
+        } catch (_: any) {
+            // Best-effort: never let strike bookkeeping break the watchdog.
         }
     }
 
     /**
-     * Force a reconnect to recover a dead-but-open fill channel, debounced so a
-     * multi-account setup fires at most one reconnect per cooldown window. The
-     * reconnect re-establishes the login session AND fires the registered
+     * Operator-facing escalation: after N forced reconnects without the channel
+     * recovering, recovery is not working and a human/restart is needed. Purely
+     * informational reconnect looping is invisible in the logs, which is how the
+     * original incident went unnoticed for hours.
+     */
+    function maybeAlertUnrecoverableChannel(sub: any, account: string, err: any): void {
+        if (sub._recoveryAlerted) return;
+        const cycles = Number(sub._channelRecoveryCycles) || 0;
+        if (cycles < channelRecoveryAlertAfter) return;
+        sub._recoveryAlerted = true;
+        subscriptionsLogger.error(
+            `Fill channel for ${account} did NOT recover after ${cycles} forced reconnects ` +
+            `(last: ${getErrorMessage(err)}) — fills may be missed. Automatic recovery is giving up; ` +
+            `check node health, then restart the bot if the channel stays dead (node=${activeNodeUrl()})`
+        );
+    }
+
+    /**
+     * Force a reconnect to recover a dead-but-open fill channel. The debounce
+     * lives in chain_client.forceReconnect (one per client, shared with the
+     * stale api_id escalation), so this is a straight delegation.
+     *
+     * The reconnect re-establishes the login session AND fires the registered
      * post-reconnect safety-net sync (the fill backlog is then discovered even
      * if the subscription feed stays quiet).
+     *
+     * @returns the reconnect outcome: 'issued' (a new teardown started),
+     *          'coalesced' (a forced reconnect was already issued within the
+     *          shared cooldown), or 'unavailable' (no live socket / no escalation
+     *          path).
      */
-    function requestChannelReconnect(reason: string): void {
-        const now = Date.now();
-        if (now - lastChannelReconnectAt < channelReconnectCooldownMs) return;
-        lastChannelReconnectAt = now;
+    function requestChannelReconnect(reason: string): 'issued' | 'coalesced' | 'unavailable' {
         try {
-            if (typeof chainClient.forceReconnect === 'function') {
-                chainClient.forceReconnect(reason);
+            if (typeof chainClient.forceReconnect !== 'function') return 'unavailable';
+            const outcome = chainClient.forceReconnect(reason);
+            // New chain_client contract. Legacy/mock booleans are normalized so
+            // the accounting is stable: true = issued, anything else = unavailable.
+            if (outcome === 'issued' || outcome === 'coalesced' || outcome === 'unavailable') {
+                return outcome;
             }
+            return outcome === true ? 'issued' : 'unavailable';
         } catch (_: any) {
-            // Best-effort recovery; the next poll retries the escalation.
+            // Best-effort recovery; the next failure re-requests (the watchdog
+            // no longer latches, so a broken recovery is retried, not dropped).
+            return 'unavailable';
         }
     }
 
@@ -760,7 +948,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     try {
                         await Promise.resolve(callback(fills));
                     } catch (err: any) {
-                        subscriptionsLogger.warn(`processObjects: callback error for ${sub.accountName}: ${getErrorMessage(err)} (node=${activeNodeUrl()})`);
+                        warnSubscription(sub, 'processObjects: callback error', err, 'callback');
                         failed.push(err);
                     }
                 }
@@ -905,6 +1093,10 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                     if (!entry.active) continue;
                     if (entry.reconnecting) continue;
                     if (entry._processingHistory) continue;
+                    // A probe is already scheduled for this account: it re-scans
+                    // in seconds, so a regular tick would only duplicate the
+                    // request and burn a failure count against the threshold.
+                    if (entry._channelRetryTimer) continue;
                     // Poll is a lightweight liveness check (fetches only >cursor, ~1 page
                     // in steady state). Gap recovery (2000 per-account ops ≈40 pages) is
                     // already armed by handleNotice cursor advances and by
@@ -965,8 +1157,17 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
                 // Fill-channel health (see recordChannelFailure/recordChannelSuccess).
                 _channelFailures: 0,
                 _channelDegraded: false,
-                _lastWarnAt: 0,
-                _suppressedWarnCount: 0,
+                // Forced reconnects issued for this account since the last
+                // successful scan; drives the unrecoverable-channel alert.
+                _channelRecoveryCycles: 0,
+                _recoveryAlerted: false,
+                // Pending fast re-scan after a failure: it retries in seconds, so
+                // a regular tick would only duplicate the request and burn a
+                // failure count against the threshold.
+                _channelRetryTimer: null,
+                _channelRetryStep: 0,
+                _channelRetryRefills: 0,
+                _warnThrottle: {},
             };
             subscriptions.set(accountName, entry);
 
@@ -1076,6 +1277,7 @@ function createSubscriptionManager(chainClient: any, overrides: any = {}): any {
         if (entry.callbacks.size === 0) {
             entry.active = false;
             clearReconnectRetry(entry);
+            clearChannelRetry(entry);
             const pending = pendingScans.get(entry);
             if (pending) {
                 if (pending.timer) clearTimeout(pending.timer);

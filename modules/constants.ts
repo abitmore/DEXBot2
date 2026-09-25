@@ -1773,6 +1773,16 @@ let NATIVE_CLIENT = {
         STALE_API_FORCE_RECONNECT_AFTER: 3,
         STALE_API_WINDOW_MS: 60000,
 
+        // Debounce for forced reconnects (transport.forceReconnect), enforced
+        // once per chain client so every escalation source shares it: the
+        // stale api_id window above and the subscriptions fill-channel watchdog.
+        // A wedged session trips both counters in the same tick, so without a
+        // shared window they would stack two reconnects on top of each other.
+        // Once recovery is failing repeatedly this is the floor on how often the
+        // transport is allowed to be torn down; the transport's own exponential
+        // backoff still applies on top of it.
+        FORCED_RECONNECT_COOLDOWN_MS: 30000,
+
         // WebSocket close codes treated as benign — they do NOT count as a
         // node failure. 1000 = normal closure, 1001 = going away (server
         // shutdown/deploy). Any other code, or wasClean === false, is abnormal.
@@ -1878,10 +1888,38 @@ let NATIVE_CLIENT = {
         // floods the error log (95k lines in ~3h during the incident).
         CHANNEL_ERROR_LOG_INTERVAL_MS: 60000,
 
-        // Cooldown (ms) between forced reconnects triggered by channel
-        // degradation, so a multi-account setup cannot fire one reconnect per
-        // account in the same tick.
-        CHANNEL_RECONNECT_COOLDOWN_MS: 30000,
+        // CHANNEL_RETRY_LADDER_MS: escalating re-scan delays (ms) used after a
+        // channel failure, instead of waiting for the next 60s fill-poll tick.
+        // One failed scan proves nothing, but a channel still failing seconds
+        // later is wedged — and waiting out the poll cadence costs 3 ticks
+        // (3 min of blind fills) per escalation. The ladder verifies a recovery
+        // attempt quickly, then hands back to the regular poll so a permanently
+        // dead channel cannot become a tight scan loop.
+        //
+        // This does NOT raise the reconnect rate: TRANSPORT.FORCED_RECONNECT_
+        // COOLDOWN_MS still floors that. The ladder's job is to find out within
+        // seconds whether a reconnect actually worked, so the next permitted
+        // reconnect fires immediately instead of idling until the next poll.
+        // Set to [] to disable fast retries entirely.
+        CHANNEL_RETRY_LADDER_MS: [5000, 10000, 15000],
+
+        // CHANNEL_RETRY_MAX_REFILLS: how many times one continuous failure run
+        // may restart the ladder after a reconnect was issued. Without this bound
+        // the ladder would chain forever whenever reconnects are issued faster
+        // than the ladder completes (which is exactly what happens if
+        // FORCED_RECONNECT_COOLDOWN_MS is ever tuned below the ladder total) —
+        // a permanently dead channel would then scan every 5s indefinitely
+        // instead of settling back to the 60s poll. The operator alert fires
+        // within this many recovery cycles, so once the cap is hit the fast
+        // path has already done its job.
+        CHANNEL_RETRY_MAX_REFILLS: 3,
+
+        // CHANNEL_RECOVERY_ALERT_AFTER: how many forced-reconnect cycles an
+        // account may go through without the channel recovering before the
+        // watchdog escalates to a distinct operator-facing alert. Purely
+        // informational reconnect looping is invisible; this makes "recovery is
+        // not working, consider a restart" a log line an operator can act on.
+        CHANNEL_RECOVERY_ALERT_AFTER: 3,
 
     },
 

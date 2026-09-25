@@ -52,6 +52,49 @@ interface ChainConfig {
     coreAsset: string;
 }
 
+/**
+ * Outcome of a forced-reconnect request.
+ * - `issued`      a fresh teardown/reconnect was started by this call.
+ * - `coalesced`   a forced reconnect was already issued within the cooldown (by
+ *                 this or another escalation source); nothing was torn down
+ *                 again, but a recovery attempt is in flight/recent.
+ * - `unavailable` no live socket to tear down, so no recovery attempt exists.
+ */
+export type ForcedReconnectOutcome = 'issued' | 'coalesced' | 'unavailable';
+
+/**
+ * Build the per-client forced-reconnect gate shared by the main and read-only
+ * clients, and transitively by the stale-api window and the subscriptions
+ * fill-channel watchdog. One cooldown per client stops a wedged session from
+ * stacking concurrent reconnects; the outcome lets a caller distinguish a
+ * genuinely new teardown from one coalesced onto another source's, so
+ * escalation accounting is not starved when the cooldown is already spent.
+ */
+function createForcedReconnectGate(transport: any): (reason?: string) => ForcedReconnectOutcome {
+    const cooldownMs = Number.isFinite(TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS)
+        ? Math.max(0, TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS)
+        : 30000;
+    let lastForcedReconnectAt = 0;
+    return function forceReconnect(reason: string = 'forced'): ForcedReconnectOutcome {
+        const now = Date.now();
+        // Coalesce is checked before connectivity: immediately after a teardown
+        // the socket is null while the reconnect is in flight, and that must
+        // still read as `coalesced`, not `unavailable`.
+        if (now - lastForcedReconnectAt < cooldownMs) return 'coalesced';
+        // No live socket: there is nothing to tear down, so this is not a
+        // recovery attempt. Reporting it as `issued` would let callers count a
+        // no-op as a cycle and burn the cooldown.
+        if (typeof transport?.isConnected === 'function' && !transport.isConnected()) return 'unavailable';
+        lastForcedReconnectAt = now;
+        try {
+            transport.forceReconnect(reason);
+        } catch (_: any) {
+            // Keep the stamp: a throwing recovery must not become a tight loop.
+        }
+        return 'issued';
+    };
+}
+
 function createChainClient(config: ChainClientConfig = {}) {
     const {
         nodes = [],
@@ -106,6 +149,17 @@ function createChainClient(config: ChainClientConfig = {}) {
     // different node) clears it.
     let _staleApiErrorCount = 0;
     let _staleApiWindowStartedAt = 0;
+    // Shared forced-reconnect debounce. Both escalation sources — the stale
+    // api_id window below and the subscriptions fill-channel watchdog — call
+    // forceReconnect(), so the cooldown lives here, once per client, instead of
+    // being duplicated (and independently tuned) at each call site. A wedged
+    // session trips both counters in the same tick; without this they would
+    // stack two reconnects on top of each other.
+    //
+    // Public entry point for higher layers (subscriptions watchdog) to recover
+    // a session that is nominally connected but rejecting every call.
+    // @returns the {@link ForcedReconnectOutcome} of the request.
+    const forceReconnect = createForcedReconnectGate(transport);
     if (Array.isArray(nodes) && nodes.length > 0) {
         transport._setNodes(nodes);
     }
@@ -245,11 +299,9 @@ function createChainClient(config: ChainClientConfig = {}) {
         if (_staleApiErrorCount < threshold) return;
         _staleApiErrorCount = 0;
         _staleApiWindowStartedAt = now;
-        try {
-            transport.forceReconnect(`repeated stale api_id for ${apiName} (${threshold}x)`);
-        } catch (_: any) {
-            // forceReconnect never throws, but never let recovery mask the original error.
-        }
+        // Go through the local wrapper so this escalation shares the one
+        // per-client cooldown with the subscriptions watchdog.
+        forceReconnect(`repeated stale api_id for ${apiName} (${threshold}x)`);
     }
 
     async function dbCall(method: string, args?: any[]): Promise<any> {
@@ -303,15 +355,6 @@ function createChainClient(config: ChainClientConfig = {}) {
 
     function setNodes(servers: string[]): void {
         transport._setNodes(servers);
-    }
-
-    /**
-     * Force a reconnect of the active connection, preferring a different node.
-     * Exposed so higher layers (subscriptions watchdog) can recover a session
-     * that is nominally connected but rejecting every namespaced call.
-     */
-    function forceReconnect(reason: string = 'forced'): void {
-        transport.forceReconnect(reason);
     }
 
     function getNodes(): string[] { return transport._getNodes(); }
@@ -415,6 +458,10 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
             if (status === 'closed') resetApiIds();
         },
     });
+    // Shared forced-reconnect debounce for the read channel, mirroring the main
+    // client: one cooldown and one outcome for every forced reconnect raised on
+    // this client (stale api_id escalation today).
+    const forceReconnect = createForcedReconnectGate(transport);
 
     async function connect(servers?: string[]): Promise<void> {
         const effectiveNodes = Array.isArray(servers) && servers.length > 0
@@ -523,11 +570,9 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
         if (_staleApiErrorCount < threshold) return;
         _staleApiErrorCount = 0;
         _staleApiWindowStartedAt = now;
-        try {
-            transport.forceReconnect(`repeated stale api_id on read channel (${threshold}x)`);
-        } catch (_: any) {
-            // forceReconnect never throws; keep the original error authoritative.
-        }
+        // Route through the shared wrapper so both stale-id escalations on this
+        // client obey one cooldown.
+        forceReconnect(`repeated stale api_id on read channel (${threshold}x)`);
     }
 
     async function db(method: string, args?: any[]): Promise<any> {
@@ -559,7 +604,7 @@ function createReadOnlyClient(config: ReadOnlyClientConfig = {}) {
     return {
         connect,
         disconnect,
-        forceReconnect: (reason: string = 'forced') => transport.forceReconnect(reason),
+        forceReconnect,
         db,
         history,
         setNodes,

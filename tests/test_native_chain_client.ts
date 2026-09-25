@@ -486,6 +486,53 @@ async function testRepeatedStaleApiForcesReconnect() {
     }
 }
 
+// ── Test: forced reconnects share one per-client cooldown ────────────────
+
+async function testForcedReconnectCooldown() {
+    const { createChainClient } = require('../modules/bitshares-native/chain_client');
+    const { NATIVE_CLIENT } = require('../modules/constants');
+    const cooldown = Number(NATIVE_CLIENT.TRANSPORT.FORCED_RECONNECT_COOLDOWN_MS) || 30000;
+    const port = 21000 + Math.floor(Math.random() * 1000);
+    const wsServer = await createStrictWsServer(port);
+    const failures: any[] = [];
+
+    try {
+        const client = createChainClient({
+            nodes: [`ws://127.0.0.1:${port}/ws`],
+            autoreconnect: true,
+            onNodeFailure: (url, message, source) => failures.push({ url, message, source }),
+        });
+        await client.connect();
+
+        // Both escalation sources (the subscriptions fill-channel watchdog and
+        // the stale api_id window) call this same wrapper, so its cooldown is
+        // their single shared window. Two consecutive requests stand in for
+        // those two call sites: the second must coalesce, not tear down again.
+        const first = client.forceReconnect('first');
+        assert.strictEqual(first, 'issued', 'the first forced reconnect must be issued');
+
+        const second = client.forceReconnect('second');
+        assert.strictEqual(second, 'coalesced',
+            `a second forced reconnect inside the ${cooldown}ms window must coalesce`);
+
+        const forcedStrikes = () => failures.filter((f: any) => f.source === 'forced-reconnect').length;
+        assert.strictEqual(forcedStrikes(), 1,
+            'the coalesced second request must not emit another forced-reconnect node failure');
+
+        client.disconnect();
+        // A client that never issued a reconnect and has no live socket must not
+        // report `issued` (which would let callers count a no-op cycle and burn
+        // the cooldown).
+        const idle = createChainClient({ nodes: [`ws://127.0.0.1:${port}/ws`] });
+        assert.strictEqual(idle.forceReconnect('idle'), 'unavailable',
+            'a forced reconnect with no live socket and no recent attempt must report unavailable');
+
+        console.log('  PASS: forced reconnects share one per-client cooldown');
+    } finally {
+        (wsServer as any).close();
+    }
+}
+
 // ── Run all tests ────────────────────────────────────────────────────────
 
 (async () => {
@@ -499,6 +546,7 @@ async function testRepeatedStaleApiForcesReconnect() {
                 await testReadOnlyClient();
                 await testStaleApiIdRecovery();
                 await testRepeatedStaleApiForcesReconnect();
+                await testForcedReconnectCooldown();
                 testChainConfigValidation();
                 testSetNodes();
                 testBroadcastProxy();

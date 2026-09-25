@@ -266,8 +266,11 @@ New/updated operator-visible messages added by the uncertain-broadcast and COW h
 | `[DUST] Chain refetch after verified cancel is TRUNCATED/EMPTY; applying local cancel sync` | Truncated-read fallback in the dust-cancel refetch path |
 | `authoritative absence verified` | Aligned retry log wording — re-broadcast only on provable absence |
 | `Fill channel DEGRADED for <account>: N consecutive history-scan failures … forcing reconnect` | Fill-history channel stayed dead while the socket looked open; the watchdog forced a reconnect (which re-establishes the session and fires the post-reconnect safety-net sync) |
-| `Fill channel recovered for <account>` | A previously degraded channel completed a successful history scan |
+| `Fill channel recovered for <account> [after N forced reconnect(s)]` | A previously degraded channel completed a successful history scan; `N` is how many forced reconnects it took (the clause is omitted when it recovered without an issued reconnect) |
 | `processObjects (fill-poll): error … (+N suppressed)` | Throttled fill-channel error; `+N suppressed` counts repeats collapsed within the log interval |
+| `processObjects (retry<N>-after-<context>): error …` | Fast re-scan rung fired after a channel failure (ladder 5s/10s/15s), to verify a recovery attempt without waiting for the next 60s poll tick. `N` is the rung |
+| `Fill channel for <account> did NOT recover after N forced reconnects … fills may be missed … restart the bot` | **Operator action required.** Automatic recovery ran its full escalation and the channel is still dead — the log line that makes a failed recovery visible instead of a silent reconnect loop |
+| `⚠ <node>… FAILED attempt N/3 (fill channel unrecoverable for <account>: …)` | **Node strike recorded.** Emitted only after N forced reconnects failed to clear the channel, i.e. the node itself is suspect. A forced reconnect on its own never costs a node a strike — a session-level wedge that clears on the first cycle leaves the strike ledger untouched. Three of these blacklist the node for 24h |
 | `Forcing reconnect on <node> (<reason>)` | Transport-level forced reconnect (stale api_id escalation or fill-channel watchdog); the node is reported failed so the reconnect prefers another node |
 
 ---
