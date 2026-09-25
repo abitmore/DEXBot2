@@ -188,7 +188,9 @@ Keep the default settings first, and tune these:
    section. Boolean prompts accept `y`/`yes`/`true` and `n`/`no`/`false`;
    Enter keeps the current value.
 
-5. **Start DEXBot2** with `dexbot start`.
+5. **Start DEXBot2** with `dexbot start`. If setup is incomplete, `start`
+   automatically opens `dexbot key` when no usable account key is configured,
+   or `dexbot bot` when a valid key exists but no bot is configured.
 
 6. **Tune `minPrice` / `maxPrice`** around the market's volatility range. Once
    AMA is active, tighten them around the maximum expected market volatility

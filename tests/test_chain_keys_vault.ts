@@ -24,32 +24,8 @@ function requireStorage() {
     return require('../modules/storage').getStorage();
 }
 
-function writeModernVault(keysFile, password, accounts = {}) {
-    const chainKeys = requireChainKeys();
-    const { writeJSON } = requireStorage();
-    const vaultSalt = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
-    const secret = chainKeys.createVaultSecret(chainKeys.deriveVaultKey(password, vaultSalt));
-    const data = {
-        vaultVersion: 2,
-        vaultSalt: vaultSalt.toString('hex'),
-        vaultVerifier: '',
-        accounts: {},
-    };
-
-    data.vaultVerifier = require('crypto')
-        .createHmac('sha256', Buffer.from(secret.vaultKeyHex, 'hex'))
-        .update('dexbot2:v2:verifier')
-        .digest('hex');
-
-    for (const [name, privateKey] of Object.entries(accounts)) {
-        data.accounts[name] = {
-            encryptedKey: chainKeys.encrypt(privateKey, secret),
-        };
-    }
-
-    writeJSON(keysFile, data);
-    return secret;
-}
+// Shared fixture helper (also used by the CLI start-onboarding tests).
+const { writeModernVault } = require('./helpers/vault_fixture');
 
 function keysFile() {
     return process.env.DEXBOT_KEYS_FILE;
@@ -113,6 +89,35 @@ function testLegacyVaultRejected() {
     );
 }
 
+async function testKeySetupDetection() {
+    const chainKeys = requireChainKeys();
+
+    assert.strictEqual(chainKeys.hasKeySetup(), false, 'a missing/empty keys file should require key setup');
+    assert.strictEqual(
+        chainKeys.hasKeySetup({ vaultVersion: 2, accounts: { alice: { encryptedKey: 'key' } } }),
+        false,
+        'account records without password metadata should not count as key setup'
+    );
+    assert.strictEqual(
+        chainKeys.hasKeySetup({ vaultVersion: 2, vaultSalt: '00', vaultVerifier: '00', accounts: {} }),
+        false,
+        'a cancelled key setup with only password metadata should require key setup'
+    );
+    assert.strictEqual(
+        chainKeys.hasKeySetup({
+            vaultVersion: 2,
+            vaultSalt: '00',
+            vaultVerifier: '00',
+            accounts: { alice: { encryptedKey: 'v2:not-valid' } },
+        }),
+        false,
+        'malformed account records should not count as key setup'
+    );
+
+    writeModernVault(keysFile(), 'modern-password', { alice: 'a'.repeat(64) });
+    assert.strictEqual(chainKeys.hasKeySetup(), true, 'a modern password-protected vault should count as configured');
+}
+
 async function testUnlockWithPasswordOnModernVault() {
     writeModernVault(keysFile(), 'modern-password', { alice: 'a'.repeat(64) });
     const chainKeys = requireChainKeys();
@@ -171,6 +176,29 @@ async function testInteractiveSessionPersistsModernState() {
     assert.ok(prompts.includes('Enter account name: '), 'test should drive the add-key flow after authentication');
 }
 
+async function testExistingPasswordWithNoAccountOpensKeyManager() {
+    const password = 'modern-password';
+    writeModernVault(keysFile(), password);
+
+    const prompts = installPromptMocks({
+        readInputResponses: ['7'],
+        readPasswordResponses: [password],
+    });
+
+    const chainKeys = requireChainKeys();
+    await chainKeys.main();
+
+    assert.strictEqual(
+        prompts.filter((prompt) => prompt === 'Enter master password: ').length,
+        1,
+        'an existing password should be authenticated once when the vault has no account entries'
+    );
+    assert.ok(
+        !prompts.includes('Confirm master password: '),
+        'an existing master password should not be reset when starting key setup'
+    );
+}
+
 async function testChangePasswordRequiresCurrentPasswordPrompt() {
     const password = 'modern-password';
     const privateKey = 'c'.repeat(64);
@@ -202,10 +230,14 @@ const STAGES = {
         testDerivedVaultRoundtrip();
         testLegacyPayloadRejected();
         testLegacyVaultRejected();
+        await testKeySetupDetection();
         await testUnlockWithPasswordOnModernVault();
     },
     interactive_session_persists_modern_state: async () => {
         await testInteractiveSessionPersistsModernState();
+    },
+    existing_password_without_account: async () => {
+        await testExistingPasswordWithNoAccountOpensKeyManager();
     },
     change_password_requires_current_password_prompt: async () => {
         await testChangePasswordRequiresCurrentPasswordPrompt();

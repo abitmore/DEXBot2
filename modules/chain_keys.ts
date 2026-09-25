@@ -22,7 +22,7 @@
  * All newly written private keys use the v2 vault format.
  *
  * ===============================================================================
- * EXPORTS (23 functions + 1 error class)
+ * EXPORTS (24 functions + 1 error class)
  * ===============================================================================
  *
  * AUTHENTICATION (3 functions)
@@ -53,18 +53,19 @@
  *  13. isVaultSecret(value) - Type guard for vault-secret objects
  *  14. isDaemonSigningToken(value) - Type guard for daemon signing-token objects
  *
- * STORAGE (3 functions)
+ * STORAGE (4 functions)
  *  15. loadAccounts() - Load accounts from keys.json
- *  16. saveAccounts(data) - Save accounts to keys.json
- *  17. checkKeysFileSecurity() - Verify keys.json permissions and ownership
+ *  16. hasKeySetup() - Check whether the vault has a valid account entry
+ *  17. saveAccounts(data) - Save accounts to keys.json
+ *  18. checkKeysFileSecurity() - Verify keys.json permissions and ownership
  *
  * DAEMON (6 functions)
- *  18. createDaemonSigningToken(accountName, options) - Build a credential-daemon signing token
- *  19. isDaemonReady(options) - Check if credential daemon is ready
- *  20. isDaemonResponsive(options, timeout) - Check if daemon is responsive
- *  21. waitForDaemon(maxWaitMs, options) - Wait for daemon to become ready (async)
- *  22. probeAccountInDaemon(accountName, timeout, options) - Probe daemon for account (async)
- *  23. pingDaemon(accountName, timeout, options) - Lightweight daemon health check (async)
+ *  19. createDaemonSigningToken(accountName, options) - Build a credential-daemon signing token
+ *  20. isDaemonReady(options) - Check if credential daemon is ready
+ *  21. isDaemonResponsive(options, timeout) - Check if daemon is responsive
+ *  22. waitForDaemon(maxWaitMs, options) - Wait for daemon to become ready (async)
+ *  23. probeAccountInDaemon(accountName, timeout, options) - Probe daemon for account (async)
+ *  24. pingDaemon(accountName, timeout, options) - Lightweight daemon health check (async)
  *
  * ERROR HANDLING (1 error class)
  *  - MasterPasswordError - Thrown when authentication fails
@@ -469,6 +470,26 @@ function loadAccounts() {
         }
         return normalizeAccountsData();
     }
+}
+
+/**
+ * Report whether the key vault has a usable account entry.
+ * Password metadata alone is not sufficient: cancelling key setup can leave
+ * a valid-looking vault with no account key to use at runtime.
+ */
+function hasKeySetup(accountsData: any = loadAccounts()) {
+    if (!hasModernVault(accountsData)) return false;
+
+    // A vault created by cancelling key setup can contain only password
+    // metadata (salt/verifier) and no usable account key. Treat that as
+    // incomplete onboarding so `dexbot start` returns to the key manager.
+    return Object.entries(accountsData.accounts || {}).some(([accountName, account]: [string, any]) => {
+        if (!accountName.trim() || !account || typeof account.encryptedKey !== 'string') return false;
+        const parts = account.encryptedKey.split(':');
+        return parts.length === 5
+            && parts[0] === 'v2'
+            && parts.slice(1).every((part: string) => part.length > 0 && part.length % 2 === 0 && /^[0-9a-f]+$/i.test(part));
+    });
 }
 
 function setupModernVault(accountsData: any, password: any) {
@@ -1107,4 +1128,4 @@ function probeAccountInDaemon(accountName: any, timeout: any = TIMING.DAEMON_PIN
     });
 }
 
-export { validatePrivateKey, loadAccounts, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }
+export { validatePrivateKey, loadAccounts, hasKeySetup, saveAccounts, checkKeysFileSecurity, encrypt, decrypt, deriveVaultKey, createDaemonSigningToken, createSessionSecret, createVaultSecret, isVaultSecret, isDaemonSigningToken, unlockWithPassword, main, authenticate, getPrivateKey, resolvePrivateKey, isMasterPasswordFailure, MasterPasswordError, isDaemonReady, isDaemonResponsive, waitForDaemon, probeAccountInDaemon, pingDaemon }

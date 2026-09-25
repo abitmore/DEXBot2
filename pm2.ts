@@ -94,7 +94,7 @@ import { createPasswordBootstrapServer } from './modules/launcher/credential_boo
 import { parsePm2Args } from './modules/launcher/launch_modes.js';
 import { setupGracefulShutdown } from './modules/graceful_shutdown.js';
 import { UPDATER, TIMING } from './modules/constants.js';
-import { PATHS } from './modules/paths.js';
+import { PATHS, printRelocationNotices } from './modules/paths.js';
 import { buildRuntimeScriptPath } from './modules/launcher/runtime_entry.js';
 import { Config } from './modules/config.js';
 import { waitForConnected } from './modules/bitshares_client.js';
@@ -1017,6 +1017,9 @@ const isPm2DirectRun = !!process.argv[1] && (
     path.basename(process.argv[1]).replace(/\.js$/, '') === 'pm2'
 );
 if (isPm2DirectRun) {
+    // `dexbot pm2` delegates here without printing relocation notices, so the
+    // child owns them: emit once for every pm2 invocation, before dispatch.
+    printRelocationNotices();
     // Parse command line arguments
     const { command, target, clawOnly, headless, passwordFile } = parsePm2Args(process.argv);
 

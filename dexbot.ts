@@ -126,7 +126,7 @@ const {
 } = require('./modules/bot_settings');
 const { buildRuntimeScriptArgs } = require('./modules/launcher/runtime_entry');
 const { parseWorkerArgs, LAUNCHER_WORKER_COMMAND } = require('./modules/launcher/launch_modes');
-const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile } = require('./modules/paths');
+const { PATHS, getHomeProfilesDir, getRecalculateTriggerFile, printRelocationNotices } = require('./modules/paths');
 const credentialPolicy = require('./modules/credential_policy');
 const { Config } = require('./modules/config');
 const { getErrorMessage } = require('./modules/utils/errors');
@@ -904,6 +904,12 @@ async function handleCLICommands() {
 
     const [rawCommand, target] = cliArgs;
     const command = COMMAND_ALIASES[rawCommand] ?? rawCommand;
+    // `start`/`unlock` and `pm2` delegate to child launchers that print the
+    // relocation notices themselves (after they know whether onboarding is
+    // needed); printing here too would duplicate them.
+    const childOwnsRelocationNotices = command === COMMAND_ALIASES.start || command === 'pm2';
+    if (!childOwnsRelocationNotices) printRelocationNotices();
+
     if (!CLI_COMMANDS.includes(command)) {
         console.error(startupError(`Unknown command '${command}'.`));
         printCLIUsage();
