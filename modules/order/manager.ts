@@ -787,8 +787,8 @@ class OrderManager {
     _clearStaleBroadcastFlag() {
         if (this._broadcastingFlag > 0 && this._broadcastingStartedAt > 0) {
             const elapsed = Date.now() - this._broadcastingStartedAt;
-            if (elapsed > 120000) {
-                this.logger?.log?.('[BROADCAST] Auto-clearing stale broadcast flag after 120s', 'warn');
+            if (elapsed > TIMING.BROADCAST_STALE_CLEAR_MS) {
+                this.logger?.log?.(`[BROADCAST] Auto-clearing stale broadcast flag after ${Math.round(TIMING.BROADCAST_STALE_CLEAR_MS / 1000)}s`, 'warn');
                 // Hard-reset to 0 (not decrement) — this is a safety valve for
                 // a hung broadcast where stopBroadcasting() was never called.
                 // The caller is released from the refcount contract.

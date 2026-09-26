@@ -1837,6 +1837,7 @@ function startOpenOrdersSyncLoop(bot: any) {
                     // grid. Same isolation the fill consumer gets via
                     // _recoverySyncInFlight.
                     if (!bot._recoverySyncInFlight &&
+                        !shouldDeferMaintenanceForBroadcast(bot) &&
                         !bot.manager._fillProcessingLock.isLocked() &&
                         bot.manager._fillProcessingLock.getQueueLength() === 0) {
                         await bot.manager._fillProcessingLock.acquire(async () => {
@@ -1956,6 +1957,10 @@ function setupBlockchainFetchInterval(bot: any) {
         // (syncMarketAdapter, fetchAccountTotals, readOpenOrders)
         // during shutdown.
         if (bot._shuttingDown) return;
+        // 7a: never queue on _fillProcessingLock while a broadcast/placement
+        // region is active. The fill consumer pre-defers on the same signal;
+        // the timer retries next interval once the region ends.
+        if (shouldDeferMaintenanceForBroadcast(bot)) return;
         // Guard against overlapping ticks: if the previous tick is still in
         // flight (slow chain / stall), skip rather than queue a second
         // periodic fetch. The fill lock below would still serialize the
@@ -2170,6 +2175,41 @@ async function releaseMarketAdapterRuntime(_bot: any, botId: any, context: any =
  */
 function isOrderDoesNotExistError(message: any, orderId: any) {
     return require('./order/utils/order').isOrderGoneErrorMessage(message, orderId);
+}
+
+/**
+ * 7a: pre-acquire broadcast deferral for timer-driven lock waiters.
+ *
+ * The fill consumer already defers before acquiring _fillProcessingLock (see
+ * shouldDeferFillForBroadcast in dexbot_fill_runtime); the maintenance timer
+ * loops do not. While a long broadcast/placement region holds work on the
+ * lock (or holds the broadcasting flag between per-op acquisitions), they
+ * queue behind it and can die at the 20s acquisition timeout. These loops
+ * are timer-driven, so skipping a tick is safe: the next tick retries once
+ * the region ends.
+ *
+ * Deadlock guard: these loops also run the periodic maintenance that calls
+ * _clearStaleBroadcastFlag, so deferring on a genuinely STALE (leaked) flag
+ * would prevent the only watchdog that clears it — the flag would never
+ * clear and every tick would defer forever. A live region refreshes
+ * manager._broadcastingStartedAt on every holder, so its age stays small;
+ * a frozen timestamp ages past BROADCAST_STALE_CLEAR_MS and we let the tick
+ * through so maintenance can hard-reset the flag.
+ * @param {any} bot
+ * @returns {boolean} true when the caller should skip this tick
+ */
+function shouldDeferMaintenanceForBroadcast(bot: any): boolean {
+    try {
+        if (bot?.manager?.isBroadcastingActive?.() !== true) return false;
+        const startedAt = Number(bot?.manager?._broadcastingStartedAt) || 0;
+        if (!startedAt) return false;
+        const staleMs = Number((TIMING as any)?.BROADCAST_STALE_CLEAR_MS) > 0
+            ? Number((TIMING as any).BROADCAST_STALE_CLEAR_MS)
+            : 120000;
+        return (Date.now() - startedAt) < staleMs;
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -3371,7 +3411,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
-export { loadBotsConfigSnapshot, isWrapperAdapterOwner, checkAndApplyBotConfigChanges, buildBotConfigFingerprint, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, getTargetedSyncReason, countLiveReserveOrders, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, usesAmaGridPrice, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills };
+export { loadBotsConfigSnapshot, isWrapperAdapterOwner, checkAndApplyBotConfigChanges, buildBotConfigFingerprint, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, getTargetedSyncReason, countLiveReserveOrders, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, usesAmaGridPrice, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills, shouldDeferMaintenanceForBroadcast };
 
 
 export default {
@@ -3416,5 +3456,6 @@ export default {
     markGridActivity,
     getMetrics,
     syncOpenOrdersAndProcessFills,
+    shouldDeferMaintenanceForBroadcast,
     _internalDeferredHold: { logDeferredHoldSummary, describeDeferredHolds, considerDeferredHoldEscalation },
 };

@@ -44,6 +44,8 @@ function createManager(ordersList, queue = []) {
         _lastUnmatchedChainOrders: [] as any[],
         boundaryIdx: 0,
         _gapSlots: 0,
+        config: undefined as any,
+        isBroadcastingActive: undefined as any,
         _gapEvacCancelQueued: new Set<string>(),
         logger: { log: (msg, level) => logs.push(`[${level}] ${msg}`) },
         _gridLock: { acquire: async (fn) => fn() },
@@ -461,6 +463,90 @@ async function run() {
         assert.strictEqual(kept.queuedAt, 123, 're-queue must keep original queuedAt');
         assert.strictEqual(kept.queuedBy, 'sync-duplicate-orphan', 're-queue must keep original detector');
         console.log('  - provenance stamping preserves first-seen values');
+    }
+
+    // ---- 4a. Update budget caps the sequential loop; remainder stays queued ----
+    {
+        const slots = [];
+        const queue = [];
+        for (let i = 0; i < 7; i++) {
+            slots.push(liveSell(`slot-b${i}`, `1.7.b${i}`, 0.3 + i * 0.01));
+            queue.push(priceEntry(`slot-b${i}`, `1.7.b${i}`, 0.3 + i * 0.01));
+        }
+        const { manager } = createManager(slots, queue);
+        manager.config = { fillProcessing: { CORRECTION_MAX_UPDATES_PER_CYCLE: 3 } };
+        let updates = 0;
+        const accountOrders = { updateOrder: async () => { updates++; return {}; } };
+        const out = await correctAllPriceMismatches(manager, 'acct', 'k', accountOrders);
+        assert.strictEqual(updates, 3, 'only the budgeted updates broadcast');
+        assert.strictEqual(out.corrected, 3);
+        assert.strictEqual(out.deferredUpdates, 4, 'remainder reported as deferred');
+        assert.strictEqual(manager.ordersNeedingPriceCorrection.length, 4, 'remainder stays queued durably');
+        console.log('  - update budget caps the sequential loop; remainder stays queued');
+    }
+
+    // ---- 4b. Zero update budget still drains cancel-class entries ----
+    {
+        const { manager } = createManager(
+            [liveSell('slot-x', '1.7.x', 0.3)],
+            [
+                priceEntry('slot-x', '1.7.x', 0.3),
+                {
+                    gridOrder: { id: 'slot-x' },
+                    chainOrderId: '1.7.cancel',
+                    expectedPrice: 0.3,
+                    size: 850,
+                    type: ORDER_TYPES.SELL,
+                    isSurplus: true,
+                    cancelOnly: true,
+                    queuedAt: Date.now(),
+                    queuedBy: 'sync-duplicate-orphan',
+                },
+            ]
+        );
+        manager.config = { fillProcessing: { CORRECTION_MAX_UPDATES_PER_CYCLE: 0 } };
+        let cancels = 0; let updates = 0;
+        const accountOrders = {
+            updateOrder: async () => { updates++; return {}; },
+            cancelOrder: async () => { cancels++; return { success: true }; },
+        };
+        const out = await correctAllPriceMismatches(manager, 'acct', 'k', accountOrders);
+        assert.strictEqual(cancels, 1, 'cancel-class entries must always drain');
+        assert.strictEqual(updates, 0, 'zero budget suppresses updates');
+        assert.strictEqual(out.deferredUpdates, 1, 'update deferred to next cycle');
+        console.log('  - zero update budget still drains cancels');
+    }
+
+    // ---- 4c. Broadcast-active pre-acquire deferral (7a) ----
+    {
+        const { manager } = createManager(
+            [liveSell('slot-89', '1.7.574249250', 0.312638)],
+            [priceEntry('slot-89', '1.7.574249250', 0.312638)]
+        );
+        let lockAcquired = false;
+        manager._gridLock = { acquire: async () => { lockAcquired = true; throw new Error('must not acquire during broadcast'); } };
+        manager.isBroadcastingActive = () => true;
+        let updates = 0;
+        const accountOrders = { updateOrder: async () => { updates++; return {}; } };
+        const out = await correctAllPriceMismatches(manager, 'acct', 'k', accountOrders);
+        assert.strictEqual(out.deferred, true, 'drain must defer under broadcast');
+        assert.strictEqual(lockAcquired, false, 'must not take _gridLock during broadcast');
+        assert.strictEqual(updates, 0, 'no broadcast during defer');
+        assert.strictEqual(manager.ordersNeedingPriceCorrection.length, 1, 'entry stays queued');
+        console.log('  - broadcast-active drain defers without taking _gridLock');
+    }
+
+    // ---- 4d. Backlog threshold alarm (6b) ----
+    {
+        const { manager, logs } = createManager(
+            [liveSell('slot-89', '1.7.574249250', 0.312638), liveSell('slot-90', '1.7.90', 0.4)],
+            [priceEntry('slot-89', '1.7.574249250', 0.312638), priceEntry('slot-90', '1.7.90', 0.4)]
+        );
+        manager.config = { fillProcessing: { CORRECTION_QUEUE_WARN_THRESHOLD: 2 } };
+        const accountOrders = { updateOrder: async () => ({}) };
+        await correctAllPriceMismatches(manager, 'acct', 'k', accountOrders);
+        assert.ok(logs.some((l: string) => l.includes('Backlog')), 'backlog threshold must warn');
+        console.log('  - backlog threshold emits a warn');
     }
 
     console.log('PASS test_correction_queue_staleness');

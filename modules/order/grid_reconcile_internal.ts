@@ -1649,6 +1649,16 @@ async function _executePlannedStartupCreates({
 
     logger?.log?.(`Startup: Executing ${createPlans.length} planned create(s) in ${groups.length} outside->center group(s)`, 'info');
 
+    // 7c: yield to the event loop between create groups. Phase 2 holds the
+    // broadcasting region across the whole loop; a blocking/synchronous
+    // stretch of group prep + master mutations must not starve timers and
+    // watchdog pollers (region-end reschedule, _awaitBroadcastIdle, stale-flag
+    // clear) that run on the macrotask queue. The network I/O in each group
+    // already yields, but an explicit yield guarantees it per group.
+    // setTimeout(0) (not setImmediate): this module is browser-safe, and
+    // setImmediate is Node-only.
+    const yieldBetweenCreateGroups = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
     for (let i = 0; i < groups.length; i++) {
         const group = groups[i];
         const labels = group.map((p: any) => `${p.orderType.toUpperCase()}:${p.gridOrder?.id}`).join(', ');
@@ -1666,6 +1676,7 @@ async function _executePlannedStartupCreates({
                 totalGroups: groups.length,
                 });
             for (const id of batchIds) createdOrderIds.add(id);
+            await yieldBetweenCreateGroups();
             continue;
         }
 
@@ -1686,6 +1697,8 @@ async function _executePlannedStartupCreates({
                 });
             if (chainOrderId) createdOrderIds.add(chainOrderId);
         }
+
+        await yieldBetweenCreateGroups();
     }
 
     const failedCount = Math.max(0, createPlans.length - createdOrderIds.size);

@@ -85,6 +85,43 @@ async function runTests() {
         assert.strictEqual(cancelCalls, 1, 'dust cancel must run when the fill lock is available');
     }
 
+    console.log(' - shouldDeferMaintenanceForBroadcast: live region defers, stale flag does not...');
+    {
+        const shouldDefer = MaintenanceRuntime.shouldDeferMaintenanceForBroadcast;
+        const { TIMING } = require('../modules/constants');
+
+        assert.strictEqual(
+            shouldDefer({ manager: { isBroadcastingActive: () => false } }),
+            false,
+            'idle manager must not defer'
+        );
+        assert.strictEqual(shouldDefer(null), false, 'missing bot must fail open');
+
+        // Live region (recent start) → defer so the tick does not queue on the
+        // fill lock behind a long broadcast/placement region.
+        assert.strictEqual(
+            shouldDefer({ manager: { isBroadcastingActive: () => true, _broadcastingStartedAt: Date.now() - 1000 } }),
+            true,
+            'live region must defer'
+        );
+
+        // Leaked/stale flag (start older than the watchdog) → do NOT defer:
+        // executeMaintenanceLogic must run _clearStaleBroadcastFlag, or a
+        // leaked flag would defer every tick forever.
+        const staleMs = Number(TIMING.BROADCAST_STALE_CLEAR_MS);
+        assert.strictEqual(
+            shouldDefer({ manager: { isBroadcastingActive: () => true, _broadcastingStartedAt: Date.now() - staleMs - 1000 } }),
+            false,
+            'stale flag must NOT defer (watchdog must run)'
+        );
+
+        assert.strictEqual(
+            shouldDefer({ manager: { isBroadcastingActive: () => true } }),
+            false,
+            'missing region timestamp must fail open'
+        );
+    }
+
     console.log('\n✓ Lock-bypass guard tests passed!');
 }
 

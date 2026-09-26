@@ -73,7 +73,7 @@
  */
 
 
-import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE, COW_ACTIONS } from '../../constants.js';
+import { ORDER_TYPES, ORDER_STATES, TIMING, FEE_PARAMETERS, GRID_LIMITS, NATIVE_CLIENT, COW_PERFORMANCE, COW_ACTIONS, FILL_PROCESSING } from '../../constants.js';
 import * as Format from '../format.js';
 import * as MathUtils from './math.js';
 import Logger from '../../order/logger.js';
@@ -869,6 +869,52 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
 }
 
 /**
+ * Resolve the per-cycle sequential price-update budget for
+ * correctAllPriceMismatches. Cancel-class entries are never budgeted; only
+ * the SYNC_DELAY_MS-spaced update loop is bounded so an unbounded backlog
+ * cannot hold _gridLock (no acquisition timeout) for minutes. Reads the bot
+ * config override first, then the frozen default. Non-finite falls back to
+ * the default; a value of 0 intentionally drains no updates this cycle.
+ * @param {any} manager
+ * @returns {number}
+ */
+function resolveCorrectionUpdateBudget(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_MAX_UPDATES_PER_CYCLE
+        ?? (FILL_PROCESSING as any)?.CORRECTION_MAX_UPDATES_PER_CYCLE;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    return 5;
+}
+
+/**
+ * Resolve the correction-backlog warn threshold (see
+ * CORRECTION_QUEUE_WARN_THRESHOLD). Non-positive disables the alarm.
+ * @param {any} manager
+ * @returns {number}
+ */
+function resolveCorrectionWarnThreshold(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_QUEUE_WARN_THRESHOLD
+        ?? (FILL_PROCESSING as any)?.CORRECTION_QUEUE_WARN_THRESHOLD;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    return 0;
+}
+
+/**
+ * Resolve the correction-backlog warn rate-limit window.
+ * @param {any} manager
+ * @returns {number}
+ */
+function resolveCorrectionWarnRateLimitMs(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_QUEUE_WARN_RATE_LIMIT_MS
+        ?? (FILL_PROCESSING as any)?.CORRECTION_QUEUE_WARN_RATE_LIMIT_MS
+        ?? TIMING?.STALE_TOTALS_WARN_RATE_LIMIT_MS;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+    return 5 * 60 * 1000;
+}
+
+/**
  * Correct all pending price mismatches atomically.
  * Cancel-type corrections (duplicate orphans, surplus) are batched into
  * chunked multi-op transactions; price updates run sequentially.
@@ -881,6 +927,39 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
  */
 async function correctAllPriceMismatches(manager: any, accountName: any, privateKey: any, accountOrders: any) {
     if (!manager || !manager._gridLock) return { corrected: 0, failed: 0, results: [] };
+
+    // 6b: backlog alarm (rate-limited). Emitted even when the drain defers
+    // below, because deferral is exactly when the queue is growing.
+    const queuedBefore = Array.isArray(manager.ordersNeedingPriceCorrection)
+        ? manager.ordersNeedingPriceCorrection.length
+        : 0;
+    const warnThreshold = resolveCorrectionWarnThreshold(manager);
+    if (warnThreshold > 0 && queuedBefore >= warnThreshold) {
+        const now = Date.now();
+        const warnRateLimitMs = resolveCorrectionWarnRateLimitMs(manager);
+        const lastWarn = Number(manager._correctionQueueWarnAt) || 0;
+        if (now - lastWarn >= warnRateLimitMs) {
+            manager._correctionQueueWarnAt = now;
+            manager?.logger?.log?.(
+                `[CORRECTION] Backlog: ${queuedBefore} pending correction(s) (threshold ${warnThreshold}); ` +
+                `draining budgeted price updates per cycle so _gridLock is not held across a long drain`,
+                'warn'
+            );
+        }
+    }
+
+    // 7a: pre-acquire deferral. _gridLock has NO acquisition timeout, so
+    // taking it while a broadcast/placement region is active holds it across
+    // the region and starves every concurrent per-op lock acquisition (the
+    // broadcaster's own _applySync/cancel calls). Leave corrections queued —
+    // the next sync / maintenance tick drains them once the region ends.
+    if (manager.isBroadcastingActive?.() === true) {
+        manager?.logger?.log?.(
+            `[CORRECTION] Drain deferred: broadcast/placement region active; ${queuedBefore} correction(s) stay queued`,
+            'debug'
+        );
+        return { corrected: 0, failed: 0, results: [], staleDropped: 0, deferred: true, reason: 'broadcast-active' };
+    }
 
     return await manager._gridLock.acquire(async () => {
         const results: any[] = [];
@@ -930,21 +1009,29 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
             );
         }
 
-        const canBatch = liveEntries.length > 1
+        // 6a: cancel-class entries are always fully drained (batched, no
+        // inter-op delay, fund-safety-critical). Only the SYNC_DELAY_MS-spaced
+        // price-update loop is budgeted; the unselected remainder stays queued
+        // durably and re-drains next cycle.
+        const cancelEntries = liveEntries.filter((c: any) => c.cancelOnly === true || c.isSurplus === true);
+        const updateEntries = liveEntries.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
+        const updateBudget = resolveCorrectionUpdateBudget(manager);
+        const budgetedUpdates = updateEntries.slice(0, updateBudget);
+        const deferredUpdates = updateEntries.length - budgetedUpdates.length;
+
+        const canBatch = cancelEntries.length > 1
             && typeof accountOrders?.buildCancelOrderOp === 'function'
             && typeof accountOrders?.executeBatch === 'function';
-        let serialEntries = liveEntries;
+        let serialEntries: any[] = [...cancelEntries, ...budgetedUpdates];
         if (canBatch) {
-            const cancelEntries = liveEntries.filter((c: any) => c.cancelOnly === true || c.isSurplus === true);
-            const updateEntries = liveEntries.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
-            if (cancelEntries.length > 1) {
-                const batchOutcome = await _batchCancelCorrections(
-                    manager, cancelEntries, accountName, privateKey, accountOrders
-                );
-                corrected += batchOutcome.corrected;
-                failed += batchOutcome.failed;
-                serialEntries = [...batchOutcome.unresolved, ...updateEntries];
-            }
+            const batchOutcome = await _batchCancelCorrections(
+                manager, cancelEntries, accountName, privateKey, accountOrders
+            );
+            corrected += batchOutcome.corrected;
+            failed += batchOutcome.failed;
+            // Unresolved cancels still serialize (they must not be dropped);
+            // budgeted updates follow.
+            serialEntries = [...batchOutcome.unresolved, ...budgetedUpdates];
         }
 
         for (const correctionInfo of serialEntries) {
@@ -960,7 +1047,17 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
         if (corrected > 0 && typeof manager.persistGrid === 'function') {
             await manager.persistGrid();
         }
-        return { corrected, failed, results, staleDropped };
+        if (deferredUpdates > 0) {
+            const queuedAfter = Array.isArray(manager.ordersNeedingPriceCorrection)
+                ? manager.ordersNeedingPriceCorrection.length
+                : 0;
+            manager?.logger?.log?.(
+                `[CORRECTION] Deferred ${deferredUpdates} price update(s) to the next cycle ` +
+                `(budget ${updateBudget}/cycle, ${queuedAfter} still queued)`,
+                'info'
+            );
+        }
+        return { corrected, failed, results, staleDropped, deferredUpdates };
     });
 }
 
