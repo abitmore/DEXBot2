@@ -1,7 +1,7 @@
 # The Grid-Price Invariant
 
 Status: **implemented; the emission check is BLOCKING**
-Last code-reviewed against the v1.6.6 release baseline `224f92ee` (2026-09-24).
+Last code-reviewed against the v1.6.7 release baseline `d4e0ce0b` (2026-09-26).
 
 ## The invariant
 
@@ -140,6 +140,54 @@ every BUILT op:
 
 Tested by FG-1..11 (`tests/test_final_pivot_gate.ts`), including the incident
 replay (FG-2) and the index-remap hygiene (FG-7/FG-11).
+
+### The pivot rides the grid snapshot
+
+The guard reads `_lastFilledPrice`/`_lastFilledType`, so the pivot must be live
+before the first decision of a run — including while the boundary is still
+being rebuilt. Without a persisted row the guard starts every process cold, and
+the startup book seed (`seedLastFilledPricesFromBook`, max resting buy / min
+resting sell) is only a proxy: it goes wrong whenever the book is not adjacent
+to the last fill (partials, rotations, reserve shelf, dust).
+
+`persistGridSnapshot` therefore writes a `{price, type, fillsAt, genesisHash}`
+row alongside the grid (`storeMasterGrid`'s `lastFillPivot` parameter, written
+under the bot's persistence lock), and `loadGrid` restores it via
+`restoreLastFillPivot` right after `_restoreBoundary` — with the grid re-typed
+and genesis applied, before the first reconcile/broadcast — so startup,
+price-match resume, and the recovery reload all inherit one call site.
+
+Rules that keep the mirror honest:
+
+- **The manager's in-memory pivot stays authoritative at runtime.** The row is a
+  mirror that rides the grid snapshot, so it invalidates in lockstep with the
+  boundary/genesis instead of forming a second ledger (the `_pendingFillCrawls`
+  lockstep contract).
+- **Provenance gates persistence.** One writer, `setLastFillPivot(type, price,
+  'fill' | 'book')`; only `'fill'` is persist-eligible, so a book seed never
+  fossilizes as market truth. One shared shape gate (`normalizeLastFillPivot`)
+  serves the snapshot sanitizer and the loader, so the two checks cannot drift.
+- **Restore validates before it re-arms**, in order: TTL (24h,
+  `GRID_LIMITS.LAST_FILL_PIVOT_TTL_MS`, with the ORIGINAL `fillsAt` preserved
+  through `setLastFillPivot`'s `atMs` so it keeps meaning "age of the last
+  fill", not "time since last restart") → genesis binding (a row from a dead
+  generation is refused) → on-grid (the runtime's own `resolveOnGridPivot`
+  ladder validator, reused from `utils/system.ts`, so the restorer can never
+  accept a value the live guard would refuse per probe). TTL and
+  genesis-mismatch verdicts erase the row through one shared drop path
+  (`AccountOrders.clearPersistedLastFillPivot`); an off-ladder row is a no-op
+  that falls back to the book seed. The snapped ladder level is restored, never
+  the raw float.
+- **The generation wipes the pivot.** `initializeGrid` and
+  `rejectCorruptedGridSnapshot` call `resetLastFillPivot`, which clears the
+  full scalar family including the per-side mirrors (so the book seed's cold
+  gate is not silently suppressed by a stale mirror), and `AccountOrders.clearGrid`
+  drops the persisted row with the snapshot.
+
+Tested by LFP-1..8 (`tests/test_last_fill_pivot_persistence.ts`) for the
+store/load round-trip shape gates, null-clears vs undefined no-ops, the
+provenance gate, `fillsAt` preservation, TTL and genesis-mismatch erasure, and
+off-ladder refusal.
 
 ### This BLOCKS
 
@@ -384,6 +432,10 @@ is divergence telemetry built on `calculateGridSideDivergenceMetric`.
 | Fill-guard pivot validated onto the ladder (`resolveOnGridPivot`) | **landed** |
 | `[HOLD]` enrichment + slow re-warn | **landed** |
 | Final pre-broadcast pivot gate re-checks BUILT ops on a refreshed pivot | **landed** |
+| Fill-guard pivot persisted with the grid snapshot (provenance: fills only) | **landed** |
+| Pivot restored with the boundary (TTL → genesis → on-grid validation chain) | **landed** |
+| Pivot mutation behind one provenance-tagged writer (`setLastFillPivot`) | **landed** |
+| Grid generation invalidates the pivot (in-memory + persisted row) | **landed** |
 
 `resolveOnGridPivot` snaps a near-ladder pivot to its slot level but **refuses to
 rewrite a far-off-ladder one** onto an edge slot — silently clamping would dress
@@ -414,6 +466,9 @@ reported.
   skipped-slot restore paths, remaps pending indexes on compaction, and never
   gates cancels or size-updates (`tests/test_final_pivot_gate.ts`, FG-1..11,
   including the 2026-09-13 stale-pivot incident replay).
+- **Unit:** pivot snapshot round-trip and its restore validation chain
+  (`tests/test_last_fill_pivot_persistence.ts`, LFP-1..8) — shape gates,
+  provenance, TTL, genesis binding, off-ladder refusal, full-family reset.
 - **External gate:** `analysis/grid_correction_check.ts` — target 0 sustained
   violations at 168h/720h. **The baseline is NOT clean:** 4 of 5 bots were
   non-zero over 7 days, so this is a live signal, not a historical one.

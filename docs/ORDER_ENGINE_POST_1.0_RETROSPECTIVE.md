@@ -155,7 +155,7 @@ plans, `LANDED`/`REVERTED`/`SUPERSEDED` statuses, commit hashes, and verificatio
 - **P3** — landed `f94d6ec4` (`validateBoundaryAgainstChainEvidence` + reconcile phase-1 gate + `placementsAllowed` adoption-only mode); amended `3713c496` (anchor demoted to non-authoritative hint, can never veto); extended `a54863ca` (NO_FEASIBLE escalates a straddle-cancel ladder instead of freezing). **REVERTED `e7231534`** — `validateBoundaryAgainstChainEvidence` (`grid_reconcile.ts:359`) and `placementsAllowed` (`grid_reconcile_internal.ts:1601`) removed; **current** boundary derives from `calculateIdealBoundary` (`order/utils/order.ts:1216` via `grid.ts:160`) + `LAST-FILL-GUARD` (`manager.ts:1679`/`dexbot_cow_runtime.ts:1624`), not a P3 chain-evidence gate.
 - **P4** — landed `f94d6ec4` (`dexbot_state_recovery.ts:581 rejectCorruptedGridSnapshot` clears in-memory + persisted boundary on reject). Live.
 - **P5** — landed `f94d6ec4` (skip/defer logging + `STRUCTURAL_RESYNC_MAX_DEFER_MS` force, `dexbot_maintenance_runtime.ts:2242-2266`). Live.
-- **P6** — landed `f94d6ec4` as `tests/test_gap_band_regression.ts` + `tests/test_boundary_chain_evidence.ts` (updated by `3713c496`/`e2898e51`/`a54863ca` to the amended behavior).
+- **P6** — landed `f94d6ec4` (2026-08-29) as boundary chain-evidence regression coverage, since superseded by the boundary-geometry suite (`tests/test_boundary_anchor_recovery.ts`, `tests/test_boundary_restore_validation.ts`) and the slot-invariant guard tests.
 
 #### 1.1 Incident summary
 
@@ -200,7 +200,7 @@ Sequence `Restored boundary index: 131` *then* `[SNAPSHOT-REJECT] Deleting corru
 
 #### 1.7 P6 — Regression tests
 
-*Status: LANDED `f94d6ec4` as `test_gap_band_regression.ts` + `test_boundary_chain_evidence.ts`; **DELETED `e7231534`** — both files removed with P3 revert; no P6 tests remain at HEAD.*
+*Status: LANDED, then superseded — the boundary chain-evidence and geometry assertions are now held by `tests/test_boundary_anchor_recovery.ts` (ANCHOR-001..004) and `tests/test_boundary_restore_validation.ts`.*
 - A (P1): stale boundary → startup updates into slot X → boundary snaps past X → assert cancel emitted same batch, no live in-band. (P1 later reverted `e2898e51`.)
 - B (P2): seed live orphan strictly inside gap with no duplicate price → sync/reconcile → assert `cancelOnly` within one cycle. (P2 reverted `3713c496`.)
 - C (P3/P4): corrupted snapshot stale vs fill evidence → rebuild → assert placements use re-derived boundary, rejected boundary not reused. **Both tests deleted `e7231534`** with P3 revert; P4 behavior now covered by `test_dexbot_state_recovery` + `test_periodic_sync_fill_rebalance`.
@@ -365,7 +365,7 @@ Still open: drift logging/alert >active window, re-stamp BUY above anchor metric
 
 ### 4. Price-First Alignment Plan
 
-> **Source:** `PRICE_FIRST_ALIGNMENT_PLAN.md` · **Status:** Phase 1 shipped and live as shadow telemetry; Phase 2 projection was enabled (`1bbf1a23`) then **removed** (`3713c496`) after a live-bot incident — the anchor veto overrode chain evidence and drove destructive gap-band cancels. The anchor is now observability-only; the boundary is chain-evidence-derived. Phase 3 is moot (no second write path to retire); Phase 4 golden tests landed (`tests/test_anchor_golden_geometry.ts`).
+> **Source:** `PRICE_FIRST_ALIGNMENT_PLAN.md` · **Status:** Phase 1 shipped and live as shadow telemetry; Phase 2 projection was enabled (`1bbf1a23`) then **removed** (`3713c496`) after a live-bot incident — the anchor veto overrode chain evidence and drove destructive gap-band cancels. The anchor is now observability-only; the boundary is chain-evidence-derived. Phase 3 is moot (no second write path to retire); boundary geometry is pinned by `tests/test_boundary_anchor_recovery.ts` (ANCHOR-001..004) and `tests/test_grid_price_slot_invariant.ts`.
 > **Scope:** grid boundary state `modules/order/` · **Related:** three-layer crawl/anchor/guard fix.
 
 #### 4.1 Goal
@@ -389,7 +389,7 @@ Grid's "where is market" maintained two ways that disagree: boundary (discrete, 
 
 #### 4.4 Invariants I1–I6
 
-I1 No order on wrong side of just-filled price (`sell ≤ maxFill, buy > minFill`) — `test_boundary_price_anchor.ts`; I2 Single eligible fill ±1 crawl — `test_multi_partial_consolidation.ts`; I3 Just-filled BUY refills as BUY at fill price — `test_multifill_opposite_partial.ts`; I4 Boundary never exceeds gap-aware ceiling / collapses on degenerate geometry — `test_boundary_restore_validation.ts`; I5 Price-less fills degrade conservatively — `test_boundary_price_anchor.ts #4`; I6 COW-commit-only writes (`_setBoundary`) — `test_cow_boundary_slot_replacement.ts`.
+I1 No order on wrong side of just-filled price (`sell ≤ maxFill, buy > minFill`) — `test_last_fill_guard.ts` (LFG-1..7); I2 Single eligible fill ±1 crawl — `test_multi_partial_consolidation.ts`; I3 Just-filled BUY refills as BUY at fill price — `test_multifill_opposite_partial.ts`; I4 Boundary never exceeds gap-aware ceiling / collapses on degenerate geometry — `test_boundary_restore_validation.ts`; I5 Price-less fills degrade conservatively — `test_boundary_anchor_recovery.ts` ANCHOR-003; I6 COW-commit-only writes (`_setBoundary`) — `test_cow_boundary_slot_replacement.ts`.
 
 #### 4.5 Phase 1 — MarketAnchor + divergence telemetry (no behavior change)
 
@@ -407,10 +407,9 @@ Pure `projectAnchorToGrid(anchor, allSlots, gapSlots)` via `computePriceAnchored
 *Status: MOOT — Phase 2 was removed (`3713c496`), so there is no second write path to retire; the legacy machinery below is the live path. Original gate: 14-day zero rotations + flat divergence.*
 3a: `deriveTargetBoundary` collapses to initial-recovery + projection; delete `netShift`/cross-chunk budget/window-cap; delete `_boundaryShiftBudget/_boundaryShiftBudgetBase/_boundaryAnchor` (`dexbot_class.ts`) + re-plan restore (`dexbot_cow_runtime.ts`); fund sync now D1 floor only; spread-correction promotes via anchor; remaining readers projection-based; `manager._setBoundary` stays (I6). 3b: `account_orders.loadBoundaryIdx` (`validatePersistedBoundary` `dexbot_state_recovery.ts`) + `storeGrid` (`utils/system.ts`) stop persisting boundary; startup = load grid → book-seed → project. Gate: harness + fund-floor/recovery cases; kill-switch: corrupt/delete snapshot must converge from chain alone.
 
-#### 4.8 Phase 4 — Geometry golden tests (pin, don't refactor)
+#### 4.8 Phase 4 — Boundary geometry coverage (pin, don't refactor)
 
-*Status: LANDED — `tests/test_anchor_golden_geometry.ts`.*
-Golden files canonical grid × gap `{0,1,2,3}` × price at/between slots × direction asserting `calculateIdealBoundary/getSellStartIdx/projectAnchorToGrid` agree. Gate: green.
+*Status: LANDED with the projection, then superseded — boundary geometry is pinned by `tests/test_boundary_anchor_recovery.ts` (ANCHOR-001..004) and `tests/test_grid_price_slot_invariant.ts`.*
 
 #### 4.9 Sequencing & risk
 

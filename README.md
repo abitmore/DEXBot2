@@ -344,6 +344,7 @@ dexbot export <bot>        # Export trades + settings (CSV/JSON) for analysis/
 dexbot update              # Update DEXBot2
 dexbot clear               # Clear log files (also clear-orders, clear-market-adapter, clear-all)
 dexbot default             # Reset settings to defaults
+dexbot help                # Grouped command reference
 ```
 
 ## 🎯 PM2 Process Management
