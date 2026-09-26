@@ -286,9 +286,19 @@ let TIMING = {
 
     // BROADCAST_STALE_CLEAR_MS: a leaked/hung broadcast flag is hard-cleared
     // after this long so it cannot permanently block rebalancing
-    // (see manager._clearStaleBroadcastFlag). Kept as a constant so the
-    // fill-consumer deferral bound below can derive from it.
+    // (see manager._clearStaleBroadcastFlag). This is the SINGLE authority on
+    // "when is a broadcast region stale": both the maintenance-tick deferral
+    // (shouldDeferMaintenanceForBroadcast) and the fill-consumer deferral
+    // bound (FILL_BROADCAST_DEFER_MAX_MS, derived below) are expressed in
+    // terms of it, so they cannot be tuned out of agreement.
     BROADCAST_STALE_CLEAR_MS: 120000,  // 120 seconds
+
+    // BROADCAST_DEFER_SAFETY_MARGIN_MS: headroom added to
+    // BROADCAST_STALE_CLEAR_MS when deriving FILL_BROADCAST_DEFER_MAX_MS, so a
+    // region that is still considered live by the stale-clear watchdog cannot
+    // first trip the fill-consumer deferral bound (which would drop the
+    // consumer into the in-lock wait the deferral exists to avoid).
+    BROADCAST_DEFER_SAFETY_MARGIN_MS: 30000,  // 30 seconds
 
     // FILL_BROADCAST_DEFER_MAX_MS: Bound on fill-consumer deferral while a
     // broadcast region is active. The consumer defers (instead of acquiring
@@ -296,11 +306,11 @@ let TIMING = {
     // never queue as lock waiters and time out. Past this bound a stuck flag
     // falls through to the legacy in-lock wait, which still caps at 30s and
     // proceeds — a leaked flag can delay fills, never starve them.
-    // MUST exceed BROADCAST_STALE_CLEAR_MS, or a legitimately long region
-    // (e.g. startup reconcile Phase 2 with many create groups) trips the
-    // bound and drops the consumer into the very in-lock wait the deferral
-    // exists to avoid. The post-merge derivation enforces that relationship.
-    FILL_BROADCAST_DEFER_MAX_MS: 120000,  // 120 seconds (raised below to stale-clear + margin)
+    // Derived after override merge from BROADCAST_STALE_CLEAR_MS +
+    // BROADCAST_DEFER_SAFETY_MARGIN_MS (see end of this module), so the
+    // ordering invariant holds by construction. The value below is only a
+    // floor for that derivation.
+    FILL_BROADCAST_DEFER_MAX_MS: 120000,  // 120 seconds (raised after merge to stale-clear + margin)
 
     // FILL_TOTALS_RETRY_BASE_MS / MAX_MS: Backoff for re-processing fills
     // parked when the accountTotals refresh failed (stale snapshot). The
@@ -476,6 +486,14 @@ let TIMING = {
     // is detached from it.
     // Derived as SYNC_LOCK_TIMEOUT_MS * 2 after override merge (see end of this module).
     SYNC_LOCK_FORCE_RELEASE_AGE_MS: 40000, // overridden by derivation after merge
+
+    // GRID_LOCK_HOLD_WARN_MS: observability threshold for _gridLock hold
+    // duration. That lock has no acquisition timeout and its callers cannot
+    // safely recover from a rejected acquire, so an over-long critical
+    // section is surfaced (warn + metric) by the maintenance tick rather than
+    // timed out or force-released. A hold crossing this threshold means a
+    // section is running unbounded and should be bounded at the source.
+    GRID_LOCK_HOLD_WARN_MS: 15000,
 
     // GRID_BLOAT_RESYNC_GRACE_MS: Grace period before the maintenance runtime
     // re-triggers a structural resync for a previously detected grid bloat.
@@ -925,17 +943,28 @@ let FILL_PROCESSING = {
     // credential daemon recovery) should not wait 5 minutes between retries.
     CONSUMER_BACKOFF_MAX_MS: 60000,
 
-    // CORRECTION_MAX_UPDATES_PER_CYCLE: cap on sequential price-update
-    // corrections drained per cycle. correctAllPriceMismatches holds _gridLock
-    // (no acquisition timeout) and runs price updates sequentially with
-    // SYNC_DELAY_MS between each, so an unbounded backlog can hold the lock
-    // for minutes and starve every other waiter (the "Lock acquisition
-    // timeout" cascade). Cancel-class entries (duplicate orphans / surplus /
-    // type mismatch) are ALWAYS fully drained — they are batched with no
-    // inter-op delay and are fund-safety-critical. Only the sequential
-    // price-update loop is budgeted; the remainder stays queued durably and
-    // re-drains on the next cycle.
-    CORRECTION_MAX_UPDATES_PER_CYCLE: 5,
+    // CORRECTION_LOCK_HOLD_BUDGET_MS: wall-clock budget for the sequential
+    // price-update drain in correctAllPriceMismatches. That drain holds
+    // _gridLock (no acquisition timeout), so the invariant to protect is
+    // *lock-hold duration*, not update count: each update costs SYNC_DELAY_MS
+    // plus its RPC round-trip, and that round-trip grows with chain
+    // congestion. The drain stops pulling new updates once this much time has
+    // elapsed, so a slow chain drains fewer per cycle instead of holding the
+    // lock past the 20s fill-lock timeout (the "Lock acquisition timeout"
+    // cascade). Cancel-class entries (duplicate orphans / surplus / type
+    // mismatch) are ALWAYS fully drained — they are batched with no inter-op
+    // delay and are fund-safety-critical — and are never charged against this
+    // budget. Only the sequential price-update loop is budgeted; the
+    // remainder stays queued durably and re-drains on the next cycle.
+    CORRECTION_LOCK_HOLD_BUDGET_MS: 4000,
+
+    // CORRECTION_MAX_UPDATES_PER_CYCLE: optional hard cap on price updates
+    // drained per cycle, layered on top of CORRECTION_LOCK_HOLD_BUDGET_MS.
+    // Default null = no count cap (the hold-time budget alone governs, so the
+    // bound adapts to real RPC latency); a positive integer pins the count;
+    // 0 drains no price updates this cycle. Cancel-class entries are never
+    // budgeted by either knob.
+    CORRECTION_MAX_UPDATES_PER_CYCLE: null,
 
     // CORRECTION_QUEUE_WARN_THRESHOLD: emit a rate-limited warn when the
     // persisted correction queue reaches this size, so a growing backlog is
@@ -2075,14 +2104,30 @@ if (settings) {
 // Post-merge derivations: compute values from their documented relationships
 // so that user overrides to base constants propagate automatically.
 TIMING.SYNC_LOCK_FORCE_RELEASE_AGE_MS = TIMING.SYNC_LOCK_TIMEOUT_MS * 2;
-// The fill-consumer deferral bound must outlast the stale-broadcast watchdog:
-// a live region that runs longer than the bound would otherwise drop the
-// consumer into the in-lock 30s wait (fill-lock acquisition timeout is 20s).
-// Derive from the watchdog so overriding it propagates, keeping the margin.
+
+// Broadcast deferral bounds are all expressed in terms of the single stale
+// authority (BROADCAST_STALE_CLEAR_MS): the maintenance-tick deferral uses it
+// directly (shouldDeferMaintenanceForBroadcast) and the fill-consumer bound is
+// staleClear + a named safety margin. Deriving rather than declaring keeps the
+// ordering invariant true by construction; the check below catches a future
+// edit or override that breaks it at load time instead of silently at runtime.
+const _broadcastStaleClearMs = Number(TIMING.BROADCAST_STALE_CLEAR_MS) > 0
+    ? Number(TIMING.BROADCAST_STALE_CLEAR_MS)
+    : 120000;
+const _broadcastDeferSafetyMarginMs = Number(TIMING.BROADCAST_DEFER_SAFETY_MARGIN_MS) > 0
+    ? Number(TIMING.BROADCAST_DEFER_SAFETY_MARGIN_MS)
+    : 30000;
 TIMING.FILL_BROADCAST_DEFER_MAX_MS = Math.max(
     Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS) > 0 ? Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS) : 0,
-    (Number(TIMING.BROADCAST_STALE_CLEAR_MS) > 0 ? Number(TIMING.BROADCAST_STALE_CLEAR_MS) : 120000) + 30000
+    _broadcastStaleClearMs + _broadcastDeferSafetyMarginMs
 );
+if (!(Number(TIMING.FILL_BROADCAST_DEFER_MAX_MS) > _broadcastStaleClearMs)) {
+    throw new Error(
+        `[constants] invariant violated: FILL_BROADCAST_DEFER_MAX_MS (${TIMING.FILL_BROADCAST_DEFER_MAX_MS}) ` +
+        `must exceed BROADCAST_STALE_CLEAR_MS (${_broadcastStaleClearMs}) — the fill-consumer deferral bound ` +
+        `must outlast the stale-broadcast watchdog.`
+    );
+}
 
 // Freeze objects to prevent accidental runtime modifications
 Object.freeze(ORDER_TYPES);

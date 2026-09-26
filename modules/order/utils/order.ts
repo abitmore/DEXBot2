@@ -869,21 +869,38 @@ async function _batchCancelCorrections(manager: any, entries: any[], accountName
 }
 
 /**
- * Resolve the per-cycle sequential price-update budget for
+ * Resolve the wall-clock budget for the sequential price-update drain in
  * correctAllPriceMismatches. Cancel-class entries are never budgeted; only
- * the SYNC_DELAY_MS-spaced update loop is bounded so an unbounded backlog
+ * the SYNC_DELAY_MS-spaced update loop is bounded, so an unbounded backlog
  * cannot hold _gridLock (no acquisition timeout) for minutes. Reads the bot
- * config override first, then the frozen default. Non-finite falls back to
- * the default; a value of 0 intentionally drains no updates this cycle.
+ * config override first, then the frozen default. Non-finite/non-positive
+ * falls back to the frozen default, then to 4000ms.
  * @param {any} manager
- * @returns {number}
+ * @returns {number} Positive hold budget in milliseconds
  */
-function resolveCorrectionUpdateBudget(manager: any): number {
+function resolveCorrectionHoldBudget(manager: any): number {
+    const raw = manager?.config?.fillProcessing?.CORRECTION_LOCK_HOLD_BUDGET_MS
+        ?? (FILL_PROCESSING as any)?.CORRECTION_LOCK_HOLD_BUDGET_MS;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    return 4000;
+}
+
+/**
+ * Resolve the optional hard cap on price updates drained per cycle. Layered
+ * on top of the hold-time budget: unset (null/undefined/non-finite) means no
+ * count cap and the elapsed-time budget alone governs; a finite value >= 0 is
+ * honored verbatim (0 intentionally drains no updates this cycle).
+ * @param {any} manager
+ * @returns {number} Finite cap, or Infinity when uncapped
+ */
+function resolveCorrectionMaxUpdates(manager: any): number {
     const raw = manager?.config?.fillProcessing?.CORRECTION_MAX_UPDATES_PER_CYCLE
         ?? (FILL_PROCESSING as any)?.CORRECTION_MAX_UPDATES_PER_CYCLE;
+    if (raw == null) return Infinity;
     const n = Number(raw);
     if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-    return 5;
+    return Infinity;
 }
 
 /**
@@ -1015,29 +1032,49 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
         // durably and re-drains next cycle.
         const cancelEntries = liveEntries.filter((c: any) => c.cancelOnly === true || c.isSurplus === true);
         const updateEntries = liveEntries.filter((c: any) => !(c.cancelOnly === true || c.isSurplus === true));
-        const updateBudget = resolveCorrectionUpdateBudget(manager);
-        const budgetedUpdates = updateEntries.slice(0, updateBudget);
-        const deferredUpdates = updateEntries.length - budgetedUpdates.length;
 
         const canBatch = cancelEntries.length > 1
             && typeof accountOrders?.buildCancelOrderOp === 'function'
             && typeof accountOrders?.executeBatch === 'function';
-        let serialEntries: any[] = [...cancelEntries, ...budgetedUpdates];
+        let serialCancels: any[] = cancelEntries;
         if (canBatch) {
             const batchOutcome = await _batchCancelCorrections(
                 manager, cancelEntries, accountName, privateKey, accountOrders
             );
             corrected += batchOutcome.corrected;
             failed += batchOutcome.failed;
-            // Unresolved cancels still serialize (they must not be dropped);
-            // budgeted updates follow.
-            serialEntries = [...batchOutcome.unresolved, ...budgetedUpdates];
+            // Unresolved cancels still serialize (they must not be dropped).
+            serialCancels = batchOutcome.unresolved;
         }
 
-        for (const correctionInfo of serialEntries) {
+        for (const correctionInfo of serialCancels) {
             const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
             results.push({ ...correctionInfo, result });
             if (result && result.success) corrected++; else failed++;
+            await sleep(TIMING.SYNC_DELAY_MS);
+        }
+
+        // Price updates are bounded by wall-clock lock-hold budget (primary)
+        // plus an optional hard count cap. The window opens *after* cancels so
+        // fund-critical cancels are never delayed by the update budget, and it
+        // is measured from the clock rather than a fixed count so a slow chain
+        // (large RPC round-trip) drains fewer updates instead of holding
+        // _gridLock past the 20s fill-lock timeout. Leftovers stay queued in
+        // order for the next cycle.
+        const holdBudgetMs = resolveCorrectionHoldBudget(manager);
+        const maxUpdates = resolveCorrectionMaxUpdates(manager);
+        const updateDeadline = Date.now() + holdBudgetMs;
+        let updatesProcessed = 0;
+        let deferredUpdates = 0;
+        for (const correctionInfo of updateEntries) {
+            if (updatesProcessed >= maxUpdates || Date.now() >= updateDeadline) {
+                deferredUpdates++;
+                continue;
+            }
+            const result = await correctOrderPriceOnChain(manager, correctionInfo, accountName, privateKey, accountOrders);
+            results.push({ ...correctionInfo, result });
+            if (result && result.success) corrected++; else failed++;
+            updatesProcessed++;
             await sleep(TIMING.SYNC_DELAY_MS);
         }
         // Persist master grid mutations from surplus-type-mismatch cancellations.
@@ -1053,7 +1090,8 @@ async function correctAllPriceMismatches(manager: any, accountName: any, private
                 : 0;
             manager?.logger?.log?.(
                 `[CORRECTION] Deferred ${deferredUpdates} price update(s) to the next cycle ` +
-                `(budget ${updateBudget}/cycle, ${queuedAfter} still queued)`,
+                `(hold budget ${holdBudgetMs}ms${Number.isFinite(maxUpdates) ? `, cap ${maxUpdates}` : ''}, ` +
+                `${queuedAfter} still queued)`,
                 'info'
             );
         }

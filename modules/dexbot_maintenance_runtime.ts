@@ -2213,6 +2213,48 @@ function shouldDeferMaintenanceForBroadcast(bot: any): boolean {
 }
 
 /**
+ * Observability watchdog for _gridLock hold duration. _gridLock has no
+ * acquisition timeout and its callers cannot safely recover from a rejected
+ * acquire (grid mutations are not idempotent, and forceRelease would let a new
+ * acquirer run alongside the orphaned callback), so an over-long critical
+ * section cannot be timed out — it must be bounded at the source. This makes
+ * any such section visible: when the live hold crosses
+ * TIMING.GRID_LOCK_HOLD_WARN_MS it emits a rate-limited warn. Called from the
+ * maintenance tick so holds outside a broadcast region are observed too.
+ * @param {any} bot
+ * @returns {number} Observed hold duration in ms (0 when not held)
+ */
+function checkGridLockHoldDuration(bot: any): number {
+    try {
+        const lock = bot?.manager?._gridLock;
+        if (!lock || typeof lock.heldForMs !== 'function') return 0;
+        const heldMs = Number(lock.heldForMs()) || 0;
+        if (heldMs <= 0) return 0;
+        const warnMs = Number((TIMING as any)?.GRID_LOCK_HOLD_WARN_MS) > 0
+            ? Number((TIMING as any).GRID_LOCK_HOLD_WARN_MS)
+            : 15000;
+        if (heldMs >= warnMs) {
+            const now = Date.now();
+            const rateLimitMs = Number((TIMING as any)?.STALE_TOTALS_WARN_RATE_LIMIT_MS) > 0
+                ? Number((TIMING as any).STALE_TOTALS_WARN_RATE_LIMIT_MS)
+                : 60000;
+            const lastWarnAt = Number(bot?._gridLockHoldWarnAt) || 0;
+            if (now - lastWarnAt >= rateLimitMs) {
+                bot._gridLockHoldWarnAt = now;
+                bot?._warn?.(
+                    `[GRID-LOCK] _gridLock held for ${Math.round(heldMs)}ms (threshold ${warnMs}ms). ` +
+                    `A critical section is running long and may starve lock waiters; bound the holder ` +
+                    `at the source rather than force-releasing a mutating lock.`
+                );
+            }
+        }
+        return heldMs;
+    } catch {
+        return 0;
+    }
+}
+
+/**
  * Calculate the remaining idle delay (ms) before grid maintenance can proceed.
  * Waits for fill queue to drain and for recent grid activity to settle.
  * @param {Object} ctx - Bot context with _lastGridActivityAt and _incomingFillQueue
@@ -2316,6 +2358,9 @@ function scheduleDeferredGridResync(ctx: any, options: any = {}) {
  * @returns {Promise<void>}
  */
 async function executeMaintenanceLogic(bot: any, context: any) {
+    // Surface any over-long _gridLock hold first — observational only, and it
+    // must run even when the rest of the tick defers on a broadcast region.
+    checkGridLockHoldDuration(bot);
     // Clear stale broadcast flag first so any downstream gating on
     // isBroadcastingActive() (e.g. recalculateFunds, BTS balance check)
     // sees the freshest state rather than a hung flag.
@@ -3411,7 +3456,7 @@ async function syncOpenOrdersAndProcessFillsImpl(bot: any, tag: any) {
         return { syncResult: null, aborted: true, hasUnmatched: -1, openOrders: null };
     }
 }
-export { loadBotsConfigSnapshot, isWrapperAdapterOwner, checkAndApplyBotConfigChanges, buildBotConfigFingerprint, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, getTargetedSyncReason, countLiveReserveOrders, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, usesAmaGridPrice, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills, shouldDeferMaintenanceForBroadcast };
+export { loadBotsConfigSnapshot, isWrapperAdapterOwner, checkAndApplyBotConfigChanges, buildBotConfigFingerprint, refreshDynamicWeightDistribution, performGridResync, updateBotGridResetMetadata, handlePendingTriggerReset, setupTriggerFileDetection, performPeriodicGridChecks, isOpenOrdersSyncLoopEnabled, startOpenOrdersSyncLoop, stopOpenOrdersSyncLoop, setupBlockchainFetchInterval, stopBlockchainFetchInterval, setupBotsConfigPollInterval, stopBotsConfigPollInterval, executeMaintenanceLogic, getTargetedSyncReason, countLiveReserveOrders, cancelDustOrders, isOrderDoesNotExistError, runGridMaintenance, releaseMarketAdapterRuntime, syncMarketAdapterOnPeriodicConfigCheck, usesAmaGridPrice, runDustHealthCheck, setupDustHealthCheckInterval, requestGridReset, wireStructuralGridResyncRequest, getPipelineSignals, markGridActivity, getMetrics, syncOpenOrdersAndProcessFills, shouldDeferMaintenanceForBroadcast, checkGridLockHoldDuration };
 
 
 export default {
@@ -3457,5 +3502,6 @@ export default {
     getMetrics,
     syncOpenOrdersAndProcessFills,
     shouldDeferMaintenanceForBroadcast,
+    checkGridLockHoldDuration,
     _internalDeferredHold: { logDeferredHoldSummary, describeDeferredHolds, considerDeferredHoldEscalation },
 };

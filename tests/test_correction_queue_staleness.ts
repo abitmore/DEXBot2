@@ -485,6 +485,39 @@ async function run() {
         console.log('  - update budget caps the sequential loop; remainder stays queued');
     }
 
+    // ---- 4a-time. Hold-time budget caps the drain when no count cap is set ----
+    {
+        const slots = [];
+        const queue = [];
+        for (let i = 0; i < 6; i++) {
+            slots.push(liveSell(`slot-t${i}`, `1.7.t${i}`, 0.3 + i * 0.01));
+            queue.push(priceEntry(`slot-t${i}`, `1.7.t${i}`, 0.3 + i * 0.01));
+        }
+        const { manager } = createManager(slots, queue);
+        // No CORRECTION_MAX_UPDATES_PER_CYCLE, so the elapsed-time budget alone
+        // must bound the drain. Simulate a slow chain (large RPC round-trip) by
+        // advancing the clock past the budget on the first update.
+        manager.config = { fillProcessing: { CORRECTION_LOCK_HOLD_BUDGET_MS: 4000 } };
+        const realNow = Date.now;
+        let clock = 1_000_000;
+        Date.now = () => clock;
+        let updates = 0;
+        const accountOrders = {
+            updateOrder: async () => { updates++; clock += 60_000; return {}; },
+        };
+        let out;
+        try {
+            out = await correctAllPriceMismatches(manager, 'acct', 'k', accountOrders);
+        } finally {
+            Date.now = realNow;
+        }
+        assert.strictEqual(updates, 1, 'slow chain must stop once the time budget is exceeded');
+        assert.strictEqual(out.corrected, 1);
+        assert.strictEqual(out.deferredUpdates, 5, 'remainder reported as deferred');
+        assert.strictEqual(manager.ordersNeedingPriceCorrection.length, 5, 'remainder stays queued durably');
+        console.log('  - hold-time budget caps the drain without a count cap');
+    }
+
     // ---- 4b. Zero update budget still drains cancel-class entries ----
     {
         const { manager } = createManager(
