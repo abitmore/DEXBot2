@@ -669,6 +669,15 @@ let GRID_LIMITS = {
     // spread placeholder — no re-placement, fee-light.
     GAP_EVACUATION_CANCEL_THRESHOLD: 3,
 
+    // LAST_FILL_PIVOT_TTL_MS: Maximum age of a persisted LAST-FILL-GUARD
+    // pivot for it to be re-armed at startup. The pivot is a "latest fill"
+    // fact, not a permanent ratchet: after long downtime (dormant bot, stale
+    // market regime) a restored pivot would veto legitimate placements
+    // indefinitely, so it expires instead. In-memory pivots acquired at
+    // runtime are NOT expired — the guard has no clock there and the pivot
+    // is refreshed by every fresh fill.
+    LAST_FILL_PIVOT_TTL_MS: 24 * 60 * 60 * 1000,  // 24 hours
+
 
     // Grid comparison metrics
     // Detects significant divergence between calculated (in-memory) and persisted grid state

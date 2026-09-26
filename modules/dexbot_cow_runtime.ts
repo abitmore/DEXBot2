@@ -14,7 +14,7 @@ const { readOpenOrdersWithMetaSafe } = chainOrdersModule as any;
 import { BroadcastUncertainError as BroadcastUncertainErrorBinding } from './dexbot_credential_client.js';
 const BroadcastUncertainError = BroadcastUncertainErrorBinding as any;
 import * as orderUtils from './order/utils/order.js';
-import { sleep } from './order/utils/system.js';
+import { sleep, setLastFillPivot } from './order/utils/system.js';
 const {
     buildCreateOrderArgs,
     buildCreateOpFingerprint,
@@ -2140,13 +2140,11 @@ function refreshLastFillPivotFromQueue(bot: any): boolean {
             }
         }
         if (!latest) return false;
-        mgr._lastFilledPrice = (latest as { price: number; type: string }).price;
-        mgr._lastFilledType = (latest as { price: number; type: string }).type;
-        if ((latest as { price: number; type: string }).type === ORDER_TYPES.BUY) {
-            mgr._lastFilledBuyPrice = (latest as { price: number; type: string }).price;
-        } else {
-            mgr._lastFilledSellPrice = (latest as { price: number; type: string }).price;
-        }
+        // Shared free writer (utils/system) — the same implementation the
+        // manager's _setLastFillPivot method delegates to and restoreLast-
+        // FillPivot uses, so the queued-fill refresh cannot write a different
+        // scalar-family shape than any other pivot writer.
+        setLastFillPivot(mgr, (latest as { price: number; type: string }).type, (latest as { price: number; type: string }).price, 'fill');
         try {
             mgr.logger?.log?.(
                 `[LAST-FILL-GUARD] Pivot refreshed from ${queue.length} pending queued fill(s): ` +

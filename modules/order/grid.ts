@@ -177,7 +177,7 @@ import {
     reserveEdgeIdSet,
     resolveLiveReserveEdgeAnchorPrice
 } from './utils/order.js';
-import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry } from './utils/system.js';
+import { loadAmaCenterPrice, loadAmaCenterSnapshot, withBlockchainRetry, restoreLastFillPivot, resetLastFillPivot } from './utils/system.js';
 import * as MathUtils from './utils/math.js';
 import { derivePriceWithPoolRef, resolveStartPriceMode } from './utils/withPoolRef.js';
 import { getWhitelistFlags } from '../market_adapter_whitelist.js';
@@ -867,6 +867,23 @@ export async function loadGrid(manager: any, grid: any, boundaryIdx: any = null,
                 manager.logger?.log?.(`Restored boundary index: ${restoredBoundary}`, 'info');
             }
 
+            // Restart resilience: restore the persisted LAST-FILL-GUARD pivot
+            // WITH the boundary — after the persisted genesis is applied and
+            // the grid re-typed, before the first reconcile/broadcast — so a
+            // restart cannot re-open the cold window where the guard is
+            // disabled and evacuation stamps get applied against a boundary
+            // that is still being rebuilt. restoreLastFillPivot validates the
+            // row against the manager's live genesis (refuses on mismatch —
+            // a regenerated grid drops it) and onto the price ladder with the
+            // same one-increment drift rule the runtime guard applies.
+            if (restoredBoundary !== null) {
+                try {
+                    restoreLastFillPivot(manager, (manager as any)?.accountOrders?.loadLastFillPivot?.() ?? null);
+                } catch (pivotErr: any) {
+                    manager.logger?.log?.(`[LAST-FILL-GUARD] Persisted pivot restore failed (${getErrorMessage(pivotErr)}); book seed takes over`, 'warn');
+                }
+            }
+
             // Reassign slot types based on current boundary.
             // Every slot's type must match its price-slot index (parseSlotIndex)
             // relative to the boundary + gapSlots, not array position.  After
@@ -1414,6 +1431,20 @@ export async function initializeGrid(manager: any): Promise<void> {
         // deltas would shift the new anchor again for movement it already
         // contains (and their slot ids now name different prices).
         manager._clearPendingFillCrawls?.('grid rebuild');
+
+        // Same generation contract for the LAST-FILL-GUARD pivot: it was
+        // armed against the previous ladder, and restoreLastFillPivot would
+        // refuse it against the new genesis anyway. Drop it now so the guard
+        // re-arms on the first real fill of the new generation (the startup
+        // book seed may arm a heuristic pivot in the meantime, which is
+        // in-memory-only by provenance).
+        try {
+            if (typeof (manager as any)._resetLastFillPivot === 'function') {
+                (manager as any)._resetLastFillPivot('grid rebuild');
+            } else {
+                resetLastFillPivot(manager, 'grid rebuild');
+            }
+        } catch {}
 
         // RC-8: Update boundary with notification to dependent systems
         // Persist master boundary for StrategyEngine

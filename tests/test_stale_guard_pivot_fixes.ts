@@ -196,6 +196,16 @@ async function testFillPivotLogLine() {
         _lastFilledType: null,
         _lastFilledBuyPrice: null,
         _lastFilledSellPrice: null,
+        _lastFilledAt: 0,
+        lastFillPivotSource: null,
+        _setLastFillPivot: function (type: any, price: number, provenance: any) {
+            this._lastFilledPrice = price;
+            this._lastFilledType = type;
+            this._lastFilledAt = Date.now();
+            this.lastFillPivotSource = provenance;
+            if (type === ORDER_TYPES.BUY) this._lastFilledBuyPrice = price;
+            else this._lastFilledSellPrice = price;
+        },
     };
     const record = OrderManager.prototype.recordLastFilledPrices;
     // Partial fill with direct price.

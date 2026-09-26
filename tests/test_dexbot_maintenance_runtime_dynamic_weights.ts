@@ -40,6 +40,8 @@ const NAMES = {
         'withBlockchainRetry', 'retryPersistenceIfNeeded',
         'applyGridDivergenceCorrections', 'initializeFeeCache',
         'restoreGapEvacStreaks', 'applyPersistedPendingCrawls',
+        'resetLastFillPivot', 'restoreLastFillPivot',
+        'setLastFillPivot', 'normalizeLastFillPivot',
     ],
     format: ['formatCurrency', 'formatMetric2', 'isValidNumber', 'toFiniteNumber', 'formatPrice6', 'formatPercent'],
     orderUtils: [
