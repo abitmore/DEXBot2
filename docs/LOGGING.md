@@ -43,6 +43,8 @@ Module → Logger.log() ──┬→ console (stdout/stderr)
                               + JSON lines (optional)
 ```
 
+**Under PM2** the console branch is the only active sink: PM2 captures stdout/stderr into `profiles/logs/<app>.log`, so the Logger suppresses its own file writes and its timestamps (PM2's `log_date_format` prefixes each line). Keep console output enabled under PM2 — auto-quieting it would leave PM2 with nothing to capture. Use `quietUnderPm2: true` only if you deliberately want a silent process.
+
 ---
 
 ## Log Levels
@@ -155,7 +157,13 @@ The default `LOG_LEVEL` is `"info"`. For production or minimal output, set to `"
 
 Example: 1.1GB budget with 10 rotated files → each file rotates at ~100MB, max total ~1.1GB.
 
-Under PM2, rotation is auto-suppressed — PM2 handles its own log files.
+Under PM2, the Logger's own file writes and rotation are suppressed — PM2 owns the log files. PM2 core does **not** rotate them (the per-app `max_size` field is ignored), so `dexbot pm2` installs and configures the `pm2-logrotate` module (100M per file, retain 10, compressed) on first start. To manage rotation yourself, install it ahead of time:
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 100M
+pm2 set pm2-logrotate:retain 10
+```
 
 ---
 
@@ -323,7 +331,7 @@ Yes — each bot entry in `profiles/bots.json` accepts an optional `logging` fie
 The per-bot `logging` is deep-merged on top of the global config from `general.settings.json`. See `modules/runtime_settings.ts` for the merge logic and `modules/order/manager.ts` for where the merged config reaches the logger.
 
 **Q: What about PM2?**
-The logger auto-detects PM2 and suppresses file writes (PM2 captures stdout/stderr). File rotation is also suppressed under PM2.
+The logger auto-detects PM2 and suppresses its own file writes because PM2 captures stdout/stderr into `profiles/logs/<app>.log`. It never auto-quiets under PM2 (that would drop every line — stdout is the only sink). Log rotation moves to `pm2-logrotate`, which `dexbot pm2` installs automatically on first start.
 
 **Q: Are log lines lost on crash?**
 Queued-but-unwritten lines could be lost. Critical errors go to stderr immediately (PM2 captures those). Queue drains every 100ms. Call `flush()` on shutdown.
